@@ -37,7 +37,10 @@ code, but Positron is committed to standing the project up.
 
 ### License
 
-The Apache/MIT license will allow integration with lots of downstream commercial
-and personal use cases.  The library side can find use in games and live shows.
-The visualization program can be used directly on any platform that can run
-Vulkan, including most phones, PCs, Macs, and many smart platforms that have GPUs.
+This project is licensed under either of
+
+ * Apache License, Version 2.0 (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
+ * MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
+
+at your option.
+
