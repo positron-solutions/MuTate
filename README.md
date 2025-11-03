@@ -7,15 +7,23 @@
     and library, using Vulkan and local AI models in Rust.
 </p>
 
-## Stub! 🚧
+## Status
 
-This repo was started to make links work.  Here's a tip about music visualizer programming:
+Just started work.
 
-Project M etc all use a pretty fun trick.  You just re-use last frame's output
-buffers as input buffers for the new frame.  With a blending factor, this
-creates a ghosting affect.  If you have seen any of my YouTube videos feature
-Jean Claude Van Damme, the same effect was used in a shader.  Tricks like this
-are the basis of continuously warping the output.
+- [x] window
+- [ ] Vulkan swap chain
+- [ ] PipeWire (audio crate selection pending) input ring
+- [ ] Draw inputs as outputs
+
+### Open Product, Directly Sponsored by Positron
+
+µTate is being developed by Positron to demonstrate the features of
+[PrizeForge](https://prizeforge.com).  The [stream for
+mutate](https://prizeforge.com/streams/details/163AQ5rQj92) is continuously
+raising funds.  Want to write code?  The PrizeForge stream exists to reward
+people like you.  Anyone can contribute funds, code or ideas.  In any case,
+Positron is committed to standing the project up.
 
 ### What Can Done Better With A New Visualizer?
 
@@ -27,13 +35,10 @@ are the basis of continuously warping the output.
 - Accept text prompts to create lightweight customizations
 - Steel scheme scripting language for preset programming
 
-### Open Product, Directly Sponsored by Positron
-
-µTate is being developed by Positron to demonstrate the features of
-[PrizeForge](https://prizeforge.com).  The [stream for
-mutate](https://prizeforge.com/streams/details/163AQ5rQj92) is continuously
-raising funds to attract new code contributions.  Anyone can contribute funds or
-code, but Positron is committed to standing the project up.
+Got a better idea?  We would love to hear it.
+[contact@prizeforge.com](mailto:contact@prizeforge.com).  If you want other
+people to hear it, check out our [subreddit](https://reddit.com/r/prizeforge)
+until we have our on-platform social reasoning MVP built.
 
 ### License
 
