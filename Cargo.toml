@@ -5,3 +5,19 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+ash = "0.38.0"
+winit = "0.30.12"
+
+# Build fast dependencies
+[profile.dev.package."*"]
+codegen-units = 1
+opt-level = 3
+
+# Build fast build scripts and proc-macros.
+[profile.dev.build-override]
+codegen-units = 1
+opt-level = 3
+
+[profile.release]
+lto = "fat"
+strip = "symbols"
