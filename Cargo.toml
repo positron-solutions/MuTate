@@ -6,6 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 ash = "0.38.0"
+raw-window-handle = "0.6.2"
 winit = "0.30.12"
 
 # Build fast dependencies

@@ -12,7 +12,7 @@
 Just started work.
 
 - [x] window
-- [ ] Vulkan swap chain
+- [x] Vulkan swap chain
 - [ ] PipeWire (audio crate selection pending) input ring
 - [ ] Draw inputs as outputs
 
