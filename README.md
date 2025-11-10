@@ -16,15 +16,6 @@ Just started work.
 - [ ] PipeWire (audio crate selection pending) input ring
 - [ ] Draw inputs as outputs
 
-### Open Product, Directly Sponsored by Positron
-
-µTate is being developed by Positron to demonstrate the features of
-[PrizeForge](https://prizeforge.com).  The [stream for
-mutate](https://prizeforge.com/streams/details/163AQ5rQj92) is continuously
-raising funds.  Want to write code?  The PrizeForge stream exists to reward
-people like you.  Anyone can contribute funds, code or ideas.  In any case,
-Positron is committed to standing the project up.
-
 ### What Can Done Better With A New Visualizer?
 
 - Anticipate beats from patterns of beats and experience
@@ -40,6 +31,15 @@ Got a better idea?  We would love to hear it.
 people to hear it, check out our [subreddit](https://reddit.com/r/prizeforge)
 until we have our on-platform social reasoning MVP built.
 
+### Open Product, Directly Sponsored by Positron
+
+µTate is being developed by Positron to demonstrate the features of
+[PrizeForge](https://prizeforge.com).  The [stream for
+mutate](https://prizeforge.com/streams/details/163AQ5rQj92) is continuously
+raising funds.  Want to write code?  The PrizeForge stream exists to reward
+people like you.  Anyone can contribute funds, code or ideas.  In any case,
+Positron is committed to standing the project up.
+
 ### License
 
 This project is licensed under either of
@@ -49,3 +49,6 @@ This project is licensed under either of
 
 at your option.
 
+#### Your contributions
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
