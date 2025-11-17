@@ -4,7 +4,22 @@ This is a record of "crimes" and the plans to later un-crime them.  Debt specifi
 
 # Currently Paying Down
 
-None.  We are still identifying high interest rates.
+Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
+
+## Lifetime Alignment
+
+Prototype code is not yet attempting to build structs to gather related lifetimes or enable multiple window setups.  It should.  Boundaries emerging:
+
+- Device, instance, other detected & configured choices
+- The window dependent objects such as swapchain images
+- Compositing buffers
+- Pipelines and their exclusive resources
+
+User setting updates, dynamic scripting, and generation will all as usual require a lot of re-creation and re-allocation that can share duty with teardown, destruction being the first step of re-creation.
+
+## Memory Management
+
+Dynamic usage of allocated memory is likely unavoidable.  Several tools are like VMA bindings or the gpu-allocator crate are being looked at.  Expectations are that memory usage will be relatively low but less predictable due to generation and scripting.  Bindless rendering will certainly be coupled to the memory use strategy.  The tradeoffs of existing approaches are not clear yet, but the need to manage a pool and dependent addresses does suggest more rather than less work will pay off.
 
 # Charging Interest
 

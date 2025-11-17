@@ -18,6 +18,12 @@
           xorg.libXcursor
           xorg.libXi
           libxkbcommon
+
+          shader-slang
+
+          vulkan-loader
+          vulkan-tools
+          vulkan-validation-layers
         ];
 
         # Make sure dynamic linker can find libX11 at runtime
@@ -28,6 +34,8 @@
           LD_LIBRARY_PATH=${pkgs.libxkbcommon}/lib:$LD_LIBRARY_PATH
           LD_LIBRARY_PATH=${pkgs.vulkan-loader}/lib:$LD_LIBRARY_PATH
           export LD_LIBRARY_PATH
+
+          export VK_LAYER_PATH=${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d
         '';
       };
     in {
