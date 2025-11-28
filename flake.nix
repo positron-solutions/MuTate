@@ -21,6 +21,9 @@
 
           shader-slang
 
+          pipewire
+          llvmPackages.libclang.lib
+
           vulkan-loader
           vulkan-tools
           vulkan-validation-layers
@@ -33,7 +36,11 @@
           LD_LIBRARY_PATH=${pkgs.xorg.libXi}/lib:$LD_LIBRARY_PATH
           LD_LIBRARY_PATH=${pkgs.libxkbcommon}/lib:$LD_LIBRARY_PATH
           LD_LIBRARY_PATH=${pkgs.vulkan-loader}/lib:$LD_LIBRARY_PATH
+          LD_LIBRARY_PATH=${pkgs.pipewire}/lib:$LD_LIBRARY_PATH
+          LD_LIBRARY_PATH=${pkgs.llvmPackages.libclang.lib}/lib:$LD_LIBRARY_PATH
           export LD_LIBRARY_PATH
+
+          export LIBCLANG_PATH=${pkgs.llvmPackages.libclang.lib}/lib
 
           export VK_LAYER_PATH=${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d
         '';
