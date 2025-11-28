@@ -1,13 +1,24 @@
-[package]
-name = "mutate"
-version = "0.1.0"
-edition = "2024"
-license = "MIT OR Apache-2.0"
+[workspace]
+resolver = "3"
+members = [ "mutate-lib", "mutate-visualizer"]
 
-[dependencies]
+[workspace.package]
+categories = ["multimedia", "graphics", "rendering", "visualization"]
+edition = "2024"
+keywords = ["graphics", "audio", "music", "vulkan"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/positron-solutions/mutate"
+rust-version = "1.88.0"
+version = "0.1.0"
+default-run = "mutate-visualizer"
+
+[workspace.dependencies]
 ash = "0.38.0"
-gpu-allocator = {version="0.28.0", default-features=false, features=["vulkan", "std"]}
+# gpu-allocator = {version="0.28.0", default-features=false, features=["vulkan", "std"]}
+pipewire = {version="0.9.2"}
 raw-window-handle = "0.6.2"
+ringbuf = "0.4.8"
+thiserror = "2.0.17"
 winit = "0.30.12"
 
 # Build fast dependencies

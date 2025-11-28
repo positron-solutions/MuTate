@@ -1,0 +1,24 @@
+[package]
+name = "mutate-lib"
+description = "Converts audio streams into raw outputs used in the µTate visualizer"
+readme = "../README.md"
+
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+pipewire = {workspace = true, features = ["v0_3_44"]}
+ringbuf.workspace = true
+thiserror.workspace = true
+
+[[example]]
+name = "pipewire"
+path = "src/pipewire.rs"
+
+[[example]]
+name = "pipewire2"
+path = "src/pipewire2.rs"
