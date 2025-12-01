@@ -12,5 +12,16 @@ version.workspace = true
 
 [dependencies]
 ash.workspace = true
+dirs.workspace = true
 raw-window-handle.workspace = true
+thiserror.workspace = true
 winit.workspace = true
+
+[build-dependencies]
+toml.workspace = true
+
+[package.metadata.mutate]
+# 📦 Attention packagers!  The build.rs hardcodes this into assets.rs.  Set the
+# path absolutely or relative to the installed binary.  This setting does not
+# affect debug builds.
+asset_dir="../shared/mutate/assets"

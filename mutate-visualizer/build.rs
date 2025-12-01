@@ -1,39 +1,66 @@
-use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::{ffi, fs, path::Path, process};
 
 fn main() {
-    let shader_dir = "shaders";
+    set_asset_default_dir();
+    build_shaders();
+}
 
-    // Tell Cargo to rerun if anything in shaders/ changes
-    println!("cargo:rerun-if-changed={}", shader_dir);
+fn build_shaders() {
+    let src_root = Path::new("shaders");
+    let dest_root = Path::new("assets/shaders");
 
-    let out_dir = std::env::var("OUT_DIR").unwrap();
+    println!("cargo:rerun-if-changed=shaders");
 
-    for entry in fs::read_dir(shader_dir).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        if path.extension().map(|s| s == "slang").unwrap_or(false) {
-            let output_path = Path::new(&out_dir)
-                .join(path.file_name().unwrap())
-                .with_extension("spv");
+    if process::Command::new("slangc").arg("-v").output().is_err() {
+        panic!("no slangc found");
+    }
 
-            let needs_build = if output_path.exists() {
-                let input_meta = fs::metadata(&path).unwrap();
-                let output_meta = fs::metadata(&output_path).unwrap();
-                input_meta.modified().unwrap() > output_meta.modified().unwrap()
-            } else {
-                true
-            };
+    fn compile_dir(dir: &Path, src_root: &Path, dest_root: &Path, ext: &ffi::OsStr) {
+        let mut out_ensured = false;
+        let out_dir = dest_root.join(dir.strip_prefix(src_root).unwrap());
 
-            if needs_build {
-                Command::new("slangc")
-                    .arg(&path)
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                compile_dir(&path, &src_root, &dest_root, &ext);
+            } else if path.extension() == Some(ext) {
+                if !out_ensured {
+                    fs::create_dir_all(&out_dir).unwrap();
+                    out_ensured = true;
+                }
+                let out = dest_root
+                    .join(path.strip_prefix(src_root).unwrap())
+                    .with_extension("spv");
+
+                // Run slangc: `slangc <input> -o <output>`
+                let status = process::Command::new("slangc")
+                    .arg(path.as_os_str())
                     .arg("-o")
-                    .arg(&output_path)
+                    .arg(out.as_os_str())
                     .status()
                     .unwrap();
+
+                if !status.success() {
+                    panic!("slangc failed for {:?}", path);
+                }
             }
         }
     }
+
+    let slang_ext = ffi::OsStr::new("slang");
+    compile_dir(&src_root, &src_root, &dest_root, &slang_ext);
+}
+
+/// Packagers, see the Cargo.toml.  Sets the path for hard coding into the binary for use at
+/// runtime.  Does not affect build time lookups.
+fn set_asset_default_dir() {
+    let cargo = fs::read_to_string("Cargo.toml").unwrap();
+    let parsed: toml::Value = toml::from_str(&cargo).unwrap();
+
+    let mutate_asset_dir = parsed["package"]["metadata"]["mutate"]["asset_dir"]
+        .as_str()
+        .unwrap_or("assets");
+
+    println!("cargo:rustc-env=MUTATE_ASSET_DIR={mutate_asset_dir}");
 }

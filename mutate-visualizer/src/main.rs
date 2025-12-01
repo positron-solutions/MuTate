@@ -1,5 +1,6 @@
 // Copyright 2025 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
+mod assets;
 
 use std::ffi::{c_void, CStr, CString};
 
@@ -570,8 +571,13 @@ impl ApplicationHandler for App {
 
         let buffers = unsafe { device.allocate_command_buffers(&alloc_info).unwrap() };
 
-        let vert_spv = include_bytes!("shaders/vertex.spv");
-        let frag_spv = include_bytes!("shaders/fragment.spv");
+        let assets = assets::AssetDirs::new();
+        let vert_spv = assets
+            .find_bytes("vertex", assets::AssetKind::Shader)
+            .unwrap();
+        let frag_spv = assets
+            .find_bytes("fragment", assets::AssetKind::Shader)
+            .unwrap();
 
         let vert_module_ci = vk::ShaderModuleCreateInfo {
             code_size: vert_spv.len(),

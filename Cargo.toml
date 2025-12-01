@@ -14,11 +14,13 @@ default-run = "mutate-visualizer"
 
 [workspace.dependencies]
 ash = "0.38.0"
+dirs = "6.0.0"
 # gpu-allocator = {version="0.28.0", default-features=false, features=["vulkan", "std"]}
 pipewire = {version="0.9.2"}
 raw-window-handle = "0.6.2"
 ringbuf = "0.4.8"
 thiserror = "2.0.17"
+toml = "0.9.8"
 winit = "0.30.12"
 
 # Build fast dependencies
