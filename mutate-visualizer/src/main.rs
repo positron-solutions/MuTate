@@ -25,9 +25,10 @@ struct App {
     pipelines: Option<Vec<vk::Pipeline>>, // XXX Empty Vec instead of optional Vec
     pipeline_layout: Option<vk::PipelineLayout>,
 
-    image_available_semaphore: Option<vk::Semaphore>,
-    in_flight_fence: Option<vk::Fence>,
-    render_finished_semaphore: Option<vk::Semaphore>,
+    frame_index: usize,
+    image_available_semaphores: Vec<vk::Semaphore>,
+    in_flight_fences: Vec<vk::Fence>,
+    render_finished_semaphores: Vec<vk::Semaphore>,
 
     device: Option<ash::Device>,
     entry: Option<ash::Entry>,
@@ -50,9 +51,11 @@ impl App {
         let swapchain = self.swapchain.unwrap();
         let swapchain_loader = self.swapchain_loader.as_ref().unwrap();
 
-        let image_available = self.image_available_semaphore.unwrap();
-        let render_finished = self.render_finished_semaphore.unwrap();
-        let in_flight = self.in_flight_fence.unwrap();
+        let idx = self.frame_index;
+        let image_available = self.image_available_semaphores[idx];
+        let render_finished = self.render_finished_semaphores[idx];
+        let in_flight = self.in_flight_fences[idx];
+        self.frame_index = (self.frame_index + 1) % 3;
 
         unsafe {
             device
@@ -138,6 +141,10 @@ impl App {
             swapchain_loader
                 .queue_present(queue, &present_info)
                 .expect("queue_present failed");
+        }
+
+        if let Some(win) = &self.window {
+            win.request_redraw();
         }
     }
 
@@ -491,7 +498,7 @@ impl ApplicationHandler for App {
         let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &device);
         let swapchain_info = vk::SwapchainCreateInfoKHR {
             surface,
-            min_image_count: 3, // double buffered
+            min_image_count: 3,
             image_format: surface_format.format,
             image_color_space: surface_format.color_space,
             image_extent: surface_caps.current_extent,
@@ -538,16 +545,21 @@ impl ApplicationHandler for App {
             ..Default::default()
         };
 
-        let fence = unsafe { device.create_fence(&fence_info, None).unwrap() };
+        let in_flight_fences: Vec<vk::Fence> = (0..3)
+            .map(|_| unsafe { device.create_fence(&fence_info, None).unwrap() })
+            .collect();
 
         let semaphore_info = vk::SemaphoreCreateInfo {
             ..Default::default()
         };
 
-        let image_available_semaphore =
-            unsafe { device.create_semaphore(&semaphore_info, None).unwrap() };
-        let render_finished_semaphore =
-            unsafe { device.create_semaphore(&semaphore_info, None).unwrap() };
+        let image_available_semaphores = (0..3)
+            .map(|_| unsafe { device.create_semaphore(&semaphore_info, None).unwrap() })
+            .collect();
+
+        let render_finished_semaphores = (0..3)
+            .map(|_| unsafe { device.create_semaphore(&semaphore_info, None).unwrap() })
+            .collect();
 
         let command_pool_info = vk::CommandPoolCreateInfo {
             flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
@@ -744,9 +756,9 @@ impl ApplicationHandler for App {
         self.swapchain_images = images;
         self.swapchain_image_views = image_views;
 
-        self.in_flight_fence = Some(fence);
-        self.image_available_semaphore = Some(image_available_semaphore);
-        self.render_finished_semaphore = Some(render_finished_semaphore);
+        self.in_flight_fences = in_flight_fences;
+        self.image_available_semaphores = image_available_semaphores;
+        self.render_finished_semaphores = render_finished_semaphores;
 
         self.command_pool = Some(command_pool);
         self.command_buffers = buffers;
@@ -796,14 +808,14 @@ impl ApplicationHandler for App {
                         }
                     }
 
-                    self.image_available_semaphore.map(|s| {
-                        device.destroy_semaphore(s, None);
+                    self.image_available_semaphores.iter().for_each(|s| {
+                        device.destroy_semaphore(*s, None);
                     });
-                    self.render_finished_semaphore.map(|s| {
-                        device.destroy_semaphore(s, None);
+                    self.render_finished_semaphores.iter().for_each(|s| {
+                        device.destroy_semaphore(*s, None);
                     });
-                    self.in_flight_fence.map(|f| {
-                        device.destroy_fence(f, None);
+                    self.in_flight_fences.iter().for_each(|f| {
+                        device.destroy_fence(*f, None);
                     });
                     self.command_pool.map(|p| {
                         device.destroy_command_pool(p, None);
@@ -835,13 +847,17 @@ fn main() {
         framebuffers: Vec::new(),
         pipelines: None,
         pipeline_layout: None,
-        image_available_semaphore: None,
-        in_flight_fence: None,
+
+        frame_index: 0,
+        image_available_semaphores: Vec::new(),
+        in_flight_fences: Vec::new(),
+        render_finished_semaphores: Vec::new(),
+
         instance: None,
         physical_device: None,
         queue: None,
         queue_family_index: 0,
-        render_finished_semaphore: None,
+
         surface: None,
         surface_loader: None,
         swapchain: None,
