@@ -29,7 +29,9 @@ impl AssetKind {
 /// the duration that such paths are valid, such as when listing assets or looking up several assets.
 pub struct AssetDirs {
     env: Option<PathBuf>,
+    #[allow(dead_code)]
     local: Option<PathBuf>,
+    #[allow(dead_code)]
     default: Option<PathBuf>,
 }
 
