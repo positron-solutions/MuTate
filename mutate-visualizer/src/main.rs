@@ -16,6 +16,8 @@ use winit::{
 };
 
 struct App {
+    running: bool,
+
     queue: Option<vk::Queue>,
     queue_family_index: u32,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -775,9 +777,12 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::RedrawRequested => {
-                self.draw_frame();
+                if self.running {
+                    self.draw_frame();
+                }
             }
             WindowEvent::CloseRequested => unsafe {
+                self.running = false;
                 if let Some(device) = &self.device {
                     device.device_wait_idle().unwrap();
 
@@ -840,6 +845,8 @@ fn main() {
 
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
+        running: true,
+
         command_buffers: Vec::new(),
         command_pool: None,
         device: None,
