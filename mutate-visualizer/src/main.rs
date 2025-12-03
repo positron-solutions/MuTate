@@ -23,7 +23,6 @@ struct App {
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: Option<vk::CommandPool>,
 
-    framebuffers: Vec<vk::Framebuffer>,
     pipelines: Option<Vec<vk::Pipeline>>, // XXX Empty Vec instead of optional Vec
     pipeline_layout: Option<vk::PipelineLayout>,
 
@@ -786,10 +785,6 @@ impl ApplicationHandler for App {
                 if let Some(device) = &self.device {
                     device.device_wait_idle().unwrap();
 
-                    for fb in &self.framebuffers {
-                        device.destroy_framebuffer(*fb, None);
-                    }
-
                     for view in &self.swapchain_image_views {
                         device.destroy_image_view(*view, None);
                     }
@@ -851,7 +846,6 @@ fn main() {
         command_pool: None,
         device: None,
         entry: None,
-        framebuffers: Vec::new(),
         pipelines: None,
         pipeline_layout: None,
 
