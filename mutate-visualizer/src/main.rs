@@ -104,11 +104,11 @@ impl App {
         self.record_command_buffer(image_index);
 
         // Which command buffer to submit.
-        let cmd = self.command_buffers[image_index as usize];
+        let cmd_buffer = self.command_buffers[image_index as usize];
 
         let cmd_info = vk::CommandBufferSubmitInfo {
             s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
-            command_buffer: cmd,
+            command_buffer: cmd_buffer,
             device_mask: 0,
             ..Default::default()
         };
@@ -158,7 +158,7 @@ impl App {
 
     fn record_command_buffer(&self, image_index: u32) {
         let device = self.device.as_ref().unwrap();
-        let cmd = self.command_buffers[image_index as usize];
+        let command_buffer = self.command_buffers[image_index as usize];
         let image = self.swapchain_images[image_index as usize];
         let view = self.swapchain_image_views[image_index as usize];
         let extent = unsafe {
@@ -177,13 +177,13 @@ impl App {
         // reset CB
         unsafe {
             device
-                .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
                 .expect("reset_command_buffer failed");
 
             // begin CB
             let begin = vk::CommandBufferBeginInfo::default();
             device
-                .begin_command_buffer(cmd, &begin)
+                .begin_command_buffer(command_buffer, &begin)
                 .expect("begin failed");
         }
 
@@ -212,7 +212,7 @@ impl App {
             ..Default::default()
         };
 
-        unsafe { device.cmd_pipeline_barrier2(cmd, &dep_info) };
+        unsafe { device.cmd_pipeline_barrier2(command_buffer, &dep_info) };
 
         let clear = vk::ClearValue {
             color: vk::ClearColorValue {
@@ -242,11 +242,13 @@ impl App {
             ..Default::default()
         };
 
-        unsafe { device.cmd_begin_rendering(cmd, &render_info) };
+        unsafe { device.cmd_begin_rendering(command_buffer, &render_info) };
 
         let pipeline = self.pipelines.as_ref().unwrap()[0];
         unsafe {
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        }
+
         let color: [f32; 4] = [self.seed, 0.2, 0.7, 1.0];
 
         let pipeline_layout = self.pipeline_layout.as_ref().unwrap();
@@ -278,14 +280,14 @@ impl App {
         };
 
         unsafe {
-            device.cmd_set_viewport(cmd, 0, &[viewport]);
-            device.cmd_set_scissor(cmd, 0, &[scissor]);
+            device.cmd_set_viewport(command_buffer, 0, &[viewport]);
+            device.cmd_set_scissor(command_buffer, 0, &[scissor]);
         }
 
         // Naive triangle draw
-        unsafe { device.cmd_draw(cmd, 3, 1, 0, 0) };
+        unsafe { device.cmd_draw(command_buffer, 3, 1, 0, 0) };
 
-        unsafe { device.cmd_end_rendering(cmd) };
+        unsafe { device.cmd_end_rendering(command_buffer) };
 
         let barrier2 = vk::ImageMemoryBarrier2 {
             s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
@@ -312,11 +314,11 @@ impl App {
             ..Default::default()
         };
 
-        unsafe { device.cmd_pipeline_barrier2(cmd, &dep2) };
+        unsafe { device.cmd_pipeline_barrier2(command_buffer, &dep2) };
 
         unsafe {
             device
-                .end_command_buffer(cmd)
+                .end_command_buffer(command_buffer)
                 .expect("end_command_buffer failed")
         };
     }
