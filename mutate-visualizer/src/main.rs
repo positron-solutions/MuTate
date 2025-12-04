@@ -43,10 +43,17 @@ struct App {
     swapchain_images: Vec<vk::Image>,
     swapchain_loader: Option<ash::khr::swapchain::Device>,
     window: Option<Window>,
+
+    seed: f32,
 }
 
 impl App {
     fn draw_frame(&mut self) {
+        self.seed = self.seed + 0.01;
+        if self.seed > 1.0 {
+            self.seed = self.seed - 1.0;
+        }
+
         let device = self.device.as_ref().unwrap();
         let queue = *self.queue.as_ref().unwrap();
         let swapchain = self.swapchain.unwrap();
@@ -240,6 +247,20 @@ impl App {
         let pipeline = self.pipelines.as_ref().unwrap()[0];
         unsafe {
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        let color: [f32; 4] = [self.seed, 0.2, 0.7, 1.0];
+
+        let pipeline_layout = self.pipeline_layout.as_ref().unwrap();
+        unsafe {
+            device.cmd_push_constants(
+                command_buffer,
+                *pipeline_layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                0,
+                std::slice::from_raw_parts(
+                    color.as_ptr() as *const u8,
+                    std::mem::size_of::<[f32; 4]>(),
+                ),
+            );
         }
 
         let viewport = vk::Viewport {
@@ -630,6 +651,12 @@ impl ApplicationHandler for App {
             },
         ];
 
+        let push_constant_range = vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::FRAGMENT,
+            offset: 0,
+            size: std::mem::size_of::<[f32; 4]>() as u32,
+        };
+
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
             s_type: vk::StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             vertex_attribute_description_count: 0,
@@ -696,7 +723,11 @@ impl ApplicationHandler for App {
             ..Default::default()
         };
 
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
+            push_constant_range_count: 1,
+            p_push_constant_ranges: &push_constant_range,
+            ..Default::default()
+        };
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(&pipeline_layout_info, None)
@@ -866,6 +897,8 @@ fn main() {
         swapchain_images: Vec::new(),
         swapchain_loader: None,
         window: None,
+
+        seed: rand::random::<f32>(),
     };
     event_loop.run_app(&mut app).unwrap();
 }
