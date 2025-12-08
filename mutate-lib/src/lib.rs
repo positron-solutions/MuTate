@@ -559,7 +559,6 @@ impl Drop for AudioProducer {
 #[cfg(target_os = "linux")]
 struct StreamData {
     format: spa::param::audio::AudioInfoRaw,
-    stream: *mut pw::sys::pw_stream,
     tx: AudioProducer,
 }
 
@@ -590,11 +589,8 @@ fn create_stream<'c>(
 
     let stream = pw::stream::StreamBox::new(core, name, props)?;
 
-    let stream_ptr = stream.as_raw_ptr();
-
     let data = Box::new(StreamData {
         format: Default::default(), // XXX format is not exposed to receiver
-        stream: stream_ptr,
         tx,
     });
 
@@ -611,6 +607,7 @@ fn create_stream<'c>(
             if id != pw::spa::param::ParamType::Format.as_raw() {
                 return;
             }
+
             let (media_type, media_subtype) = match spa::param::format_utils::parse_format(param) {
                 Ok(v) => v,
                 Err(_) => return,
