@@ -215,7 +215,12 @@ impl AudioContext {
                     if let Some(props) = &global.props {
                         match props.get("media.class") {
                             Some(got) => {
-                                if got == "Audio/Source" {
+                                // NOTE this may filter too much!  Use pipewire CLI tools if a
+                                // device you want to use is not available for use.
+                                if got == "Audio/Source"
+                                    || got == "Audio/Sink"
+                                    || got == "Audio/Device"
+                                {
                                     match AudioChoice::try_new(*props, global.id) {
                                         Ok(choice) => match choices_add.inner.choices.lock() {
                                             Ok(mut choices) => {
@@ -232,7 +237,7 @@ impl AudioContext {
                                             eprintln!("Skipping Audio/Source: {:?}", e);
                                         }
                                     }
-                                }
+                                };
                             }
                             None => {}
                         };
