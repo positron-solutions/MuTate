@@ -631,23 +631,24 @@ fn create_stream<'c>(
             );
         })
         .process(|stream, user_data| {
-            eprintln!("in process callback....");
-            let foo = stream.dequeue_buffer();
-            match foo {
+            match stream.dequeue_buffer() {
                 Some(mut buffer) => {
-                    let data = buffer.datas_mut(); // implicit drop dequeue
+                    let datas = buffer.datas_mut(); // implicit drop dequeue
                     let mut written = 0;
-                    data.iter_mut().for_each(|d| {
-                        d.data().map(|bytes| match &user_data.tx.write(bytes) {
-                            Ok(wrote) => {
-                                written += wrote;
-                            }
-                            Err(e) => {
-                                eprintln!("Stream write error: {:?}", e);
+                    datas.iter_mut().for_each(|d| {
+                        let size = d.chunk().size() as usize;
+                        let offset = d.chunk().offset() as usize;
+                        d.data().map(|bytes| {
+                            match &user_data.tx.write(&bytes[offset..offset + size]) {
+                                Ok(wrote) => {
+                                    written += wrote;
+                                }
+                                Err(e) => {
+                                    eprintln!("Stream write error: {:?}", e);
+                                }
                             }
                         });
                     });
-                    eprintln!("wrote: {} bytes", written);
                 }
                 None => {
                     eprintln!("no buffer dequeued");
