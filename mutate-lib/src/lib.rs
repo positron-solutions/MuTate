@@ -376,6 +376,11 @@ impl AudioChoice {
             .unwrap_or_else(|| self.object_serial.to_string())
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn id(&self) -> String {
+        format!("{}", self.object_serial)
+    }
+
     // This was going to be a try_from implementation until I realized the global_id was needed to
     // support removals on Linux / pipewire.
     fn try_new(props: &spa::utils::dict::DictRef, global_id: u32) -> Result<Self, MutateError> {
