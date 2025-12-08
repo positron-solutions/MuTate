@@ -408,7 +408,7 @@ impl AudioChoice {
 /// returned AudioConsumer will clean up the connection after the corresponding AudioProducer has an
 /// opportunity to clean up.
 pub struct AudioConnection {
-    buffer: ringbuf::HeapRb<u8>,
+    pub buffer: ringbuf::HeapRb<u8>,
     pub bytes_tx: std::sync::atomic::AtomicUsize,
     bytes_rx: std::sync::atomic::AtomicUsize,
     pub last_bytes: std::sync::atomic::AtomicUsize,
