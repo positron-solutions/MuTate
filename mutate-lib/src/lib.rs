@@ -33,6 +33,8 @@ pub enum MutateError {
 
     #[error("audio source error: {0}")]
     AudioSource(String),
+    #[error("cannot use dropped audio connection")]
+    Dropped,
 
     #[error("audio connection error: {0}")]
     AudioConnect(&'static str),
@@ -502,6 +504,10 @@ impl AudioProducer {
     fn write(&mut self, input: &[u8]) -> Result<usize, MutateError> {
         // XXX check the tombstone and allow the connection to unwind
         let mut conn = std::mem::ManuallyDrop::new(unsafe { Box::from_raw(self.conn) });
+        if conn.dropped.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(MutateError::Dropped);
+        }
+
         let mut input = input;
         let mut input_len = input.len();
 
