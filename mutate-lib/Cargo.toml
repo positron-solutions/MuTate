@@ -18,7 +18,3 @@ thiserror.workspace = true
 [[example]]
 name = "pipewire"
 path = "src/pipewire.rs"
-
-[[example]]
-name = "pipewire2"
-path = "src/pipewire2.rs"
