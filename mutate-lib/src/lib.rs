@@ -412,6 +412,11 @@ pub struct AudioConnection {
     pub bytes_tx: std::sync::atomic::AtomicUsize,
     bytes_rx: std::sync::atomic::AtomicUsize,
 
+    pub ready: std::sync::Condvar,
+    /// The lock payload is a u64 representing the number of chunks written.
+    // LIES This might be a blurry idea of a version lock as this point.
+    pub lock: std::sync::Mutex<u64>,
+
     // Tombstone for either end of the resource to finish up.
     dropped: std::sync::atomic::AtomicBool,
 
@@ -432,6 +437,9 @@ impl AudioConnection {
             buffer,
             bytes_tx: 0.into(),
             bytes_rx: 0.into(),
+            ready: std::sync::Condvar::new(),
+            lock: std::sync::Mutex::new(0),
+
             dropped: false.into(),
 
             user_data: None,
@@ -451,9 +459,18 @@ pub struct AudioConsumer {
 unsafe impl Send for AudioConsumer {}
 
 impl AudioConsumer {
-    pub fn read() -> Result<usize, MutateError> {
-        // Check the connection tombstone and return Result
-        Ok(0 as usize)
+    /// Wait for a buffer chunk to be written.
+    pub fn wait(&self) -> Result<u64, MutateError> {
+        let conn = unsafe { &(*self.conn) };
+        if conn.dropped.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(MutateError::Dropped);
+        }
+        let mut count = conn.lock.lock()?;
+        let initial = *count;
+        while *count == initial {
+            count = conn.ready.wait(count)?;
+        }
+        Ok(*count)
     }
 }
 
@@ -500,6 +517,8 @@ impl AudioProducer {
         let written = conn.buffer.push_slice(input);
         conn.bytes_tx
             .fetch_add(written, std::sync::atomic::Ordering::Release);
+        *conn.lock.lock()? += 1;
+        conn.ready.notify_all();
         Ok(written)
     }
 }
