@@ -1,5 +1,6 @@
 struct PushData {
     float4 uColor;
+    float _scale;
 }
 
 [[vk::push_constant]]
