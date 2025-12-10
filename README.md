@@ -9,12 +9,12 @@ library, using Vulkan and local AI models in Rust.
 
 ## Status
 
-Just started.  Writing the throwaway prototype first:
+The music moving a triangle phase is complete.  The program **only runs on Linux with xlib, not Wayland yet.**
 
 - [x] Window
 - [x] Vulkan swap chain
-- [ ] PipeWire (audio crate selection pending) input ring
-- [ ] Draw inputs as outputs
+- [x] PipeWire (audio crate selection pending) input ring
+- [x] Draw inputs as outputs
 
 ### Incidental goals of this phase:
 
@@ -27,10 +27,10 @@ Tool selections are aiming to be as modern as possible without becoming pioneeri
 
 ## What Can Done Better With A New Visualizer?
 
-- Beat anticipation from patterns
+- Beat anticipation from musical patterns
 - Distinguish layered melodies and instrument changes
-- Recognize lyrics and musical features
-- Mung together traditional procedural techniques with generative techniques
+- Recognize lyrics
+- Mung together traditional procedural techniques with emerging generative techniques
 - Lightweight customizations via text prompts
 - Steel scheme scripting language for more in-depth preset programming and embedded extensibility
 - Live performance-oriented features such as alternative frontend integration (LEDs, stage lights etc) and sequence pre-baking
