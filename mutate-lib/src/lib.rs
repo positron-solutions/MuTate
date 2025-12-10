@@ -486,13 +486,9 @@ impl AudioConsumer {
 impl Drop for AudioConsumer {
     fn drop(&mut self) {
         unsafe {
-            if (*self.conn)
+            (*self.conn)
                 .dropped
-                .swap(true, std::sync::atomic::Ordering::AcqRel)
-                == false
-            {
-                drop(Box::from_raw(self.conn));
-            }
+                .store(false, std::sync::atomic::Ordering::Release)
         }
     }
 }
