@@ -20,40 +20,37 @@ use winit::{
 use mutate_lib as utate;
 
 struct App {
+    device: Option<ash::Device>,
+    entry: Option<ash::Entry>,
+    instance: Option<ash::Instance>,
+    physical_device: Option<vk::PhysicalDevice>,
+    queue: Option<vk::Queue>,
+    queue_family_index: u32,
+
+    command_buffers: Vec<vk::CommandBuffer>,
+    command_pool: Option<vk::CommandPool>,
+    pipeline_layout: Option<vk::PipelineLayout>,
+    pipelines: Option<Vec<vk::Pipeline>>,
+
+    frame_index: usize,
+    image_available_semaphores: Vec<vk::Semaphore>,
+    in_flight_fences: Vec<vk::Fence>,
+    render_finished_semaphores: Vec<vk::Semaphore>,
     running: bool,
+    surface: Option<vk::SurfaceKHR>,
+    surface_loader: Option<ash::khr::surface::Instance>,
+    swapchain: Option<vk::SwapchainKHR>,
+    swapchain_dirty: bool,
+    swapchain_image_views: Vec<vk::ImageView>,
+    swapchain_images: Vec<vk::Image>,
+    swapchain_loader: Option<ash::khr::swapchain::Device>,
+    window: Option<Window>,
 
     audio_events: ringbuf::wrap::caching::Caching<
         std::sync::Arc<ringbuf::SharedRb<ringbuf::storage::Heap<(f32, f32, f32, f32)>>>,
         false,
         true,
     >,
-
-    queue: Option<vk::Queue>,
-    queue_family_index: u32,
-    command_buffers: Vec<vk::CommandBuffer>,
-    command_pool: Option<vk::CommandPool>,
-
-    pipelines: Option<Vec<vk::Pipeline>>,
-    pipeline_layout: Option<vk::PipelineLayout>,
-
-    frame_index: usize,
-    image_available_semaphores: Vec<vk::Semaphore>,
-    in_flight_fences: Vec<vk::Fence>,
-    render_finished_semaphores: Vec<vk::Semaphore>,
-
-    device: Option<ash::Device>,
-    entry: Option<ash::Entry>,
-    instance: Option<ash::Instance>,
-    physical_device: Option<vk::PhysicalDevice>,
-
-    surface: Option<vk::SurfaceKHR>,
-    surface_loader: Option<ash::khr::surface::Instance>,
-    swapchain: Option<vk::SwapchainKHR>,
-    swapchain_image_views: Vec<vk::ImageView>,
-    swapchain_images: Vec<vk::Image>,
-    swapchain_loader: Option<ash::khr::swapchain::Device>,
-    window: Option<Window>,
-
     hue: f32,
     value: f32,
 }
@@ -818,7 +815,6 @@ impl ApplicationHandler for App {
             device.destroy_shader_module(frag_shader_module, None);
         }
 
-        // Store all
         self.entry = Some(entry);
         self.instance = Some(instance);
         self.surface_loader = Some(surface_loader);
@@ -827,20 +823,18 @@ impl ApplicationHandler for App {
         self.device = Some(device);
         self.queue = Some(queue);
         self.queue_family_index = queue_family_index;
-        self.window = Some(window);
 
+        self.window = Some(window);
         self.swapchain_loader = Some(swapchain_loader);
         self.swapchain = Some(swapchain);
         self.swapchain_images = images;
         self.swapchain_image_views = image_views;
-
         self.in_flight_fences = in_flight_fences;
         self.image_available_semaphores = image_available_semaphores;
         self.render_finished_semaphores = render_finished_semaphores;
 
         self.command_pool = Some(command_pool);
         self.command_buffers = buffers;
-
         self.pipelines = Some(pipelines);
         self.pipeline_layout = Some(pipeline_layout);
     }
@@ -1058,35 +1052,33 @@ fn main() -> Result<(), utate::MutateError> {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-        running: true,
-
-        audio_events: ae_rx,
-
-        command_buffers: Vec::new(),
-        command_pool: None,
         device: None,
         entry: None,
-        pipelines: None,
-        pipeline_layout: None,
-
-        frame_index: 0,
-        image_available_semaphores: Vec::new(),
-        in_flight_fences: Vec::new(),
-        render_finished_semaphores: Vec::new(),
-
         instance: None,
         physical_device: None,
         queue: None,
         queue_family_index: 0,
 
+        frame_index: 0,
+        image_available_semaphores: Vec::new(),
+        in_flight_fences: Vec::new(),
+        render_finished_semaphores: Vec::new(),
+        running: true,
         surface: None,
         surface_loader: None,
         swapchain: None,
+        swapchain_dirty: true,
         swapchain_image_views: Vec::new(),
         swapchain_images: Vec::new(),
         swapchain_loader: None,
         window: None,
 
+        command_buffers: Vec::new(),
+        command_pool: None,
+        pipeline_layout: None,
+        pipelines: None,
+
+        audio_events: ae_rx,
         hue: rand::random::<f32>(),
         value: 0.0,
     };
