@@ -19,7 +19,7 @@ use winit::{
 
 use mutate_lib as utate;
 
-struct SwapChain {
+struct RenderTarget {
     frames: usize,
     /// XXX not in use yet
     frame_index: usize,
@@ -38,9 +38,8 @@ struct SwapChain {
     window: Window,
 }
 
-impl SwapChain {
-    // XXX depends on base?  event loop?
-    fn new(frames: usize, base: &Base, event_loop: &ActiveEventLoop) -> Self {
+impl RenderTarget {
+    fn new(frames: usize, rb: &RenderBase, event_loop: &ActiveEventLoop) -> Self {
         let attrs = Window::default_attributes()
             .with_title("µTate")
             .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
@@ -69,22 +68,22 @@ impl SwapChain {
             ..Default::default()
         };
 
-        let xlib_surface_loader = xlib_surface::Instance::new(&base.entry, &base.instance);
+        let xlib_surface_loader = xlib_surface::Instance::new(&rb.entry, &rb.instance);
 
         let surface = unsafe { xlib_surface_loader.create_xlib_surface(&xlib_create_info, None) }
             .expect("Failed to create surface");
 
-        let surface_loader = ash::khr::surface::Instance::new(&base.entry, &base.instance);
+        let surface_loader = ash::khr::surface::Instance::new(&rb.entry, &rb.instance);
 
         let surface_caps = unsafe {
             surface_loader
-                .get_physical_device_surface_capabilities(base.physical_device, surface)
+                .get_physical_device_surface_capabilities(rb.physical_device, surface)
                 .unwrap()
         };
 
         let formats = unsafe {
             surface_loader
-                .get_physical_device_surface_formats(base.physical_device, surface)
+                .get_physical_device_surface_formats(rb.physical_device, surface)
                 .unwrap()
         };
         let surface_format = formats[0];
@@ -111,8 +110,8 @@ impl SwapChain {
         let supported = unsafe {
             surface_loader
                 .get_physical_device_surface_support(
-                    base.physical_device,
-                    base.queue_family_index,
+                    rb.physical_device,
+                    rb.queue_family_index,
                     surface,
                 )
                 .unwrap()
@@ -126,7 +125,7 @@ impl SwapChain {
                 height: size.height,
             }
         };
-        let swapchain_loader = ash::khr::swapchain::Device::new(&base.instance, &base.device);
+        let swapchain_loader = ash::khr::swapchain::Device::new(&rb.instance, &rb.device);
         let swapchain_info = vk::SwapchainCreateInfoKHR {
             surface,
             min_image_count: 3,
@@ -167,13 +166,13 @@ impl SwapChain {
                     },
                     ..Default::default()
                 };
-                unsafe { base.device.create_image_view(&view_info, None).unwrap() }
+                unsafe { rb.device.create_image_view(&view_info, None).unwrap() }
             })
             .collect();
 
         let extent = unsafe {
             let caps = surface_loader
-                .get_physical_device_surface_capabilities(base.physical_device, surface)
+                .get_physical_device_surface_capabilities(rb.physical_device, surface)
                 .unwrap();
             caps.current_extent
         };
@@ -184,7 +183,7 @@ impl SwapChain {
         };
 
         let in_flight_fences: Vec<vk::Fence> = (0..3)
-            .map(|_| unsafe { base.device.create_fence(&fence_info, None).unwrap() })
+            .map(|_| unsafe { rb.device.create_fence(&fence_info, None).unwrap() })
             .collect();
 
         let semaphore_info = vk::SemaphoreCreateInfo {
@@ -192,11 +191,11 @@ impl SwapChain {
         };
 
         let image_available_semaphores = (0..3)
-            .map(|_| unsafe { base.device.create_semaphore(&semaphore_info, None).unwrap() })
+            .map(|_| unsafe { rb.device.create_semaphore(&semaphore_info, None).unwrap() })
             .collect();
 
         let render_finished_semaphores = (0..3)
-            .map(|_| unsafe { base.device.create_semaphore(&semaphore_info, None).unwrap() })
+            .map(|_| unsafe { rb.device.create_semaphore(&semaphore_info, None).unwrap() })
             .collect();
 
         Self {
@@ -246,7 +245,7 @@ impl SwapChain {
     }
 }
 
-struct Base {
+struct RenderBase {
     entry: ash::Entry,
     instance: ash::Instance,
     physical_device: vk::PhysicalDevice,
@@ -261,7 +260,7 @@ struct Base {
     queue_family_index: u32,
 }
 
-impl Base {
+impl RenderBase {
     fn new() -> Self {
         let entry = unsafe { Entry::load().expect("failed to load Vulkan library") };
         let available_exts = unsafe {
@@ -417,8 +416,8 @@ impl Base {
 struct App {
     running: bool,
 
-    base: Option<Base>,
-    swapchain: Option<SwapChain>,
+    render_base: Option<RenderBase>,
+    swapchain: Option<RenderTarget>,
 
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: Option<vk::CommandPool>,
@@ -436,9 +435,9 @@ struct App {
 
 impl App {
     fn draw_frame(&mut self) {
-        let base = self.base.as_ref().unwrap();
-        let device = &base.device;
-        let queue = base.graphics_queue();
+        let render_base = self.render_base.as_ref().unwrap();
+        let device = &render_base.device;
+        let queue = render_base.graphics_queue();
 
         let sc = self.swapchain.as_mut().unwrap();
 
@@ -578,8 +577,8 @@ impl App {
         extent: &vk::Extent2D,
     ) {
         let command_buffer = self.command_buffers[image_index];
-        let base = self.base.as_ref().unwrap();
-        let device = &base.device;
+        let render_base = self.render_base.as_ref().unwrap();
+        let device = &render_base.device;
 
         // reset CB
         unsafe {
@@ -750,10 +749,10 @@ static VALIDATION_LAYER: &CStr =
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let base = Base::new();
-        let sc = SwapChain::new(3, &base, event_loop);
-        let queue_family_index = base.queue_family_index;
-        let device = &base.device;
+        let rb = RenderBase::new();
+        let rt = RenderTarget::new(3, &rb, event_loop);
+        let queue_family_index = rb.queue_family_index;
+        let device = &rb.device;
 
         // XXX getting command pools requires the queue index
         let command_pool_info = vk::CommandPoolCreateInfo {
@@ -772,7 +771,7 @@ impl ApplicationHandler for App {
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool,
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: sc.swapchain_images.len() as u32,
+            command_buffer_count: rt.swapchain_images.len() as u32,
             ..Default::default()
         };
 
@@ -910,7 +909,7 @@ impl ApplicationHandler for App {
                 .unwrap()
         };
 
-        let color_formats = [sc.surface_format];
+        let color_formats = [rt.surface_format];
         let pipeline_rendering_info = vk::PipelineRenderingCreateInfo {
             s_type: vk::StructureType::PIPELINE_RENDERING_CREATE_INFO,
             view_mask: 0,
@@ -952,8 +951,8 @@ impl ApplicationHandler for App {
         self.pipelines = Some(pipelines);
         self.pipeline_layout = Some(pipeline_layout);
 
-        self.swapchain = Some(sc);
-        self.base = Some(base);
+        self.swapchain = Some(rt);
+        self.render_base = Some(rb);
     }
 
     fn window_event(
@@ -973,8 +972,8 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CloseRequested => unsafe {
                 self.running = false;
-                let base = self.base.as_ref().unwrap();
-                let device = &base.device();
+                let render_base = self.render_base.as_ref().unwrap();
+                let device = &render_base.device();
 
                 device.device_wait_idle().unwrap();
 
@@ -990,7 +989,7 @@ impl ApplicationHandler for App {
                 });
 
                 self.swapchain.as_ref().unwrap().destroy(&device);
-                base.destroy();
+                render_base.destroy();
 
                 event_loop.exit();
             },
@@ -1149,7 +1148,7 @@ fn main() -> Result<(), utate::MutateError> {
     let mut app = App {
         running: true, // XXX
 
-        base: None,
+        render_base: None,
         swapchain: None,
 
         command_buffers: Vec::new(),
