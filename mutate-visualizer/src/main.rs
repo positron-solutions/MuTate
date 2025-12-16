@@ -19,13 +19,174 @@ use winit::{
 
 use mutate_lib as utate;
 
-struct App {
-    device: Option<ash::Device>,
-    entry: Option<ash::Entry>,
-    instance: Option<ash::Instance>,
-    physical_device: Option<vk::PhysicalDevice>,
-    queue: Option<vk::Queue>,
+struct Base {
+    entry: ash::Entry,
+    instance: ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    device: ash::Device,
+
+    graphics_queue: vk::Queue,
+    compute_queue: vk::Queue,
+    transfer_queue: vk::Queue,
+
     queue_family_index: u32,
+}
+
+impl Base {
+    fn new() -> Self {
+        let entry = unsafe { Entry::load().expect("failed to load Vulkan library") };
+        let available_exts = unsafe {
+            entry
+                .enumerate_instance_extension_properties(None)
+                .expect("Failed to enumerate instance extensions")
+        };
+
+        // XXX insufficiently accurate platform check
+        assert!(
+            available_exts.iter().any(|ext| unsafe {
+                CStr::from_ptr(ext.extension_name.as_ptr()) == ash::vk::KHR_WAYLAND_SURFACE_NAME
+            }),
+            "Only xlib is currently supported"
+        );
+
+        let required_exts = [
+            ash::vk::KHR_SURFACE_NAME.as_ptr(),
+            ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr(),
+            // XXX CLI switch gate
+            ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
+        ];
+
+        let validation_layers = [VALIDATION_LAYER.as_ptr()];
+
+        let app_info = vk::ApplicationInfo {
+            api_version: vk::make_api_version(0, 1, 3, 0),
+            ..Default::default()
+        };
+
+        let create_info = vk::InstanceCreateInfo {
+            p_application_info: &app_info,
+            enabled_extension_count: required_exts.len() as u32,
+            pp_enabled_extension_names: required_exts.as_ptr(),
+            enabled_layer_count: validation_layers.len() as u32,
+            pp_enabled_layer_names: validation_layers.as_ptr(),
+            ..Default::default()
+        };
+
+        let instance = unsafe { entry.create_instance(&create_info, None).unwrap() };
+
+        let physical_devices = unsafe {
+            instance
+                .enumerate_physical_devices()
+                .expect("No Vulkan devices")
+        };
+        let physical_device = physical_devices[0];
+
+        let queue_family_index = unsafe {
+            instance
+                .get_physical_device_queue_family_properties(physical_device)
+                .iter()
+                .enumerate()
+                .find_map(|(index, q)| {
+                    if q.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                        Some(index as u32)
+                    } else {
+                        None
+                    }
+                })
+                .expect("No graphics queue family found")
+        };
+
+        let queue_priorities = [1.0];
+        let queue_info = [vk::DeviceQueueCreateInfo {
+            queue_family_index,
+            queue_count: 1,
+            p_queue_priorities: queue_priorities.as_ptr(),
+            ..Default::default()
+        }];
+
+        let device_extensions = [
+            ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
+            ash::vk::KHR_SYNCHRONIZATION2_NAME.as_ptr(),
+            ash::vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
+            ash::vk::EXT_EXTENDED_DYNAMIC_STATE_NAME.as_ptr(),
+            ash::vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME.as_ptr(),
+            ash::vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME.as_ptr(),
+            ash::vk::KHR_DYNAMIC_RENDERING_NAME.as_ptr(),
+            ash::vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
+            ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
+            ash::vk::EXT_DESCRIPTOR_INDEXING_NAME.as_ptr(),
+            ash::vk::KHR_PIPELINE_LIBRARY_NAME.as_ptr(),
+            ash::vk::EXT_MEMORY_BUDGET_NAME.as_ptr(),
+            ash::vk::KHR_SHADER_NON_SEMANTIC_INFO_NAME.as_ptr(),
+            // ROLL holding off on this until other hardware vendors have supporting drivers
+            // ash::vk::EXT_SHADER_OBJECT_NAME.as_ptr(),
+            ash::vk::KHR_MAINTENANCE1_NAME.as_ptr(),
+            ash::vk::KHR_MAINTENANCE2_NAME.as_ptr(),
+            ash::vk::KHR_MAINTENANCE3_NAME.as_ptr(),
+            ash::vk::KHR_MAINTENANCE4_NAME.as_ptr(),
+        ];
+
+        let mut sync2_features = vk::PhysicalDeviceSynchronization2Features::default();
+        sync2_features.synchronization2 = vk::TRUE;
+
+        let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
+        dynamic_rendering_features.dynamic_rendering = vk::TRUE;
+
+        let mut features2 = vk::PhysicalDeviceFeatures2::default();
+        // XXX not bad
+        features2.p_next = &mut sync2_features as *mut _ as *mut c_void;
+
+        sync2_features.p_next = &mut dynamic_rendering_features as *mut _ as *mut c_void;
+
+        let mut device_info = vk::DeviceCreateInfo {
+            queue_create_info_count: 1,
+            p_queue_create_infos: queue_info.as_ptr(),
+            pp_enabled_extension_names: device_extensions.as_ptr(),
+            enabled_extension_count: device_extensions.len() as u32,
+            ..Default::default()
+        };
+        device_info.p_next = &mut features2 as *mut _ as *mut c_void;
+
+        let device = unsafe {
+            instance
+                .create_device(physical_device, &device_info, None)
+                .unwrap()
+        };
+        let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+
+        Self {
+            entry,
+            instance,
+            physical_device,
+            device,
+
+            graphics_queue: queue.clone(),
+            compute_queue: queue.clone(),
+            transfer_queue: queue,
+
+            queue_family_index,
+        }
+    }
+
+    fn graphics_queue(&self) -> &vk::Queue {
+        &self.graphics_queue
+    }
+
+    fn device(&self) -> &ash::Device {
+        &self.device
+    }
+
+    // XXX this consumes the base in reality...
+    fn destroy(&self) {
+        unsafe {
+            self.device.destroy_device(None);
+            self.instance.destroy_instance(None)
+        };
+    }
+}
+
+struct App {
+    base: Option<Base>,
 
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: Option<vk::CommandPool>,
@@ -57,6 +218,10 @@ struct App {
 
 impl App {
     fn draw_frame(&mut self) {
+        let base = self.base.as_ref().unwrap();
+        let device = &base.device;
+        let queue = base.graphics_queue();
+
         if self.audio_events.is_full() {
             eprintln!("audio event backpressure drop");
             self.audio_events.skip(1);
@@ -78,8 +243,6 @@ impl App {
             self.hue = self.hue - self.hue.floor();
         }
 
-        let device = self.device.as_ref().unwrap();
-        let queue = *self.queue.as_ref().unwrap();
         let swapchain = self.swapchain.unwrap();
         let swapchain_loader = self.swapchain_loader.as_ref().unwrap();
 
@@ -151,7 +314,7 @@ impl App {
 
         unsafe {
             device
-                .queue_submit2(queue, &[submit], in_flight)
+                .queue_submit2(*queue, &[submit], in_flight)
                 .expect("queue_submit2 failed");
         }
 
@@ -171,7 +334,7 @@ impl App {
 
         unsafe {
             swapchain_loader
-                .queue_present(queue, &present_info)
+                .queue_present(*queue, &present_info)
                 .expect("queue_present failed");
         }
 
@@ -181,19 +344,19 @@ impl App {
     }
 
     fn record_command_buffer(&self, image_index: u32) {
-        let device = self.device.as_ref().unwrap();
         let command_buffer = self.command_buffers[image_index as usize];
         let image = self.swapchain_images[image_index as usize];
         let view = self.swapchain_image_views[image_index as usize];
+        let base = self.base.as_ref().unwrap();
+        let physical_device = base.physical_device;
+        let device = &base.device;
+
         let extent = unsafe {
             let caps = self
                 .surface_loader
                 .as_ref()
                 .unwrap()
-                .get_physical_device_surface_capabilities(
-                    self.physical_device.unwrap(),
-                    self.surface.unwrap(),
-                )
+                .get_physical_device_surface_capabilities(physical_device, self.surface.unwrap())
                 .unwrap();
             caps.current_extent
         };
@@ -372,44 +535,14 @@ impl ApplicationHandler for App {
         let window = event_loop
             .create_window(attrs)
             .expect("Failed to create window");
-        let entry = unsafe { Entry::load().expect("failed to load Vulkan library") };
-        let available_exts = unsafe {
-            entry
-                .enumerate_instance_extension_properties(None)
-                .expect("Failed to enumerate instance extensions")
-        };
 
-        assert!(
-            available_exts.iter().any(|ext| unsafe {
-                CStr::from_ptr(ext.extension_name.as_ptr()) == ash::vk::KHR_XLIB_SURFACE_NAME
-            }),
-            "Only xlib is currently supported"
-        );
+        let base = Base::new();
+        let entry = &base.entry;
+        let instance = &base.instance;
+        let physical_device = &base.physical_device;
+        let queue_family_index = base.queue_family_index;
+        let device = &base.device;
 
-        let required_exts = [
-            ash::vk::KHR_SURFACE_NAME.as_ptr(),
-            ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr(),
-            // XXX CLI switch gate
-            ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
-        ];
-
-        let validation_layers = [VALIDATION_LAYER.as_ptr()];
-
-        let app_info = vk::ApplicationInfo {
-            api_version: vk::make_api_version(0, 1, 3, 0),
-            ..Default::default()
-        };
-
-        let create_info = vk::InstanceCreateInfo {
-            p_application_info: &app_info,
-            enabled_extension_count: required_exts.len() as u32,
-            pp_enabled_extension_names: required_exts.as_ptr(),
-            enabled_layer_count: validation_layers.len() as u32,
-            pp_enabled_layer_names: validation_layers.as_ptr(),
-            ..Default::default()
-        };
-
-        let instance = unsafe { entry.create_instance(&create_info, None).unwrap() };
         let xlib_surface_loader = xlib_surface::Instance::new(&entry, &instance);
         let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
@@ -436,97 +569,15 @@ impl ApplicationHandler for App {
         let surface = unsafe { xlib_surface_loader.create_xlib_surface(&xlib_create_info, None) }
             .expect("Failed to create surface");
 
-        let physical_devices = unsafe {
-            instance
-                .enumerate_physical_devices()
-                .expect("No Vulkan devices")
-        };
-        let physical_device = physical_devices[0];
-
-        let queue_family_index = unsafe {
-            instance
-                .get_physical_device_queue_family_properties(physical_device)
-                .iter()
-                .enumerate()
-                .find_map(|(index, q)| {
-                    if q.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-                        Some(index as u32)
-                    } else {
-                        None
-                    }
-                })
-                .expect("No graphics queue family found")
-        };
-
-        let queue_priorities = [1.0];
-        let queue_info = [vk::DeviceQueueCreateInfo {
-            queue_family_index,
-            queue_count: 1,
-            p_queue_priorities: queue_priorities.as_ptr(),
-            ..Default::default()
-        }];
-
-        let device_extensions = [
-            ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
-            ash::vk::KHR_SYNCHRONIZATION2_NAME.as_ptr(),
-            ash::vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
-            ash::vk::EXT_EXTENDED_DYNAMIC_STATE_NAME.as_ptr(),
-            ash::vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME.as_ptr(),
-            ash::vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME.as_ptr(),
-            ash::vk::KHR_DYNAMIC_RENDERING_NAME.as_ptr(),
-            ash::vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
-            ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
-            ash::vk::EXT_DESCRIPTOR_INDEXING_NAME.as_ptr(),
-            ash::vk::KHR_PIPELINE_LIBRARY_NAME.as_ptr(),
-            ash::vk::EXT_MEMORY_BUDGET_NAME.as_ptr(),
-            ash::vk::KHR_SHADER_NON_SEMANTIC_INFO_NAME.as_ptr(),
-            // ROLL holding off on this until other hardware vendors have supporting drivers
-            // ash::vk::EXT_SHADER_OBJECT_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE1_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE2_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE3_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE4_NAME.as_ptr(),
-        ];
-
-        // Enable synchronization2 and dynamic rendering features:
-        let mut sync2_features = vk::PhysicalDeviceSynchronization2Features::default();
-        sync2_features.synchronization2 = vk::TRUE;
-
-        let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
-        dynamic_rendering_features.dynamic_rendering = vk::TRUE;
-
-        // Query base features if you want existing supported features - optional but good practice:
-        let mut features2 = vk::PhysicalDeviceFeatures2::default();
-        // If you need to set specific core features, populate features2.features here.
-        // Chain the extension feature structs via p_next:
-        features2.p_next = &mut sync2_features as *mut _ as *mut c_void;
-        sync2_features.p_next = &mut dynamic_rendering_features as *mut _ as *mut c_void;
-
-        let mut device_info = vk::DeviceCreateInfo {
-            queue_create_info_count: 1,
-            p_queue_create_infos: queue_info.as_ptr(),
-            pp_enabled_extension_names: device_extensions.as_ptr(),
-            enabled_extension_count: device_extensions.len() as u32,
-            ..Default::default()
-        };
-        device_info.p_next = &mut features2 as *mut _ as *mut c_void;
-
-        let device = unsafe {
-            instance
-                .create_device(physical_device, &device_info, None)
-                .unwrap()
-        };
-        let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
-
         let surface_caps = unsafe {
             surface_loader
-                .get_physical_device_surface_capabilities(physical_device, surface)
+                .get_physical_device_surface_capabilities(*physical_device, surface)
                 .unwrap()
         };
 
         let formats = unsafe {
             surface_loader
-                .get_physical_device_surface_formats(physical_device, surface)
+                .get_physical_device_surface_formats(*physical_device, surface)
                 .unwrap()
         };
         let surface_format = formats[0];
@@ -552,18 +603,29 @@ impl ApplicationHandler for App {
 
         let supported = unsafe {
             surface_loader
-                .get_physical_device_surface_support(physical_device, queue_family_index, surface)
+                .get_physical_device_surface_support(
+                    *physical_device,
+                    base.queue_family_index,
+                    surface,
+                )
                 .unwrap()
         };
         assert!(supported, "Physical device must support this surface!");
 
-        let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &device);
+        let swapchain_size = {
+            let size = window.inner_size();
+            vk::Extent2D {
+                width: size.width,
+                height: size.height,
+            }
+        };
+        let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);
         let swapchain_info = vk::SwapchainCreateInfoKHR {
             surface,
             min_image_count: 3,
             image_format: surface_format.format,
             image_color_space: surface_format.color_space,
-            image_extent: surface_caps.current_extent,
+            image_extent: swapchain_size,
             image_array_layers: 1,
             image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
             image_sharing_mode: vk::SharingMode::EXCLUSIVE,
@@ -815,17 +877,10 @@ impl ApplicationHandler for App {
             device.destroy_shader_module(frag_shader_module, None);
         }
 
-        self.entry = Some(entry);
-        self.instance = Some(instance);
-        self.surface_loader = Some(surface_loader);
-        self.surface = Some(surface);
-        self.physical_device = Some(physical_device);
-        self.device = Some(device);
-        self.queue = Some(queue);
-        self.queue_family_index = queue_family_index;
-
         self.window = Some(window);
         self.swapchain_loader = Some(swapchain_loader);
+        self.surface_loader = Some(surface_loader);
+        self.surface = Some(surface);
         self.swapchain = Some(swapchain);
         self.swapchain_images = images;
         self.swapchain_image_views = image_views;
@@ -837,6 +892,8 @@ impl ApplicationHandler for App {
         self.command_buffers = buffers;
         self.pipelines = Some(pipelines);
         self.pipeline_layout = Some(pipeline_layout);
+
+        self.base = Some(base);
     }
 
     fn window_event(
@@ -853,50 +910,49 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CloseRequested => unsafe {
                 self.running = false;
-                if let Some(device) = &self.device {
-                    device.device_wait_idle().unwrap();
+                let base = self.base.as_ref().unwrap();
+                let device = &base.device();
 
-                    for view in &self.swapchain_image_views {
-                        device.destroy_image_view(*view, None);
-                    }
+                device.device_wait_idle().unwrap();
 
-                    self.pipelines.as_ref().unwrap().iter().for_each(|p| {
-                        device.destroy_pipeline(*p, None);
-                    });
-
-                    if let Some(layout) = self.pipeline_layout {
-                        device.destroy_pipeline_layout(layout, None);
-                    }
-
-                    if let Some(loader) = &self.swapchain_loader {
-                        if let Some(swapchain) = self.swapchain {
-                            loader.destroy_swapchain(swapchain, None);
-                        }
-                    }
-                    if let Some(surface_loader) = &self.surface_loader {
-                        if let Some(surface) = self.surface {
-                            surface_loader.destroy_surface(surface, None);
-                        }
-                    }
-
-                    self.image_available_semaphores.iter().for_each(|s| {
-                        device.destroy_semaphore(*s, None);
-                    });
-                    self.render_finished_semaphores.iter().for_each(|s| {
-                        device.destroy_semaphore(*s, None);
-                    });
-                    self.in_flight_fences.iter().for_each(|f| {
-                        device.destroy_fence(*f, None);
-                    });
-                    self.command_pool.map(|p| {
-                        device.destroy_command_pool(p, None);
-                    });
-
-                    device.destroy_device(None);
+                for view in &self.swapchain_image_views {
+                    device.destroy_image_view(*view, None);
                 }
-                if let Some(instance) = &self.instance {
-                    instance.destroy_instance(None);
+
+                self.pipelines.as_ref().unwrap().iter().for_each(|p| {
+                    device.destroy_pipeline(*p, None);
+                });
+
+                if let Some(layout) = self.pipeline_layout {
+                    device.destroy_pipeline_layout(layout, None);
                 }
+
+                if let Some(loader) = &self.swapchain_loader {
+                    if let Some(swapchain) = self.swapchain {
+                        loader.destroy_swapchain(swapchain, None);
+                    }
+                }
+                if let Some(surface_loader) = &self.surface_loader {
+                    if let Some(surface) = self.surface {
+                        surface_loader.destroy_surface(surface, None);
+                    }
+                }
+
+                self.image_available_semaphores.iter().for_each(|s| {
+                    device.destroy_semaphore(*s, None);
+                });
+                self.render_finished_semaphores.iter().for_each(|s| {
+                    device.destroy_semaphore(*s, None);
+                });
+                self.in_flight_fences.iter().for_each(|f| {
+                    device.destroy_fence(*f, None);
+                });
+                self.command_pool.map(|p| {
+                    device.destroy_command_pool(p, None);
+                });
+
+                base.destroy();
+
                 event_loop.exit();
             },
             _ => (),
@@ -1052,12 +1108,7 @@ fn main() -> Result<(), utate::MutateError> {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-        device: None,
-        entry: None,
-        instance: None,
-        physical_device: None,
-        queue: None,
-        queue_family_index: 0,
+        base: None,
 
         frame_index: 0,
         image_available_semaphores: Vec::new(),
