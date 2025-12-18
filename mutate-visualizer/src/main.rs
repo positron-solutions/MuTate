@@ -257,6 +257,8 @@ impl RenderTarget {
             .create_window(attrs)
             .expect("Failed to create window");
 
+        window.set_cursor_visible(false);
+
         let win_handle = window.window_handle().unwrap().as_raw();
         let xlib_window_handle = match win_handle {
             RawWindowHandle::Xlib(handle) => handle,
