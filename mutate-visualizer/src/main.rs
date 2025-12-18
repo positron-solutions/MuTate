@@ -19,27 +19,236 @@ use winit::{
 
 use mutate_lib as utate;
 
-struct RenderTarget {
+// This is a temporary extraction to support fullscreen.  A better solution will roll off old
+// swapchain resources to phase in resizing image by image, creating these images asynchronously.
+struct SwapChain {
     frames: usize,
-    /// XXX not in use yet
     frame_index: usize,
     image_available_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
     render_finished_semaphores: Vec<vk::Semaphore>,
-    surface: vk::SurfaceKHR,
-    surface_loader: ash::khr::surface::Instance,
-    surface_format: vk::Format,
+
     swapchain: vk::SwapchainKHR,
-    swapchain_dirty: bool,
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
     swapchain_images: Vec<vk::Image>,
     swapchain_loader: ash::khr::swapchain::Device,
+}
+
+impl SwapChain {
+    fn new(rb: &RenderBase, rt: &RenderTarget) -> Self {
+        // &surface, &surface_caps, surface_format, swapchain_size
+        let surface = &rt.surface;
+        let surface_caps = &rt.surface_caps;
+        let surface_format = &rt.surface_format;
+        let extent = window_size(&rt.window);
+
+        let composite_alpha = pick_alpha(&surface_caps);
+
+        let swapchain_loader = ash::khr::swapchain::Device::new(&rb.instance, &rb.device);
+        let swapchain_info = vk::SwapchainCreateInfoKHR {
+            surface: *surface,
+            min_image_count: 3, // XXX frame counts
+            image_format: surface_format.format,
+            image_color_space: surface_format.color_space,
+            image_extent: extent,
+            image_array_layers: 1,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_sharing_mode: vk::SharingMode::EXCLUSIVE,
+            pre_transform: surface_caps.current_transform,
+            composite_alpha: composite_alpha,
+            present_mode: vk::PresentModeKHR::FIFO,
+            clipped: vk::TRUE,
+            ..Default::default()
+        };
+
+        let swapchain = unsafe {
+            swapchain_loader
+                .create_swapchain(&swapchain_info, None)
+                .unwrap()
+        };
+        let images = unsafe { swapchain_loader.get_swapchain_images(swapchain).unwrap() };
+
+        // Create image views
+        let image_views: Vec<_> = images
+            .iter()
+            .map(|&image| {
+                let view_info = vk::ImageViewCreateInfo {
+                    image,
+                    view_type: vk::ImageViewType::TYPE_2D,
+                    format: surface_format.format,
+                    components: vk::ComponentMapping::default(),
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        level_count: 1,
+                        layer_count: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                unsafe { rb.device.create_image_view(&view_info, None).unwrap() }
+            })
+            .collect();
+
+        let fence_info = vk::FenceCreateInfo {
+            flags: vk::FenceCreateFlags::SIGNALED,
+            ..Default::default()
+        };
+
+        let in_flight_fences: Vec<vk::Fence> = (0..3)
+            .map(|_| unsafe { rb.device.create_fence(&fence_info, None).unwrap() })
+            .collect();
+
+        let semaphore_info = vk::SemaphoreCreateInfo {
+            ..Default::default()
+        };
+
+        // FIXME propagate image counts
+        let image_available_semaphores = (0..3)
+            .map(|_| unsafe { rb.device.create_semaphore(&semaphore_info, None).unwrap() })
+            .collect();
+
+        let render_finished_semaphores = (0..3)
+            .map(|_| unsafe { rb.device.create_semaphore(&semaphore_info, None).unwrap() })
+            .collect();
+
+        Self {
+            frames: 3,
+            frame_index: 0,
+            image_available_semaphores,
+            in_flight_fences,
+            render_finished_semaphores,
+            swapchain_extent: extent,
+            swapchain,
+            swapchain_image_views: image_views,
+            swapchain_images: images,
+            swapchain_loader,
+        }
+    }
+
+    fn destroy(&self, device: &ash::Device) {
+        unsafe {
+            for view in &self.swapchain_image_views {
+                device.destroy_image_view(*view, None);
+            }
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
+
+            self.image_available_semaphores.iter().for_each(|s| {
+                device.destroy_semaphore(*s, None);
+            });
+            self.render_finished_semaphores.iter().for_each(|s| {
+                device.destroy_semaphore(*s, None);
+            });
+            self.in_flight_fences.iter().for_each(|f| {
+                device.destroy_fence(*f, None);
+            });
+        }
+    }
+
+    fn recreate_images(&mut self, rb: &RenderBase, rt: &RenderTarget) {
+        let device = &rb.device;
+        let physical_device = rb.physical_device;
+
+        unsafe {
+            device.device_wait_idle().unwrap();
+        }
+
+        // partial destruction
+        unsafe {
+            for view in &self.swapchain_image_views {
+                device.destroy_image_view(*view, None);
+            }
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
+        }
+
+        // Recreation
+        unsafe {
+            let surface_caps = rt
+                .surface_loader
+                .get_physical_device_surface_capabilities(physical_device, rt.surface)
+                .unwrap();
+            let current_extent = surface_caps.current_extent;
+            let extent = if current_extent.width != u32::MAX {
+                self.swapchain_extent = current_extent;
+                self.swapchain_extent
+            } else {
+                // FIXME a number of cases this can be wrong.
+                window_size(&rt.window)
+            };
+            let surface = &rt.surface;
+            let surface_format = &rt.surface_format;
+
+            let swapchain_info = vk::SwapchainCreateInfoKHR {
+                surface: *surface,
+                min_image_count: self.frames as u32,
+                image_format: surface_format.format,
+                image_color_space: surface_format.color_space,
+                image_extent: extent,
+                image_array_layers: 1,
+                image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                image_sharing_mode: vk::SharingMode::EXCLUSIVE,
+                pre_transform: surface_caps.current_transform,
+                composite_alpha: pick_alpha(&surface_caps),
+                present_mode: vk::PresentModeKHR::FIFO,
+                clipped: vk::TRUE,
+                ..Default::default()
+            };
+
+            let swapchain = self
+                .swapchain_loader
+                .create_swapchain(&swapchain_info, None)
+                .unwrap();
+            let images = self
+                .swapchain_loader
+                .get_swapchain_images(swapchain)
+                .unwrap();
+
+            let image_views: Vec<_> = images
+                .iter()
+                .map(|&image| {
+                    let view_info = vk::ImageViewCreateInfo {
+                        image,
+                        view_type: vk::ImageViewType::TYPE_2D,
+                        format: surface_format.format,
+                        components: vk::ComponentMapping::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            level_count: 1,
+                            layer_count: 1,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    device.create_image_view(&view_info, None).unwrap()
+                })
+                .collect();
+
+            self.swapchain = swapchain;
+            self.swapchain_images = images;
+            self.swapchain_image_views = image_views;
+        }
+    }
+
+    fn render_target(&self, index: usize) -> (vk::Image, vk::ImageView) {
+        let image = self.swapchain_images[index];
+        let view = self.swapchain_image_views[index];
+        (image, view)
+    }
+}
+
+struct RenderTarget {
+    surface: vk::SurfaceKHR,
+    surface_loader: ash::khr::surface::Instance,
+    surface_format: vk::SurfaceFormatKHR,
+    surface_caps: vk::SurfaceCapabilitiesKHR,
+
     window: Window,
 }
 
 impl RenderTarget {
-    fn new(frames: usize, rb: &RenderBase, event_loop: &ActiveEventLoop) -> Self {
+    fn new(rb: &RenderBase, event_loop: &ActiveEventLoop) -> Self {
         let attrs = Window::default_attributes()
             .with_title("µTate")
             .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
@@ -88,25 +297,6 @@ impl RenderTarget {
         };
         let surface_format = formats[0];
 
-        let composite_alpha = if surface_caps
-            .supported_composite_alpha
-            .contains(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        {
-            vk::CompositeAlphaFlagsKHR::OPAQUE
-        } else if surface_caps
-            .supported_composite_alpha
-            .contains(vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED)
-        {
-            vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED
-        } else if surface_caps
-            .supported_composite_alpha
-            .contains(vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED)
-        {
-            vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED
-        } else {
-            vk::CompositeAlphaFlagsKHR::INHERIT
-        };
-
         let supported = unsafe {
             surface_loader
                 .get_physical_device_surface_support(
@@ -118,130 +308,20 @@ impl RenderTarget {
         };
         assert!(supported, "Physical device must support this surface!");
 
-        let swapchain_size = {
-            let size = window.inner_size();
-            vk::Extent2D {
-                width: size.width,
-                height: size.height,
-            }
-        };
-        let swapchain_loader = ash::khr::swapchain::Device::new(&rb.instance, &rb.device);
-        let swapchain_info = vk::SwapchainCreateInfoKHR {
-            surface,
-            min_image_count: 3,
-            image_format: surface_format.format,
-            image_color_space: surface_format.color_space,
-            image_extent: swapchain_size,
-            image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            image_sharing_mode: vk::SharingMode::EXCLUSIVE,
-            pre_transform: surface_caps.current_transform,
-            composite_alpha: composite_alpha,
-            present_mode: vk::PresentModeKHR::FIFO,
-            clipped: vk::TRUE,
-            ..Default::default()
-        };
-
-        let swapchain = unsafe {
-            swapchain_loader
-                .create_swapchain(&swapchain_info, None)
-                .unwrap()
-        };
-        let images = unsafe { swapchain_loader.get_swapchain_images(swapchain).unwrap() };
-
-        // Create image views
-        let image_views: Vec<_> = images
-            .iter()
-            .map(|&image| {
-                let view_info = vk::ImageViewCreateInfo {
-                    image,
-                    view_type: vk::ImageViewType::TYPE_2D,
-                    format: surface_format.format,
-                    components: vk::ComponentMapping::default(),
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        level_count: 1,
-                        layer_count: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                unsafe { rb.device.create_image_view(&view_info, None).unwrap() }
-            })
-            .collect();
-
-        let extent = unsafe {
-            let caps = surface_loader
-                .get_physical_device_surface_capabilities(rb.physical_device, surface)
-                .unwrap();
-            caps.current_extent
-        };
-
-        let fence_info = vk::FenceCreateInfo {
-            flags: vk::FenceCreateFlags::SIGNALED,
-            ..Default::default()
-        };
-
-        let in_flight_fences: Vec<vk::Fence> = (0..3)
-            .map(|_| unsafe { rb.device.create_fence(&fence_info, None).unwrap() })
-            .collect();
-
-        let semaphore_info = vk::SemaphoreCreateInfo {
-            ..Default::default()
-        };
-
-        let image_available_semaphores = (0..3)
-            .map(|_| unsafe { rb.device.create_semaphore(&semaphore_info, None).unwrap() })
-            .collect();
-
-        let render_finished_semaphores = (0..3)
-            .map(|_| unsafe { rb.device.create_semaphore(&semaphore_info, None).unwrap() })
-            .collect();
-
         Self {
-            frames,
-            frame_index: 0,
-            image_available_semaphores,
-            in_flight_fences,
-            render_finished_semaphores,
             surface,
             surface_loader,
-            surface_format: surface_format.format,
-            swapchain_extent: extent,
-            swapchain,
-            swapchain_dirty: false,
-            swapchain_image_views: image_views,
-            swapchain_images: images,
-            swapchain_loader,
+            surface_format: surface_format,
+            surface_caps: surface_caps,
+
             window,
         }
     }
 
-    fn destroy(&self, device: &ash::Device) {
+    fn destroy(&self) {
         unsafe {
-            for view in &self.swapchain_image_views {
-                device.destroy_image_view(*view, None);
-            }
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
             self.surface_loader.destroy_surface(self.surface, None);
-
-            self.image_available_semaphores.iter().for_each(|s| {
-                device.destroy_semaphore(*s, None);
-            });
-            self.render_finished_semaphores.iter().for_each(|s| {
-                device.destroy_semaphore(*s, None);
-            });
-            self.in_flight_fences.iter().for_each(|f| {
-                device.destroy_fence(*f, None);
-            });
         }
-    }
-
-    fn render_target(&self, index: usize) -> (vk::Image, vk::ImageView) {
-        let image = self.swapchain_images[index];
-        let view = self.swapchain_image_views[index];
-        (image, view)
     }
 }
 
@@ -269,7 +349,7 @@ impl RenderBase {
                 .expect("Failed to enumerate instance extensions")
         };
 
-        // XXX insufficiently accurate platform check
+        // FIXME insufficiently accurate platform check
         assert!(
             available_exts.iter().any(|ext| unsafe {
                 CStr::from_ptr(ext.extension_name.as_ptr()) == ash::vk::KHR_WAYLAND_SURFACE_NAME
@@ -280,7 +360,7 @@ impl RenderBase {
         let required_exts = [
             ash::vk::KHR_SURFACE_NAME.as_ptr(),
             ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr(),
-            // XXX CLI switch gate
+            // NEXT CLI switch gate
             ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
         ];
 
@@ -361,7 +441,6 @@ impl RenderBase {
         dynamic_rendering_features.dynamic_rendering = vk::TRUE;
 
         let mut features2 = vk::PhysicalDeviceFeatures2::default();
-        // XXX not bad
         features2.p_next = &mut sync2_features as *mut _ as *mut c_void;
 
         sync2_features.p_next = &mut dynamic_rendering_features as *mut _ as *mut c_void;
@@ -417,7 +496,8 @@ struct App {
     running: bool,
 
     render_base: Option<RenderBase>,
-    swapchain: Option<RenderTarget>,
+    render_target: Option<RenderTarget>,
+    swapchain: Option<SwapChain>,
 
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: Option<vk::CommandPool>,
@@ -439,7 +519,8 @@ impl App {
         let device = &render_base.device;
         let queue = render_base.graphics_queue();
 
-        let sc = self.swapchain.as_mut().unwrap();
+        let rt = self.render_target.as_ref().unwrap();
+        let sc = self.swapchain.as_ref().unwrap();
 
         if self.audio_events.is_full() {
             eprintln!("audio event backpressure drop");
@@ -462,14 +543,15 @@ impl App {
             self.hue = self.hue - self.hue.floor();
         }
 
-        let swapchain = &sc.swapchain;
-        let swapchain_loader = &sc.swapchain_loader;
-
         let idx = sc.frame_index;
         let image_available = sc.image_available_semaphores[idx];
         let render_finished = sc.render_finished_semaphores[idx];
         let in_flight = sc.in_flight_fences[idx];
+
+        // While there is a lot of silly code, this is much more silly.
+        let sc = self.swapchain.as_mut().unwrap();
         sc.frame_index = (sc.frame_index + 1) % sc.frames;
+        let sc = self.swapchain.as_ref().unwrap();
 
         unsafe {
             device
@@ -482,9 +564,9 @@ impl App {
         }
 
         let (image_index, _) = unsafe {
-            swapchain_loader
+            sc.swapchain_loader
                 .acquire_next_image(
-                    *swapchain,
+                    sc.swapchain,
                     std::u64::MAX,
                     image_available,
                     vk::Fence::null(),
@@ -514,11 +596,11 @@ impl App {
             ..Default::default()
         };
 
-        // XXX
-        let (swapchain, swapchain_loader) = (1, 2);
-        let sc = self.swapchain.as_ref().unwrap();
+        let rt = self.render_target.as_ref().unwrap();
 
-        self.record_command_buffer(image_index as usize, render_target, &sc.swapchain_extent);
+        let command_buffer = self.command_buffers[image_index as usize];
+
+        self.record_command_buffer(render_target, &sc.swapchain_extent, command_buffer);
 
         // Which command buffer to submit.
         let cmd_buffer = self.command_buffers[image_index as usize];
@@ -563,33 +645,33 @@ impl App {
         };
 
         unsafe {
-            sc.swapchain_loader
-                .queue_present(*queue, &present_info)
-                .expect("queue_present failed");
+            match sc.swapchain_loader.queue_present(*queue, &present_info) {
+                Ok(_) => {
+                    // MAYBE How to interpret false?
+                }
+                Err(result) => eprintln!("presentation error: {:?}", result),
+            };
         }
-        sc.window.request_redraw();
+        rt.window.request_redraw();
     }
 
     fn record_command_buffer(
         &self,
-        image_index: usize,
         render_target: (vk::Image, vk::ImageView),
         extent: &vk::Extent2D,
+        cb: vk::CommandBuffer,
     ) {
-        let command_buffer = self.command_buffers[image_index];
         let render_base = self.render_base.as_ref().unwrap();
         let device = &render_base.device;
 
-        // reset CB
         unsafe {
             device
-                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
-                .expect("reset_command_buffer failed");
+                .reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())
+                .expect("reset_cb failed");
 
-            // begin CB
             let begin = vk::CommandBufferBeginInfo::default();
             device
-                .begin_command_buffer(command_buffer, &begin)
+                .begin_command_buffer(cb, &begin)
                 .expect("begin failed");
         }
 
@@ -618,7 +700,8 @@ impl App {
             ..Default::default()
         };
 
-        unsafe { device.cmd_pipeline_barrier2(command_buffer, &dep_info) };
+        unsafe { device.cmd_pipeline_barrier2(cb, &dep_info) };
+        // XXX Command barrier reset leaking into draw
 
         let tweaked = self.value * 0.02 + 0.3;
         let value = tweaked.clamp(0.0, 1.0);
@@ -653,14 +736,12 @@ impl App {
             ..Default::default()
         };
 
-        unsafe { device.cmd_begin_rendering(command_buffer, &render_info) };
+        unsafe { device.cmd_begin_rendering(cb, &render_info) };
 
         let pipeline = self.pipelines.as_ref().unwrap()[0];
         unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
         }
-
-        // Update the
 
         // Update the color used in the fragment shader
         let mut trie_hue = self.hue * 360.0 + 180.0;
@@ -674,7 +755,7 @@ impl App {
         let pipeline_layout = self.pipeline_layout.as_ref().unwrap();
         unsafe {
             device.cmd_push_constants(
-                command_buffer,
+                cb,
                 *pipeline_layout,
                 vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
                 0,
@@ -700,15 +781,15 @@ impl App {
         };
 
         unsafe {
-            device.cmd_set_viewport(command_buffer, 0, &[viewport]);
-            device.cmd_set_scissor(command_buffer, 0, &[scissor]);
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[scissor]);
         }
 
-        // Naive triangle draw
-        unsafe { device.cmd_draw(command_buffer, 3, 1, 0, 0) };
+        unsafe { device.cmd_draw(cb, 3, 1, 0, 0) };
 
-        unsafe { device.cmd_end_rendering(command_buffer) };
+        unsafe { device.cmd_end_rendering(cb) };
 
+        // XXX presentation details leaking into draw
         let barrier2 = vk::ImageMemoryBarrier2 {
             s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
             src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
@@ -734,13 +815,9 @@ impl App {
             ..Default::default()
         };
 
-        unsafe { device.cmd_pipeline_barrier2(command_buffer, &dep2) };
+        unsafe { device.cmd_pipeline_barrier2(cb, &dep2) };
 
-        unsafe {
-            device
-                .end_command_buffer(command_buffer)
-                .expect("end_command_buffer failed")
-        };
+        unsafe { device.end_command_buffer(cb).expect("end_cb failed") };
     }
 }
 
@@ -750,11 +827,13 @@ static VALIDATION_LAYER: &CStr =
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let rb = RenderBase::new();
-        let rt = RenderTarget::new(3, &rb, event_loop);
+        let rt = RenderTarget::new(&rb, event_loop);
+        let sc = SwapChain::new(&rb, &rt);
+
         let queue_family_index = rb.queue_family_index;
         let device = &rb.device;
 
-        // XXX getting command pools requires the queue index
+        // MAYBE getting command pools requires the queue index
         let command_pool_info = vk::CommandPoolCreateInfo {
             flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
             queue_family_index,
@@ -767,11 +846,11 @@ impl ApplicationHandler for App {
                 .unwrap()
         };
 
-        // allocate one command buffer per swapchain image (use `images.len()` — not self.swapchain_images)
+        // allocate one command buffer per swapchain image
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool,
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: rt.swapchain_images.len() as u32,
+            command_buffer_count: sc.swapchain_images.len() as u32,
             ..Default::default()
         };
 
@@ -909,7 +988,7 @@ impl ApplicationHandler for App {
                 .unwrap()
         };
 
-        let color_formats = [rt.surface_format];
+        let color_formats = [rt.surface_format.format];
         let pipeline_rendering_info = vk::PipelineRenderingCreateInfo {
             s_type: vk::StructureType::PIPELINE_RENDERING_CREATE_INFO,
             view_mask: 0,
@@ -951,8 +1030,9 @@ impl ApplicationHandler for App {
         self.pipelines = Some(pipelines);
         self.pipeline_layout = Some(pipeline_layout);
 
-        self.swapchain = Some(rt);
+        self.render_target = Some(rt);
         self.render_base = Some(rb);
+        self.swapchain = Some(sc);
     }
 
     fn window_event(
@@ -962,8 +1042,14 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::Resized(_size) => {
-                self.swapchain.as_mut().unwrap().swapchain_dirty = true;
+            WindowEvent::Resized(size) => {
+                if size.width == 0 || size.height == 0 {
+                    println!("window resize reported degenerate size");
+                } else {
+                    let rb = self.render_base.as_ref().unwrap();
+                    let rt = self.render_target.as_ref().unwrap();
+                    self.swapchain.as_mut().unwrap().recreate_images(&rb, &rt);
+                }
             }
             WindowEvent::RedrawRequested => {
                 if self.running {
@@ -989,6 +1075,7 @@ impl ApplicationHandler for App {
                 });
 
                 self.swapchain.as_ref().unwrap().destroy(&device);
+                self.render_target.as_ref().unwrap().destroy();
                 render_base.destroy();
 
                 event_loop.exit();
@@ -1149,6 +1236,7 @@ fn main() -> Result<(), utate::MutateError> {
         running: true, // XXX
 
         render_base: None,
+        render_target: None,
         swapchain: None,
 
         command_buffers: Vec::new(),
@@ -1164,4 +1252,33 @@ fn main() -> Result<(), utate::MutateError> {
     drop(app);
     audio_thread.join().unwrap();
     Ok(())
+}
+
+fn pick_alpha(&surface_caps: &vk::SurfaceCapabilitiesKHR) -> vk::CompositeAlphaFlagsKHR {
+    if surface_caps
+        .supported_composite_alpha
+        .contains(vk::CompositeAlphaFlagsKHR::OPAQUE)
+    {
+        vk::CompositeAlphaFlagsKHR::OPAQUE
+    } else if surface_caps
+        .supported_composite_alpha
+        .contains(vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED)
+    {
+        vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED
+    } else if surface_caps
+        .supported_composite_alpha
+        .contains(vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED)
+    {
+        vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED
+    } else {
+        vk::CompositeAlphaFlagsKHR::INHERIT
+    }
+}
+
+fn window_size(window: &Window) -> vk::Extent2D {
+    let size = window.inner_size();
+    vk::Extent2D {
+        width: size.width,
+        height: size.height,
+    }
 }
