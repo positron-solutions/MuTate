@@ -11,14 +11,14 @@ library, using Vulkan and local AI models in Rust.
 
 The music moving a triangle phase is complete.  Work to create a real architecture is underway:
 
-- [ ] Fullscreen support (includes resizing and swapchain re-creation)
+- [x] Fullscreen support (includes resizing and swapchain re-creation)
 - [ ] Reactive updates for render graph dependents, such as images that depend on the window
       extent
 - [ ] Separate drawing and presentation
 - [ ] Indirect / off-screen rendering for presentation by CLI frontend, similar
       to [alemidev/scope-tui](https://github.com/alemidev/scope-tui).
 - [ ] Memory, devices, queue handling
-- [ ] Audio processing as an upstream input for an optional downstream render graphs
+- [ ] Audio processing as an upstream input for an *optional* downstream render graphs
 
 Before going deep on capabilities such as multi-GPU, we will just develop interfaces that have the semantics while implementing them in the most simple way first.
 
