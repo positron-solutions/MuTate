@@ -9,12 +9,38 @@ library, using Vulkan and local AI models in Rust.
 
 ## Status
 
-The music moving a triangle phase is complete.  The program **only runs on Linux with xlib, not Wayland yet.**
+The music moving a triangle phase is complete.  Work to create a real architecture is underway:
 
-- [x] Window
-- [x] Vulkan swap chain
-- [x] PipeWire (audio crate selection pending) input ring
-- [x] Draw inputs as outputs
+- [ ] Fullscreen support (includes resizing and swapchain re-creation)
+- [ ] Reactive updates for render graph dependents, such as images that depend on the window
+      extent
+- [ ] Separate drawing and presentation
+- [ ] Indirect / off-screen rendering for presentation by CLI frontend, similar
+      to [alemidev/scope-tui](https://github.com/alemidev/scope-tui).
+- [ ] Memory, devices, queue handling
+- [ ] Audio processing as an upstream input for an optional downstream render graphs
+
+Before going deep on capabilities such as multi-GPU, we will just develop interfaces that have the semantics while implementing them in the most simple way first.
+
+### Platform Support
+
+**These are good places to contribute**.  We need to draw on several kinds of Surfaces:
+
+- [x] Xlib
+- [ ] MacOS
+- [ ] Wayland
+- [ ] Windows
+- [ ] Android (apk Packaging is the larger share of work)
+
+Platform-specific audio servers may be used for audio monitors:
+
+- [ ] CPAL (cross-platform, uses Pulse Audio on Linux)
+- [x] Pipewire
+- [ ] Other platforms optionally if CPAL monitoring doesn't work
+
+### Distribution
+
+Only the TUI binary will likely be appropriate for `cargo install`.  The other binaries will need to be built via CI for releases, which will document the process for distributors.  Dependencies will be maintained as a Nix flake and associated shells.
 
 ### Incidental goals of this phase:
 
@@ -37,14 +63,17 @@ Tool selections are aiming to be as modern as possible without becoming pioneeri
   
 Past visualizers users simple beat detection based on simple heuristics like volume thresholds.  These are easily faked out.  They don't understand patterns or layering.  Only a handful of dynamic values and waveform textures were available to preset authors, so the results were inevitably highly abstract programmer art that cannot reflect the mood or spirit of the music being played.
 
-Got a better idea?  We would love to hear it.
-[contact@prizeforge.com](mailto:contact@prizeforge.com).  If you want other
-people to hear it, check out our [subreddit](https://reddit.com/r/prizeforge)
-until we have our on-platform social reasoning MVP built.
+### Machine Learning
+
+Rather than integrating slow, network-dependent generative AI based on heavy transformers and integrating via MCP, this project seeks to attract development of extremely lightweight alternatives, focusing on architecture sophistication above all.
+
+Positron will be contributing some alternative training / online learning techniques that are not dependent on differentiable behavior in the feed forward.  In our opinion, music visualization is the perfect [forgiving problem](https://positron.solutions/articles/finding-alignment-by-visualizing-music) for open source machine learning to to do some cooking.
 
 ### Open Product, Directly Sponsored by Positron
 
-µTate is being developed by Positron to demonstrate the features of [PrizeForge](https://prizeforge.com).  The [stream for mutate](https://prizeforge.com/streams/details/163AQ5rQj92) is continuously raising funds.  Want to write code?  The PrizeForge stream exists to reward people like you.  Anyone can contribute funds, code or ideas.  In any case, Positron is committed to standing the project up.
+µTate is being developed by Positron to motivate use of [PrizeForge](https://prizeforge.com), a new set of social finance tools.  The [stream for mutate](https://prizeforge.com/streams/details/163AQ5rQj92) is continuously raising funds.  Want to write code for µTate?  The PrizeForge stream exists to reward people like you.
+
+µTate enthusiasts can view PrizeForge like a better Patreon or Kickstarter specific to this repo for now.  Funds are matched bit-by-bit with other users before being disbursed.  Funds remain controlled by the backers and can be disbursed to anyone who contributes on µTate, not just the repo owner.  *That's one way Positron aims to change the model.*
 
 ### License
 
