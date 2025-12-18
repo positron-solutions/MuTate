@@ -7,6 +7,10 @@
 library, using Vulkan and local AI models in Rust.
 </p>
 
+### Build & Run
+
+This repository (optionally) provides non-Rust dependencies via a Nix shell with direnv integration available.  The default binary selected by `cargo run` is the Vulkan frontend, found in the mutate-visualizer crate.
+
 ## Status
 
 The music moving a triangle phase is complete.  Work to create a real architecture is underway:
