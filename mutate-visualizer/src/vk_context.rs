@@ -7,6 +7,9 @@ use std::ffi::{c_void, CStr};
 
 use ash::vk;
 
+// Hardware, drivers, and the lowest level abstractions of hardware should be encapsulated within
+// this module.  Devices may need to be split out later for use of multiple devices.  Memory
+// likewise may be globally managed but will stay with associated devices.
 pub struct VkContext {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
@@ -174,5 +177,16 @@ impl VkContext {
             self.device.destroy_device(None);
             self.instance.destroy_instance(None)
         };
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_context_lifecycle() {
+        let vk_context = VkContext::new();
+        vk_context.destroy();
     }
 }
