@@ -12,6 +12,7 @@ version.workspace = true
 
 [dependencies]
 ash.workspace = true
+clap = {workspace = true, features = ["derive"]}
 dirs.workspace = true
 palette.workspace = true
 rand.workspace = true

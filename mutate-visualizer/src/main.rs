@@ -6,6 +6,7 @@ use std::ffi::{c_void, CStr, CString};
 
 use ash::khr::xlib_surface;
 use ash::{vk, Entry};
+use clap::Parser;
 use palette::convert::FromColorUnclamped;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use ringbuf::traits::*;
@@ -248,10 +249,12 @@ struct RenderTarget {
 }
 
 impl RenderTarget {
-    fn new(rb: &RenderBase, event_loop: &ActiveEventLoop) -> Self {
-        let attrs = Window::default_attributes()
-            .with_title("µTate")
-            .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+    fn new(rb: &RenderBase, event_loop: &ActiveEventLoop, args: &Args) -> Self {
+        let mut attrs = Window::default_attributes().with_title("µTate");
+
+        if args.fullscreen {
+            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
+        }
 
         let window = event_loop
             .create_window(attrs)
@@ -494,7 +497,15 @@ impl RenderBase {
     }
 }
 
+#[derive(Parser, Debug)]
+struct Args {
+    /// Run in fullscreen mode
+    #[arg(short = 'f', long = "fullscreen")]
+    fullscreen: bool,
+}
+
 struct App {
+    args: Args,
     running: bool,
 
     render_base: Option<RenderBase>,
@@ -829,7 +840,7 @@ static VALIDATION_LAYER: &CStr =
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let rb = RenderBase::new();
-        let rt = RenderTarget::new(&rb, event_loop);
+        let rt = RenderTarget::new(&rb, event_loop, &self.args);
         let sc = SwapChain::new(&rb, &rt);
 
         let queue_family_index = rb.queue_family_index;
@@ -1090,6 +1101,9 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<(), utate::MutateError> {
+    // NEXT Merge over toml config values obtained as resources
+    let args = Args::parse();
+
     let context = utate::AudioContext::new()?;
     println!("Choose the audio source:");
 
@@ -1235,6 +1249,8 @@ fn main() -> Result<(), utate::MutateError> {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
+        args,
+
         running: true, // XXX
 
         render_base: None,
