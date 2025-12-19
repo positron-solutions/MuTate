@@ -8,8 +8,8 @@
 use ash::vk;
 use winit::window::Window;
 
-use super::vk_context::VkContext;
-use super::RenderTarget;
+use crate::render_target::RenderTarget;
+use crate::vk_context::VkContext;
 
 pub struct SwapChain {
     pub frames: usize,

@@ -2,121 +2,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod assets;
+mod render_target;
 mod swapchain;
 mod vk_context;
 
 use std::ffi::CString;
 
-use ash::khr::xlib_surface;
 use ash::vk;
 use clap::Parser;
 use palette::convert::FromColorUnclamped;
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use ringbuf::traits::*;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::ActiveEventLoop,
     event_loop::{ControlFlow, EventLoop},
-    window::Window,
 };
 
 use vk_context::VkContext;
 
 use mutate_lib as utate;
-
-struct RenderTarget {
-    surface: vk::SurfaceKHR,
-    surface_loader: ash::khr::surface::Instance,
-    surface_format: vk::SurfaceFormatKHR,
-    surface_caps: vk::SurfaceCapabilitiesKHR,
-
-    window: Window,
-}
-
-impl RenderTarget {
-    fn new(vk_context: &VkContext, event_loop: &ActiveEventLoop, args: &Args) -> Self {
-        let mut attrs = Window::default_attributes().with_title("µTate");
-
-        if args.fullscreen {
-            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
-        }
-
-        let window = event_loop
-            .create_window(attrs)
-            .expect("Failed to create window");
-
-        window.set_cursor_visible(false);
-
-        let win_handle = window.window_handle().unwrap().as_raw();
-        let xlib_window_handle = match win_handle {
-            RawWindowHandle::Xlib(handle) => handle,
-            _ => panic!("Only Xlib supported!"),
-        };
-        let xlib_window = xlib_window_handle.window;
-
-        let display_handle = window.display_handle().unwrap().as_raw();
-        let xlib_display = match display_handle {
-            RawDisplayHandle::Xlib(handle) => handle,
-            _ => panic!("Only Xlib supported!"),
-        };
-
-        let xlib_create_info = vk::XlibSurfaceCreateInfoKHR {
-            s_type: vk::StructureType::XLIB_SURFACE_CREATE_INFO_KHR,
-            window: xlib_window.into(),
-            dpy: xlib_display.display.unwrap().as_ptr(),
-            ..Default::default()
-        };
-
-        let xlib_surface_loader =
-            xlib_surface::Instance::new(&vk_context.entry, &vk_context.instance);
-
-        let surface = unsafe { xlib_surface_loader.create_xlib_surface(&xlib_create_info, None) }
-            .expect("Failed to create surface");
-
-        let surface_loader =
-            ash::khr::surface::Instance::new(&vk_context.entry, &vk_context.instance);
-
-        let surface_caps = unsafe {
-            surface_loader
-                .get_physical_device_surface_capabilities(vk_context.physical_device, surface)
-                .unwrap()
-        };
-
-        let formats = unsafe {
-            surface_loader
-                .get_physical_device_surface_formats(vk_context.physical_device, surface)
-                .unwrap()
-        };
-        let surface_format = formats[0];
-
-        let supported = unsafe {
-            surface_loader
-                .get_physical_device_surface_support(
-                    vk_context.physical_device,
-                    vk_context.queue_family_index,
-                    surface,
-                )
-                .unwrap()
-        };
-        assert!(supported, "Physical device must support this surface!");
-
-        Self {
-            surface,
-            surface_loader,
-            surface_format: surface_format,
-            surface_caps: surface_caps,
-
-            window,
-        }
-    }
-
-    fn destroy(&self) {
-        unsafe {
-            self.surface_loader.destroy_surface(self.surface, None);
-        }
-    }
-}
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -130,7 +35,7 @@ struct App {
     running: bool,
 
     render_base: Option<VkContext>,
-    render_target: Option<RenderTarget>,
+    render_target: Option<render_target::RenderTarget>,
     swapchain: Option<swapchain::SwapChain>,
 
     command_buffers: Vec<vk::CommandBuffer>,
@@ -457,7 +362,7 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let vk_context = VkContext::new();
-        let rt = RenderTarget::new(&vk_context, event_loop, &self.args);
+        let rt = render_target::RenderTarget::new(&vk_context, event_loop, &self.args);
         let sc = swapchain::SwapChain::new(&vk_context, &rt);
 
         let queue_family_index = vk_context.queue_family_index;
@@ -871,7 +776,7 @@ fn main() -> Result<(), utate::MutateError> {
     let mut app = App {
         args,
 
-        running: true, // XXX
+        running: true,
 
         render_base: None,
         render_target: None,
