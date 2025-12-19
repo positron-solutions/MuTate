@@ -1,11 +1,13 @@
 // Copyright 2025 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
-mod assets;
 
-use std::ffi::{c_void, CStr, CString};
+mod assets;
+mod vk_context;
+
+use std::ffi::CString;
 
 use ash::khr::xlib_surface;
-use ash::{vk, Entry};
+use ash::vk;
 use clap::Parser;
 use palette::convert::FromColorUnclamped;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
@@ -17,6 +19,8 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
+
+use vk_context::VkContext;
 
 use mutate_lib as utate;
 
@@ -37,7 +41,7 @@ struct SwapChain {
 }
 
 impl SwapChain {
-    fn new(rb: &RenderBase, rt: &RenderTarget) -> Self {
+    fn new(vk_context: &VkContext, rt: &RenderTarget) -> Self {
         // &surface, &surface_caps, surface_format, swapchain_size
         let surface = &rt.surface;
         let surface_caps = &rt.surface_caps;
@@ -46,7 +50,8 @@ impl SwapChain {
 
         let composite_alpha = pick_alpha(&surface_caps);
 
-        let swapchain_loader = ash::khr::swapchain::Device::new(&rb.instance, &rb.device);
+        let swapchain_loader =
+            ash::khr::swapchain::Device::new(&vk_context.instance, &vk_context.device);
         let swapchain_info = vk::SwapchainCreateInfoKHR {
             surface: *surface,
             min_image_count: 3, // XXX frame counts
@@ -87,7 +92,12 @@ impl SwapChain {
                     },
                     ..Default::default()
                 };
-                unsafe { rb.device.create_image_view(&view_info, None).unwrap() }
+                unsafe {
+                    vk_context
+                        .device
+                        .create_image_view(&view_info, None)
+                        .unwrap()
+                }
             })
             .collect();
 
@@ -97,7 +107,7 @@ impl SwapChain {
         };
 
         let in_flight_fences: Vec<vk::Fence> = (0..3)
-            .map(|_| unsafe { rb.device.create_fence(&fence_info, None).unwrap() })
+            .map(|_| unsafe { vk_context.device.create_fence(&fence_info, None).unwrap() })
             .collect();
 
         let semaphore_info = vk::SemaphoreCreateInfo {
@@ -106,11 +116,21 @@ impl SwapChain {
 
         // FIXME propagate image counts
         let image_available_semaphores = (0..3)
-            .map(|_| unsafe { rb.device.create_semaphore(&semaphore_info, None).unwrap() })
+            .map(|_| unsafe {
+                vk_context
+                    .device
+                    .create_semaphore(&semaphore_info, None)
+                    .unwrap()
+            })
             .collect();
 
         let render_finished_semaphores = (0..3)
-            .map(|_| unsafe { rb.device.create_semaphore(&semaphore_info, None).unwrap() })
+            .map(|_| unsafe {
+                vk_context
+                    .device
+                    .create_semaphore(&semaphore_info, None)
+                    .unwrap()
+            })
             .collect();
 
         Self {
@@ -147,9 +167,9 @@ impl SwapChain {
         }
     }
 
-    fn recreate_images(&mut self, rb: &RenderBase, rt: &RenderTarget) {
-        let device = &rb.device;
-        let physical_device = rb.physical_device;
+    fn recreate_images(&mut self, vk_context: &VkContext, rt: &RenderTarget) {
+        let device = &vk_context.device;
+        let physical_device = vk_context.physical_device;
 
         unsafe {
             device.device_wait_idle().unwrap();
@@ -249,7 +269,7 @@ struct RenderTarget {
 }
 
 impl RenderTarget {
-    fn new(rb: &RenderBase, event_loop: &ActiveEventLoop, args: &Args) -> Self {
+    fn new(vk_context: &VkContext, event_loop: &ActiveEventLoop, args: &Args) -> Self {
         let mut attrs = Window::default_attributes().with_title("µTate");
 
         if args.fullscreen {
@@ -282,22 +302,24 @@ impl RenderTarget {
             ..Default::default()
         };
 
-        let xlib_surface_loader = xlib_surface::Instance::new(&rb.entry, &rb.instance);
+        let xlib_surface_loader =
+            xlib_surface::Instance::new(&vk_context.entry, &vk_context.instance);
 
         let surface = unsafe { xlib_surface_loader.create_xlib_surface(&xlib_create_info, None) }
             .expect("Failed to create surface");
 
-        let surface_loader = ash::khr::surface::Instance::new(&rb.entry, &rb.instance);
+        let surface_loader =
+            ash::khr::surface::Instance::new(&vk_context.entry, &vk_context.instance);
 
         let surface_caps = unsafe {
             surface_loader
-                .get_physical_device_surface_capabilities(rb.physical_device, surface)
+                .get_physical_device_surface_capabilities(vk_context.physical_device, surface)
                 .unwrap()
         };
 
         let formats = unsafe {
             surface_loader
-                .get_physical_device_surface_formats(rb.physical_device, surface)
+                .get_physical_device_surface_formats(vk_context.physical_device, surface)
                 .unwrap()
         };
         let surface_format = formats[0];
@@ -305,8 +327,8 @@ impl RenderTarget {
         let supported = unsafe {
             surface_loader
                 .get_physical_device_surface_support(
-                    rb.physical_device,
-                    rb.queue_family_index,
+                    vk_context.physical_device,
+                    vk_context.queue_family_index,
                     surface,
                 )
                 .unwrap()
@@ -330,173 +352,6 @@ impl RenderTarget {
     }
 }
 
-struct RenderBase {
-    entry: ash::Entry,
-    instance: ash::Instance,
-    physical_device: vk::PhysicalDevice,
-    device: ash::Device,
-
-    graphics_queue: vk::Queue,
-    #[allow(dead_code)]
-    compute_queue: vk::Queue,
-    #[allow(dead_code)]
-    transfer_queue: vk::Queue,
-
-    queue_family_index: u32,
-}
-
-impl RenderBase {
-    fn new() -> Self {
-        let entry = unsafe { Entry::load().expect("failed to load Vulkan library") };
-        let available_exts = unsafe {
-            entry
-                .enumerate_instance_extension_properties(None)
-                .expect("Failed to enumerate instance extensions")
-        };
-
-        // FIXME insufficiently accurate platform check
-        assert!(
-            available_exts.iter().any(|ext| unsafe {
-                CStr::from_ptr(ext.extension_name.as_ptr()) == ash::vk::KHR_WAYLAND_SURFACE_NAME
-            }),
-            "Only xlib is currently supported"
-        );
-
-        let required_exts = [
-            ash::vk::KHR_SURFACE_NAME.as_ptr(),
-            ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr(),
-            // NEXT CLI switch gate
-            ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
-        ];
-
-        let validation_layers = [VALIDATION_LAYER.as_ptr()];
-
-        let app_info = vk::ApplicationInfo {
-            api_version: vk::make_api_version(0, 1, 3, 0),
-            ..Default::default()
-        };
-
-        let create_info = vk::InstanceCreateInfo {
-            p_application_info: &app_info,
-            enabled_extension_count: required_exts.len() as u32,
-            pp_enabled_extension_names: required_exts.as_ptr(),
-            enabled_layer_count: validation_layers.len() as u32,
-            pp_enabled_layer_names: validation_layers.as_ptr(),
-            ..Default::default()
-        };
-
-        let instance = unsafe { entry.create_instance(&create_info, None).unwrap() };
-
-        let physical_devices = unsafe {
-            instance
-                .enumerate_physical_devices()
-                .expect("No Vulkan devices")
-        };
-        let physical_device = physical_devices[0];
-
-        let queue_family_index = unsafe {
-            instance
-                .get_physical_device_queue_family_properties(physical_device)
-                .iter()
-                .enumerate()
-                .find_map(|(index, q)| {
-                    if q.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-                        Some(index as u32)
-                    } else {
-                        None
-                    }
-                })
-                .expect("No graphics queue family found")
-        };
-
-        let queue_priorities = [1.0];
-        let queue_info = [vk::DeviceQueueCreateInfo {
-            queue_family_index,
-            queue_count: 1,
-            p_queue_priorities: queue_priorities.as_ptr(),
-            ..Default::default()
-        }];
-
-        let device_extensions = [
-            ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
-            ash::vk::KHR_SYNCHRONIZATION2_NAME.as_ptr(),
-            ash::vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
-            ash::vk::EXT_EXTENDED_DYNAMIC_STATE_NAME.as_ptr(),
-            ash::vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME.as_ptr(),
-            ash::vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME.as_ptr(),
-            ash::vk::KHR_DYNAMIC_RENDERING_NAME.as_ptr(),
-            ash::vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
-            ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
-            ash::vk::EXT_DESCRIPTOR_INDEXING_NAME.as_ptr(),
-            ash::vk::KHR_PIPELINE_LIBRARY_NAME.as_ptr(),
-            ash::vk::EXT_MEMORY_BUDGET_NAME.as_ptr(),
-            ash::vk::KHR_SHADER_NON_SEMANTIC_INFO_NAME.as_ptr(),
-            // ROLL holding off on this until other hardware vendors have supporting drivers
-            // ash::vk::EXT_SHADER_OBJECT_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE1_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE2_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE3_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE4_NAME.as_ptr(),
-        ];
-
-        let mut sync2_features = vk::PhysicalDeviceSynchronization2Features::default();
-        sync2_features.synchronization2 = vk::TRUE;
-
-        let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
-        dynamic_rendering_features.dynamic_rendering = vk::TRUE;
-
-        let mut features2 = vk::PhysicalDeviceFeatures2::default();
-        features2.p_next = &mut sync2_features as *mut _ as *mut c_void;
-
-        sync2_features.p_next = &mut dynamic_rendering_features as *mut _ as *mut c_void;
-
-        let mut device_info = vk::DeviceCreateInfo {
-            queue_create_info_count: 1,
-            p_queue_create_infos: queue_info.as_ptr(),
-            pp_enabled_extension_names: device_extensions.as_ptr(),
-            enabled_extension_count: device_extensions.len() as u32,
-            ..Default::default()
-        };
-        device_info.p_next = &mut features2 as *mut _ as *mut c_void;
-
-        let device = unsafe {
-            instance
-                .create_device(physical_device, &device_info, None)
-                .unwrap()
-        };
-        let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
-
-        Self {
-            entry,
-            instance,
-            physical_device,
-            device,
-
-            graphics_queue: queue.clone(),
-            compute_queue: queue.clone(),
-            transfer_queue: queue,
-
-            queue_family_index,
-        }
-    }
-
-    fn graphics_queue(&self) -> &vk::Queue {
-        &self.graphics_queue
-    }
-
-    fn device(&self) -> &ash::Device {
-        &self.device
-    }
-
-    // XXX this consumes the base in reality...
-    fn destroy(&self) {
-        unsafe {
-            self.device.destroy_device(None);
-            self.instance.destroy_instance(None)
-        };
-    }
-}
-
 #[derive(Parser, Debug)]
 struct Args {
     /// Run in fullscreen mode
@@ -508,7 +363,7 @@ struct App {
     args: Args,
     running: bool,
 
-    render_base: Option<RenderBase>,
+    render_base: Option<VkContext>,
     render_target: Option<RenderTarget>,
     swapchain: Option<SwapChain>,
 
@@ -834,17 +689,14 @@ impl App {
     }
 }
 
-static VALIDATION_LAYER: &CStr =
-    unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
-
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let rb = RenderBase::new();
-        let rt = RenderTarget::new(&rb, event_loop, &self.args);
-        let sc = SwapChain::new(&rb, &rt);
+        let vk_context = VkContext::new();
+        let rt = RenderTarget::new(&vk_context, event_loop, &self.args);
+        let sc = SwapChain::new(&vk_context, &rt);
 
-        let queue_family_index = rb.queue_family_index;
-        let device = &rb.device;
+        let queue_family_index = vk_context.queue_family_index;
+        let device = &vk_context.device;
 
         // MAYBE getting command pools requires the queue index
         let command_pool_info = vk::CommandPoolCreateInfo {
@@ -1044,7 +896,7 @@ impl ApplicationHandler for App {
         self.pipeline_layout = Some(pipeline_layout);
 
         self.render_target = Some(rt);
-        self.render_base = Some(rb);
+        self.render_base = Some(vk_context);
         self.swapchain = Some(sc);
     }
 
@@ -1059,9 +911,12 @@ impl ApplicationHandler for App {
                 if size.width == 0 || size.height == 0 {
                     println!("window resize reported degenerate size");
                 } else {
-                    let rb = self.render_base.as_ref().unwrap();
+                    let vk_context = self.render_base.as_ref().unwrap();
                     let rt = self.render_target.as_ref().unwrap();
-                    self.swapchain.as_mut().unwrap().recreate_images(&rb, &rt);
+                    self.swapchain
+                        .as_mut()
+                        .unwrap()
+                        .recreate_images(&vk_context, &rt);
                 }
             }
             WindowEvent::RedrawRequested => {
