@@ -81,6 +81,7 @@ impl App {
             self.hue = self.hue - self.hue.floor();
         }
 
+        // 😠 Swapchain begin
         let idx = sc.frame_index;
         let image_available = sc.image_available_semaphores[idx];
         let render_finished = sc.render_finished_semaphores[idx];
@@ -111,10 +112,11 @@ impl App {
                 )
                 .expect("Failed to acquire next image")
         };
+        let command_buffer = self.command_buffers[image_index as usize];
 
-        let render_target = sc.render_target(image_index as usize);
+        let rt = self.render_target.as_ref().unwrap();
+        let output = sc.render_target(image_index as usize);
 
-        // Wait for the image-available semaphore before executing commands.
         let wait_info = vk::SemaphoreSubmitInfo {
             s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
             semaphore: image_available,
@@ -124,7 +126,6 @@ impl App {
             ..Default::default()
         };
 
-        // Signal when rendering is done.
         let signal_info = vk::SemaphoreSubmitInfo {
             s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
             semaphore: render_finished,
@@ -134,23 +135,15 @@ impl App {
             ..Default::default()
         };
 
-        let rt = self.render_target.as_ref().unwrap();
+        self.record_command_buffer(output, &sc.swapchain_extent, command_buffer);
 
-        let command_buffer = self.command_buffers[image_index as usize];
-
-        self.record_command_buffer(render_target, &sc.swapchain_extent, command_buffer);
-
-        // Which command buffer to submit.
-        let cmd_buffer = self.command_buffers[image_index as usize];
-
-        let cmd_info = vk::CommandBufferSubmitInfo {
+        let cb_info = vk::CommandBufferSubmitInfo {
             s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
-            command_buffer: cmd_buffer,
+            command_buffer,
             device_mask: 0,
             ..Default::default()
         };
 
-        // Submit struct (synchronization2)
         let submit = vk::SubmitInfo2 {
             s_type: vk::StructureType::SUBMIT_INFO_2,
             wait_semaphore_info_count: 1,
@@ -158,7 +151,7 @@ impl App {
             signal_semaphore_info_count: 1,
             p_signal_semaphore_infos: &signal_info,
             command_buffer_info_count: 1,
-            p_command_buffer_infos: &cmd_info,
+            p_command_buffer_infos: &cb_info,
             ..Default::default()
         };
 
@@ -578,9 +571,9 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::KeyboardInput {
-                device_id,
+                device_id: _,
                 event,
-                is_synthetic,
+                is_synthetic: _,
             } => {
                 if !event.repeat
                     && event.state == winit::event::ElementState::Pressed
