@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod assets;
+mod node;
 mod render_target;
 mod swapchain;
 mod vk_context;
-
-use std::ffi::CString;
 
 use ash::vk;
 use clap::Parser;
@@ -39,11 +38,14 @@ struct App {
     render_target: Option<render_target::RenderTarget>,
     swapchain: Option<swapchain::SwapChain>,
 
+    // move to be with presentation / swapchain
     command_buffers: Vec<vk::CommandBuffer>,
+    // move onto the device / context
     command_pool: Option<vk::CommandPool>,
-    pipeline_layout: Option<vk::PipelineLayout>,
-    pipelines: Option<Vec<vk::Pipeline>>,
 
+    render_node: Option<node::RenderNode>,
+
+    // move into render graph information
     audio_events: ringbuf::wrap::caching::Caching<
         std::sync::Arc<ringbuf::SharedRb<ringbuf::storage::Heap<(f32, f32, f32, f32)>>>,
         false,
@@ -94,7 +96,6 @@ impl App {
             self.hue = self.hue - self.hue.floor();
         }
 
-        // 😠 Swapchain begin
         let idx = sc.frame_index;
         let image_available = sc.image_available_semaphores[idx];
         let render_finished = sc.render_finished_semaphores[idx];
@@ -245,7 +246,6 @@ impl App {
         };
 
         unsafe { device.cmd_pipeline_barrier2(cb, &dep_info) };
-        // XXX Command barrier reset leaking into draw
 
         let tweaked = self.value * 0.02 + 0.3;
         let value = tweaked.clamp(0.0, 1.0);
@@ -282,7 +282,8 @@ impl App {
 
         unsafe { device.cmd_begin_rendering(cb, &render_info) };
 
-        let pipeline = self.pipelines.as_ref().unwrap()[0];
+        let rn = self.render_node.as_ref().unwrap();
+        let pipeline = rn.pipelines[0];
         unsafe {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
         }
@@ -296,11 +297,10 @@ impl App {
         let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
         let combined_push: [f32; 5] = [rgb.red, rgb.green, rgb.blue, 1.0, scale];
-        let pipeline_layout = self.pipeline_layout.as_ref().unwrap();
         unsafe {
             device.cmd_push_constants(
                 cb,
-                *pipeline_layout,
+                rn.pipeline_layout,
                 vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
                 0,
                 std::slice::from_raw_parts(
@@ -397,180 +397,13 @@ impl ApplicationHandler for App {
 
         let buffers = unsafe { device.allocate_command_buffers(&alloc_info).unwrap() };
 
-        let assets = assets::AssetDirs::new();
-        let vert_spv = assets
-            .find_bytes("vertex", assets::AssetKind::Shader)
-            .unwrap();
-        let frag_spv = assets
-            .find_bytes("fragment", assets::AssetKind::Shader)
-            .unwrap();
-
-        let vert_module_ci = vk::ShaderModuleCreateInfo {
-            code_size: vert_spv.len(),
-            p_code: vert_spv.as_ptr() as *const u32,
-            ..Default::default()
-        };
-
-        let frag_module_ci = vk::ShaderModuleCreateInfo {
-            code_size: frag_spv.len(),
-            p_code: frag_spv.as_ptr() as *const u32,
-            ..Default::default()
-        };
-
-        let vert_shader_module =
-            unsafe { device.create_shader_module(&vert_module_ci, None).unwrap() };
-        let frag_shader_module =
-            unsafe { device.create_shader_module(&frag_module_ci, None).unwrap() };
-
-        // Static
-        let entry_vert = CString::new("main").unwrap();
-        let entry_frag = CString::new("main").unwrap();
-
-        let shader_stages = [
-            vk::PipelineShaderStageCreateInfo {
-                s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-                stage: vk::ShaderStageFlags::VERTEX,
-                module: vert_shader_module,
-                p_name: entry_vert.as_ptr(),
-                ..Default::default()
-            },
-            vk::PipelineShaderStageCreateInfo {
-                s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-                stage: vk::ShaderStageFlags::FRAGMENT,
-                module: frag_shader_module,
-                p_name: entry_frag.as_ptr(),
-                ..Default::default()
-            },
-        ];
-
-        // I messed around with two ranges but the validation of the shader code made me believe
-        // that using two separate push constants was at best hacky.  Therefore, I merged the ranges
-        // and just used the relevant data in each shader.
-        let push_constant_range = vk::PushConstantRange {
-            stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
-            offset: 0,
-            size: std::mem::size_of::<[f32; 5]>() as u32,
-        };
-
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            vertex_attribute_description_count: 0,
-            vertex_binding_description_count: 0,
-            ..Default::default()
-        };
-
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            topology: vk::PrimitiveTopology::TRIANGLE_LIST,
-            primitive_restart_enable: vk::FALSE,
-            ..Default::default()
-        };
-
-        let viewport_state = vk::PipelineViewportStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            viewport_count: 1,
-            scissor_count: 1,
-            ..Default::default()
-        };
-
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            depth_clamp_enable: vk::FALSE,
-            rasterizer_discard_enable: vk::FALSE,
-            polygon_mode: vk::PolygonMode::FILL,
-            line_width: 1.0,
-            cull_mode: vk::CullModeFlags::BACK,
-            front_face: vk::FrontFace::COUNTER_CLOCKWISE,
-            depth_bias_enable: vk::FALSE,
-            ..Default::default()
-        };
-
-        let multisampling = vk::PipelineMultisampleStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            rasterization_samples: vk::SampleCountFlags::TYPE_1,
-            sample_shading_enable: vk::FALSE,
-            ..Default::default()
-        };
-
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState {
-            blend_enable: vk::FALSE,
-            src_color_blend_factor: vk::BlendFactor::ONE,
-            dst_color_blend_factor: vk::BlendFactor::ZERO,
-            color_blend_op: vk::BlendOp::ADD,
-            src_alpha_blend_factor: vk::BlendFactor::ONE,
-            dst_alpha_blend_factor: vk::BlendFactor::ZERO,
-            alpha_blend_op: vk::BlendOp::ADD,
-            color_write_mask: vk::ColorComponentFlags::RGBA,
-        };
-
-        let color_blend = vk::PipelineColorBlendStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            logic_op_enable: vk::FALSE,
-            attachment_count: 1,
-            p_attachments: &color_blend_attachment,
-            ..Default::default()
-        };
-
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo {
-            dynamic_state_count: dynamic_states.len() as u32,
-            p_dynamic_states: dynamic_states.as_ptr(),
-            ..Default::default()
-        };
-
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
-            push_constant_range_count: 1,
-            p_push_constant_ranges: &push_constant_range,
-            ..Default::default()
-        };
-        let pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layout_info, None)
-                .unwrap()
-        };
-
-        let color_formats = [rt.surface_format.format];
-        let pipeline_rendering_info = vk::PipelineRenderingCreateInfo {
-            s_type: vk::StructureType::PIPELINE_RENDERING_CREATE_INFO,
-            view_mask: 0,
-            color_attachment_count: 1,
-            p_color_attachment_formats: color_formats.as_ptr(),
-            ..Default::default()
-        };
-
-        let pipeline_ci = vk::GraphicsPipelineCreateInfo {
-            s_type: vk::StructureType::GRAPHICS_PIPELINE_CREATE_INFO,
-            p_next: &pipeline_rendering_info as *const _ as *const std::ffi::c_void,
-            stage_count: shader_stages.len() as u32,
-            p_stages: shader_stages.as_ptr(),
-            p_vertex_input_state: &vertex_input_info,
-            p_input_assembly_state: &input_assembly,
-            p_viewport_state: &viewport_state,
-            p_rasterization_state: &rasterizer,
-            p_multisample_state: &multisampling,
-            p_color_blend_state: &color_blend,
-            p_dynamic_state: &dynamic_state_info,
-            layout: pipeline_layout,
-            render_pass: vk::RenderPass::null(), // dynamic rendering
-            subpass: 0,
-            ..Default::default()
-        };
-
-        let pipelines = unsafe {
-            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_ci], None)
-        }
-        .unwrap();
-
-        unsafe {
-            device.destroy_shader_module(vert_shader_module, None);
-            device.destroy_shader_module(frag_shader_module, None);
-        }
-
         self.command_pool = Some(command_pool);
         self.command_buffers = buffers;
-        self.pipelines = Some(pipelines);
-        self.pipeline_layout = Some(pipeline_layout);
 
+        self.render_node = Some(node::RenderNode::new(
+            device,
+            rt.surface_format.format.clone(),
+        ));
         self.render_target = Some(rt);
         self.render_base = Some(vk_context);
         self.swapchain = Some(sc);
@@ -625,13 +458,8 @@ impl ApplicationHandler for App {
 
                 device.device_wait_idle().unwrap();
 
-                self.pipelines.as_ref().unwrap().iter().for_each(|p| {
-                    device.destroy_pipeline(*p, None);
-                });
+                self.render_node.as_ref().unwrap().destroy(&device);
 
-                if let Some(layout) = self.pipeline_layout {
-                    device.destroy_pipeline_layout(layout, None);
-                }
                 self.command_pool.map(|p| {
                     device.destroy_command_pool(p, None);
                 });
@@ -805,11 +633,10 @@ fn main() -> Result<(), utate::MutateError> {
         render_base: None,
         render_target: None,
         swapchain: None,
+        render_node: None,
 
         command_buffers: Vec::new(),
         command_pool: None,
-        pipeline_layout: None,
-        pipelines: None,
 
         audio_events: ae_rx,
         hue: rand::random::<f32>(),
