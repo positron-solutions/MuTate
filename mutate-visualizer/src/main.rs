@@ -17,6 +17,7 @@ use winit::{
     event::WindowEvent,
     event_loop::ActiveEventLoop,
     event_loop::{ControlFlow, EventLoop},
+    keyboard as kb,
 };
 
 use vk_context::VkContext;
@@ -53,6 +54,18 @@ struct App {
 }
 
 impl App {
+    fn toggle_fullscreen(&self) {
+        let win = &self.render_target.as_ref().unwrap().window;
+        match win.fullscreen() {
+            Some(winit::window::Fullscreen::Borderless(None)) => {
+                win.set_fullscreen(None);
+            }
+            _ => {
+                win.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            }
+        }
+    }
+
     fn draw_frame(&mut self) {
         let render_base = self.render_base.as_ref().unwrap();
         let device = &render_base.device;
@@ -575,19 +588,16 @@ impl ApplicationHandler for App {
                 event,
                 is_synthetic: _,
             } => {
-                if !event.repeat
-                    && event.state == winit::event::ElementState::Pressed
-                    && event.physical_key
-                        == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyF)
-                {
-                    let win = &self.render_target.as_ref().unwrap().window;
-                    match win.fullscreen() {
-                        Some(winit::window::Fullscreen::Borderless(None)) => {
-                            win.set_fullscreen(None);
+                if !event.repeat && event.state == winit::event::ElementState::Pressed {
+                    match event.physical_key {
+                        kb::PhysicalKey::Code(kb::KeyCode::KeyF) => {
+                            self.toggle_fullscreen();
                         }
-                        _ => {
-                            win.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                        kb::PhysicalKey::Code(kb::KeyCode::KeyQ)
+                        | kb::PhysicalKey::Code(kb::KeyCode::Escape) => {
+                            event_loop.exit();
                         }
+                        _ => {}
                     }
                 }
             }
