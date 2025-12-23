@@ -49,6 +49,7 @@ impl VkContext {
         let required_exts = [
             ash::vk::KHR_SURFACE_NAME.as_ptr(),
             ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr(),
+            ash::vk::KHR_WAYLAND_SURFACE_NAME.as_ptr(),
             // NEXT CLI switch gate
             ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
         ];
