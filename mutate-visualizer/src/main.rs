@@ -61,9 +61,11 @@ impl App {
         match win.fullscreen() {
             Some(winit::window::Fullscreen::Borderless(None)) => {
                 win.set_fullscreen(None);
+                win.set_cursor_visible(true);
             }
             _ => {
                 win.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                win.set_cursor_visible(false);
             }
         }
     }
