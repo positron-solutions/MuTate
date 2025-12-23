@@ -13,8 +13,6 @@ pub struct RenderTarget {
     pub surface: vk::SurfaceKHR,
     pub surface_loader: ash::khr::surface::Instance,
     pub surface_format: vk::SurfaceFormatKHR,
-    pub surface_caps: vk::SurfaceCapabilitiesKHR,
-
     pub window: Window,
 }
 
@@ -62,12 +60,6 @@ impl RenderTarget {
         let surface_loader =
             ash::khr::surface::Instance::new(&vk_context.entry, &vk_context.instance);
 
-        let surface_caps = unsafe {
-            surface_loader
-                .get_physical_device_surface_capabilities(vk_context.physical_device, surface)
-                .unwrap()
-        };
-
         let formats = unsafe {
             surface_loader
                 .get_physical_device_surface_formats(vk_context.physical_device, surface)
@@ -90,8 +82,6 @@ impl RenderTarget {
             surface,
             surface_loader,
             surface_format: surface_format,
-            surface_caps: surface_caps,
-
             window,
         }
     }

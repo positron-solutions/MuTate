@@ -29,9 +29,14 @@ impl SwapChain {
     pub fn new(vk_context: &VkContext, rt: &RenderTarget) -> Self {
         // &surface, &surface_caps, surface_format, swapchain_size
         let surface = &rt.surface;
-        let surface_caps = &rt.surface_caps;
         let surface_format = &rt.surface_format;
         let extent = window_size(&rt.window);
+
+        let surface_caps = unsafe {
+            rt.surface_loader
+                .get_physical_device_surface_capabilities(vk_context.physical_device, rt.surface)
+                .unwrap()
+        };
 
         let composite_alpha = pick_alpha(&surface_caps);
 
