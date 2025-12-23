@@ -453,8 +453,8 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CloseRequested => unsafe {
                 self.running = false;
-                let render_base = self.render_base.as_ref().unwrap();
-                let device = &render_base.device();
+                let vk_context = self.render_base.as_ref().unwrap();
+                let device = &vk_context.device();
 
                 device.device_wait_idle().unwrap();
 
@@ -465,8 +465,8 @@ impl ApplicationHandler for App {
                 });
 
                 self.swapchain.as_ref().unwrap().destroy(&device);
-                self.render_target.as_ref().unwrap().destroy();
-                render_base.destroy();
+                self.render_target.as_ref().unwrap().destroy(vk_context);
+                vk_context.destroy();
 
                 event_loop.exit();
             },

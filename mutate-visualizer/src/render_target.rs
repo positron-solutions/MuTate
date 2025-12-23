@@ -11,7 +11,6 @@ use crate::Args;
 
 pub struct RenderTarget {
     pub surface: vk::SurfaceKHR,
-    pub surface_loader: ash::khr::surface::Instance,
     pub surface_format: vk::SurfaceFormatKHR,
     pub window: Window,
 }
@@ -57,18 +56,17 @@ impl RenderTarget {
         let surface = unsafe { xlib_surface_loader.create_xlib_surface(&xlib_create_info, None) }
             .expect("Failed to create surface");
 
-        let surface_loader =
-            ash::khr::surface::Instance::new(&vk_context.entry, &vk_context.instance);
-
         let formats = unsafe {
-            surface_loader
+            vk_context
+                .surface_loader
                 .get_physical_device_surface_formats(vk_context.physical_device, surface)
                 .unwrap()
         };
         let surface_format = formats[0];
 
         let supported = unsafe {
-            surface_loader
+            vk_context
+                .surface_loader
                 .get_physical_device_surface_support(
                     vk_context.physical_device,
                     vk_context.queue_family_index,
@@ -80,15 +78,16 @@ impl RenderTarget {
 
         Self {
             surface,
-            surface_loader,
             surface_format: surface_format,
             window,
         }
     }
 
-    pub fn destroy(&self) {
+    pub fn destroy(&self, vk_context: &VkContext) {
         unsafe {
-            self.surface_loader.destroy_surface(self.surface, None);
+            vk_context
+                .surface_loader
+                .destroy_surface(self.surface, None);
         }
     }
 }

@@ -15,6 +15,7 @@ pub struct VkContext {
     pub instance: ash::Instance,
     pub physical_device: vk::PhysicalDevice,
     pub device: ash::Device,
+    pub surface_loader: ash::khr::surface::Instance,
 
     graphics_queue: vk::Queue,
     #[allow(dead_code)]
@@ -149,11 +150,14 @@ impl VkContext {
         };
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
+        let surface_loader = unsafe { ash::khr::surface::Instance::new(&entry, &instance) };
+
         Self {
             entry,
             instance,
             physical_device,
             device,
+            surface_loader,
 
             graphics_queue: queue.clone(),
             compute_queue: queue.clone(),

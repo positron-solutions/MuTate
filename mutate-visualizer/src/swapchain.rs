@@ -33,7 +33,8 @@ impl SwapChain {
         let extent = window_size(&rt.window);
 
         let surface_caps = unsafe {
-            rt.surface_loader
+            vk_context
+                .surface_loader
                 .get_physical_device_surface_capabilities(vk_context.physical_device, rt.surface)
                 .unwrap()
         };
@@ -176,7 +177,7 @@ impl SwapChain {
 
         // Recreation
         unsafe {
-            let surface_caps = rt
+            let surface_caps = vk_context
                 .surface_loader
                 .get_physical_device_surface_capabilities(physical_device, rt.surface)
                 .unwrap();
