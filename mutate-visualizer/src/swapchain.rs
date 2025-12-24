@@ -27,7 +27,6 @@ pub struct SwapChain {
 
 impl SwapChain {
     pub fn new(vk_context: &VkContext, rt: &RenderTarget) -> Self {
-        // &surface, &surface_caps, surface_format, swapchain_size
         let surface = &rt.surface;
         let surface_format = &rt.surface_format;
         let extent = window_size(&rt.window);

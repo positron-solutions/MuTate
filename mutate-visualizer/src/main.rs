@@ -38,14 +38,15 @@ struct App {
     render_target: Option<render_target::RenderTarget>,
     swapchain: Option<swapchain::SwapChain>,
 
-    // move to be with presentation / swapchain
+    // The existence of multiple command buffers depends entirely on the render target here (a
+    // swapchain).
     command_buffers: Vec<vk::CommandBuffer>,
     // move onto the device / context
     command_pool: Option<vk::CommandPool>,
 
     render_node: Option<node::RenderNode>,
 
-    // move into render graph information
+    // move into a render graph node, an audio to color stream
     audio_events: ringbuf::wrap::caching::Caching<
         std::sync::Arc<ringbuf::SharedRb<ringbuf::storage::Heap<(f32, f32, f32, f32)>>>,
         false,
@@ -71,12 +72,7 @@ impl App {
     }
 
     fn draw_frame(&mut self) {
-        let render_base = self.render_base.as_ref().unwrap();
-        let device = &render_base.device;
-        let queue = render_base.graphics_queue();
-
-        let sc = self.swapchain.as_ref().unwrap();
-
+        // Receive available audio inputs
         if self.audio_events.is_full() {
             eprintln!("audio event backpressure drop");
             self.audio_events.skip(1);
@@ -89,8 +85,8 @@ impl App {
             }
         };
 
+        // Push color information into audio node
         self.value = fast;
-
         self.hue += 0.002 * fast;
         if self.hue > 1.0 || self.hue < 0.0 {
             self.hue = self.hue - self.hue.floor();
@@ -98,6 +94,8 @@ impl App {
             self.hue = self.hue - self.hue.floor();
         }
 
+        // Obtain output destination and perform synchronization
+        let sc = self.swapchain.as_ref().unwrap();
         let idx = sc.frame_index;
         let image_available = sc.image_available_semaphores[idx];
         let render_finished = sc.render_finished_semaphores[idx];
@@ -108,6 +106,8 @@ impl App {
         sc.frame_index = (sc.frame_index + 1) % sc.frames;
         let sc = self.swapchain.as_ref().unwrap();
 
+        let render_base = self.render_base.as_ref().unwrap();
+        let device = &render_base.device;
         unsafe {
             device
                 .wait_for_fences(&[in_flight], true, u64::MAX)
@@ -128,10 +128,11 @@ impl App {
                 )
                 .expect("Failed to acquire next image")
         };
-        let command_buffer = self.command_buffers[image_index as usize];
 
-        let rt = self.render_target.as_ref().unwrap();
+        let command_buffer = self.command_buffers[image_index as usize];
         let output = sc.render_target(image_index as usize);
+
+        self.record_command_buffer(output, &sc.swapchain_extent, command_buffer);
 
         let wait_info = vk::SemaphoreSubmitInfo {
             s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
@@ -151,8 +152,7 @@ impl App {
             ..Default::default()
         };
 
-        self.record_command_buffer(output, &sc.swapchain_extent, command_buffer);
-
+        // Submission is mainly a device/queue behavior
         let cb_info = vk::CommandBufferSubmitInfo {
             s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
             command_buffer,
@@ -171,12 +171,14 @@ impl App {
             ..Default::default()
         };
 
+        let queue = render_base.graphics_queue();
         unsafe {
             device
                 .queue_submit2(*queue, &[submit], in_flight)
                 .expect("queue_submit2 failed");
         }
 
+        // Presentaters present
         let present_wait = [render_finished];
         let swapchains = [sc.swapchain];
         let indices = [image_index];
@@ -199,6 +201,8 @@ impl App {
                 Err(result) => eprintln!("presentation error: {:?}", result),
             };
         }
+
+        let rt = self.render_target.as_ref().unwrap();
         rt.window.request_redraw();
     }
 
@@ -208,9 +212,30 @@ impl App {
         extent: &vk::Extent2D,
         cb: vk::CommandBuffer,
     ) {
+        // Extract audio -> color stream
+        let tweaked = self.value * 0.02 + 0.3;
+        let value = tweaked.clamp(0.0, 1.0);
+        let hsv: palette::Hsv = palette::Hsv::new_srgb(self.hue * 360.0, 1.0, value);
+        let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
+
+        let clear = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [rgb.red, rgb.green, rgb.blue, 1.0],
+            },
+        };
+
+        let mut trie_hue = self.hue * 360.0 + 180.0;
+        if trie_hue > 360.0 {
+            trie_hue -= 360.0;
+        }
+        let scale = 0.8 + (0.2 * self.value);
+        let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
+        let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
+
         let render_base = self.render_base.as_ref().unwrap();
         let device = &render_base.device;
 
+        // More synchronization, creation of inputs, and culmination at our one draw command
         unsafe {
             device
                 .reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())
@@ -249,17 +274,6 @@ impl App {
 
         unsafe { device.cmd_pipeline_barrier2(cb, &dep_info) };
 
-        let tweaked = self.value * 0.02 + 0.3;
-        let value = tweaked.clamp(0.0, 1.0);
-        let hsv: palette::Hsv = palette::Hsv::new_srgb(self.hue * 360.0, 1.0, value);
-        let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
-
-        let clear = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [rgb.red, rgb.green, rgb.blue, 1.0],
-            },
-        };
-
         let color_attachment = vk::RenderingAttachmentInfo {
             s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
             image_view: render_target.1,
@@ -290,14 +304,6 @@ impl App {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
         }
 
-        // Update the color used in the fragment shader
-        let mut trie_hue = self.hue * 360.0 + 180.0;
-        if trie_hue > 360.0 {
-            trie_hue -= 360.0;
-        }
-        let scale = 0.8 + (0.2 * self.value);
-        let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
-        let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
         let combined_push: [f32; 5] = [rgb.red, rgb.green, rgb.blue, 1.0, scale];
         unsafe {
             device.cmd_push_constants(
@@ -331,6 +337,7 @@ impl App {
             device.cmd_set_scissor(cb, 0, &[scissor]);
         }
 
+        // Basically the entirety of drawing
         unsafe { device.cmd_draw(cb, 3, 1, 0, 0) };
 
         unsafe { device.cmd_end_rendering(cb) };

@@ -20,10 +20,9 @@ impl RenderTarget {
         let mut attrs = Window::default_attributes().with_title("µTate");
 
         if args.fullscreen {
-            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
+            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
 
-        // XXX extract this and just give a window
         let window = event_loop
             .create_window(attrs)
             .expect("Failed to create window");
