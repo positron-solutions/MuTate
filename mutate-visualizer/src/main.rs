@@ -292,47 +292,11 @@ impl App {
 
         unsafe { device.cmd_begin_rendering(cb, &render_info) };
 
-        let rn = self.render_node.as_ref().unwrap();
-        let pipeline = rn.pipelines[0];
-        unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        }
-
-        let combined_push: [f32; 5] = [rgb.red, rgb.green, rgb.blue, 1.0, scale];
-        unsafe {
-            device.cmd_push_constants(
-                cb,
-                rn.pipeline_layout,
-                vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
-                0,
-                std::slice::from_raw_parts(
-                    combined_push.as_ptr() as *const u8,
-                    std::mem::size_of::<[f32; 5]>(),
-                ),
-            );
-        }
-
-        let viewport = vk::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: extent.width as f32,
-            height: extent.height as f32,
-            min_depth: 0.0,
-            max_depth: 1.0,
-        };
-
-        let scissor = vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: *extent,
-        };
-
-        unsafe {
-            device.cmd_set_viewport(cb, 0, &[viewport]);
-            device.cmd_set_scissor(cb, 0, &[scissor]);
-        }
-
-        // Basically the entirety of drawing
-        unsafe { device.cmd_draw(cb, 3, 1, 0, 0) };
+        let context = self.vk_context.as_ref().unwrap();
+        self.render_node
+            .as_ref()
+            .unwrap()
+            .draw(cb, context, rgb, scale, extent);
 
         unsafe { device.cmd_end_rendering(cb) };
 

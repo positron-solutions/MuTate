@@ -6,14 +6,14 @@
 // tomorrow.
 use std::ffi::CString;
 
-use ash::vk;
+use ash::vk::{self, CommandBuffer};
 
 use crate::assets;
 
 // This will be an interface after more nodes exist
 pub struct RenderNode {
-    pub pipeline_layout: vk::PipelineLayout,
-    pub pipelines: Vec<vk::Pipeline>,
+    pipeline_layout: vk::PipelineLayout,
+    pipelines: Vec<vk::Pipeline>,
 }
 
 impl RenderNode {
@@ -191,6 +191,58 @@ impl RenderNode {
             pipeline_layout,
             pipelines,
         }
+    }
+
+    pub fn draw(
+        &self,
+        cb: vk::CommandBuffer,
+        context: &crate::VkContext,
+        rgb: palette::Srgb<f32>,
+        scale: f32,
+        extent: &vk::Extent2D,
+    ) {
+        let device = context.device();
+        let pipeline = self.pipelines[0];
+        unsafe {
+            context
+                .device
+                .cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        }
+
+        let combined_push: [f32; 5] = [rgb.red, rgb.green, rgb.blue, 1.0, scale];
+        unsafe {
+            device.cmd_push_constants(
+                cb,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
+                0,
+                std::slice::from_raw_parts(
+                    combined_push.as_ptr() as *const u8,
+                    std::mem::size_of::<[f32; 5]>(),
+                ),
+            );
+        }
+
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: extent.width as f32,
+            height: extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: *extent,
+        };
+
+        unsafe {
+            device.cmd_set_viewport(cb, 0, &[viewport]);
+            device.cmd_set_scissor(cb, 0, &[scissor]);
+        }
+
+        unsafe { device.cmd_draw(cb, 3, 1, 0, 0) };
     }
 
     pub fn destroy(&self, device: &ash::Device) {
