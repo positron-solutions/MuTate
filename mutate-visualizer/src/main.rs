@@ -148,7 +148,6 @@ impl App {
             };
         }
 
-        wp.window.request_redraw();
     }
 
     fn record_command_buffer(
@@ -344,6 +343,11 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if self.running {
                     self.draw_frame();
+                    self.window_present
+                        .as_ref()
+                        .unwrap()
+                        .window
+                        .request_redraw();
                 }
             }
             WindowEvent::CloseRequested => unsafe {
