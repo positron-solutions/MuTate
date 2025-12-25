@@ -19,7 +19,7 @@ pub struct DrawSync {
     pub image_index: usize,
 }
 
-pub struct SwapChain {
+pub struct WindowPresent {
     pub frames: usize,
     pub frame_index: usize,
     pub image_available_semaphores: Vec<vk::Semaphore>,
@@ -39,7 +39,7 @@ pub struct SwapChain {
     pub window: Window,
 }
 
-impl SwapChain {
+impl WindowPresent {
     pub fn new(vk_context: &VkContext, event_loop: &ActiveEventLoop, args: &Args) -> Self {
         let mut attrs = Window::default_attributes().with_title("µTate");
         if args.fullscreen {

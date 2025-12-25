@@ -3,7 +3,7 @@
 
 mod assets;
 mod node;
-mod swapchain;
+mod present;
 mod vk_context;
 
 use ash::vk;
@@ -34,7 +34,7 @@ struct App {
     running: bool,
 
     vk_context: Option<VkContext>,
-    swapchain: Option<swapchain::SwapChain>,
+    window_present: Option<present::WindowPresent>,
     render_node: Option<node::RenderNode>,
 
     // move into a render graph node, an audio to color stream
@@ -72,8 +72,8 @@ impl App {
         }
 
         let vk_context = self.vk_context.as_ref().unwrap();
-        let sc = self.swapchain.as_mut().unwrap();
-        let output = sc.render_target(vk_context);
+        let wp = self.window_present.as_mut().unwrap();
+        let output = wp.render_target(vk_context);
         let sync = &output.4;
 
         self.record_command_buffer(&output);
@@ -124,9 +124,9 @@ impl App {
         }
 
         // Presenters present
-        let sc = self.swapchain.as_ref().unwrap();
+        let wp = self.window_present.as_ref().unwrap();
         let present_wait = [sync.render_finished];
-        let swapchains = [sc.swapchain];
+        let swapchains = [wp.swapchain];
         let indices = [sync.image_index as u32];
 
         let present_info = vk::PresentInfoKHR {
@@ -140,7 +140,7 @@ impl App {
         };
 
         unsafe {
-            match sc.swapchain_loader.queue_present(*queue, &present_info) {
+            match wp.swapchain_loader.queue_present(*queue, &present_info) {
                 Ok(_) => {
                     // MAYBE How to interpret false?
                 }
@@ -148,7 +148,7 @@ impl App {
             };
         }
 
-        sc.window.request_redraw();
+        wp.window.request_redraw();
     }
 
     fn record_command_buffer(
@@ -158,7 +158,7 @@ impl App {
             vk::ImageView,
             vk::Extent2D,
             vk::CommandBuffer,
-            crate::swapchain::DrawSync,
+            crate::present::DrawSync,
         ),
     ) {
         // Extract audio -> color stream
@@ -292,17 +292,17 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let vk_context = VkContext::new();
-        let sc = swapchain::SwapChain::new(&vk_context, event_loop, &self.args);
+        let wp = present::WindowPresent::new(&vk_context, event_loop, &self.args);
 
         // Render nodes need a device in order to allocate things.  They will need an entire vk_context to
         // properly interact with memory management.
         let device = &vk_context.device;
         self.render_node = Some(node::RenderNode::new(
             device,
-            sc.surface_format.format.clone(),
+            wp.surface_format.format.clone(),
         ));
         self.vk_context = Some(vk_context);
-        self.swapchain = Some(sc);
+        self.window_present = Some(wp);
     }
 
     fn window_event(
@@ -320,7 +320,7 @@ impl ApplicationHandler for App {
                 if !event.repeat && event.state == winit::event::ElementState::Pressed {
                     match event.physical_key {
                         kb::PhysicalKey::Code(kb::KeyCode::KeyF) => {
-                            self.swapchain.as_ref().unwrap().toggle_fullscreen();
+                            self.window_present.as_ref().unwrap().toggle_fullscreen();
                         }
                         kb::PhysicalKey::Code(kb::KeyCode::KeyQ)
                         | kb::PhysicalKey::Code(kb::KeyCode::Escape) => {
@@ -335,7 +335,7 @@ impl ApplicationHandler for App {
                     println!("window resize reported degenerate size");
                 } else {
                     let vk_context = self.vk_context.as_ref().unwrap();
-                    self.swapchain
+                    self.window_present
                         .as_mut()
                         .unwrap()
                         .recreate_images(&vk_context);
@@ -353,7 +353,7 @@ impl ApplicationHandler for App {
 
                 device.device_wait_idle().unwrap();
                 self.render_node.as_ref().unwrap().destroy(&device);
-                self.swapchain.as_ref().unwrap().destroy(vk_context);
+                self.window_present.as_ref().unwrap().destroy(vk_context);
                 vk_context.destroy();
 
                 event_loop.exit();
@@ -519,7 +519,7 @@ fn main() -> Result<(), utate::MutateError> {
         running: true,
 
         vk_context: None,
-        swapchain: None,
+        window_present: None,
         render_node: None,
 
         audio_events: ae_rx,
