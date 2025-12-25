@@ -88,48 +88,16 @@ impl App {
             self.hue = self.hue - self.hue.floor();
         }
 
-        // Obtain output destination and perform synchronization
-        let sc = self.swapchain.as_ref().unwrap();
-        let idx = sc.frame_index;
-        let image_available = sc.image_available_semaphores[idx];
-        let render_finished = sc.render_finished_semaphores[idx];
-        let in_flight = sc.in_flight_fences[idx];
-
-        // While there is a lot of silly code, this is much more silly.
+        let vk_context = self.vk_context.as_ref().unwrap();
         let sc = self.swapchain.as_mut().unwrap();
-        sc.frame_index = (sc.frame_index + 1) % sc.frames;
-        let sc = self.swapchain.as_ref().unwrap();
+        let output = sc.render_target(vk_context);
+        let sync = &output.4;
 
-        let render_base = self.vk_context.as_ref().unwrap();
-        let device = &render_base.device;
-        unsafe {
-            device
-                .wait_for_fences(&[in_flight], true, u64::MAX)
-                .expect("wait_for_fences failed");
-
-            device
-                .reset_fences(&[in_flight])
-                .expect("reset_fences failed");
-        }
-
-        let (image_index, _) = unsafe {
-            sc.swapchain_loader
-                .acquire_next_image(
-                    sc.swapchain,
-                    std::u64::MAX,
-                    image_available,
-                    vk::Fence::null(),
-                )
-                .expect("Failed to acquire next image")
-        };
-
-        let output = sc.render_target(image_index as usize);
-
-        self.record_command_buffer(output, &sc.swapchain_extent);
+        self.record_command_buffer(&output);
 
         let wait_info = vk::SemaphoreSubmitInfo {
             s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
-            semaphore: image_available,
+            semaphore: sync.image_available,
             value: 0,
             stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             device_index: 0,
@@ -138,7 +106,7 @@ impl App {
 
         let signal_info = vk::SemaphoreSubmitInfo {
             s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
-            semaphore: render_finished,
+            semaphore: sync.render_finished,
             value: 0,
             stage_mask: vk::PipelineStageFlags2::ALL_GRAPHICS,
             device_index: 0,
@@ -148,7 +116,7 @@ impl App {
         // Submission is mainly a device/queue behavior
         let cb_info = vk::CommandBufferSubmitInfo {
             s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
-            command_buffer: output.2,
+            command_buffer: output.3,
             device_mask: 0,
             ..Default::default()
         };
@@ -164,17 +132,19 @@ impl App {
             ..Default::default()
         };
 
-        let queue = render_base.graphics_queue();
+        let queue = vk_context.graphics_queue();
         unsafe {
-            device
-                .queue_submit2(*queue, &[submit], in_flight)
+            vk_context
+                .device
+                .queue_submit2(*queue, &[submit], sync.in_flight)
                 .expect("queue_submit2 failed");
         }
 
-        // Presentaters present
-        let present_wait = [render_finished];
+        // Presenters present
+        let sc = self.swapchain.as_ref().unwrap();
+        let present_wait = [sync.render_finished];
         let swapchains = [sc.swapchain];
-        let indices = [image_index];
+        let indices = [sync.image_index as u32];
 
         let present_info = vk::PresentInfoKHR {
             s_type: vk::StructureType::PRESENT_INFO_KHR,
@@ -201,8 +171,13 @@ impl App {
 
     fn record_command_buffer(
         &self,
-        render_target: (vk::Image, vk::ImageView, vk::CommandBuffer),
-        extent: &vk::Extent2D,
+        render_target: &(
+            vk::Image,
+            vk::ImageView,
+            vk::Extent2D,
+            vk::CommandBuffer,
+            crate::swapchain::DrawSync,
+        ),
     ) {
         // Extract audio -> color stream
         let tweaked = self.value * 0.02 + 0.3;
@@ -224,10 +199,10 @@ impl App {
         let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
 
-        let render_base = self.vk_context.as_ref().unwrap();
-        let device = &render_base.device;
+        let vk_context = self.vk_context.as_ref().unwrap();
+        let device = &vk_context.device;
 
-        let cb = render_target.2;
+        let cb = render_target.3;
 
         // More synchronization, creation of inputs, and culmination at our one draw command
         unsafe {
@@ -282,7 +257,7 @@ impl App {
             s_type: vk::StructureType::RENDERING_INFO,
             render_area: vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: *extent,
+                extent: render_target.2,
             },
             layer_count: 1,
             color_attachment_count: 1,
@@ -296,7 +271,7 @@ impl App {
         self.render_node
             .as_ref()
             .unwrap()
-            .draw(cb, context, rgb, scale, extent);
+            .draw(cb, context, rgb, scale, &render_target.2);
 
         unsafe { device.cmd_end_rendering(cb) };
 

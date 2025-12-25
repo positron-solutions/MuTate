@@ -11,6 +11,13 @@ use winit::window::Window;
 use crate::render_target::RenderTarget;
 use crate::vk_context::VkContext;
 
+pub struct DrawSync {
+    pub in_flight: vk::Fence,
+    pub render_finished: vk::Semaphore,
+    pub image_available: vk::Semaphore,
+    pub image_index: usize,
+}
+
 pub struct SwapChain {
     pub frames: usize,
     pub frame_index: usize,
@@ -261,11 +268,58 @@ impl SwapChain {
         }
     }
 
-    pub fn render_target(&self, index: usize) -> (vk::Image, vk::ImageView, vk::CommandBuffer) {
+    pub fn render_target(
+        &mut self,
+        context: &VkContext,
+    ) -> (
+        vk::Image,
+        vk::ImageView,
+        vk::Extent2D,
+        vk::CommandBuffer,
+        DrawSync,
+    ) {
+        let idx = self.frame_index as usize;
+        let image_available = self.image_available_semaphores[idx];
+        let render_finished = self.render_finished_semaphores[idx];
+        let in_flight = self.in_flight_fences[idx];
+
+        self.frame_index = (idx + 1) % self.frames;
+
+        unsafe {
+            context
+                .device
+                .wait_for_fences(&[in_flight], true, u64::MAX)
+                .expect("wait_for_fences failed");
+
+            context
+                .device
+                .reset_fences(&[in_flight])
+                .expect("reset_fences failed");
+        }
+
+        let (image_index, _) = unsafe {
+            self.swapchain_loader
+                .acquire_next_image(
+                    self.swapchain,
+                    std::u64::MAX,
+                    image_available,
+                    vk::Fence::null(),
+                )
+                .expect("Failed to acquire next image")
+        };
+        let index = image_index as usize;
         let image = self.swapchain_images[index];
         let view = self.swapchain_image_views[index];
         let cb = self.command_buffers[index];
-        (image, view, cb)
+
+        let sync = DrawSync {
+            image_available,
+            in_flight,
+            render_finished,
+            image_index: index,
+        };
+
+        (image, view, self.swapchain_extent, cb, sync)
     }
 }
 
