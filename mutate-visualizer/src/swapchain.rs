@@ -5,11 +5,12 @@
 // all render targets need presentation, but a swapchain does.  Aligning the fields and structs with
 // this abstraction is underway.
 
-use ash::vk;
-use winit::window::Window;
+use ash::{khr::xlib_surface, vk};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use crate::render_target::RenderTarget;
 use crate::vk_context::VkContext;
+use crate::Args;
 
 pub struct DrawSync {
     pub in_flight: vk::Fence,
@@ -32,27 +33,62 @@ pub struct SwapChain {
     pub swapchain_loader: ash::khr::swapchain::Device,
 
     command_buffers: Vec<vk::CommandBuffer>,
+
+    surface: vk::SurfaceKHR,
+    pub surface_format: vk::SurfaceFormatKHR,
+    pub window: Window,
 }
 
 impl SwapChain {
-    pub fn new(vk_context: &VkContext, rt: &RenderTarget) -> Self {
-        let surface = &rt.surface;
-        let surface_format = &rt.surface_format;
-        let extent = window_size(&rt.window);
+    pub fn new(vk_context: &VkContext, event_loop: &ActiveEventLoop, args: &Args) -> Self {
+        let mut attrs = Window::default_attributes().with_title("µTate");
+        if args.fullscreen {
+            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        }
+        let window = event_loop
+            .create_window(attrs)
+            .expect("Failed to create window");
+
+        if args.fullscreen {
+            window.set_cursor_visible(false);
+        }
+        let surface = window_surface(&window, &vk_context);
+
+        let formats = unsafe {
+            vk_context
+                .surface_loader
+                .get_physical_device_surface_formats(vk_context.physical_device, surface)
+                .unwrap()
+        };
+        let surface_format = formats[0];
+
+        let supported = unsafe {
+            vk_context
+                .surface_loader
+                .get_physical_device_surface_support(
+                    vk_context.physical_device,
+                    vk_context.queue_family_index,
+                    surface,
+                )
+                .unwrap()
+        };
+        assert!(supported, "Physical device must support this surface!");
 
         let surface_caps = unsafe {
             vk_context
                 .surface_loader
-                .get_physical_device_surface_capabilities(vk_context.physical_device, rt.surface)
+                .get_physical_device_surface_capabilities(vk_context.physical_device, surface)
                 .unwrap()
         };
+        // TODO Watch for degenerate extents
+        let extent = surface_caps.current_extent;
 
         let composite_alpha = pick_alpha(&surface_caps);
 
         let swapchain_loader =
             ash::khr::swapchain::Device::new(&vk_context.instance, &vk_context.device);
         let swapchain_info = vk::SwapchainCreateInfoKHR {
-            surface: *surface,
+            surface: surface,
             min_image_count: 3, // XXX frame counts
             image_format: surface_format.format,
             image_color_space: surface_format.color_space,
@@ -160,17 +196,21 @@ impl SwapChain {
             swapchain_image_views: image_views,
             swapchain_images: images,
             swapchain_loader,
+
+            surface,
+            surface_format,
+            window,
         }
     }
 
-    pub fn destroy(&self, device: &ash::Device) {
+    pub fn destroy(&self, context: &VkContext) {
+        let device = &context.device;
         unsafe {
             for view in &self.swapchain_image_views {
                 device.destroy_image_view(*view, None);
             }
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
-
             self.image_available_semaphores.iter().for_each(|s| {
                 device.destroy_semaphore(*s, None);
             });
@@ -180,10 +220,11 @@ impl SwapChain {
             self.in_flight_fences.iter().for_each(|f| {
                 device.destroy_fence(*f, None);
             });
+            context.surface_loader.destroy_surface(self.surface, None);
         }
     }
 
-    pub fn recreate_images(&mut self, vk_context: &VkContext, rt: &RenderTarget) {
+    pub fn recreate_images(&mut self, vk_context: &VkContext) {
         let device = &vk_context.device;
         let physical_device = vk_context.physical_device;
 
@@ -204,7 +245,7 @@ impl SwapChain {
         unsafe {
             let surface_caps = vk_context
                 .surface_loader
-                .get_physical_device_surface_capabilities(physical_device, rt.surface)
+                .get_physical_device_surface_capabilities(physical_device, self.surface)
                 .unwrap();
             let current_extent = surface_caps.current_extent;
             let extent = if current_extent.width != u32::MAX {
@@ -212,10 +253,10 @@ impl SwapChain {
                 self.swapchain_extent
             } else {
                 // FIXME a number of cases this can be wrong.
-                window_size(&rt.window)
+                window_size(&self.window)
             };
-            let surface = &rt.surface;
-            let surface_format = &rt.surface_format;
+            let surface = &self.surface;
+            let surface_format = &self.surface_format;
 
             let swapchain_info = vk::SwapchainCreateInfoKHR {
                 surface: *surface,
@@ -349,5 +390,47 @@ fn window_size(window: &Window) -> vk::Extent2D {
     vk::Extent2D {
         width: size.width,
         height: size.height,
+    }
+}
+
+fn window_surface(window: &Window, vk_context: &VkContext) -> vk::SurfaceKHR {
+    let win_handle = window.window_handle().unwrap().as_raw();
+    let display_handle = window.display_handle().unwrap().as_raw();
+
+    match (win_handle, display_handle) {
+        (RawWindowHandle::Xlib(win_handle), RawDisplayHandle::Xlib(display_handle)) => {
+            let win_thing = win_handle.window;
+            let xlib_create_info = vk::XlibSurfaceCreateInfoKHR {
+                s_type: vk::StructureType::XLIB_SURFACE_CREATE_INFO_KHR,
+                window: win_thing.into(),
+                dpy: display_handle.display.unwrap().as_ptr(),
+                ..Default::default()
+            };
+            let xlib_surface_loader =
+                xlib_surface::Instance::new(&vk_context.entry, &vk_context.instance);
+
+            unsafe { xlib_surface_loader.create_xlib_surface(&xlib_create_info, None) }
+                .expect("Failed to create surface")
+        }
+        (RawWindowHandle::Wayland(win_handle), RawDisplayHandle::Wayland(display_handle)) => {
+            let wayland_create_info = vk::WaylandSurfaceCreateInfoKHR {
+                s_type: vk::StructureType::WAYLAND_SURFACE_CREATE_INFO_KHR,
+                display: display_handle.display.as_ptr(),
+                surface: win_handle.surface.as_ptr(),
+                ..Default::default()
+            };
+
+            let wayland_surface_loader =
+                ash::khr::wayland_surface::Instance::new(&vk_context.entry, &vk_context.instance);
+
+            unsafe {
+                wayland_surface_loader
+                    .create_wayland_surface(&wayland_create_info, None)
+                    .expect("Failed to create Wayland surface")
+            }
+        }
+        (_, _) => {
+            panic!("Unsupported surface type!");
+        }
     }
 }

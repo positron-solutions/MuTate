@@ -3,7 +3,6 @@
 
 mod assets;
 mod node;
-mod render_target;
 mod swapchain;
 mod vk_context;
 
@@ -35,9 +34,7 @@ struct App {
     running: bool,
 
     vk_context: Option<VkContext>,
-    render_target: Option<render_target::RenderTarget>,
     swapchain: Option<swapchain::SwapChain>,
-
     render_node: Option<node::RenderNode>,
 
     // move into a render graph node, an audio to color stream
@@ -52,7 +49,7 @@ struct App {
 
 impl App {
     fn toggle_fullscreen(&self) {
-        let win = &self.render_target.as_ref().unwrap().window;
+        let win = &self.swapchain.as_ref().unwrap().window;
         match win.fullscreen() {
             Some(winit::window::Fullscreen::Borderless(None)) => {
                 win.set_fullscreen(None);
@@ -165,8 +162,7 @@ impl App {
             };
         }
 
-        let rt = self.render_target.as_ref().unwrap();
-        rt.window.request_redraw();
+        sc.window.request_redraw();
     }
 
     fn record_command_buffer(
@@ -310,19 +306,15 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let vk_context = VkContext::new();
-        let rt = render_target::RenderTarget::new(&vk_context, event_loop, &self.args);
-
-        let device = &vk_context.device;
-
-        let sc = swapchain::SwapChain::new(&vk_context, &rt);
+        let sc = swapchain::SwapChain::new(&vk_context, event_loop, &self.args);
 
         // Render nodes need a device in order to allocate things.  They will need an entire vk_context to
         // properly interact with memory management.
+        let device = &vk_context.device;
         self.render_node = Some(node::RenderNode::new(
             device,
-            rt.surface_format.format.clone(),
+            sc.surface_format.format.clone(),
         ));
-        self.render_target = Some(rt);
         self.vk_context = Some(vk_context);
         self.swapchain = Some(sc);
     }
@@ -357,11 +349,10 @@ impl ApplicationHandler for App {
                     println!("window resize reported degenerate size");
                 } else {
                     let vk_context = self.vk_context.as_ref().unwrap();
-                    let rt = self.render_target.as_ref().unwrap();
                     self.swapchain
                         .as_mut()
                         .unwrap()
-                        .recreate_images(&vk_context, &rt);
+                        .recreate_images(&vk_context);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -375,11 +366,8 @@ impl ApplicationHandler for App {
                 let device = &vk_context.device();
 
                 device.device_wait_idle().unwrap();
-
                 self.render_node.as_ref().unwrap().destroy(&device);
-
-                self.swapchain.as_ref().unwrap().destroy(&device);
-                self.render_target.as_ref().unwrap().destroy(vk_context);
+                self.swapchain.as_ref().unwrap().destroy(vk_context);
                 vk_context.destroy();
 
                 event_loop.exit();
@@ -545,7 +533,6 @@ fn main() -> Result<(), utate::MutateError> {
         running: true,
 
         vk_context: None,
-        render_target: None,
         swapchain: None,
         render_node: None,
 
