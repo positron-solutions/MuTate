@@ -93,14 +93,13 @@ impl App {
         // Do the actual drawing
         let vk_context = self.vk_context.as_ref().unwrap();
         let wp = self.window_present.as_mut().unwrap();
-        let output = wp.render_target(vk_context);
-        let sync = &output.4;
+        let (sync, target) = wp.render_target(vk_context);
 
         let vk_context = self.vk_context.as_ref().unwrap();
         let device = &vk_context.device;
 
         // XXX begin pre-draw sync
-        let cb = output.3;
+        let cb = target.command_buffer;
 
         unsafe {
             device
@@ -119,7 +118,7 @@ impl App {
             new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             src_access_mask: vk::AccessFlags2::empty(),
             dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            image: output.0,
+            image: target.image,
             subresource_range: vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 level_count: 1,
@@ -140,7 +139,7 @@ impl App {
 
         let color_attachment = vk::RenderingAttachmentInfo {
             s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
-            image_view: output.1,
+            image_view: target.image_view,
             image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             load_op: vk::AttachmentLoadOp::CLEAR,
             store_op: vk::AttachmentStoreOp::STORE,
@@ -152,7 +151,7 @@ impl App {
             s_type: vk::StructureType::RENDERING_INFO,
             render_area: vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: output.2,
+                extent: target.extent,
             },
             layer_count: 1,
             color_attachment_count: 1,
@@ -167,7 +166,7 @@ impl App {
         self.render_node
             .as_ref()
             .unwrap()
-            .draw(cb, context, rgb, scale, &output.2);
+            .draw(cb, context, rgb, scale, &target.extent);
 
         unsafe { device.cmd_end_rendering(cb) };
 
@@ -182,7 +181,7 @@ impl App {
             old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
 
-            image: output.0,
+            image: target.image,
             subresource_range: vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 level_count: 1,
@@ -225,7 +224,7 @@ impl App {
 
         let cb_info = vk::CommandBufferSubmitInfo {
             s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
-            command_buffer: output.3,
+            command_buffer: target.command_buffer,
             device_mask: 0,
             ..Default::default()
         };

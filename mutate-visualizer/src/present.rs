@@ -19,6 +19,13 @@ pub struct DrawSync {
     pub image_index: usize,
 }
 
+pub struct DrawTarget {
+    pub image: vk::Image,
+    pub image_view: vk::ImageView,
+    pub extent: vk::Extent2D,
+    pub command_buffer: vk::CommandBuffer,
+}
+
 pub struct WindowPresent {
     pub frames: usize,
     pub frame_index: usize,
@@ -309,16 +316,7 @@ impl WindowPresent {
         }
     }
 
-    pub fn render_target(
-        &mut self,
-        context: &VkContext,
-    ) -> (
-        vk::Image,
-        vk::ImageView,
-        vk::Extent2D,
-        vk::CommandBuffer,
-        DrawSync,
-    ) {
+    pub fn render_target(&mut self, context: &VkContext) -> (DrawSync, DrawTarget) {
         let idx = self.frame_index as usize;
         let image_available = self.image_available_semaphores[idx];
         let render_finished = self.render_finished_semaphores[idx];
@@ -345,11 +343,8 @@ impl WindowPresent {
                 )
                 .unwrap()
         };
-        let index = image_index as usize;
-        let image = self.swapchain_images[index];
-        let view = self.swapchain_image_views[index];
-        let cb = self.command_buffers[index];
 
+        let index = image_index as usize;
         let sync = DrawSync {
             image_available,
             in_flight,
@@ -357,7 +352,14 @@ impl WindowPresent {
             image_index: index,
         };
 
-        (image, view, self.swapchain_extent, cb, sync)
+        let target = DrawTarget {
+            image: self.swapchain_images[index],
+            image_view: self.swapchain_image_views[index],
+            command_buffer: self.command_buffers[index],
+            extent: self.swapchain_extent,
+        };
+
+        (sync, target)
     }
 
     pub fn toggle_fullscreen(&self) {
