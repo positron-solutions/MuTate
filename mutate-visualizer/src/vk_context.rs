@@ -24,6 +24,7 @@ pub struct VkContext {
     transfer_queue: vk::Queue,
 
     pub queue_family_index: u32,
+    pub command_pool: vk::CommandPool,
 }
 
 static VALIDATION_LAYER: &CStr =
@@ -151,6 +152,18 @@ impl VkContext {
         };
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
+        let command_pool_info = vk::CommandPoolCreateInfo {
+            flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+            queue_family_index,
+            ..Default::default()
+        };
+
+        let command_pool = unsafe {
+            device
+                .create_command_pool(&command_pool_info, None)
+                .unwrap()
+        };
+
         let surface_loader = unsafe { ash::khr::surface::Instance::new(&entry, &instance) };
 
         Self {
@@ -164,12 +177,17 @@ impl VkContext {
             compute_queue: queue.clone(),
             transfer_queue: queue,
 
+            command_pool,
             queue_family_index,
         }
     }
 
     pub fn graphics_queue(&self) -> &vk::Queue {
         &self.graphics_queue
+    }
+
+    pub fn graphics_pool(&self) -> &vk::CommandPool {
+        &self.command_pool
     }
 
     pub fn device(&self) -> &ash::Device {
@@ -179,6 +197,7 @@ impl VkContext {
     // XXX in reality, this consumes the context, but ownership friction needs worked out.
     pub fn destroy(&self) {
         unsafe {
+            self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None)
         };

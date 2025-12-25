@@ -34,15 +34,9 @@ struct App {
     args: Args,
     running: bool,
 
-    render_base: Option<VkContext>,
+    vk_context: Option<VkContext>,
     render_target: Option<render_target::RenderTarget>,
     swapchain: Option<swapchain::SwapChain>,
-
-    // The existence of multiple command buffers depends entirely on the render target here (a
-    // swapchain).
-    command_buffers: Vec<vk::CommandBuffer>,
-    // move onto the device / context
-    command_pool: Option<vk::CommandPool>,
 
     render_node: Option<node::RenderNode>,
 
@@ -106,7 +100,7 @@ impl App {
         sc.frame_index = (sc.frame_index + 1) % sc.frames;
         let sc = self.swapchain.as_ref().unwrap();
 
-        let render_base = self.render_base.as_ref().unwrap();
+        let render_base = self.vk_context.as_ref().unwrap();
         let device = &render_base.device;
         unsafe {
             device
@@ -129,10 +123,9 @@ impl App {
                 .expect("Failed to acquire next image")
         };
 
-        let command_buffer = self.command_buffers[image_index as usize];
         let output = sc.render_target(image_index as usize);
 
-        self.record_command_buffer(output, &sc.swapchain_extent, command_buffer);
+        self.record_command_buffer(output, &sc.swapchain_extent);
 
         let wait_info = vk::SemaphoreSubmitInfo {
             s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
@@ -155,7 +148,7 @@ impl App {
         // Submission is mainly a device/queue behavior
         let cb_info = vk::CommandBufferSubmitInfo {
             s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
-            command_buffer,
+            command_buffer: output.2,
             device_mask: 0,
             ..Default::default()
         };
@@ -208,9 +201,8 @@ impl App {
 
     fn record_command_buffer(
         &self,
-        render_target: (vk::Image, vk::ImageView),
+        render_target: (vk::Image, vk::ImageView, vk::CommandBuffer),
         extent: &vk::Extent2D,
-        cb: vk::CommandBuffer,
     ) {
         // Extract audio -> color stream
         let tweaked = self.value * 0.02 + 0.3;
@@ -232,8 +224,10 @@ impl App {
         let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
 
-        let render_base = self.render_base.as_ref().unwrap();
+        let render_base = self.vk_context.as_ref().unwrap();
         let device = &render_base.device;
+
+        let cb = render_target.2;
 
         // More synchronization, creation of inputs, and culmination at our one draw command
         unsafe {
@@ -378,43 +372,19 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let vk_context = VkContext::new();
         let rt = render_target::RenderTarget::new(&vk_context, event_loop, &self.args);
-        let sc = swapchain::SwapChain::new(&vk_context, &rt);
 
-        let queue_family_index = vk_context.queue_family_index;
         let device = &vk_context.device;
 
-        // MAYBE getting command pools requires the queue index
-        let command_pool_info = vk::CommandPoolCreateInfo {
-            flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-            queue_family_index,
-            ..Default::default()
-        };
+        let sc = swapchain::SwapChain::new(&vk_context, &rt);
 
-        let command_pool = unsafe {
-            device
-                .create_command_pool(&command_pool_info, None)
-                .unwrap()
-        };
-
-        // allocate one command buffer per swapchain image
-        let alloc_info = vk::CommandBufferAllocateInfo {
-            command_pool,
-            level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: sc.swapchain_images.len() as u32,
-            ..Default::default()
-        };
-
-        let buffers = unsafe { device.allocate_command_buffers(&alloc_info).unwrap() };
-
-        self.command_pool = Some(command_pool);
-        self.command_buffers = buffers;
-
+        // Render nodes need a device in order to allocate things.  They will need an entire vk_context to
+        // properly interact with memory management.
         self.render_node = Some(node::RenderNode::new(
             device,
             rt.surface_format.format.clone(),
         ));
         self.render_target = Some(rt);
-        self.render_base = Some(vk_context);
+        self.vk_context = Some(vk_context);
         self.swapchain = Some(sc);
     }
 
@@ -447,7 +417,7 @@ impl ApplicationHandler for App {
                 if size.width == 0 || size.height == 0 {
                     println!("window resize reported degenerate size");
                 } else {
-                    let vk_context = self.render_base.as_ref().unwrap();
+                    let vk_context = self.vk_context.as_ref().unwrap();
                     let rt = self.render_target.as_ref().unwrap();
                     self.swapchain
                         .as_mut()
@@ -462,16 +432,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CloseRequested => unsafe {
                 self.running = false;
-                let vk_context = self.render_base.as_ref().unwrap();
+                let vk_context = self.vk_context.as_ref().unwrap();
                 let device = &vk_context.device();
 
                 device.device_wait_idle().unwrap();
 
                 self.render_node.as_ref().unwrap().destroy(&device);
-
-                self.command_pool.map(|p| {
-                    device.destroy_command_pool(p, None);
-                });
 
                 self.swapchain.as_ref().unwrap().destroy(&device);
                 self.render_target.as_ref().unwrap().destroy(vk_context);
@@ -639,13 +605,10 @@ fn main() -> Result<(), utate::MutateError> {
 
         running: true,
 
-        render_base: None,
+        vk_context: None,
         render_target: None,
         swapchain: None,
         render_node: None,
-
-        command_buffers: Vec::new(),
-        command_pool: None,
 
         audio_events: ae_rx,
         hue: rand::random::<f32>(),

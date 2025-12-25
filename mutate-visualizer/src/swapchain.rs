@@ -23,6 +23,8 @@ pub struct SwapChain {
     pub swapchain_image_views: Vec<vk::ImageView>,
     pub swapchain_images: Vec<vk::Image>,
     pub swapchain_loader: ash::khr::swapchain::Device,
+
+    command_buffers: Vec<vk::CommandBuffer>,
 }
 
 impl SwapChain {
@@ -123,7 +125,24 @@ impl SwapChain {
             })
             .collect();
 
+        let command_pool = *vk_context.graphics_pool();
+
+        let alloc_info = vk::CommandBufferAllocateInfo {
+            command_pool,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_buffer_count: 3,
+            ..Default::default()
+        };
+
+        let command_buffers = unsafe {
+            vk_context
+                .device
+                .allocate_command_buffers(&alloc_info)
+                .unwrap()
+        };
+
         Self {
+            command_buffers,
             frames: 3,
             frame_index: 0,
             image_available_semaphores,
@@ -242,10 +261,11 @@ impl SwapChain {
         }
     }
 
-    pub fn render_target(&self, index: usize) -> (vk::Image, vk::ImageView) {
+    pub fn render_target(&self, index: usize) -> (vk::Image, vk::ImageView, vk::CommandBuffer) {
         let image = self.swapchain_images[index];
         let view = self.swapchain_image_views[index];
-        (image, view)
+        let cb = self.command_buffers[index];
+        (image, view, cb)
     }
 }
 
