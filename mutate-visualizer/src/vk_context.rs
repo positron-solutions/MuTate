@@ -164,7 +164,7 @@ impl VkContext {
                 .unwrap()
         };
 
-        let surface_loader = unsafe { ash::khr::surface::Instance::new(&entry, &instance) };
+        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
         Self {
             entry,

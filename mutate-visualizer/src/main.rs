@@ -105,12 +105,10 @@ impl App {
         unsafe {
             device
                 .reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())
-                .expect("reset_cb failed");
+                .unwrap();
 
             let begin = vk::CommandBufferBeginInfo::default();
-            device
-                .begin_command_buffer(cb, &begin)
-                .expect("begin failed");
+            device.begin_command_buffer(cb, &begin).unwrap();
         }
 
         let barrier = vk::ImageMemoryBarrier2 {
@@ -248,7 +246,7 @@ impl App {
             vk_context
                 .device
                 .queue_submit2(*queue, &[submit], sync.in_flight)
-                .expect("queue_submit2 failed");
+                .unwrap();
         }
 
         // Presenters present

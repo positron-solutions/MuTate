@@ -330,12 +330,9 @@ impl WindowPresent {
             context
                 .device
                 .wait_for_fences(&[in_flight], true, u64::MAX)
-                .expect("wait_for_fences failed");
+                .unwrap();
 
-            context
-                .device
-                .reset_fences(&[in_flight])
-                .expect("reset_fences failed");
+            context.device.reset_fences(&[in_flight]).unwrap();
         }
 
         let (image_index, _) = unsafe {
@@ -346,7 +343,7 @@ impl WindowPresent {
                     image_available,
                     vk::Fence::null(),
                 )
-                .expect("Failed to acquire next image")
+                .unwrap()
         };
         let index = image_index as usize;
         let image = self.swapchain_images[index];
