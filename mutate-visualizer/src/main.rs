@@ -48,20 +48,6 @@ struct App {
 }
 
 impl App {
-    fn toggle_fullscreen(&self) {
-        let win = &self.swapchain.as_ref().unwrap().window;
-        match win.fullscreen() {
-            Some(winit::window::Fullscreen::Borderless(None)) => {
-                win.set_fullscreen(None);
-                win.set_cursor_visible(true);
-            }
-            _ => {
-                win.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
-                win.set_cursor_visible(false);
-            }
-        }
-    }
-
     fn draw_frame(&mut self) {
         // Receive available audio inputs
         if self.audio_events.is_full() {
@@ -334,7 +320,7 @@ impl ApplicationHandler for App {
                 if !event.repeat && event.state == winit::event::ElementState::Pressed {
                     match event.physical_key {
                         kb::PhysicalKey::Code(kb::KeyCode::KeyF) => {
-                            self.toggle_fullscreen();
+                            self.swapchain.as_ref().unwrap().toggle_fullscreen();
                         }
                         kb::PhysicalKey::Code(kb::KeyCode::KeyQ)
                         | kb::PhysicalKey::Code(kb::KeyCode::Escape) => {
