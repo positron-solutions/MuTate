@@ -49,7 +49,7 @@ struct App {
 
 impl App {
     fn draw_frame(&mut self) {
-        // Receive available audio inputs
+        // NEXT extract this audio event -> color stream as nodes
         if self.audio_events.is_full() {
             eprintln!("audio event backpressure drop");
             self.audio_events.skip(1);
@@ -62,7 +62,6 @@ impl App {
             }
         };
 
-        // Push color information into audio node
         self.value = fast;
         self.hue += 0.002 * fast;
         if self.hue > 1.0 || self.hue < 0.0 {
@@ -71,13 +70,143 @@ impl App {
             self.hue = self.hue - self.hue.floor();
         }
 
+        // Extract audio -> color stream
+        let tweaked = self.value * 0.02 + 0.3;
+        let value = tweaked.clamp(0.0, 1.0);
+        let hsv: palette::Hsv = palette::Hsv::new_srgb(self.hue * 360.0, 1.0, value);
+        let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
+
+        let clear = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [rgb.red, rgb.green, rgb.blue, 1.0],
+            },
+        };
+
+        let mut trie_hue = self.hue * 360.0 + 180.0;
+        if trie_hue > 360.0 {
+            trie_hue -= 360.0;
+        }
+        let scale = 0.8 + (0.2 * self.value);
+        let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
+        let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
+
+        // Do the actual drawing
         let vk_context = self.vk_context.as_ref().unwrap();
         let wp = self.window_present.as_mut().unwrap();
         let output = wp.render_target(vk_context);
         let sync = &output.4;
 
-        self.record_command_buffer(&output);
+        let vk_context = self.vk_context.as_ref().unwrap();
+        let device = &vk_context.device;
 
+        // XXX begin pre-draw sync
+        let cb = output.3;
+
+        unsafe {
+            device
+                .reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())
+                .expect("reset_cb failed");
+
+            let begin = vk::CommandBufferBeginInfo::default();
+            device
+                .begin_command_buffer(cb, &begin)
+                .expect("begin failed");
+        }
+
+        let barrier = vk::ImageMemoryBarrier2 {
+            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
+            src_stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
+            dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            old_layout: vk::ImageLayout::UNDEFINED,
+            new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            src_access_mask: vk::AccessFlags2::empty(),
+            dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            image: output.0,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                level_count: 1,
+                layer_count: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let dep_info = vk::DependencyInfo {
+            s_type: vk::StructureType::DEPENDENCY_INFO,
+            image_memory_barrier_count: 1,
+            p_image_memory_barriers: &barrier,
+            ..Default::default()
+        };
+
+        unsafe { device.cmd_pipeline_barrier2(cb, &dep_info) };
+
+        let color_attachment = vk::RenderingAttachmentInfo {
+            s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
+            image_view: output.1,
+            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            load_op: vk::AttachmentLoadOp::CLEAR,
+            store_op: vk::AttachmentStoreOp::STORE,
+            clear_value: clear,
+            ..Default::default()
+        };
+
+        let render_info = vk::RenderingInfo {
+            s_type: vk::StructureType::RENDERING_INFO,
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: output.2,
+            },
+            layer_count: 1,
+            color_attachment_count: 1,
+            p_color_attachments: &color_attachment,
+            ..Default::default()
+        };
+
+        unsafe { device.cmd_begin_rendering(cb, &render_info) };
+        // XXX end pre-draw sync
+
+        let context = self.vk_context.as_ref().unwrap();
+        self.render_node
+            .as_ref()
+            .unwrap()
+            .draw(cb, context, rgb, scale, &output.2);
+
+        unsafe { device.cmd_end_rendering(cb) };
+
+        // XXX begin post-draw sync
+        let barrier2 = vk::ImageMemoryBarrier2 {
+            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
+            src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            dst_stage_mask: vk::PipelineStageFlags2::NONE,
+            dst_access_mask: vk::AccessFlags2::empty(),
+
+            old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+
+            image: output.0,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                level_count: 1,
+                layer_count: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let dep2 = vk::DependencyInfo {
+            s_type: vk::StructureType::DEPENDENCY_INFO,
+            image_memory_barrier_count: 1,
+            p_image_memory_barriers: &barrier2,
+            ..Default::default()
+        };
+
+        unsafe { device.cmd_pipeline_barrier2(cb, &dep2) };
+
+        unsafe { device.end_command_buffer(cb).unwrap() };
+        // XXX end post-draw sync
+
+        // Submission is mainly a device/queue behavior
         let wait_info = vk::SemaphoreSubmitInfo {
             s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
             semaphore: sync.image_available,
@@ -96,7 +225,6 @@ impl App {
             ..Default::default()
         };
 
-        // Submission is mainly a device/queue behavior
         let cb_info = vk::CommandBufferSubmitInfo {
             s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
             command_buffer: output.3,
@@ -125,6 +253,7 @@ impl App {
 
         // Presenters present
         let wp = self.window_present.as_ref().unwrap();
+
         let present_wait = [sync.render_finished];
         let swapchains = [wp.swapchain];
         let indices = [sync.image_index as u32];
@@ -147,144 +276,6 @@ impl App {
                 Err(result) => eprintln!("presentation error: {:?}", result),
             };
         }
-
-    }
-
-    fn record_command_buffer(
-        &self,
-        render_target: &(
-            vk::Image,
-            vk::ImageView,
-            vk::Extent2D,
-            vk::CommandBuffer,
-            crate::present::DrawSync,
-        ),
-    ) {
-        // Extract audio -> color stream
-        let tweaked = self.value * 0.02 + 0.3;
-        let value = tweaked.clamp(0.0, 1.0);
-        let hsv: palette::Hsv = palette::Hsv::new_srgb(self.hue * 360.0, 1.0, value);
-        let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
-
-        let clear = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [rgb.red, rgb.green, rgb.blue, 1.0],
-            },
-        };
-
-        let mut trie_hue = self.hue * 360.0 + 180.0;
-        if trie_hue > 360.0 {
-            trie_hue -= 360.0;
-        }
-        let scale = 0.8 + (0.2 * self.value);
-        let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
-        let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
-
-        let vk_context = self.vk_context.as_ref().unwrap();
-        let device = &vk_context.device;
-
-        let cb = render_target.3;
-
-        // More synchronization, creation of inputs, and culmination at our one draw command
-        unsafe {
-            device
-                .reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())
-                .expect("reset_cb failed");
-
-            let begin = vk::CommandBufferBeginInfo::default();
-            device
-                .begin_command_buffer(cb, &begin)
-                .expect("begin failed");
-        }
-
-        let barrier = vk::ImageMemoryBarrier2 {
-            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
-            src_stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
-            dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            old_layout: vk::ImageLayout::UNDEFINED,
-            new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            src_access_mask: vk::AccessFlags2::empty(),
-            dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            image: render_target.0,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                level_count: 1,
-                layer_count: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let dep_info = vk::DependencyInfo {
-            s_type: vk::StructureType::DEPENDENCY_INFO,
-            image_memory_barrier_count: 1,
-            p_image_memory_barriers: &barrier,
-            ..Default::default()
-        };
-
-        unsafe { device.cmd_pipeline_barrier2(cb, &dep_info) };
-
-        let color_attachment = vk::RenderingAttachmentInfo {
-            s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
-            image_view: render_target.1,
-            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            load_op: vk::AttachmentLoadOp::CLEAR,
-            store_op: vk::AttachmentStoreOp::STORE,
-            clear_value: clear,
-            ..Default::default()
-        };
-
-        let render_info = vk::RenderingInfo {
-            s_type: vk::StructureType::RENDERING_INFO,
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: render_target.2,
-            },
-            layer_count: 1,
-            color_attachment_count: 1,
-            p_color_attachments: &color_attachment,
-            ..Default::default()
-        };
-
-        unsafe { device.cmd_begin_rendering(cb, &render_info) };
-
-        let context = self.vk_context.as_ref().unwrap();
-        self.render_node
-            .as_ref()
-            .unwrap()
-            .draw(cb, context, rgb, scale, &render_target.2);
-
-        unsafe { device.cmd_end_rendering(cb) };
-
-        // XXX presentation details leaking into draw
-        let barrier2 = vk::ImageMemoryBarrier2 {
-            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
-            src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            dst_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-            old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-            src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            dst_access_mask: vk::AccessFlags2::empty(),
-            image: render_target.0,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                level_count: 1,
-                layer_count: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let dep2 = vk::DependencyInfo {
-            s_type: vk::StructureType::DEPENDENCY_INFO,
-            image_memory_barrier_count: 1,
-            p_image_memory_barriers: &barrier2,
-            ..Default::default()
-        };
-
-        unsafe { device.cmd_pipeline_barrier2(cb, &dep2) };
-
-        unsafe { device.end_command_buffer(cb).expect("end_cb failed") };
     }
 }
 
