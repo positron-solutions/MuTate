@@ -228,6 +228,10 @@ fn main() -> Result<(), utate::MutateError> {
     let ae_ring = ringbuf::HeapRb::new(3);
     let (mut ae_tx, ae_rx) = ae_ring.split();
 
+    // NEXT Package this into a node.  The node will store a thread handle.  The node is used to
+    // yield inputs to the visual node in draw_frame.  Treat each output as some independent
+    // transformation so that we may begin creating the kinds of tension that our later render graph
+    // architecture will have to solve.
     let audio_thread = std::thread::spawn(move || {
         // This thread continuously emits events.  The scheme is a sliding window with a 120Hz width
         // and sliding in 240Hz increments.  The production of events is faster than the frame rate,
