@@ -76,6 +76,12 @@ impl App {
         let hsv: palette::Hsv = palette::Hsv::new_srgb(self.hue * 360.0, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
 
+        // XXX Transitioning the image to get ready for drawing performs the clear, but the clear
+        // color selection on the output is a node behavior.  This creates some coupling between the
+        // node and target that either requires the node to provide the clear color early or to
+        // perform the entire image layout transition, which is not bad, but adds a function call to
+        // each node.  We can enforce the correct behavior by passing the untransitioned target and
+        // then transitioning it with a clear color as an argument.
         let clear = vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [rgb.red, rgb.green, rgb.blue, 1.0],
@@ -90,189 +96,25 @@ impl App {
         let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
 
-        // Do the actual drawing
+        // Obtain image and hot command buffer
         let vk_context = self.vk_context.as_ref().unwrap();
         let wp = self.window_present.as_mut().unwrap();
-        let (sync, target) = wp.render_target(vk_context);
 
-        let vk_context = self.vk_context.as_ref().unwrap();
-        let device = &vk_context.device;
+        let (sync, target) = wp.render_target(vk_context, clear);
 
-        // XXX begin pre-draw sync
-        let cb = target.command_buffer;
+        // Node draws to command buffer.  The idea we've isolated is that drawing to a target has
+        // little to do with the source or fate of that target.
+        self.render_node.as_ref().unwrap().draw(
+            target.command_buffer,
+            vk_context,
+            rgb,
+            scale,
+            &target.extent,
+        );
 
-        unsafe {
-            device
-                .reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())
-                .unwrap();
-
-            let begin = vk::CommandBufferBeginInfo::default();
-            device.begin_command_buffer(cb, &begin).unwrap();
-        }
-
-        let barrier = vk::ImageMemoryBarrier2 {
-            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
-            src_stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
-            dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            old_layout: vk::ImageLayout::UNDEFINED,
-            new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            src_access_mask: vk::AccessFlags2::empty(),
-            dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            image: target.image,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                level_count: 1,
-                layer_count: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let dep_info = vk::DependencyInfo {
-            s_type: vk::StructureType::DEPENDENCY_INFO,
-            image_memory_barrier_count: 1,
-            p_image_memory_barriers: &barrier,
-            ..Default::default()
-        };
-
-        unsafe { device.cmd_pipeline_barrier2(cb, &dep_info) };
-
-        let color_attachment = vk::RenderingAttachmentInfo {
-            s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
-            image_view: target.image_view,
-            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            load_op: vk::AttachmentLoadOp::CLEAR,
-            store_op: vk::AttachmentStoreOp::STORE,
-            clear_value: clear,
-            ..Default::default()
-        };
-
-        let render_info = vk::RenderingInfo {
-            s_type: vk::StructureType::RENDERING_INFO,
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: target.extent,
-            },
-            layer_count: 1,
-            color_attachment_count: 1,
-            p_color_attachments: &color_attachment,
-            ..Default::default()
-        };
-
-        unsafe { device.cmd_begin_rendering(cb, &render_info) };
-        // XXX end pre-draw sync
-
-        let context = self.vk_context.as_ref().unwrap();
-        self.render_node
-            .as_ref()
-            .unwrap()
-            .draw(cb, context, rgb, scale, &target.extent);
-
-        unsafe { device.cmd_end_rendering(cb) };
-
-        // XXX begin post-draw sync
-        let barrier2 = vk::ImageMemoryBarrier2 {
-            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
-            src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            dst_stage_mask: vk::PipelineStageFlags2::NONE,
-            dst_access_mask: vk::AccessFlags2::empty(),
-
-            old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-
-            image: target.image,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                level_count: 1,
-                layer_count: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let dep2 = vk::DependencyInfo {
-            s_type: vk::StructureType::DEPENDENCY_INFO,
-            image_memory_barrier_count: 1,
-            p_image_memory_barriers: &barrier2,
-            ..Default::default()
-        };
-
-        unsafe { device.cmd_pipeline_barrier2(cb, &dep2) };
-
-        unsafe { device.end_command_buffer(cb).unwrap() };
-        // XXX end post-draw sync
-
-        // Submission is mainly a device/queue behavior
-        let wait_info = vk::SemaphoreSubmitInfo {
-            s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
-            semaphore: sync.image_available,
-            value: 0,
-            stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            device_index: 0,
-            ..Default::default()
-        };
-
-        let signal_info = vk::SemaphoreSubmitInfo {
-            s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
-            semaphore: sync.render_finished,
-            value: 0,
-            stage_mask: vk::PipelineStageFlags2::ALL_GRAPHICS,
-            device_index: 0,
-            ..Default::default()
-        };
-
-        let cb_info = vk::CommandBufferSubmitInfo {
-            s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
-            command_buffer: target.command_buffer,
-            device_mask: 0,
-            ..Default::default()
-        };
-
-        let submit = vk::SubmitInfo2 {
-            s_type: vk::StructureType::SUBMIT_INFO_2,
-            wait_semaphore_info_count: 1,
-            p_wait_semaphore_infos: &wait_info,
-            signal_semaphore_info_count: 1,
-            p_signal_semaphore_infos: &signal_info,
-            command_buffer_info_count: 1,
-            p_command_buffer_infos: &cb_info,
-            ..Default::default()
-        };
-
-        let queue = vk_context.graphics_queue();
-        unsafe {
-            vk_context
-                .device
-                .queue_submit2(*queue, &[submit], sync.in_flight)
-                .unwrap();
-        }
-
-        // Presenters present
         let wp = self.window_present.as_ref().unwrap();
-
-        let present_wait = [sync.render_finished];
-        let swapchains = [wp.swapchain];
-        let indices = [sync.image_index as u32];
-
-        let present_info = vk::PresentInfoKHR {
-            s_type: vk::StructureType::PRESENT_INFO_KHR,
-            wait_semaphore_count: 1,
-            p_wait_semaphores: present_wait.as_ptr(),
-            swapchain_count: 1,
-            p_swapchains: swapchains.as_ptr(),
-            p_image_indices: indices.as_ptr(),
-            ..Default::default()
-        };
-
-        unsafe {
-            match wp.swapchain_loader.queue_present(*queue, &present_info) {
-                Ok(_) => {
-                    // MAYBE How to interpret false?
-                }
-                Err(result) => eprintln!("presentation error: {:?}", result),
-            };
-        }
+        // Presentation closes the command buffer, submits to queue, transforms image, and presents
+        wp.post_draw(vk_context, sync, target);
     }
 }
 
