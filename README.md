@@ -18,7 +18,7 @@ The music moving a triangle phase is complete.  Work to create a real architectu
 - [x] Fullscreen support (includes resizing and swapchain re-creation)
 - [ ] Reactive updates for render graph dependents, such as images that depend on the window
       extent
-- [ ] Separate drawing and presentation
+- [x] Separate drawing and presentation
 - [ ] Indirect / off-screen rendering for presentation by CLI frontend, similar
       to [alemidev/scope-tui](https://github.com/alemidev/scope-tui).
 - [ ] Memory, devices, queue handling
@@ -32,7 +32,7 @@ Before going deep on capabilities such as multi-GPU, we will just develop interf
 
 - [x] Xlib
 - [ ] MacOS
-- [ ] Wayland
+- [x] Wayland (untested)
 - [ ] Windows
 - [ ] Android (apk Packaging is the larger share of work)
 
