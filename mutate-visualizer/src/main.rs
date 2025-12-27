@@ -30,7 +30,7 @@ struct App {
     args: Args,
     running: bool,
 
-    vk_context: Option<VkContext>,
+    vk_context: VkContext>,
     window_present: Option<present::WindowPresent>,
 
     // This field will turn into a graph when graphs are ready
@@ -40,12 +40,10 @@ struct App {
 
 impl App {
     fn draw_frame(&mut self) {
+        let vk_context = &self.vk_context;
         let audio_colors = self.audio_node.process();
-
         // Obtain image and hot command buffer
-        let vk_context = self.vk_context.as_ref().unwrap();
         let wp = self.window_present.as_mut().unwrap();
-
         let (sync, target) = wp.render_target(vk_context, audio_colors.clear);
 
         // Node draws to command buffer.  The idea we've isolated is that drawing to a target has
@@ -66,7 +64,6 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let vk_context = VkContext::new();
         let wp = present::WindowPresent::new(&vk_context, event_loop, &self.args);
 
         // Render nodes need a device in order to allocate things.  They will need an entire vk_context to
@@ -155,7 +152,7 @@ fn main() -> Result<(), utate::MutateError> {
         args,
         running: true,
 
-        vk_context: None,
+        vk_context: VkContext::new(),
         window_present: None,
 
         render_node: None,
