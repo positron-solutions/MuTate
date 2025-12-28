@@ -30,7 +30,7 @@ struct App {
     args: Args,
     running: bool,
 
-    vk_context: VkContext>,
+    vk_context: VkContext,
     window_present: Option<present::WindowPresent>,
 
     // This field will turn into a graph when graphs are ready
@@ -64,16 +64,16 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let wp = present::WindowPresent::new(&vk_context, event_loop, &self.args);
+        let vk_context = &self.vk_context;
+        let device = &vk_context.device;
+        let wp = present::WindowPresent::new(vk_context, event_loop, &self.args);
 
         // Render nodes need a device in order to allocate things.  They will need an entire vk_context to
         // properly interact with memory management.
-        let device = &vk_context.device;
         self.render_node = Some(node::RenderNode::new(
             device,
             wp.surface_format.format.clone(),
         ));
-        self.vk_context = Some(vk_context);
         self.window_present = Some(wp);
     }
 
@@ -106,11 +106,11 @@ impl ApplicationHandler for App {
                 if size.width == 0 || size.height == 0 {
                     println!("window resize reported degenerate size");
                 } else {
-                    let vk_context = self.vk_context.as_ref().unwrap();
+                    let vk_context = &self.vk_context;
                     self.window_present
                         .as_mut()
                         .unwrap()
-                        .recreate_images(&vk_context);
+                        .recreate_images(vk_context);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -125,7 +125,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CloseRequested => unsafe {
                 self.running = false;
-                let vk_context = self.vk_context.as_ref().unwrap();
+                let vk_context = &self.vk_context;
                 let device = &vk_context.device();
 
                 device.device_wait_idle().unwrap();
