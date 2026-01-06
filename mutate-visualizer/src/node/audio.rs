@@ -83,10 +83,6 @@ impl AudioNode {
             let window_size = 3200; // one 240FPS frame at 48kHz and 8 bytes per frame
             let read_behind = 3200; // one frame of read-behind
 
-            // Noise is calculated with a 2.0s window of RMS samples (averaged left and right)
-            let mut rmss = [0f32; 480];
-            let mut rmss_i = 0;
-
             // FIXME Ah yes, the user friendly API for real Gs
             let mut conn = std::mem::ManuallyDrop::new(unsafe { Box::from_raw(rx.conn) });
 
@@ -110,13 +106,6 @@ impl AudioNode {
 
                     // RMS
                     let (left_rms, right_rms) = (left_sum_sq.sqrt(), right_sum_sq.sqrt());
-
-                    // Store total RMS for noise floor
-                    rmss[rmss_i] = (left_rms + right_rms) * 0.5;
-                    rmss_i += 1;
-                    if !(rmss_i < rmss.len()) {
-                        rmss_i = 0;
-                    }
 
                     // Backoff using queue size
                     if ae_tx.vacant_len() > 1 {
