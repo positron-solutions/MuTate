@@ -14,16 +14,28 @@ pub struct AudioColors {
     pub scale: f32,
 }
 
+// NEXT these are the kinds of fields we want to expose as simple inputs for other nodes, but the
+// targets will need just one field per input.
+pub struct ScalarAudioEvent {
+    /// left channel RMS
+    pub left: f32,
+    /// right channel RMS
+    pub right: f32,
+}
+
 // This is a first pass extraction of the original node.  It will be refined into a more
 // render-graph like construction, an audio input node with separate processing before feeding into
 // the graphics node.
 pub struct AudioNode {
+    // MAYBE is everything in this type necessary?
     audio_events: ringbuf::wrap::caching::Caching<
-        std::sync::Arc<ringbuf::SharedRb<ringbuf::storage::Heap<(f32, f32)>>>,
+        std::sync::Arc<ringbuf::SharedRb<ringbuf::storage::Heap<ScalarAudioEvent>>>,
         false,
         true,
     >,
+
     hue: f32,
+
     handle: std::thread::JoinHandle<()>,
     context: utate::AudioContext,
 }
@@ -108,15 +120,17 @@ impl AudioNode {
 
                     // Backoff using queue size
                     if ae_tx.vacant_len() > 1 {
-                        match ae_tx.try_push((left_rms, right_rms)) {
+                        match ae_tx.try_push(ScalarAudioEvent {
+                            left: left_rms,
+                            right: right_rms,
+                        }) {
                             Ok(_) => {}
                             Err(e) => {
-                                eprintln!("sending audio event failed: {:?}", e);
-                                if ae_tx.is_full() {
-                                    eprintln!("audio event consumer is falling behind");
-                                }
+                                eprintln!("sending audio event failed");
                             }
                         }
+                    } else if ae_tx.is_full() {
+                        eprintln!("audio event consumer is falling behind");
                     }
 
                     if avail >= (window_size * 2) + read_behind {
@@ -153,7 +167,7 @@ impl AudioNode {
             self.audio_events.skip(1);
         }
         let rms = match self.audio_events.try_pop() {
-            Some(event) => event.0 + event.1,
+            Some(event) => event.left + event.right,
             None => {
                 eprintln!("No audio event was ready");
                 0.1
