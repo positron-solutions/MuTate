@@ -155,27 +155,28 @@ impl AudioNode {
             eprintln!("audio event backpressure drop");
             self.audio_events.skip(1);
         }
-        let rms = match self.audio_events.try_pop() {
-            Some(event) => event.left + event.right,
+        let avg_rms = match self.audio_events.try_pop() {
+            Some(event) => (event.left + event.right) * 0.5,
             None => {
                 eprintln!("No audio event was ready");
                 0.1
             }
         };
+        let tweaked_rms = gompertz_curve(avg_rms, 1.0, 2.0, 3.0);
 
-        self.hue += 0.0005 * rms;
+        self.hue += 0.01 * (tweaked_rms - 0.5);
         if self.hue > 1.0 || self.hue < 0.0 {
             self.hue = self.hue - self.hue.floor();
         }
 
-        // Extract audio -> color stream
-        let tweaked = rms * 0.05 + 0.1;
-        let value = tweaked.clamp(0.0, 1.0);
+        // NEXT Extract audio -> color stream into a node
+        let tweaked_value = tweaked_rms * 0.8 + 0.05;
+        let value = tweaked_value.clamp(0.0, 1.0);
 
         let hsv: palette::Hsv = palette::Hsv::new_srgb(self.hue * 360.0, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
 
-        // XXX Transitioning the image to get ready for drawing performs the clear, but the clear
+        // NOTE Transitioning the image to get ready for drawing performs the clear, but the clear
         // color selection on the output is a node behavior.  This creates some coupling between the
         // node and target that either requires the node to provide the clear color early or to
         // perform the entire image layout transition, which is not bad, but adds a function call to
@@ -191,7 +192,9 @@ impl AudioNode {
         if trie_hue > 360.0 {
             trie_hue -= 360.0;
         }
-        let scale = rms * 0.25 - 0.5;
+
+        // NEXT bring back decay based negative values as its own node
+        let scale = tweaked_rms * 2.5 - 0.5;
         let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
 
@@ -207,4 +210,9 @@ impl AudioNode {
         drop(self.audio_events);
         self.handle.join().unwrap()
     }
+}
+
+/// A nice S curve that accelerates and decelerates toward max_value.
+fn gompertz_curve(x: f32, max_value: f32, displacement: f32, growth_rate: f32) -> f32 {
+    max_value * (-displacement * (-growth_rate * x).exp()).exp()
 }
