@@ -21,12 +21,11 @@ pub struct AudioColors {
 // the graphics node.
 pub struct AudioNode {
     audio_events: ringbuf::wrap::caching::Caching<
-        std::sync::Arc<ringbuf::SharedRb<ringbuf::storage::Heap<(f32, f32, f32, f32)>>>,
+        std::sync::Arc<ringbuf::SharedRb<ringbuf::storage::Heap<(f32, f32)>>>,
         false,
         true,
     >,
     hue: f32,
-    value: f32,
     handle: std::thread::JoinHandle<()>,
     context: utate::AudioContext,
 }
@@ -70,25 +69,13 @@ impl AudioNode {
             // and sliding in 240Hz increments.  The production of events is faster than the frame rate,
             // and balanced back pressure is accomplished by looking at the ring buffer size.
 
-            // To subtract the noise floor, we track the moving average with a 240 sample exponential
-            // moving average.
             let mut window_buffer = [0u8; 3200];
             let window_size = 3200; // one 240FPS frame at 48kHz and 8 bytes per frame
             let read_behind = 3200; // one frame of read-behind
-            let mut left_max = 0f32;
-            let mut right_max = 0f32;
-            let mut left_noise = 0f32;
-            let mut right_noise = 0f32;
 
-            let alpha = 2.0 / (240.0 + 1.0);
-            let alpha_resid = 1.0 - alpha;
-
-            let mut left_fast_accum = 0f32;
-            let mut right_fast_accum = 0f32;
-            let mut left_fast = 0f32;
-            let mut right_fast = 0f32;
-            let alpha_f = 2.0 / (8.0 + 1.0);
-            let alpha_f_resid = 1.0 - alpha_f;
+            // Noise is calculated with a 2.0s window of RMS samples (averaged left and right)
+            let mut rmss = [0f32; 480];
+            let mut rmss_i = 0;
 
             // FIXME Ah yes, the user friendly API for real Gs
             let mut conn = std::mem::ManuallyDrop::new(unsafe { Box::from_raw(rx.conn) });
@@ -99,10 +86,8 @@ impl AudioNode {
                     let read = conn.buffer.peek_slice(&mut window_buffer);
                     assert!(read == window_size);
 
-                    // Estimate the energy by absolute delta.  IIRC not only is this physically wrong
-                    // but also doesn't map to perceptual very well.
-                    let (mut last_l, mut last_r) = (0.0, 0.0);
-                    let (left_sum, right_sum) = window_buffer
+                    // Square sums
+                    let (left_sum_sq, right_sum_sq) = window_buffer
                         .chunks_exact(8) // 2 samples per frame × 4 bytes = 8 bytes per frame
                         .map(|frame| {
                             let left = f32::from_le_bytes(frame[0..4].try_into().unwrap());
@@ -110,50 +95,22 @@ impl AudioNode {
                             (left, right)
                         })
                         .fold((0f32, 0f32), |(acc_l, acc_r), (l, r)| {
-                            // absolute delta + absolute amplitude
-                            let accum = (
-                                acc_l + (l - last_l).abs() + l.abs(),
-                                acc_r + (r - last_r).abs() + r.abs(),
-                            );
-                            last_l = l;
-                            last_r = r;
-                            accum
+                            (acc_l + (l * l), acc_r + (r * r))
                         });
 
-                    left_noise = (alpha * left_sum) + (alpha_resid * left_noise);
-                    right_noise = (alpha * right_sum) + (alpha_resid * right_noise);
+                    // RMS
+                    let (left_rms, right_rms) = (left_sum_sq.sqrt(), right_sum_sq.sqrt());
 
-                    // Cut noise and normalize remaining to noise
-                    let left_excess = (left_sum - (left_noise * 1.3)) / left_noise.max(0.000001);
-                    let right_excess =
-                        (right_sum - (right_noise * 1.3)) / right_noise.max(0.000001);
-
-                    // Fast EMA of the cleaned signal for beats
-                    left_fast = (alpha_f * left_excess) + (alpha_f_resid * left_fast);
-                    right_fast = (alpha_f * right_excess) + (alpha_f_resid * right_fast);
-
-                    // Instantaneous response on climb
-                    if left_fast < left_excess {
-                        left_fast = left_excess;
+                    // Store total RMS for noise floor
+                    rmss[rmss_i] = (left_rms + right_rms) * 0.5;
+                    rmss_i += 1;
+                    if !(rmss_i < rmss.len()) {
+                        rmss_i = 0;
                     }
-                    if right_fast < right_excess {
-                        right_fast = right_excess;
-                    }
-
-                    left_fast_accum = left_fast + left_fast_accum;
-                    right_fast_accum = right_fast + right_fast_accum;
-
-                    left_max = left_max.max(left_excess);
-                    right_max = right_max.max(right_excess);
 
                     // Backoff using queue size
                     if ae_tx.vacant_len() > 1 {
-                        match ae_tx.try_push((
-                            left_max,
-                            right_max,
-                            left_fast_accum,
-                            right_fast_accum,
-                        )) {
+                        match ae_tx.try_push((left_rms, right_rms)) {
                             Ok(_) => {}
                             Err(e) => {
                                 eprintln!("sending audio event failed: {:?}", e);
@@ -162,10 +119,6 @@ impl AudioNode {
                                 }
                             }
                         }
-                        left_max = 0.0;
-                        right_max = 0.0;
-                        left_fast_accum = 0.0;
-                        right_fast_accum = 0.0;
                     }
 
                     if avail >= (window_size * 2) + read_behind {
@@ -190,7 +143,6 @@ impl AudioNode {
 
         Ok(Self {
             hue: rand::random::<f32>(),
-            value: 0.0,
             handle: audio_thread,
             context,
             audio_events: ae_rx,
@@ -198,30 +150,27 @@ impl AudioNode {
     }
 
     pub fn process(&mut self) -> AudioColors {
-        // NEXT extract this audio event -> color stream as nodes
         if self.audio_events.is_full() {
             eprintln!("audio event backpressure drop");
             self.audio_events.skip(1);
         }
-        let (_slow, fast) = match self.audio_events.try_pop() {
-            Some(got) => ((got.0 + got.1), (got.2 + got.3)),
+        let rms = match self.audio_events.try_pop() {
+            Some(event) => event.0 + event.1,
             None => {
                 eprintln!("No audio event was ready");
-                (0.1, 0.1)
+                0.1
             }
         };
 
-        self.value = fast;
-        self.hue += 0.002 * fast;
+        self.hue += 0.0005 * rms;
         if self.hue > 1.0 || self.hue < 0.0 {
-            self.hue = self.hue - self.hue.floor();
-        } else if self.hue < 0.0 {
             self.hue = self.hue - self.hue.floor();
         }
 
         // Extract audio -> color stream
-        let tweaked = self.value * 0.02 + 0.3;
+        let tweaked = rms * 0.05 + 0.1;
         let value = tweaked.clamp(0.0, 1.0);
+
         let hsv: palette::Hsv = palette::Hsv::new_srgb(self.hue * 360.0, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
 
@@ -241,7 +190,7 @@ impl AudioNode {
         if trie_hue > 360.0 {
             trie_hue -= 360.0;
         }
-        let scale = 0.8 + (0.2 * self.value);
+        let scale = rms * 0.25 - 0.5;
         let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
 
