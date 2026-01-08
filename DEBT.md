@@ -28,6 +28,14 @@ Each element includes two parts:
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
 
+## Graph Scheduling & Plumbing
+
+Starting with a solution to the general problem would be appealing.  We know there are CPU and GPU dependencies.  We can do superscalar tricks to parallelize different stages and parallel tricks either CPU or GPU side.  Calculating what needs to be done and what opportunities can be taken is a coupled set of problems.
+
+### For Now
+
+Just do whatever works and attempt to read the tea leaves until it's clear which hard things need precise treatment and what data model they impose.
+
 ## Error Handling
 
 Probably using thiserror to facilitate shipping as a library.
