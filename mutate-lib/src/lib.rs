@@ -23,6 +23,7 @@ use pipewire::stream::StreamListener;
 use pw::{main_loop::MainLoopBox, spa};
 use ringbuf::traits::{Consumer, Observer, Producer};
 
+// NEXT Audio will be its own kind of error that must fit into the MutateError hierarchy.
 #[derive(thiserror::Error, Debug)]
 pub enum MutateError {
     #[cfg(target_os = "linux")]
@@ -38,6 +39,8 @@ pub enum MutateError {
 
     #[error("audio connection error: {0}")]
     AudioConnect(&'static str),
+    #[error("audio thread termination error")]
+    AudioTerminate,
 
     #[error("Timeout: {0}")]
     Timeout(&'static str),
@@ -299,6 +302,13 @@ impl AudioContext {
             .send(msg)
             .map_err(|e| MutateError::AudioConnect("connection creation failed"))?;
         Ok(AudioConsumer { conn })
+    }
+
+    /// Disconnect to a stream
+    pub fn destroy(&self) -> Result<(), MutateError> {
+        self.tx
+            .send(Message::Terminate)
+            .map_err(|_e| MutateError::AudioTerminate)
     }
 
     pub fn choices_version(&self) -> usize {
