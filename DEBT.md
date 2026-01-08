@@ -8,14 +8,17 @@ Crimes where the solution has been chosen and all new work should burn down exis
 
 ## Lifetime Alignment
 
-Prototype code is not yet attempting to build structs to gather related lifetimes or enable multiple window setups.  It should.  Boundaries emerging:
+Build structs to gather firmly bound lifetimes.  Consider multiple window setups.  Nodes encapsulate resources exclusive to their lifetimes.  Boundaries emerging:
 
-- Device, instance, other detected & configured choices
-- The window dependent objects such as swapchain images
-- Compositing buffers
-- Pipelines and their exclusive resources
+- Instance, entry
+- Device, physical device, memory
+- Render targets
+- Drawing nodes
+- Other processing nodes
 
 User setting updates, dynamic scripting, and generation will all as usual require a lot of re-creation and re-allocation that can share duty with teardown, destruction being the first step of re-creation.
+
+Eventually dependents should be notified reactively when their dependencies change configuration.
 
 ## Memory Management
 
