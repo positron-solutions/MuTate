@@ -605,7 +605,7 @@ fn create_stream<'c>(
         .state_changed(|_stream, _user_data, _old_state, new_state| {
             eprintln!("state changed!: {:?}", new_state);
         })
-        .param_changed(|_, user_data, id, param| {
+        .param_changed(|stream, user_data, id, param| {
             let Some(param) = param else {
                 return;
             };
@@ -629,6 +629,9 @@ fn create_stream<'c>(
                 .parse(param)
                 .expect("Failed to parse param changed to AudioInfoRaw");
 
+            if let Some(target_id) = stream.properties().get("target.object") {
+                println!("connected to target: {}", target_id);
+            }
             println!(
                 "capturing rate:{} channels:{}",
                 user_data.format.rate(),
