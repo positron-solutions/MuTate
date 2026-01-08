@@ -217,35 +217,29 @@ impl AudioContext {
             let _monitor_listener = registry
                 .add_listener_local()
                 .global(move |global| {
+                    if global.type_ != pw::types::ObjectType::Node {
+                        return;
+                    }
+
                     if let Some(props) = &global.props {
-                        match props.get("media.class") {
-                            Some(got) => {
-                                // NOTE this may filter too much!  Use pipewire CLI tools if a
-                                // device you want to use is not available for use.
-                                if got == "Audio/Source"
-                                    || got == "Audio/Sink"
-                                    || got == "Audio/Device"
-                                {
-                                    match AudioChoice::try_new(*props, global.id) {
-                                        Ok(choice) => match choices_add.inner.choices.lock() {
-                                            Ok(mut choices) => {
-                                                choices.push(choice);
-                                            }
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "adding audio source failed: {:?}",
-                                                    MutateError::from(e)
-                                                );
-                                            }
-                                        },
-                                        Err(e) => {
-                                            eprintln!("Skipping Audio/Source: {:?}", e);
-                                        }
+                        if props.get("media.class").map(|c| c.starts_with("Audio/")) == Some(true) {
+                            match AudioChoice::try_new(*props, global.id) {
+                                Ok(choice) => match choices_add.inner.choices.lock() {
+                                    Ok(mut choices) => {
+                                        choices.push(choice);
                                     }
-                                };
+                                    Err(e) => {
+                                        eprintln!(
+                                            "adding audio source failed: {:?}",
+                                            MutateError::from(e)
+                                        );
+                                    }
+                                },
+                                Err(e) => {
+                                    eprintln!("Skipping Audio/Source: {:?}", e);
+                                }
                             }
-                            None => {}
-                        };
+                        }
                     }
                 })
                 .register();
@@ -367,7 +361,6 @@ impl AudioContext {
 /// Platform independent Choice to enable building cross-platform UIs
 pub struct AudioChoice {
     #[cfg(target_os = "linux")]
-    /// The string is a serialized integer of the object.serial property.
     object_serial: u32,
     name: Option<String>,
     description: Option<String>,
@@ -592,7 +585,7 @@ fn create_stream<'c>(
         *pw::keys::MEDIA_ROLE => "Music",
         *pw::keys::STREAM_CAPTURE_SINK => "true",
         // FIXME this is not yet respected 😠
-        *pw::keys::TARGET_OBJECT => choice.object_serial.to_string(),
+        *pw::keys::TARGET_OBJECT => choice.global_id.to_string(),
     };
 
     // 🤠 Whatever breauxseph, just let me use a pointer like a pointer!
