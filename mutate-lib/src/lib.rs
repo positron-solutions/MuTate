@@ -3,8 +3,8 @@
 
 //! Core µTate audio recognition & transformation capabilities.
 //!
-//! Alternative frontends and applications may be interested in obtaining raw inputs to drive !
-//! behaviors besides visualization.  This crate is kept separate so that µTate behaviors can be !
+//! Alternative frontends and applications may be interested in obtaining raw inputs to drive
+//! behaviors besides visualization.  This crate is kept separate so that µTate behaviors can be
 //! embedded directly into 3rd party applications without the need to run a separate daemon.
 
 //! AudioContext sets up communication threads that receive mapped buffers from an audio server such
@@ -300,7 +300,7 @@ impl AudioContext {
         };
         self.tx
             .send(msg)
-            .map_err(|e| MutateError::AudioConnect("connection creation failed"))?;
+            .map_err(|_e| MutateError::AudioConnect("connection creation failed"))?;
         Ok(AudioConsumer { conn })
     }
 
@@ -591,6 +591,7 @@ fn create_stream<'c>(
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Music",
         *pw::keys::STREAM_CAPTURE_SINK => "true",
+        // FIXME this is not yet respected 😠
         *pw::keys::TARGET_OBJECT => choice.object_serial.to_string(),
     };
 
@@ -629,7 +630,7 @@ fn create_stream<'c>(
                 return;
             }
 
-            // call a helper function to parse the format for us.
+            // NEXT actually do the negotiation and propagate format information downstream.
             user_data
                 .format
                 .parse(param)
@@ -700,6 +701,8 @@ fn create_stream<'c>(
     });
     let pod = pw::spa::pod::Pod::from_bytes(&buf).unwrap();
 
+    // NOTE Unless we pass AUTOCONNECT, an explicit link must be created between a compatible output
+    // port and input port.
     stream.connect(
         spa::utils::Direction::Input,
         None, // read docs.  use PW_KEY_TARGET_OBJECT.  This argument is deprectated
