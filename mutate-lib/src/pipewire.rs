@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let choice_idx = input.trim().parse().unwrap();
     let choice = first_choices.remove(choice_idx);
 
-    let rx = context.connect(&choice, "mutate-test".to_owned()).unwrap();
+    let mut rx = context.connect(&choice, "mutate-test".to_owned()).unwrap();
 
     let running = Arc::new(atomic::AtomicBool::new(true));
 
@@ -41,7 +41,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut window_index = 0usize; // Windex
         let window_size = 6400; // one 60FPS frame at 48kHz and 8 bytes per frame
 
-        let mut conn = std::mem::ManuallyDrop::new(unsafe { Box::from_raw(rx.conn) });
         let mut wrote = false;
 
         // NEXT deadline tracking and numerical stability enhancements
@@ -81,10 +80,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         write!(stdout, "\x1B[?1049h\x1B[?25l").unwrap();
         stdout.flush().unwrap();
         while running.load(Ordering::Relaxed) {
-            let avail = conn.buffer.occupied_len();
+            let avail = rx.peak();
             if avail > 0 {
                 let slice = &mut window_buffer[window_index..window_size];
-                window_index += conn.buffer.pop_slice(slice);
+                window_index += rx.read(slice).unwrap();
 
                 // If we filled up the entire slice, we can "display" a visual frame.
                 if window_index == window_size {

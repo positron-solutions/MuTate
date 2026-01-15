@@ -489,6 +489,22 @@ impl AudioConsumer {
         }
         Ok(*count)
     }
+
+    // The reader is doing pull-based consumption into it's own output slice, enabling us to handle
+    // the ring buffer as minimally as possible.
+    pub fn read(&mut self, output: &mut [u8]) -> Result<usize, MutateError> {
+        let conn = unsafe { &mut (*self.conn) };
+        if conn.dropped.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(MutateError::Dropped);
+        }
+        Ok(conn.buffer.pop_slice(output))
+    }
+
+    /// Return how many bytes are available for read
+    pub fn peak(&self) -> usize {
+        let conn = unsafe { &(*self.conn) };
+        conn.buffer.occupied_len()
+    }
 }
 
 impl Drop for AudioConsumer {
