@@ -628,6 +628,9 @@ fn create_stream<'c>(
                 .parse(param)
                 .expect("Failed to parse param changed to AudioInfoRaw");
 
+            if let Some(object_serial) = stream.properties().get("object.serial") {
+                println!("new stream object serial: {}", object_serial);
+            }
             if let Some(target_id) = stream.properties().get("target.object") {
                 println!("connected to target: {}", target_id);
             }
