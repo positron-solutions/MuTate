@@ -419,9 +419,6 @@ impl AudioChoice {
 /// opportunity to clean up.
 pub struct AudioConnection {
     pub buffer: ringbuf::HeapRb<u8>,
-    pub bytes_tx: std::sync::atomic::AtomicUsize,
-    bytes_rx: std::sync::atomic::AtomicUsize,
-    pub last_bytes: std::sync::atomic::AtomicUsize,
 
     pub ready: std::sync::Condvar,
     /// The lock payload is a u64 representing the number of chunks written.
@@ -445,9 +442,6 @@ impl AudioConnection {
         let buffer = ringbuf::HeapRb::new(1024 * 256);
         Box::into_raw(Box::new(AudioConnection {
             buffer,
-            bytes_tx: 0.into(),
-            bytes_rx: 0.into(),
-            last_bytes: 0.into(),
 
             ready: std::sync::Condvar::new(),
             lock: std::sync::Mutex::new(0),
@@ -529,17 +523,6 @@ impl AudioProducer {
             conn.buffer.skip(input_len - vacant_len);
         }
         let written = conn.buffer.push_slice(input);
-        // NOTE this is torn-read and I need to just use a version spin lock
-        // but anyway this field was introduced late and I'm just getting the prototype code ready
-        // to publish.
-        conn.bytes_tx
-            .fetch_add(written, std::sync::atomic::Ordering::Release);
-        // LIES not sure which lie we want to tell.  How many bytes are expected in the next buffer
-        // or how many bytes we could write to the ring.  Since ring consumers control how much can
-        // be written, telling them how many bytes we're actually getting upstream keeps the most
-        // truth alive.
-        conn.last_bytes
-            .store(input_len as usize, std::sync::atomic::Ordering::Release);
         *conn.lock.lock()? += 1;
         conn.ready.notify_all();
         Ok(written)
