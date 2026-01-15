@@ -15,6 +15,9 @@ pipewire = {workspace = true, features = ["v0_3_44"]}
 ringbuf.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+ctrlc.workspace = true
+
 [[example]]
 name = "pipewire"
 path = "src/pipewire.rs"
