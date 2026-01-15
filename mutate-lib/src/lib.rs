@@ -510,30 +510,35 @@ struct AudioProducer {
 unsafe impl Send for AudioProducer {}
 
 impl AudioProducer {
-    fn write(&mut self, input: &[u8]) -> Result<usize, MutateError> {
+    fn write(&mut self, datas: &mut [spa::buffer::Data]) -> Result<usize, MutateError> {
         let mut conn = std::mem::ManuallyDrop::new(unsafe { Box::from_raw(self.conn) });
         // Check if the receiver died before putting data into the ring
         if conn.dropped.load(std::sync::atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
 
-        let mut input = input;
-        let mut input_len = input.len();
-
+        let input_len = datas.iter().fold(0, |accum, d| accum + d.chunk().size()) as usize;
         let capacity: usize = conn.buffer.capacity().into();
         if input_len > capacity {
-            // WARN ring is too small.
-            eprintln!("ring is too small");
-            input = &input[input_len - capacity..];
-            input_len = capacity;
+            eprintln!(
+                "total input len {} exceeds ring capacity {}",
+                input_len, capacity
+            );
+            return Err(MutateError::AudioSource("ring too small".to_owned()));
         }
         let vacant_len = conn.buffer.vacant_len();
         if input_len > vacant_len {
-            // WARN Consumer is falling behind
-            eprintln!("consumer falling behind");
+            eprintln!("audio consumer falling behind");
             conn.buffer.skip(input_len - vacant_len);
         }
-        let written = conn.buffer.push_slice(input);
+        let mut written = 0;
+        datas.iter_mut().for_each(|d| {
+            let offset = d.chunk().offset() as usize;
+            let size = d.chunk().size() as usize;
+            if let Some(input) = d.data() {
+                written += conn.buffer.push_slice(&input[offset..offset + size]);
+            }
+        });
         *conn.lock.lock()? += 1;
         conn.ready.notify_all();
         Ok(written)
@@ -635,22 +640,14 @@ fn create_stream<'c>(
         .process(|stream, user_data| {
             match stream.dequeue_buffer() {
                 Some(mut buffer) => {
-                    let datas = buffer.datas_mut(); // implicit drop dequeue
-                    let mut written = 0;
-                    datas.iter_mut().for_each(|d| {
-                        let size = d.chunk().size() as usize;
-                        let offset = d.chunk().offset() as usize;
-                        d.data().map(|bytes| {
-                            match &user_data.tx.write(&bytes[offset..offset + size]) {
-                                Ok(wrote) => {
-                                    written += wrote;
-                                }
-                                Err(e) => {
-                                    eprintln!("Stream write error: {:?}", e);
-                                }
-                            }
-                        });
-                    });
+                    let datas = buffer.datas_mut(); // drop implicitly dequeues
+
+                    match user_data.tx.write(datas) {
+                        _ => {}
+                        Err(e) => {
+                            eprintln!("Stream write error: {:?}", e)
+                        }
+                    };
                 }
                 None => {
                     eprintln!("no buffer dequeued");
