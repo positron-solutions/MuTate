@@ -14,9 +14,18 @@
 //! buffer, provides  enough synchronization information to precisely obtain sliding windows of
 //! audio data that can be used to develop whatever visual representations the user wants.
 
-// To extend the AudioContext module for other platforms, just add cfg flags wherever
-// implementations and fields are platform specific.
+// NEXT To extend the AudioContext module for other platforms, just add cfg flags wherever
+// implementations and fields are platform specific.  Take a look at CPAL but consider using
+// platform bindings more directly if CPAL can't give us precise timing data or control.  We might
+// want to adjust the input stream latency by talking to the audio server directly, which is not an
+// API expected to be found in CPAL.
 
+// NOTE remember, delay times from the server can be negative, so always use signed types, such as
+// i64 etc.
+
+// The model for working with pipewire, which might hold up when talking to other audio servers, is
+// that pipewire sends us monotonic buffer chunks without skips (via padding or stream parameter
+// change, the latter of which is not yet handled).
 use pipewire as pw;
 #[cfg(target_os = "linux")]
 use pipewire::stream::StreamListener;
@@ -418,14 +427,17 @@ impl AudioChoice {
 /// returned AudioConsumer will clean up the connection after the corresponding AudioProducer has an
 /// opportunity to clean up.
 pub struct AudioConnection {
+    // NEXT convert this to use frames?  Store the format somewhere?
     pub buffer: ringbuf::HeapRb<u8>,
 
     pub ready: std::sync::Condvar,
     /// The lock payload is a u64 representing the number of chunks written.
-    // LIES This might be a blurry idea of a version lock as this point.
     pub lock: std::sync::Mutex<u64>,
 
     // Tombstone for either end of the resource to finish up.
+    // XXX instead, we want one-sided drop behavior,
+    // the last drop being the producer
+    // and drop flags that detect the poisoning of the producer?
     dropped: std::sync::atomic::AtomicBool,
 
     #[cfg(target_os = "linux")]
@@ -445,7 +457,6 @@ impl AudioConnection {
 
             ready: std::sync::Condvar::new(),
             lock: std::sync::Mutex::new(0),
-
             dropped: false.into(),
 
             user_data: None,
@@ -500,8 +511,8 @@ unsafe impl Send for AudioProducer {}
 
 impl AudioProducer {
     fn write(&mut self, input: &[u8]) -> Result<usize, MutateError> {
-        // XXX check the tombstone and allow the connection to unwind
         let mut conn = std::mem::ManuallyDrop::new(unsafe { Box::from_raw(self.conn) });
+        // Check if the receiver died before putting data into the ring
         if conn.dropped.load(std::sync::atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
@@ -690,6 +701,8 @@ fn create_stream<'c>(
             | pw::stream::StreamFlags::RT_PROCESS,
         &mut [pod],
     )?;
+
+    // NEXT configure node delay.  Pipewire might allow it, but so far this is doubtful.
 
     Ok((listener, stream))
 }
