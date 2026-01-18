@@ -95,7 +95,7 @@ impl WindowPresent {
             ash::khr::swapchain::Device::new(&vk_context.instance, &vk_context.device);
         let swapchain_info = vk::SwapchainCreateInfoKHR {
             surface: surface,
-            min_image_count: 3, // XXX frame counts
+            min_image_count: 2,
             image_format: surface_format.format,
             image_color_space: surface_format.color_space,
             image_extent: extent,
@@ -147,7 +147,7 @@ impl WindowPresent {
             ..Default::default()
         };
 
-        let in_flight_fences: Vec<vk::Fence> = (0..3)
+        let in_flight_fences: Vec<vk::Fence> = (0..2)
             .map(|_| unsafe { vk_context.device.create_fence(&fence_info, None).unwrap() })
             .collect();
 
@@ -156,7 +156,7 @@ impl WindowPresent {
         };
 
         // FIXME propagate image counts
-        let image_available_semaphores = (0..3)
+        let image_available_semaphores = (0..2)
             .map(|_| unsafe {
                 vk_context
                     .device
@@ -165,7 +165,7 @@ impl WindowPresent {
             })
             .collect();
 
-        let render_finished_semaphores = (0..3)
+        let render_finished_semaphores = (0..2)
             .map(|_| unsafe {
                 vk_context
                     .device
@@ -179,7 +179,7 @@ impl WindowPresent {
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool,
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: 3,
+            command_buffer_count: 2,
             ..Default::default()
         };
 
@@ -192,7 +192,7 @@ impl WindowPresent {
 
         Self {
             command_buffers,
-            frames: 3,
+            frames: 2,
             frame_index: 0,
             image_available_semaphores,
             in_flight_fences,
