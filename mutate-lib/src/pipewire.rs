@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         write!(stdout, "\x1B[?1049h\x1B[?25l").unwrap();
         stdout.flush().unwrap();
         while running.load(Ordering::Relaxed) {
-            let avail = rx.peak();
+            let avail = rx.occupied();
             if avail > 0 {
                 let slice = &mut window_buffer[window_index..window_size];
                 window_index += rx.read(slice).unwrap();

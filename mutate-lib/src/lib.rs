@@ -501,7 +501,7 @@ impl AudioConsumer {
     }
 
     /// Return how many bytes are available for read
-    pub fn peak(&self) -> usize {
+    pub fn occupied(&self) -> usize {
         let conn = unsafe { &(*self.conn) };
         conn.buffer.occupied_len()
     }
