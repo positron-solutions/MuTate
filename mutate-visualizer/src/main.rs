@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod assets;
+mod graph;
 mod node;
 mod present;
 mod vk_context;
@@ -19,6 +20,8 @@ use vk_context::VkContext;
 
 use mutate_lib as utate;
 
+use crate::node::audio;
+
 #[derive(Parser, Debug)]
 struct Args {
     /// Run in fullscreen mode
@@ -35,24 +38,45 @@ struct App {
 
     // This field will turn into a graph when graphs are ready
     render_node: Option<node::video::RenderNode>,
-    audio_node: node::audio::AudioNode,
+    raw_audio: audio::raw::RawAudioNode,
+    rms: audio::rms::RmsNode,
+    k_weights: audio::kweight::KWeightsNode,
+    colors: audio::colors::AudioColorsNode,
 }
 
 impl App {
     fn draw_frame(&mut self) {
         let vk_context = &self.vk_context;
-        let audio_colors = self.audio_node.process();
+
+        // NOTE A manually driven, unrolled render graph.  These are the associations that must
+        // be described in the eventual graph connectivity APIs.
+        let raw_state = self.raw_audio.consume().unwrap();
+        let raw_out = self.raw_audio.produce().unwrap();
+        self.k_weights.consume(&raw_out);
+
+        // The control loop, unrolled
+        if raw_state == crate::node::SeekState::UnderProduced {
+            let raw_out = self.raw_audio.produce().unwrap();
+            self.k_weights.consume(&raw_out);
+        };
+
+        let kweights_out = self.k_weights.produce();
+        self.rms.consume(&kweights_out);
+        let rms_out = self.rms.produce();
+        self.colors.consume(&rms_out);
+        let colors = self.colors.produce();
+
         // Obtain image and hot command buffer
         let wp = self.window_present.as_mut().unwrap();
-        let (sync, target) = wp.render_target(vk_context, audio_colors.clear);
+        let (sync, target) = wp.render_target(vk_context, colors.clear);
 
         // Node draws to command buffer.  The idea we've isolated is that drawing to a target has
         // little to do with the source or fate of that target.
         self.render_node.as_ref().unwrap().draw(
             target.command_buffer,
             vk_context,
-            audio_colors.color,
-            audio_colors.scale,
+            colors.color,
+            colors.scale,
             &target.extent,
         );
 
@@ -145,7 +169,6 @@ impl ApplicationHandler for App {
 fn main() -> Result<(), utate::MutateError> {
     // NEXT Merge over toml config values obtained as resources
     let args = Args::parse();
-    let audio_node = node::audio::AudioNode::new()?;
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
@@ -156,9 +179,15 @@ fn main() -> Result<(), utate::MutateError> {
         window_present: None,
 
         render_node: None,
-        audio_node,
+
+        raw_audio: audio::raw::RawAudioNode::new().unwrap(),
+        k_weights: audio::kweight::KWeightsNode::new(),
+        rms: audio::rms::RmsNode::new(),
+        colors: audio::colors::AudioColorsNode::new(),
+
+        last_frame: std::time::Instant::now(),
     };
     event_loop.run_app(&mut app).unwrap();
-    app.audio_node.destroy();
+    app.raw_audio.destroy();
     Ok(())
 }
