@@ -48,6 +48,14 @@ impl App {
     fn draw_frame(&mut self) {
         let vk_context = &self.vk_context;
 
+        let wp = self.window_present.as_mut().unwrap();
+        // Wait on the frame draw fence & presentation before doing another frame.
+        wp.present_wait(vk_context);
+
+        // NEXT We can likely burn some time here and still make the latch timing.
+        // XXX without this sleep, we are getting DEVICE_LOST on the next present_wait.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
         // NOTE A manually driven, unrolled render graph.  These are the associations that must
         // be described in the eventual graph connectivity APIs.
         let raw_state = self.raw_audio.consume().unwrap();
@@ -66,8 +74,7 @@ impl App {
         self.colors.consume(&rms_out);
         let colors = self.colors.produce();
 
-        // Obtain image and hot command buffer
-        let wp = self.window_present.as_mut().unwrap();
+        // Obtain swapchain image and hot command buffer
         let (sync, target) = wp.render_target(vk_context, colors.clear);
 
         // Node draws to command buffer.  The idea we've isolated is that drawing to a target has
@@ -80,7 +87,6 @@ impl App {
             &target.extent,
         );
 
-        let wp = self.window_present.as_ref().unwrap();
         // Presentation closes the command buffer, submits to queue, transforms image, and presents
         wp.post_draw(vk_context, sync, target);
     }

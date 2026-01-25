@@ -123,27 +123,49 @@ impl VkContext {
             ash::vk::KHR_MAINTENANCE2_NAME.as_ptr(),
             ash::vk::KHR_MAINTENANCE3_NAME.as_ptr(),
             ash::vk::KHR_MAINTENANCE4_NAME.as_ptr(),
+            // ROLL VK_EXT_present_timing is still too new.  Support must be dynamic and... someone
+            // needs a card / driver that supports it to develop the support.
+            // ash::vk::EXT_PRESENT_TIMING_NAME.as_ptr(),
+            ash::vk::KHR_PRESENT_WAIT_NAME.as_ptr(),
+            ash::vk::KHR_PRESENT_ID_NAME.as_ptr(),
         ];
 
-        let mut sync2_features = vk::PhysicalDeviceSynchronization2Features::default();
-        sync2_features.synchronization2 = vk::TRUE;
+        let mut present_wait_id = vk::PhysicalDevicePresentIdFeaturesKHR {
+            present_id: vk::TRUE,
+            ..Default::default()
+        };
 
-        let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
-        dynamic_rendering_features.dynamic_rendering = vk::TRUE;
+        let mut present_wait = vk::PhysicalDevicePresentWaitFeaturesKHR {
+            p_next: &mut present_wait_id as *mut _ as *mut c_void,
+            present_wait: vk::TRUE,
+            ..Default::default()
+        };
 
-        let mut features2 = vk::PhysicalDeviceFeatures2::default();
-        features2.p_next = &mut sync2_features as *mut _ as *mut c_void;
+        let mut sync2_features = vk::PhysicalDeviceSynchronization2Features {
+            p_next: &mut present_wait as *mut _ as *mut c_void,
+            synchronization2: vk::TRUE,
+            ..Default::default()
+        };
 
-        sync2_features.p_next = &mut dynamic_rendering_features as *mut _ as *mut c_void;
+        let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures {
+            p_next: &mut sync2_features as *mut _ as *mut c_void,
+            dynamic_rendering: vk::TRUE,
+            ..Default::default()
+        };
 
-        let mut device_info = vk::DeviceCreateInfo {
+        let mut features2 = vk::PhysicalDeviceFeatures2 {
+            p_next: &mut dynamic_rendering_features as *mut _ as *mut c_void,
+            ..Default::default()
+        };
+
+        let device_info = vk::DeviceCreateInfo {
             queue_create_info_count: 1,
             p_queue_create_infos: queue_info.as_ptr(),
             pp_enabled_extension_names: device_extensions.as_ptr(),
             enabled_extension_count: device_extensions.len() as u32,
+            p_next: &mut features2 as *mut _ as *mut c_void,
             ..Default::default()
         };
-        device_info.p_next = &mut features2 as *mut _ as *mut c_void;
 
         let device = unsafe {
             instance

@@ -5,7 +5,11 @@
 // all render targets need presentation, but a swapchain does.  Aligning the fields and structs with
 // this abstraction is underway.
 
-use ash::{khr::xlib_surface, vk};
+// NEXT enable options for variable and fixed frame rate rendering, likely using MAILBOX for
+// variable and FIFO for fixed rate.  This requires looking at the actual swapchain image count
+// before allocating per-image resources like command buffers.
+
+use ash::{khr::present_wait::Device as PwDevice, khr::xlib_surface, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
@@ -43,6 +47,11 @@ pub struct WindowPresent {
     surface: vk::SurfaceKHR,
     pub surface_format: vk::SurfaceFormatKHR,
     pub window: Window,
+
+    pub pw_device: PwDevice,
+    /// Even values are usable ids.  Odd successors indicate waiting on that id has not been
+    /// completed yet.
+    pub present_id: u64,
 }
 
 impl WindowPresent {
@@ -95,7 +104,7 @@ impl WindowPresent {
             ash::khr::swapchain::Device::new(&vk_context.instance, &vk_context.device);
         let swapchain_info = vk::SwapchainCreateInfoKHR {
             surface: surface,
-            min_image_count: 2,
+            min_image_count: 3,
             image_format: surface_format.format,
             image_color_space: surface_format.color_space,
             image_extent: extent,
@@ -104,7 +113,7 @@ impl WindowPresent {
             image_sharing_mode: vk::SharingMode::EXCLUSIVE,
             pre_transform: surface_caps.current_transform,
             composite_alpha: composite_alpha,
-            present_mode: vk::PresentModeKHR::FIFO,
+            present_mode: vk::PresentModeKHR::MAILBOX,
             clipped: vk::TRUE,
             ..Default::default()
         };
@@ -147,7 +156,7 @@ impl WindowPresent {
             ..Default::default()
         };
 
-        let in_flight_fences: Vec<vk::Fence> = (0..2)
+        let in_flight_fences: Vec<vk::Fence> = (0..3)
             .map(|_| unsafe { vk_context.device.create_fence(&fence_info, None).unwrap() })
             .collect();
 
@@ -156,7 +165,7 @@ impl WindowPresent {
         };
 
         // FIXME propagate image counts
-        let image_available_semaphores = (0..2)
+        let image_available_semaphores = (0..3)
             .map(|_| unsafe {
                 vk_context
                     .device
@@ -165,7 +174,7 @@ impl WindowPresent {
             })
             .collect();
 
-        let render_finished_semaphores = (0..2)
+        let render_finished_semaphores = (0..3)
             .map(|_| unsafe {
                 vk_context
                     .device
@@ -179,7 +188,7 @@ impl WindowPresent {
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool,
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: 2,
+            command_buffer_count: 3,
             ..Default::default()
         };
 
@@ -192,7 +201,7 @@ impl WindowPresent {
 
         Self {
             command_buffers,
-            frames: 2,
+            frames: 3,
             frame_index: 0,
             image_available_semaphores,
             in_flight_fences,
@@ -206,6 +215,9 @@ impl WindowPresent {
             surface,
             surface_format,
             window,
+
+            pw_device: PwDevice::new(&vk_context.instance, &vk_context.device),
+            present_id: 0,
         }
     }
 
@@ -275,7 +287,7 @@ impl WindowPresent {
                 image_sharing_mode: vk::SharingMode::EXCLUSIVE,
                 pre_transform: surface_caps.current_transform,
                 composite_alpha: pick_alpha(&surface_caps),
-                present_mode: vk::PresentModeKHR::FIFO,
+                present_mode: vk::PresentModeKHR::MAILBOX, // FIXME look for required supoprt
                 clipped: vk::TRUE,
                 ..Default::default()
             };
@@ -315,6 +327,42 @@ impl WindowPresent {
         }
     }
 
+    /// Wait for the last queue submission to clear.
+    pub fn present_wait(&mut self, context: &VkContext) {
+        let device = &context.device;
+        let idx = self.frame_index as usize;
+        let in_flight = self.in_flight_fences[idx];
+        unsafe {
+            device
+                .wait_for_fences(&[in_flight], true, u64::MAX)
+                .unwrap();
+
+            device.reset_fences(&[in_flight]).unwrap();
+
+            if self.present_id % 2 == 1 {
+                match self.pw_device.wait_for_present(
+                    self.swapchain,
+                    self.present_id - 1,
+                    12_000_000, // 12 milliseconds
+                ) {
+                    Ok(_code) => {
+                        // idk
+                    }
+                    Err(e) => match e {
+                        vk::Result::TIMEOUT => {
+                            // nothing
+                        }
+                        e => {
+                            println!("present wait return code: {:?}", e);
+                        }
+                    },
+                };
+                self.present_id = self.present_id + 1;
+
+            }
+        }
+    }
+
     /// Return a hot command buffer, image, and associated information used for drawing.
     pub fn render_target(
         &mut self,
@@ -326,16 +374,7 @@ impl WindowPresent {
         let image_available = self.image_available_semaphores[idx];
         let render_finished = self.render_finished_semaphores[idx];
         let in_flight = self.in_flight_fences[idx];
-
         self.frame_index = (idx + 1) % self.frames;
-
-        unsafe {
-            device
-                .wait_for_fences(&[in_flight], true, u64::MAX)
-                .unwrap();
-
-            device.reset_fences(&[in_flight]).unwrap();
-        }
 
         let (image_index, _) = unsafe {
             self.swapchain_loader
@@ -431,7 +470,7 @@ impl WindowPresent {
     }
 
     /// Sync presentation image transform and present
-    pub fn post_draw(&self, vk_context: &VkContext, sync: DrawSync, target: DrawTarget) {
+    pub fn post_draw(&mut self, vk_context: &VkContext, sync: DrawSync, target: DrawTarget) {
         let device = vk_context.device();
         unsafe { device.cmd_end_rendering(target.command_buffer) };
         let barrier2 = vk::ImageMemoryBarrier2 {
@@ -522,6 +561,14 @@ impl WindowPresent {
         let swapchains = [self.swapchain];
         let indices = [sync.image_index as u32];
 
+        let present_id = vk::PresentIdKHR {
+            s_type: vk::StructureType::PRESENT_ID_KHR,
+            swapchain_count: 1,
+            p_present_ids: [self.present_id].as_ptr(),
+            ..Default::default()
+        };
+        self.present_id = self.present_id + 1;
+
         let present_info = vk::PresentInfoKHR {
             s_type: vk::StructureType::PRESENT_INFO_KHR,
             wait_semaphore_count: 1,
@@ -529,8 +576,13 @@ impl WindowPresent {
             swapchain_count: 1,
             p_swapchains: swapchains.as_ptr(),
             p_image_indices: indices.as_ptr(),
+            p_next: &present_id as *const _ as *const std::ffi::c_void,
             ..Default::default()
         };
+
+        // Winit says this helps align the window system latching with REDRAW_REQUESTED events.
+        // However, it is supported only on Wayland at this time.
+        self.window.pre_present_notify();
 
         unsafe {
             match self.swapchain_loader.queue_present(*queue, &present_info) {
