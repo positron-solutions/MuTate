@@ -113,7 +113,7 @@ impl WindowPresent {
             image_sharing_mode: vk::SharingMode::EXCLUSIVE,
             pre_transform: surface_caps.current_transform,
             composite_alpha: composite_alpha,
-            present_mode: vk::PresentModeKHR::MAILBOX,
+            present_mode: vk::PresentModeKHR::FIFO_RELAXED,
             clipped: vk::TRUE,
             ..Default::default()
         };
@@ -278,6 +278,7 @@ impl WindowPresent {
 
             let swapchain_info = vk::SwapchainCreateInfoKHR {
                 surface: *surface,
+                // NOTE this minimum is minimum.  At least under MAILBOX, extra images may result.
                 min_image_count: self.frames as u32,
                 image_format: surface_format.format,
                 image_color_space: surface_format.color_space,
@@ -287,7 +288,7 @@ impl WindowPresent {
                 image_sharing_mode: vk::SharingMode::EXCLUSIVE,
                 pre_transform: surface_caps.current_transform,
                 composite_alpha: pick_alpha(&surface_caps),
-                present_mode: vk::PresentModeKHR::MAILBOX, // FIXME look for required supoprt
+                present_mode: vk::PresentModeKHR::FIFO_RELAXED,
                 clipped: vk::TRUE,
                 ..Default::default()
             };
