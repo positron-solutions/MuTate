@@ -329,7 +329,7 @@ impl WindowPresent {
     }
 
     /// Wait for the last queue submission to clear.
-    pub fn present_wait(&mut self, context: &VkContext) {
+    pub fn draw_wait(&mut self, context: &VkContext) {
         let device = &context.device;
         let idx = self.frame_index as usize;
         let in_flight = self.in_flight_fences[idx];
@@ -339,28 +339,6 @@ impl WindowPresent {
                 .unwrap();
 
             device.reset_fences(&[in_flight]).unwrap();
-
-            if self.present_id % 2 == 1 {
-                match self.pw_device.wait_for_present(
-                    self.swapchain,
-                    self.present_id - 1,
-                    12_000_000, // 12 milliseconds
-                ) {
-                    Ok(_code) => {
-                        // idk
-                    }
-                    Err(e) => match e {
-                        vk::Result::TIMEOUT => {
-                            // nothing
-                        }
-                        e => {
-                            println!("present wait return code: {:?}", e);
-                        }
-                    },
-                };
-                self.present_id = self.present_id + 1;
-
-            }
         }
     }
 
@@ -592,6 +570,27 @@ impl WindowPresent {
                 }
                 Err(result) => eprintln!("presentation error: {:?}", result),
             };
+
+            if self.present_id % 2 == 1 {
+                match self.pw_device.wait_for_present(
+                    self.swapchain,
+                    self.present_id - 1,
+                    32_000_000, // 32 milliseconds
+                ) {
+                    Ok(_code) => {
+                        // idk
+                    }
+                    Err(e) => match e {
+                        vk::Result::TIMEOUT => {
+                            // nothing
+                        }
+                        e => {
+                            println!("present wait return code: {:?}", e);
+                        }
+                    },
+                };
+                self.present_id = self.present_id + 1;
+            }
         }
     }
 

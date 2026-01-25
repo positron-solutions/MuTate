@@ -49,12 +49,12 @@ impl App {
         let vk_context = &self.vk_context;
 
         let wp = self.window_present.as_mut().unwrap();
-        // Wait on the frame draw fence & presentation before doing another frame.
-        wp.present_wait(vk_context);
+        // LIES the previous frame fence is implicitly always signaled already
+        wp.draw_wait(vk_context);
 
-        // NEXT We can likely burn some time here and still make the latch timing.
-        // XXX without this sleep, we are getting DEVICE_LOST on the next present_wait.
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        // NEXT dynamically waiting down to the approximate latch timing to late bind the last
+        // possible audio.
+        std::thread::sleep(std::time::Duration::from_millis(12));
 
         // NOTE A manually driven, unrolled render graph.  These are the associations that must
         // be described in the eventual graph connectivity APIs.
@@ -87,7 +87,8 @@ impl App {
             &target.extent,
         );
 
-        // Presentation closes the command buffer, submits to queue, transforms image, and presents
+        // Presentation closes the command buffer, submits to queue, transforms image, and presents.
+        // Also waits on presentation.
         wp.post_draw(vk_context, sync, target);
     }
 }
