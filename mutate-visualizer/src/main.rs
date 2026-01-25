@@ -36,7 +36,7 @@ struct App {
     vk_context: VkContext,
     window_present: Option<present::WindowPresent>,
 
-    // This field will turn into a graph when graphs are ready
+    // These fields will turn into a graph when graphs are ready
     render_node: Option<node::video::RenderNode>,
     raw_audio: audio::raw::RawAudioNode,
     rms: audio::rms::RmsNode,

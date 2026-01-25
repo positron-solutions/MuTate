@@ -485,6 +485,8 @@ impl AudioConsumer {
         let mut count = conn.lock.lock()?;
         let initial = *count;
         while *count == initial {
+            // NEXT use a timeout wait and provide a method to wait for a specific number of bytes.
+            // Possibly switch to parking instead of this silly Condvar.
             count = conn.ready.wait(count)?;
         }
         Ok(*count)
