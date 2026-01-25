@@ -33,9 +33,19 @@ Each element includes two parts:
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
 
+## Audio Formats
+
+The type of the input buffers is **not** bytes.  We should either coerce all input streams to one format or handle multiple formats if we cannot coerce all target platforms to a common denominator (and convert ourselves under the hood).
+
+### For Now
+
+Hardcode and mark with `// DEBT`
+
 ## Memory Management
 
-Dynamic usage of allocated memory is likely unavoidable.  Several tools are like VMA bindings or the gpu-allocator crate are being looked at.  Expectations are that memory usage will be relatively low but less predictable due to generation and scripting.  Bindless rendering will certainly be coupled to the memory use strategy.  The tradeoffs of existing approaches are not clear yet, but the need to manage a pool and dependent addresses does suggest more rather than less work will pay off.
+There are two sides to this, GPU and CPU.  On the CPU, we want to have zero-copy and avoid allocations when moving data around the render graph.  Even if memory is unpredictable over the lifetime of the graph because the graph is updated, the memory use from frame to frame should be relatively steady.
+
+Several tools are like VMA bindings or the gpu-allocator crate are being looked at.  Expectations are that memory usage will be relatively low but less predictable due to generation and scripting.  Bindless rendering will certainly be coupled to the memory use strategy.  The tradeoffs of existing approaches are not clear yet, but the need to manage a pool and dependent addresses does suggest more rather than less work will pay off.
 
 The CQT (Constant Q Transform) Window-resize problem is really informative.  There are several valid strategies to replace a missized CQT:
 
@@ -48,6 +58,8 @@ The first technique will lead to the best fidelity, but requires extra memory.  
 ### For Now
 
 Nodes are just given a device context (also WIP) and create and destroy their own assets.  The node interface needs to emerge along with the render graph behaviors to interrogate the nodes for what operations need to be done.
+
+Don't go crazy avoiding copies just yet.  The sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.
 
 ## Graph Scheduling & Plumbing
 
