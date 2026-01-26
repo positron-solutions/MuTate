@@ -22,6 +22,7 @@ pub struct AudioColors {
 pub struct AudioColorsNode {
     hue: f32,
     amplitude: f32,
+    value: f32,
 }
 
 impl AudioColorsNode {
@@ -29,13 +30,16 @@ impl AudioColorsNode {
         Self {
             hue: rand::random::<f32>(),
             amplitude: 0.0,
+            value: 0.0,
         }
     }
 
     // XXX not using the node interface here at all until scalar and array types both work.
     pub fn consume(&mut self, input: &Rms) {
         let avg_rms = (input.left + input.right) / 2.0;
-        let tweaked_rms = hill_function(avg_rms, 0.08, 1.5, 1.2);
+        // NEXT really need some integral normalization scaling upstream
+        self.value = 0.2 + hill_function(avg_rms, 0.08, 0.8, 2.8);
+        let tweaked_rms = hill_function(avg_rms, 0.08, 1.0, 2.0);
 
         self.hue += 0.01 * (tweaked_rms * 0.2 - 0.5);
         if self.hue > 1.0 || self.hue < 0.0 {
@@ -45,8 +49,7 @@ impl AudioColorsNode {
     }
 
     pub fn produce(&mut self) -> AudioColors {
-        // NOTE we want 0 to 1.0, but hill function max was 1.5
-        let value = (self.amplitude * 0.666667).clamp(0.0, 1.0);
+        let value = self.value.clamp(0.0, 1.0);
 
         let hsv: palette::Hsv = palette::Hsv::new_srgb(self.hue * 360.0, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
@@ -69,7 +72,7 @@ impl AudioColorsNode {
         }
 
         // NEXT bring back decay based negative values as its own node
-        let scale = self.amplitude * 2.5 - 0.5;
+        let scale = self.amplitude * 1.5;
         let hsv: palette::Hsv = palette::Hsv::new_srgb(trie_hue, 1.0, value);
         let rgb: palette::Srgb<f32> = palette::Srgb::from_color_unclamped(hsv);
 
