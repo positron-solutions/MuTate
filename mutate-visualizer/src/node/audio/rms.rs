@@ -39,8 +39,6 @@ impl RmsNode {
             self.right_sum_sq = 0.0;
         }
 
-        // XXX improper processing of seek intents is screwing something up.  Save for tomorrow
-        // XXX frame timings likely resulting in overseak.
         let new = &input.buffer.data;
 
         if new.len() > 0 {
