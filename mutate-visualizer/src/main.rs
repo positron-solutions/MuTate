@@ -191,8 +191,6 @@ fn main() -> Result<(), utate::MutateError> {
         k_weights: audio::kweight::KWeightsNode::new(),
         rms: audio::rms::RmsNode::new(),
         colors: audio::colors::AudioColorsNode::new(),
-
-        last_frame: std::time::Instant::now(),
     };
     event_loop.run_app(&mut app).unwrap();
     app.raw_audio.destroy();
