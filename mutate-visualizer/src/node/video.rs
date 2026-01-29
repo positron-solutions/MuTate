@@ -70,11 +70,8 @@ impl RenderNode {
             size: std::mem::size_of::<[f32; 5]>() as u32,
         };
 
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
-            vertex_attribute_description_count: 0,
-            vertex_binding_description_count: 0,
-            ..Default::default()
-        };
+        // UPSTREAM shouldn't the transitive Default take care of this?
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo {
             topology: vk::PrimitiveTopology::TRIANGLE_LIST,
@@ -101,14 +98,8 @@ impl RenderNode {
         };
 
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState {
-            blend_enable: vk::FALSE,
-            src_color_blend_factor: vk::BlendFactor::ONE,
-            dst_color_blend_factor: vk::BlendFactor::ZERO,
-            color_blend_op: vk::BlendOp::ADD,
-            src_alpha_blend_factor: vk::BlendFactor::ONE,
-            dst_alpha_blend_factor: vk::BlendFactor::ZERO,
-            alpha_blend_op: vk::BlendOp::ADD,
             color_write_mask: vk::ColorComponentFlags::RGBA,
+            ..Default::default()
         };
 
         let color_blend = vk::PipelineColorBlendStateCreateInfo {
@@ -156,7 +147,6 @@ impl RenderNode {
             p_dynamic_state: &dynamic_state_info,
             layout: pipeline_layout,
             render_pass: vk::RenderPass::null(), // dynamic rendering
-            subpass: 0,
             ..Default::default()
         };
 

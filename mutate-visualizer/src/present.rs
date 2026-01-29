@@ -160,9 +160,7 @@ impl WindowPresent {
             .map(|_| unsafe { vk_context.device.create_fence(&fence_info, None).unwrap() })
             .collect();
 
-        let semaphore_info = vk::SemaphoreCreateInfo {
-            ..Default::default()
-        };
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
 
         // FIXME propagate image counts
         let image_available_semaphores = (0..3)
@@ -187,7 +185,6 @@ impl WindowPresent {
 
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool,
-            level: vk::CommandBufferLevel::PRIMARY,
             command_buffer_count: 3,
             ..Default::default()
         };
