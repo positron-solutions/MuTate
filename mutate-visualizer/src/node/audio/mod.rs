@@ -8,7 +8,7 @@
 
 // pub mod cqt;
 pub mod colors;
-// pub mod iso226;
+pub mod iso226;
 pub mod kweight;
 pub mod raw;
 pub mod rms;
