@@ -9,8 +9,8 @@
 //! better for music but harder to apply directly to an amplitude signal and more useful for
 //! weighting frequency buckets for filter banks.
 
+use crate::audio::raw::Audio;
 use crate::graph::{EventIntent, GraphBuffer, GraphEvent};
-use crate::node::audio::raw::Audio;
 
 #[derive(Default, Clone)]
 pub struct Biquad {

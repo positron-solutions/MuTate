@@ -39,9 +39,6 @@
 //! heaviest nodes, will be asked to downscale resolutions of assets and buffers or perform less
 //! precise calculation.  This will continue until the new node can be created.
 
-pub mod audio;
-pub mod video;
-
 use mutate_lib as utate;
 
 use crate::graph;

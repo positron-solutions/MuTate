@@ -3,7 +3,7 @@
 
 //! # Audio Nodes
 //!
-//! Audio first must be acquired, using the `crate::node::audio::raw::RawAudio` node.  As the graph
+//! Audio first must be acquired, using the `crate::audio::raw::RawAudio` node.  As the graph
 //! interfaces evolve, so must these nodes and their types.
 
 pub mod colors;

@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod assets;
+mod audio;
 mod graph;
-mod node;
-mod present;
+mod video;
 mod vk_context;
 
 use clap::Parser;
@@ -20,7 +20,7 @@ use vk_context::VkContext;
 
 use mutate_lib as utate;
 
-use crate::node::audio;
+use graph::node;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -34,10 +34,10 @@ struct App {
     running: bool,
 
     vk_context: VkContext,
-    window_present: Option<present::WindowPresent>,
+    window_present: Option<video::present::WindowPresent>,
 
     // These fields will turn into a graph when graphs are ready
-    render_node: Option<node::video::triangle::TriangleNode>,
+    render_node: Option<video::triangle::TriangleNode>,
     raw_audio: audio::raw::RawAudioNode,
     rms: audio::rms::RmsNode,
     k_weights: audio::kweight::KWeightsNode,
@@ -63,7 +63,7 @@ impl App {
         self.k_weights.consume(&raw_out);
 
         // The control loop, unrolled
-        if raw_state == crate::node::SeekState::UnderProduced {
+        if raw_state == crate::graph::node::SeekState::UnderProduced {
             let raw_out = self.raw_audio.produce().unwrap();
             self.k_weights.consume(&raw_out);
         };
@@ -97,11 +97,11 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let vk_context = &self.vk_context;
         let device = &vk_context.device;
-        let wp = present::WindowPresent::new(vk_context, event_loop, &self.args);
+        let wp = video::present::WindowPresent::new(vk_context, event_loop, &self.args);
 
         // Render nodes need a device in order to allocate things.  They will need an entire vk_context to
         // properly interact with memory management.
-        self.render_node = Some(node::video::triangle::TriangleNode::new(
+        self.render_node = Some(video::triangle::TriangleNode::new(
             device,
             wp.surface_format.format.clone(),
         ));

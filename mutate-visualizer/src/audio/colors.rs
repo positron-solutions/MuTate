@@ -9,8 +9,7 @@
 use ash::vk;
 use palette::convert::FromColorUnclamped;
 
-use crate::graph::GraphEvent;
-use crate::node::audio::rms::Rms;
+use crate::audio::rms::Rms;
 
 // Output type for our rudimentary audio -> color node
 pub struct AudioColors {

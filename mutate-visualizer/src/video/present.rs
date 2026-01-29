@@ -557,6 +557,7 @@ impl WindowPresent {
             };
 
             if self.present_id % 2 == 1 {
+                // let pre_wait = std::time::Instant::now();
                 match self.pw_device.wait_for_present(
                     self.swapchain,
                     self.present_id - 1,
@@ -575,6 +576,12 @@ impl WindowPresent {
                     },
                 };
                 self.present_id = self.present_id + 1;
+
+                // let post_wait = std::time::Instant::now();
+                // println!(
+                //     "present wait: {:10.4}",
+                //     (post_wait - pre_wait).as_micros() as f64 / 1000.0
+                // );
             }
         }
     }

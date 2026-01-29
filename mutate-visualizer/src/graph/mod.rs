@@ -62,6 +62,8 @@
 // A potential use for triple buffering may exist, but to correct late audio in feedback rendering
 // rather than to always run the GPU as fast as possible.
 
+pub mod node;
+
 /// It is but an idea.  Read the module documents and comments.
 pub struct Graph {}
 

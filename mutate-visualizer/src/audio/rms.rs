@@ -7,8 +7,8 @@
 //! perceive, below 40Hz.  It does not sufficiently emphasize high frequency tones.  To correct
 //! this, use a perceived loudness curve such as K-weighting or A-weighting etc.
 
+use crate::audio::raw::Audio;
 use crate::graph::GraphEvent;
-use crate::node::audio::raw::Audio;
 
 pub struct Rms {
     pub left: f32,
