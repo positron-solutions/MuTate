@@ -52,6 +52,17 @@ pub struct Audio {
     pub right: f32,
 }
 
+impl std::ops::Add for Audio {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Audio {
+            left: self.left + other.left,
+            right: self.right + other.right,
+        }
+    }
+}
+
 impl RawAudioNode {
     pub fn new() -> Result<Self, utate::MutateError> {
         // NEXT choice is a dependency required by the node to be created.  Handle via config, then
