@@ -15,6 +15,9 @@ pub struct RenderNode {
     pipelines: Vec<vk::Pipeline>,
 }
 
+// NEXT these names are pretty consistent and can likely be turned into asset loading functionality.
+const ENTRY_POINT: &[u8] = b"main\0";
+
 impl RenderNode {
     pub fn new(device: &ash::Device, format: vk::Format) -> Self {
         let assets = assets::AssetDirs::new();
@@ -42,21 +45,17 @@ impl RenderNode {
         let frag_shader_module =
             unsafe { device.create_shader_module(&frag_module_ci, None).unwrap() };
 
-        // Static
-        let entry_vert = CString::new("main").unwrap();
-        let entry_frag = CString::new("main").unwrap();
-
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo {
                 stage: vk::ShaderStageFlags::VERTEX,
                 module: vert_shader_module,
-                p_name: entry_vert.as_ptr(),
+                p_name: ENTRY_POINT.as_ptr() as *const std::os::raw::c_char,
                 ..Default::default()
             },
             vk::PipelineShaderStageCreateInfo {
                 stage: vk::ShaderStageFlags::FRAGMENT,
                 module: frag_shader_module,
-                p_name: entry_frag.as_ptr(),
+                p_name: ENTRY_POINT.as_ptr() as *const std::os::raw::c_char,
                 ..Default::default()
             },
         ];
