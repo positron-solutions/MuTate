@@ -149,7 +149,7 @@ impl<T: Copy + Default> GraphBuffer<T> {
         if size > 0 {
             self.data.copy_within(size..self.data.len(), 0);
         }
-        self.offset = size;
+        self.offset = old;
         return &mut self.data[old..];
     }
 }
