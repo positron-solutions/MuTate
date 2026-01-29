@@ -88,8 +88,6 @@ impl TriangleNode {
         let rasterizer = vk::PipelineRasterizationStateCreateInfo {
             polygon_mode: vk::PolygonMode::FILL,
             line_width: 1.0,
-            cull_mode: vk::CullModeFlags::BACK,
-            front_face: vk::FrontFace::COUNTER_CLOCKWISE,
             ..Default::default()
         };
 
@@ -209,6 +207,8 @@ impl TriangleNode {
         unsafe {
             device.cmd_set_viewport(cb, 0, &[viewport]);
             device.cmd_set_scissor(cb, 0, &[scissor]);
+
+            // The triangle ▲
             device.cmd_draw(cb, 3, 1, 0, 0)
         };
     }
