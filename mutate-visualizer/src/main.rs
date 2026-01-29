@@ -37,7 +37,7 @@ struct App {
     window_present: Option<present::WindowPresent>,
 
     // These fields will turn into a graph when graphs are ready
-    render_node: Option<node::video::RenderNode>,
+    render_node: Option<node::video::triangle::TriangleNode>,
     raw_audio: audio::raw::RawAudioNode,
     rms: audio::rms::RmsNode,
     k_weights: audio::kweight::KWeightsNode,
@@ -101,7 +101,7 @@ impl ApplicationHandler for App {
 
         // Render nodes need a device in order to allocate things.  They will need an entire vk_context to
         // properly interact with memory management.
-        self.render_node = Some(node::video::RenderNode::new(
+        self.render_node = Some(node::video::triangle::TriangleNode::new(
             device,
             wp.surface_format.format.clone(),
         ));
