@@ -1,8 +1,6 @@
 // Copyright 2025 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::ffi::CString;
-
 use ash::vk;
 
 use mutate_lib as utate;
