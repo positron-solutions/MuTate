@@ -1,4 +1,4 @@
-// Copyright 2025 The MuTate Contributors
+// Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::audio::iso226;

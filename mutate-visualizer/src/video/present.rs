@@ -1,4 +1,4 @@
-// Copyright 2025 The MuTate Contributors
+// Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // A swapchain exists when we are presenting to a Surface.  We can use it as a render target.  Not
