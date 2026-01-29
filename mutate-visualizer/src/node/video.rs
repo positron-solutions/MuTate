@@ -135,18 +135,18 @@ impl RenderNode {
         };
 
         let pipeline_ci = vk::GraphicsPipelineCreateInfo {
-            p_next: &pipeline_rendering_info as *const _ as *const std::ffi::c_void,
-            stage_count: shader_stages.len() as u32,
-            p_stages: shader_stages.as_ptr(),
-            p_vertex_input_state: &vertex_input_info,
-            p_input_assembly_state: &input_assembly,
-            p_viewport_state: &viewport_state,
-            p_rasterization_state: &rasterizer,
-            p_multisample_state: &multisampling,
+            layout: pipeline_layout,
             p_color_blend_state: &color_blend,
             p_dynamic_state: &dynamic_state_info,
-            layout: pipeline_layout,
+            p_input_assembly_state: &input_assembly,
+            p_multisample_state: &multisampling,
+            p_next: &pipeline_rendering_info as *const _ as *const std::ffi::c_void,
+            p_rasterization_state: &rasterizer,
+            p_stages: shader_stages.as_ptr(),
+            p_vertex_input_state: &vertex_input_info,
+            p_viewport_state: &viewport_state,
             render_pass: vk::RenderPass::null(), // dynamic rendering
+            stage_count: shader_stages.len() as u32,
             ..Default::default()
         };
 
