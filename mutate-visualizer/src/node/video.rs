@@ -78,7 +78,6 @@ impl RenderNode {
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo {
             topology: vk::PrimitiveTopology::TRIANGLE_LIST,
-            primitive_restart_enable: vk::FALSE,
             ..Default::default()
         };
 
@@ -89,19 +88,15 @@ impl RenderNode {
         };
 
         let rasterizer = vk::PipelineRasterizationStateCreateInfo {
-            depth_clamp_enable: vk::FALSE,
-            rasterizer_discard_enable: vk::FALSE,
             polygon_mode: vk::PolygonMode::FILL,
             line_width: 1.0,
             cull_mode: vk::CullModeFlags::BACK,
             front_face: vk::FrontFace::COUNTER_CLOCKWISE,
-            depth_bias_enable: vk::FALSE,
             ..Default::default()
         };
 
         let multisampling = vk::PipelineMultisampleStateCreateInfo {
             rasterization_samples: vk::SampleCountFlags::TYPE_1,
-            sample_shading_enable: vk::FALSE,
             ..Default::default()
         };
 
@@ -117,7 +112,6 @@ impl RenderNode {
         };
 
         let color_blend = vk::PipelineColorBlendStateCreateInfo {
-            logic_op_enable: vk::FALSE,
             attachment_count: 1,
             p_attachments: &color_blend_attachment,
             ..Default::default()
