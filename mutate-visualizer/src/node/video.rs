@@ -177,9 +177,7 @@ impl RenderNode {
         let device = context.device();
         let pipeline = self.pipelines[0];
         unsafe {
-            context
-                .device
-                .cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
         }
 
         let combined_push: [f32; 5] = [rgb.red, rgb.green, rgb.blue, 1.0, scale];
@@ -213,9 +211,8 @@ impl RenderNode {
         unsafe {
             device.cmd_set_viewport(cb, 0, &[viewport]);
             device.cmd_set_scissor(cb, 0, &[scissor]);
-        }
-
-        unsafe { device.cmd_draw(cb, 3, 1, 0, 0) };
+            device.cmd_draw(cb, 3, 1, 0, 0)
+        };
     }
 
     pub fn destroy(&self, device: &ash::Device) {
