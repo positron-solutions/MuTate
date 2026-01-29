@@ -48,14 +48,12 @@ impl RenderNode {
 
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo {
-                s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
                 stage: vk::ShaderStageFlags::VERTEX,
                 module: vert_shader_module,
                 p_name: entry_vert.as_ptr(),
                 ..Default::default()
             },
             vk::PipelineShaderStageCreateInfo {
-                s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
                 stage: vk::ShaderStageFlags::FRAGMENT,
                 module: frag_shader_module,
                 p_name: entry_frag.as_ptr(),
@@ -73,28 +71,24 @@ impl RenderNode {
         };
 
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             vertex_attribute_description_count: 0,
             vertex_binding_description_count: 0,
             ..Default::default()
         };
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
             topology: vk::PrimitiveTopology::TRIANGLE_LIST,
             primitive_restart_enable: vk::FALSE,
             ..Default::default()
         };
 
         let viewport_state = vk::PipelineViewportStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_VIEWPORT_STATE_CREATE_INFO,
             viewport_count: 1,
             scissor_count: 1,
             ..Default::default()
         };
 
         let rasterizer = vk::PipelineRasterizationStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             depth_clamp_enable: vk::FALSE,
             rasterizer_discard_enable: vk::FALSE,
             polygon_mode: vk::PolygonMode::FILL,
@@ -106,7 +100,6 @@ impl RenderNode {
         };
 
         let multisampling = vk::PipelineMultisampleStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
             rasterization_samples: vk::SampleCountFlags::TYPE_1,
             sample_shading_enable: vk::FALSE,
             ..Default::default()
@@ -124,7 +117,6 @@ impl RenderNode {
         };
 
         let color_blend = vk::PipelineColorBlendStateCreateInfo {
-            s_type: vk::StructureType::PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
             logic_op_enable: vk::FALSE,
             attachment_count: 1,
             p_attachments: &color_blend_attachment,
@@ -151,7 +143,6 @@ impl RenderNode {
 
         let color_formats = [format];
         let pipeline_rendering_info = vk::PipelineRenderingCreateInfo {
-            s_type: vk::StructureType::PIPELINE_RENDERING_CREATE_INFO,
             view_mask: 0,
             color_attachment_count: 1,
             p_color_attachment_formats: color_formats.as_ptr(),
@@ -159,7 +150,6 @@ impl RenderNode {
         };
 
         let pipeline_ci = vk::GraphicsPipelineCreateInfo {
-            s_type: vk::StructureType::GRAPHICS_PIPELINE_CREATE_INFO,
             p_next: &pipeline_rendering_info as *const _ as *const std::ffi::c_void,
             stage_count: shader_stages.len() as u32,
             p_stages: shader_stages.as_ptr(),

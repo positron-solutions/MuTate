@@ -389,7 +389,6 @@ impl WindowPresent {
         }
 
         let barrier = vk::ImageMemoryBarrier2 {
-            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
             src_stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
             dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             old_layout: vk::ImageLayout::UNDEFINED,
@@ -407,7 +406,6 @@ impl WindowPresent {
         };
 
         let dep_info = vk::DependencyInfo {
-            s_type: vk::StructureType::DEPENDENCY_INFO,
             image_memory_barrier_count: 1,
             p_image_memory_barriers: &barrier,
             ..Default::default()
@@ -416,7 +414,6 @@ impl WindowPresent {
         unsafe { device.cmd_pipeline_barrier2(command_buffer, &dep_info) };
 
         let color_attachment = vk::RenderingAttachmentInfo {
-            s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
             image_view: image_view,
             image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             load_op: vk::AttachmentLoadOp::CLEAR,
@@ -426,7 +423,6 @@ impl WindowPresent {
         };
 
         let render_info = vk::RenderingInfo {
-            s_type: vk::StructureType::RENDERING_INFO,
             render_area: vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: extent,
@@ -453,7 +449,6 @@ impl WindowPresent {
         let device = vk_context.device();
         unsafe { device.cmd_end_rendering(target.command_buffer) };
         let barrier2 = vk::ImageMemoryBarrier2 {
-            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
             src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
             dst_stage_mask: vk::PipelineStageFlags2::NONE,
@@ -473,7 +468,6 @@ impl WindowPresent {
         };
 
         let dep2 = vk::DependencyInfo {
-            s_type: vk::StructureType::DEPENDENCY_INFO,
             image_memory_barrier_count: 1,
             p_image_memory_barriers: &barrier2,
             ..Default::default()
@@ -493,7 +487,6 @@ impl WindowPresent {
         };
 
         let wait_info = vk::SemaphoreSubmitInfo {
-            s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
             semaphore: sync.image_available,
             value: 0,
             stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
@@ -502,7 +495,6 @@ impl WindowPresent {
         };
 
         let signal_info = vk::SemaphoreSubmitInfo {
-            s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
             semaphore: sync.render_finished,
             value: 0,
             stage_mask: vk::PipelineStageFlags2::ALL_GRAPHICS,
@@ -511,14 +503,12 @@ impl WindowPresent {
         };
 
         let cb_info = vk::CommandBufferSubmitInfo {
-            s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
             command_buffer: target.command_buffer,
             device_mask: 0,
             ..Default::default()
         };
 
         let submit = vk::SubmitInfo2 {
-            s_type: vk::StructureType::SUBMIT_INFO_2,
             wait_semaphore_info_count: 1,
             p_wait_semaphore_infos: &wait_info,
             signal_semaphore_info_count: 1,
@@ -541,7 +531,6 @@ impl WindowPresent {
         let indices = [sync.image_index as u32];
 
         let present_id = vk::PresentIdKHR {
-            s_type: vk::StructureType::PRESENT_ID_KHR,
             swapchain_count: 1,
             p_present_ids: [self.present_id].as_ptr(),
             ..Default::default()
@@ -549,7 +538,6 @@ impl WindowPresent {
         self.present_id = self.present_id + 1;
 
         let present_info = vk::PresentInfoKHR {
-            s_type: vk::StructureType::PRESENT_INFO_KHR,
             wait_semaphore_count: 1,
             p_wait_semaphores: present_wait.as_ptr(),
             swapchain_count: 1,
@@ -646,7 +634,6 @@ fn window_surface(window: &Window, vk_context: &VkContext) -> vk::SurfaceKHR {
         (RawWindowHandle::Xlib(win_handle), RawDisplayHandle::Xlib(display_handle)) => {
             let win_thing = win_handle.window;
             let xlib_create_info = vk::XlibSurfaceCreateInfoKHR {
-                s_type: vk::StructureType::XLIB_SURFACE_CREATE_INFO_KHR,
                 window: win_thing.into(),
                 dpy: display_handle.display.unwrap().as_ptr(),
                 ..Default::default()
@@ -659,7 +646,6 @@ fn window_surface(window: &Window, vk_context: &VkContext) -> vk::SurfaceKHR {
         }
         (RawWindowHandle::Wayland(win_handle), RawDisplayHandle::Wayland(display_handle)) => {
             let wayland_create_info = vk::WaylandSurfaceCreateInfoKHR {
-                s_type: vk::StructureType::WAYLAND_SURFACE_CREATE_INFO_KHR,
                 display: display_handle.display.as_ptr(),
                 surface: win_handle.surface.as_ptr(),
                 ..Default::default()
