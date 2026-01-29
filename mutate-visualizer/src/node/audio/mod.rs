@@ -6,8 +6,8 @@
 //! Audio first must be acquired, using the `crate::node::audio::raw::RawAudio` node.  As the graph
 //! interfaces evolve, so must these nodes and their types.
 
-// pub mod cqt;
 pub mod colors;
+pub mod cqt;
 pub mod iso226;
 pub mod kweight;
 pub mod raw;
