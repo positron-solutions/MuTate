@@ -3,7 +3,7 @@
 
 use crate::audio::iso226;
 use crate::audio::raw::Audio;
-use crate::graph::GraphBuffer;
+use crate::graph::{EventIntent, GraphBuffer, GraphEvent};
 
 // NEXT Windowing functions.  Windowed values must be un-windowed to correct rolling sums.
 // NEXT Decimate low frequency bins, using only every nth sample as necessary to preserve the
@@ -232,10 +232,9 @@ impl CqtNode {
         }
     }
 
-    pub fn consume(&mut self, input: &GraphBuffer<Audio>) {
-        let fresh = input.fresh();
-        println!("fresh length: {}", fresh.len());
-        println!("fresh input: {:?}", fresh[100].left);
+    pub fn consume(&mut self, input: &GraphEvent<Audio>) {
+        // XXX What are we doing with the intent?
+        let fresh = input.buffer.fresh();
         for b in &mut self.bins {
             b.consume(fresh);
         }
@@ -346,9 +345,13 @@ mod test {
             };
             phase = phase + angular;
         });
+        let event = GraphEvent {
+            intent: EventIntent::Full,
+            buffer: &input,
+        };
 
         let mut cqt = CqtNode::new(128, 48000, 60.0);
-        cqt.consume(&input);
+        cqt.consume(&event);
         let out = cqt.produce();
         for o in out {
             println!(
