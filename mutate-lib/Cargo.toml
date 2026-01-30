@@ -14,6 +14,7 @@ version.workspace = true
 pipewire = {workspace = true, features = ["v0_3_44"]}
 ringbuf.workspace = true
 thiserror.workspace = true
+ash.workspace = true
 
 [dev-dependencies]
 ctrlc.workspace = true

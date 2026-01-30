@@ -53,6 +53,9 @@ pub enum MutateError {
 
     #[error("Timeout: {0}")]
     Timeout(&'static str),
+
+    #[error("Vulkan: {0}")]
+    Vulkan(#[from] ash::vk::Result),
 }
 
 impl<T> From<std::sync::PoisonError<T>> for MutateError {
