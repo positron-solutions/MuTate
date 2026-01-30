@@ -5,9 +5,10 @@
 //!
 //! This is a very simple node that scales and colors a triangle.
 
-use ash::vk;
+// There is already beginning to be a lot of coupling between the graph behaviors and the render
+// target.
 
-use mutate_lib as utate;
+use ash::vk;
 
 use crate::assets;
 
@@ -91,6 +92,8 @@ impl TriangleNode {
             ..Default::default()
         };
 
+        // NEXT we cannot trivially multi sample when rendering into the swapchain.  The pipeline
+        // has the render target as a dependency and some indirect rendering is needed for MSAA.
         let multisampling = vk::PipelineMultisampleStateCreateInfo {
             rasterization_samples: vk::SampleCountFlags::TYPE_1,
             ..Default::default()
@@ -193,6 +196,7 @@ impl TriangleNode {
             );
         }
 
+        // NEXT move this onto the render target
         let viewport = vk::Viewport {
             width: extent.width as f32,
             height: extent.height as f32,
