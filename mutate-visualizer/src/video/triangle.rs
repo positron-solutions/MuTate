@@ -24,10 +24,10 @@ impl TriangleNode {
     pub fn new(device: &ash::Device, format: vk::Format) -> Self {
         let assets = assets::AssetDirs::new();
         let vert_spv = assets
-            .find_bytes("vertex", assets::AssetKind::Shader)
+            .find_bytes("triangle/vertex", assets::AssetKind::Shader)
             .unwrap();
         let frag_spv = assets
-            .find_bytes("fragment", assets::AssetKind::Shader)
+            .find_bytes("triangle/fragment", assets::AssetKind::Shader)
             .unwrap();
 
         let vert_module_ci = vk::ShaderModuleCreateInfo {
