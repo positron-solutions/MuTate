@@ -6,13 +6,16 @@ use ringbuf::{storage::Heap, LocalRb};
 
 use crate::audio::iso226;
 use crate::audio::raw::Audio;
-use crate::graph::{EventIntent, GraphEvent};
+use crate::graph::GraphEvent;
 
-// NEXT Windowing functions.  Windowed values must be un-windowed to correct rolling sums.
+// NEXT Windowing functions.  Windowed values must be re-applied on rolling sum portions.
 // NEXT Decimate low frequency bins, using only every nth sample as necessary to preserve the
 // necessary time resolution.
 // NEXT ML corrections for harmonics and leakages, inferring absence of true tones from presence of
 // sympathetic tones.
+// NEXT pre-compute twiddles and use phase adjustment for accumulation
+// DEBT sample rate
+// DEBT format channels
 
 /// Simple Complex number without any cruft.
 #[derive(Default, Copy, Clone)]
@@ -46,7 +49,6 @@ impl Complex {
     }
 }
 
-// DEBT format channels
 #[derive(Default, Copy, Clone)]
 pub struct AudioComplex {
     pub left: Complex,
@@ -103,6 +105,7 @@ impl CqtBin {
             iso226_offset: iso226::iso226_gain(center).unwrap(),
             terms,
             phase: 0.0,
+            // XXX needs update for decimation
             velocity: std::f32::consts::TAU * center / 48_000_f32, // DEBT format rate
         }
     }
@@ -110,6 +113,8 @@ impl CqtBin {
     // DEBT sample rate
     pub fn consume(&mut self, input: &[Audio]) {
         let read_len = input.len().min(self.len());
+        assert!(self.len() >= input.len()); // Eliminating some thinking for now
+
         let mut input = input;
         // Roll off old data
         if read_len == self.len() {
@@ -171,6 +176,7 @@ impl CqtBin {
                     phase -= std::f32::consts::TAU;
                 }
             });
+        assert_eq!(self.terms.occupied_len(), self.terms.capacity().into());
         self.phase = phase;
     }
 
@@ -185,6 +191,7 @@ impl CqtBin {
         let mut r_real = 0.0f32;
         let mut r_imag = 0.0f32;
 
+        assert_eq!(self.terms.occupied_len(), self.terms.capacity().into());
         for x in self.terms.iter() {
             l_real += x.left.real;
             l_imag += x.left.imag;
@@ -203,6 +210,7 @@ impl CqtBin {
             },
         };
 
+        // XXX length
         let norm = 1.0 / self.len() as f32;
         // `c` because this RMS is off by some constant factor we don't care about.
         let left_c_rms = sum.left.scale(norm * std::f32::consts::SQRT_2).mag();
@@ -238,7 +246,6 @@ impl CqtBin {
 ///   typical sample rate (48kHz)
 /// - Variable bin counts, enabling consumers to choose the resolution they need.
 /// - Efficient re-use of partial terms when the window is larger than the time step
-// DEBT format rate
 pub struct CqtNode {
     bins: Box<[CqtBin]>,
     /// Quality factor of this CQT filter bank.
@@ -271,6 +278,9 @@ impl CqtNode {
                 CqtBin::new(freq, size.max(size_min))
             })
             .collect();
+        let total = &bins.iter().fold(0usize, |accum, b| accum + b.len());
+        println!("total bins length: {}", total);
+
         Self {
             q,
             bins: bins.into_boxed_slice(),
@@ -306,11 +316,9 @@ impl CqtNode {
 
 #[cfg(test)]
 mod test {
-    use std::io::Read;
-
     use ringbuf::traits::Producer;
 
-    use crate::graph::GraphBuffer;
+    use crate::graph::{EventIntent, GraphBuffer};
 
     use super::*;
 
@@ -452,7 +460,7 @@ mod test {
             .unwrap();
 
         // Test result is sensitive to resolution because the bucket with the most energy is just
-        // "near" the test frequency.
+        // "near" the test frequency.  Adjust to match a nearby bin and comparisons will pass.
         assert!((closest_bin.freq - test_freq) / test_freq < 0.02);
         assert_eq!(max_by_percep_left.freq, closest_bin.freq);
         assert_eq!(max_by_mag_left.freq, closest_bin.freq);
