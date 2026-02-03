@@ -43,33 +43,11 @@ impl Complex {
     }
 }
 
-impl std::ops::Add for Complex {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            real: self.real + other.real,
-            imag: self.imag + other.imag,
-        }
-    }
-}
-
 // DEBT format channels
 #[derive(Default, Copy, Clone)]
 pub struct AudioComplex {
     pub left: Complex,
     pub right: Complex,
-}
-
-impl std::ops::Add for AudioComplex {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            left: self.left + other.left,
-            right: self.right + other.right,
-        }
-    }
 }
 
 impl AudioComplex {
@@ -152,11 +130,30 @@ impl CqtBin {
     // need RMS to have a consistent path to applying an inverse ISO226 curve correction, enabling
     // our machine to see sound somewhat like a human.
     pub fn produce(&self) -> Cqt {
-        let sum = self
-            .terms
-            .data
-            .iter()
-            .fold(AudioComplex::default(), |accum, next| accum + *next);
+        // This unrolled add was quite a bit faster.  Can't be wasting time on these sums on the CPU.
+        let mut l_real = 0.0f32;
+        let mut l_imag = 0.0f32;
+        let mut r_real = 0.0f32;
+        let mut r_imag = 0.0f32;
+
+        for x in &self.terms.data {
+            l_real += x.left.real;
+            l_imag += x.left.imag;
+            r_real += x.right.real;
+            r_imag += x.right.imag;
+        }
+
+        let sum = AudioComplex {
+            left: Complex {
+                real: l_real,
+                imag: l_imag,
+            },
+            right: Complex {
+                real: r_real,
+                imag: r_imag,
+            },
+        };
+
         let norm = 1.0 / self.terms.data.len() as f32;
         // `c` because this RMS is off by some constant factor we don't care about.
         let left_c_rms = sum.left.scale(norm * std::f32::consts::SQRT_2).mag();
