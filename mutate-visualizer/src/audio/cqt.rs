@@ -174,7 +174,7 @@ impl CqtBin {
         }
     }
 
-    pub fn length(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.terms.data.len()
     }
 }
@@ -270,9 +270,9 @@ mod test {
 
         // LIES if the test values bobble a bit, it's no big deal, just update them. What we want to
         // verify is that we get a constant window for values that are shorter than the step size.
-        assert_eq!(cqt.bins[0].length(), 42140);
-        assert_eq!(cqt.bins[72].length(), 800);
-        assert_eq!(cqt.bins[127].length(), 800);
+        assert_eq!(cqt.bins[0].len(), 42140);
+        assert_eq!(cqt.bins[72].len(), 800);
+        assert_eq!(cqt.bins[127].len(), 800);
 
         // LIES central frequencies may also bobble a bit due to changes in manner of calculation.
         // Just update them.  We want to be sure we're covering approximately the full window.
