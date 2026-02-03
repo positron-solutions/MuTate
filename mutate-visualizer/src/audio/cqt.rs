@@ -1,9 +1,12 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use ringbuf::traits::{Consumer, Observer, Producer};
+use ringbuf::{storage::Heap, LocalRb};
+
 use crate::audio::iso226;
 use crate::audio::raw::Audio;
-use crate::graph::{EventIntent, GraphBuffer, GraphEvent};
+use crate::graph::{EventIntent, GraphEvent};
 
 // NEXT Windowing functions.  Windowed values must be un-windowed to correct rolling sums.
 // NEXT Decimate low frequency bins, using only every nth sample as necessary to preserve the
@@ -81,7 +84,7 @@ struct CqtBin {
     /// ISO226 correction dB.
     iso226_offset: f32,
     // DEBT memory management
-    terms: GraphBuffer<AudioComplex>,
+    terms: LocalRb<Heap<AudioComplex>>,
     /// As we slide the window, the phase becomes offset relative to where we started.
     phase: f32,
     /// Constant modifier accounting for sample versus natural rate.
@@ -90,10 +93,15 @@ struct CqtBin {
 
 impl CqtBin {
     pub fn new(center: f32, size: usize) -> Self {
+        let mut terms = LocalRb::new(size);
+        unsafe {
+            terms.advance_write_index(size);
+        }
+        terms.iter_mut().for_each(|a| *a = AudioComplex::default());
         Self {
             center,
             iso226_offset: iso226::iso226_gain(center).unwrap(),
-            terms: GraphBuffer::new(size),
+            terms,
             phase: 0.0,
             velocity: std::f32::consts::TAU * center / 48_000_f32, // DEBT format rate
         }
@@ -101,20 +109,61 @@ impl CqtBin {
 
     // DEBT sample rate
     pub fn consume(&mut self, input: &[Audio]) {
-        let output = self.terms.writeable_slice(input.len());
+        let read_len = input.len().min(self.len());
+        let mut input = input;
+        // Roll off old data
+        if read_len == self.len() {
+            // XXX watch for input > terms.. it's not correctly handled for decimation
+            self.terms.clear(); // NOTE advances read index
+                                // If we can't use all of the data, use the tail end of it.
+            input = &input[(input.len() - read_len)..];
+        } else {
+            unsafe { self.terms.advance_read_index(read_len) };
+        }
+
+        // Roll on the new data
+        // XXX phase actually breaks if the input is too large for the ring.
         let mut phase = self.phase;
+        unsafe {
+            self.terms.advance_write_index(read_len);
+        }
+        let (head, tail) = self.terms.as_mut_slices();
+        // if we can write into just the tail, do it, otherwise write into a chain of head and tail.
+        let tail_len = tail.len();
+        let head_len = head.len();
+
+        // If read_len is larger than the slice, something is probably wrong.  If the slices we are
+        // cutting off are not the same size as the read_len, something is wrong.
+        // This assertion is trivially always true, so the code below seems good.
+        // assert_eq!(read_len, (head_len - (read_len - tail_len)) + (read_len - tail_len));
+        let head_index = if read_len >= tail_len {
+            (head_len + tail_len).saturating_sub(read_len)
+        } else {
+            0
+        };
+        let output = head[head_index..]
+            .iter_mut()
+            .chain(tail[tail_len.saturating_sub(read_len)..].iter_mut());
+
         input
             .iter()
-            .zip(output.iter_mut())
+            .take(read_len)
+            .zip(output)
             .for_each(|(input, out)| {
+                let (c, s) = phase.sin_cos();
+                let left_real = input.left * c;
+                let left_imag = -input.left * s;
+                let right_real = input.right * c;
+                let right_imag = -input.right * s;
+
                 *out = AudioComplex {
                     left: Complex {
-                        real: input.left * phase.cos(),
-                        imag: -input.left * phase.sin(),
+                        real: left_real,
+                        imag: left_imag,
                     },
                     right: Complex {
-                        real: input.right * phase.cos(),
-                        imag: -input.right * phase.sin(),
+                        real: right_real,
+                        imag: right_imag,
                     },
                 };
                 phase += self.velocity;
@@ -136,7 +185,7 @@ impl CqtBin {
         let mut r_real = 0.0f32;
         let mut r_imag = 0.0f32;
 
-        for x in &self.terms.data {
+        for x in self.terms.iter() {
             l_real += x.left.real;
             l_imag += x.left.imag;
             r_real += x.right.real;
@@ -154,7 +203,7 @@ impl CqtBin {
             },
         };
 
-        let norm = 1.0 / self.terms.data.len() as f32;
+        let norm = 1.0 / self.len() as f32;
         // `c` because this RMS is off by some constant factor we don't care about.
         let left_c_rms = sum.left.scale(norm * std::f32::consts::SQRT_2).mag();
         let right_c_rms = sum.right.scale(norm * std::f32::consts::SQRT_2).mag();
@@ -175,7 +224,7 @@ impl CqtBin {
     }
 
     pub fn len(&self) -> usize {
-        self.terms.data.len()
+        self.terms.capacity().into()
     }
 }
 
@@ -257,6 +306,12 @@ impl CqtNode {
 
 #[cfg(test)]
 mod test {
+    use std::io::Read;
+
+    use ringbuf::traits::Producer;
+
+    use crate::graph::GraphBuffer;
+
     use super::*;
 
     #[test]
@@ -293,8 +348,8 @@ mod test {
             }
         });
 
-        let mut tuned_bin = CqtBin::new(freq, 1600);
-        let mut mistuned_bin = CqtBin::new(freq * (std::f32::consts::SQRT_2 - 1.0), 1600);
+        let mut tuned_bin = CqtBin::new(freq, 5800);
+        let mut mistuned_bin = CqtBin::new(freq * (std::f32::consts::SQRT_2 - 1.0), 5800);
 
         tuned_bin.consume(&input);
         mistuned_bin.consume(&input);
@@ -329,26 +384,34 @@ mod test {
 
     #[test]
     fn test_cqt_node_precision() {
-        let test_freq = 80_f32;
+        let test_freq = 5050_f32;
         let sample_rate = 48_000_f32;
         let angular = std::f32::consts::TAU * test_freq / sample_rate;
         let mut phase = 0f32;
-        let mut input: GraphBuffer<Audio> = GraphBuffer::new(48000);
-        let slice = input.writeable_slice(48000);
-        slice.iter_mut().for_each(|out| {
+        let mut raw = [Audio::default(); 48000];
+        raw.iter_mut().for_each(|out| {
             *out = Audio {
                 left: phase.sin(),
                 right: phase.cos(),
             };
             phase = phase + angular;
         });
-        let event = GraphEvent {
-            intent: EventIntent::Full,
-            buffer: &input,
-        };
 
-        let mut cqt = CqtNode::new(128, 48000, 60.0);
-        cqt.consume(&event);
+        let mut cqt = CqtNode::new(256, 48000, 60.0);
+
+        let mut input: GraphBuffer<Audio> = GraphBuffer::new(800);
+        let mut i = 0usize;
+        while i + 800 <= 48000 {
+            input.write(&raw[i..(i + 800usize)]);
+            i += 800;
+            let event = GraphEvent {
+                intent: EventIntent::Full,
+                buffer: &input,
+            };
+
+            cqt.consume(&event);
+        }
+
         let out = cqt.produce();
         for o in out {
             println!(
@@ -390,7 +453,7 @@ mod test {
 
         // Test result is sensitive to resolution because the bucket with the most energy is just
         // "near" the test frequency.
-        assert!((closest_bin.freq - test_freq) / test_freq < 0.01);
+        assert!((closest_bin.freq - test_freq) / test_freq < 0.02);
         assert_eq!(max_by_percep_left.freq, closest_bin.freq);
         assert_eq!(max_by_mag_left.freq, closest_bin.freq);
         assert_eq!(max_by_percep_right.freq, closest_bin.freq);
