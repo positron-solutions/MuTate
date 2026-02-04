@@ -9,10 +9,10 @@ use crate::audio::raw::Audio;
 use crate::graph::GraphEvent;
 
 // NEXT Windowing functions.  Windowed values must be re-applied on rolling sum portions.
-// NEXT Decimate low frequency bins, using only every nth sample as necessary to preserve the
-// necessary time resolution.
 // NEXT ML corrections for harmonics and leakages, inferring absence of true tones from presence of
 // sympathetic tones.
+// NEXT Low-pass filters for long-wavelength bins to reduce accumulation of decimation aliasing
+// noise.
 // NEXT pre-compute twiddles and use phase adjustment for accumulation
 // DEBT sample rate
 // DEBT format channels
@@ -91,37 +91,51 @@ struct CqtBin {
     phase: f32,
     /// Constant modifier accounting for sample versus natural rate.
     velocity: f32,
+    /// Decimate the input by only reading every nth sample.
+    decimation: usize,
+    /// When reading decimated inputs, if we did not skip enough inputs for consistent decimation,
+    /// skip this many data points from the next consume cycle.
+    skip: usize,
 }
 
 impl CqtBin {
-    pub fn new(center: f32, size: usize) -> Self {
+    pub fn new(center: f32, size: usize, decimation: usize) -> Self {
+        // Ensure the effective size is longer than the typical window to avoid energy accumulation
+        // at frequencies that couple with the chunk size.
+        let size = (size as f32 / decimation as f32).ceil() as usize;
         let mut terms = LocalRb::new(size);
         unsafe {
             terms.advance_write_index(size);
         }
+        assert!((size * decimation) >= 800);
         terms.iter_mut().for_each(|a| *a = AudioComplex::default());
         Self {
             center,
             iso226_offset: iso226::iso226_gain(center).unwrap(),
             terms,
             phase: 0.0,
-            // XXX needs update for decimation
-            velocity: std::f32::consts::TAU * center / 48_000_f32, // DEBT format rate
+            velocity: (std::f32::consts::TAU * center * (decimation as f32)) / 48_000_f32, // DEBT format rate
+            decimation,
+            skip: 0,
         }
     }
 
     // DEBT sample rate
     pub fn consume(&mut self, input: &[Audio]) {
-        let read_len = input.len().min(self.len());
-        assert!(self.len() >= input.len()); // Eliminating some thinking for now
-
+        // XXX Seek events etc are just not handled.  The way to handle them is via accumulation
+        // between calls to produce,  but it needs to be numerically stable.
         let mut input = input;
+        if self.skip != 0 {
+            self.phase += self.velocity;
+            input = &input[self.skip..];
+        }
+        let read_len = input.len() / self.decimation;
+        self.skip = (self.decimation - (input.len() % self.decimation)) % self.decimation;
+
         // Roll off old data
         if read_len == self.len() {
-            // XXX watch for input > terms.. it's not correctly handled for decimation
+            // XXX watch for input > terms.. it's not correctly handled
             self.terms.clear(); // NOTE advances read index
-                                // If we can't use all of the data, use the tail end of it.
-            input = &input[(input.len() - read_len)..];
         } else {
             unsafe { self.terms.advance_read_index(read_len) };
         }
@@ -152,6 +166,7 @@ impl CqtBin {
 
         input
             .iter()
+            .step_by(self.decimation)
             .take(read_len)
             .zip(output)
             .for_each(|(input, out)| {
@@ -211,7 +226,7 @@ impl CqtBin {
         };
 
         // XXX length
-        let norm = 1.0 / self.len() as f32;
+        let norm = 1.0 / self.effective_len() as f32;
         // `c` because this RMS is off by some constant factor we don't care about.
         let left_c_rms = sum.left.scale(norm * std::f32::consts::SQRT_2).mag();
         let right_c_rms = sum.right.scale(norm * std::f32::consts::SQRT_2).mag();
@@ -231,6 +246,14 @@ impl CqtBin {
         }
     }
 
+    /// The length of the input that will be decimated and read.  This is the window length for this
+    /// filter bin.
+    pub fn effective_len(&self) -> usize {
+        self.len() * self.decimation
+    }
+
+    /// The length of the internal buffer, which is only filled after decimation.  This is **not**
+    /// the window length for this filter bin.
     pub fn len(&self) -> usize {
         self.terms.capacity().into()
     }
@@ -274,8 +297,13 @@ impl CqtNode {
         let bins: Vec<CqtBin> = (0..resolution)
             .map(|n| {
                 let freq = (log_min + (n as f32 * log_step)).exp2();
+                let bin_nyquist = freq * 2.0;
+                // Whenever we have over two times as many samples as we need, decimate the sample
+                // rate by two.  This keeps the information margins low.  The extra 2.0 keeps bin
+                // sizes relatively consistent, around 200 samples.
+                let decimation = 2u32.pow((freq_max / (bin_nyquist * 2.0)).log2() as u32);
                 let size = (q * sample_rate as f32 / freq).ceil() as usize;
-                CqtBin::new(freq, size.max(size_min))
+                CqtBin::new(freq, size.max(size_min), decimation as usize)
             })
             .collect();
         let total = &bins.iter().fold(0usize, |accum, b| accum + b.len());
@@ -328,13 +356,23 @@ mod test {
 
         // uncomment to output reference values
         // for (i, b) in cqt.bins.iter().enumerate() {
-        //     println!("i: {}, frequency: {}, length: {}", i, b.center, b.length);
+        //     println!(
+        //         "i: {}, frequency: {}, effective_length: {},  length: {}",
+        //         i,
+        //         b.center,
+        //         b.effective_len(),
+        //         b.len()
+        //     );
         // }
 
         // LIES if the test values bobble a bit, it's no big deal, just update them. What we want to
         // verify is that we get a constant window for values that are shorter than the step size.
-        assert_eq!(cqt.bins[0].len(), 42140);
-        assert_eq!(cqt.bins[72].len(), 800);
+        assert_eq!(cqt.bins[0].effective_len(), 42240);
+        assert_eq!(cqt.bins[72].effective_len(), 800);
+        assert_eq!(cqt.bins[127].effective_len(), 800);
+
+        assert_eq!(cqt.bins[0].len(), 165);
+        assert_eq!(cqt.bins[72].len(), 200);
         assert_eq!(cqt.bins[127].len(), 800);
 
         // LIES central frequencies may also bobble a bit due to changes in manner of calculation.
@@ -356,8 +394,8 @@ mod test {
             }
         });
 
-        let mut tuned_bin = CqtBin::new(freq, 5800);
-        let mut mistuned_bin = CqtBin::new(freq * (std::f32::consts::SQRT_2 - 1.0), 5800);
+        let mut tuned_bin = CqtBin::new(freq, 5800, 2);
+        let mut mistuned_bin = CqtBin::new(freq * (std::f32::consts::SQRT_2 - 1.0), 5800, 2);
 
         tuned_bin.consume(&input);
         mistuned_bin.consume(&input);
