@@ -3,7 +3,10 @@
 
 mod assets;
 mod audio;
+mod buffer;
 mod graph;
+mod image;
+mod util;
 mod video;
 mod vk_context;
 
