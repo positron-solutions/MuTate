@@ -240,8 +240,7 @@ impl CqtBin {
             },
         };
 
-        // XXX length
-        let norm = 1.0 / self.effective_len() as f32;
+        let norm = 1.0 / self.len() as f32;
         // `c` because this RMS is off by some constant factor we don't care about.
         let left_c_rms = sum.left.scale(norm * std::f32::consts::SQRT_2).mag();
         let right_c_rms = sum.right.scale(norm * std::f32::consts::SQRT_2).mag();
