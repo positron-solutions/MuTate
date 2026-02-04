@@ -303,7 +303,7 @@ impl CqtNode {
     /// * `update_rate` - expected maximum frames per second. Establishes a floor on the window
     ///    length since higher frequencies will just use all of the samples  in each frame.
     pub fn new(resolution: usize, sample_rate: u32, update_rate: f32) -> Self {
-        let freq_min = 20.0f32;
+        let freq_min = 24.0f32;
         let freq_max = ((sample_rate / 2) as f32).min(OLD_PEOPLE_MAX); // Nyquist Limit
 
         let log_min = freq_min.log2();
