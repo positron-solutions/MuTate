@@ -290,6 +290,8 @@ pub struct CqtNode {
     output: Box<[Cqt]>,
 }
 
+/// Scale the "Quality" factor.
+const Q_FACTOR: f32 = 0.2;
 impl CqtNode {
     /// * `resolution` - Number of frequency bins.
     /// * `sample_rate` - Audio input samples per second.
@@ -306,7 +308,7 @@ impl CqtNode {
         // calculate window length using "quality" derived from bins per octvate
         let octaves = (freq_max / freq_min).log2();
         let b = resolution as f32 / octaves;
-        let q = 1.0 / (2.0f32.powf(1.0 / b) - 1.0);
+        let q = 1.0 / (2.0f32.powf(1.0 / b) - 1.0) * Q_FACTOR;
         let size_min = (sample_rate as f32 / update_rate).ceil() as usize;
         let bins: Vec<CqtBin> = (0..resolution)
             .map(|n| {
