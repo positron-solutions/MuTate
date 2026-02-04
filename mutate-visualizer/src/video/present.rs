@@ -109,7 +109,7 @@ impl WindowPresent {
             image_color_space: surface_format.color_space,
             image_extent: extent,
             image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
             image_sharing_mode: vk::SharingMode::EXCLUSIVE,
             pre_transform: surface_caps.current_transform,
             composite_alpha: composite_alpha,
@@ -281,7 +281,8 @@ impl WindowPresent {
                 image_color_space: surface_format.color_space,
                 image_extent: extent,
                 image_array_layers: 1,
-                image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::TRANSFER_DST,
                 image_sharing_mode: vk::SharingMode::EXCLUSIVE,
                 pre_transform: surface_caps.current_transform,
                 composite_alpha: pick_alpha(&surface_caps),
@@ -385,52 +386,52 @@ impl WindowPresent {
             device.begin_command_buffer(command_buffer, &begin).unwrap();
         }
 
-        let barrier = vk::ImageMemoryBarrier2 {
-            src_stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
-            dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            old_layout: vk::ImageLayout::UNDEFINED,
-            new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            src_access_mask: vk::AccessFlags2::empty(),
-            dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            image,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                level_count: 1,
-                layer_count: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        // let barrier = vk::ImageMemoryBarrier2 {
+        //     src_stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
+        //     dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        //     old_layout: vk::ImageLayout::UNDEFINED,
+        //     new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        //     src_access_mask: vk::AccessFlags2::empty(),
+        //     dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        //     image,
+        //     subresource_range: vk::ImageSubresourceRange {
+        //         aspect_mask: vk::ImageAspectFlags::COLOR,
+        //         level_count: 1,
+        //         layer_count: 1,
+        //         ..Default::default()
+        //     },
+        //     ..Default::default()
+        // };
 
-        let dep_info = vk::DependencyInfo {
-            image_memory_barrier_count: 1,
-            p_image_memory_barriers: &barrier,
-            ..Default::default()
-        };
+        // let dep_info = vk::DependencyInfo {
+        //     image_memory_barrier_count: 1,
+        //     p_image_memory_barriers: &barrier,
+        //     ..Default::default()
+        // };
 
-        unsafe { device.cmd_pipeline_barrier2(command_buffer, &dep_info) };
+        // unsafe { device.cmd_pipeline_barrier2(command_buffer, &dep_info) };
 
-        let color_attachment = vk::RenderingAttachmentInfo {
-            image_view: image_view,
-            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            load_op: vk::AttachmentLoadOp::CLEAR,
-            store_op: vk::AttachmentStoreOp::STORE,
-            clear_value: clear,
-            ..Default::default()
-        };
+        // let color_attachment = vk::RenderingAttachmentInfo {
+        //     image_view: image_view,
+        //     image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        //     load_op: vk::AttachmentLoadOp::CLEAR,
+        //     store_op: vk::AttachmentStoreOp::STORE,
+        //     clear_value: clear,
+        //     ..Default::default()
+        // };
 
-        let render_info = vk::RenderingInfo {
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: extent,
-            },
-            layer_count: 1,
-            color_attachment_count: 1,
-            p_color_attachments: &color_attachment,
-            ..Default::default()
-        };
+        // let render_info = vk::RenderingInfo {
+        //     render_area: vk::Rect2D {
+        //         offset: vk::Offset2D { x: 0, y: 0 },
+        //         extent: extent,
+        //     },
+        //     layer_count: 1,
+        //     color_attachment_count: 1,
+        //     p_color_attachments: &color_attachment,
+        //     ..Default::default()
+        // };
 
-        unsafe { device.cmd_begin_rendering(command_buffer, &render_info) };
+        // unsafe { device.cmd_begin_rendering(command_buffer, &render_info) };
 
         let target = DrawTarget {
             image,
@@ -444,37 +445,42 @@ impl WindowPresent {
     /// Sync presentation image transform and present
     pub fn post_draw(&mut self, vk_context: &VkContext, sync: DrawSync, target: DrawTarget) {
         let device = vk_context.device();
-        unsafe { device.cmd_end_rendering(target.command_buffer) };
-        let barrier2 = vk::ImageMemoryBarrier2 {
-            src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            dst_stage_mask: vk::PipelineStageFlags2::NONE,
-            dst_access_mask: vk::AccessFlags2::empty(),
 
-            old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+        // XXX Needed for graphics
+        // unsafe { device.cmd_end_rendering(target.command_buffer) };
 
-            image: target.image,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                level_count: 1,
-                layer_count: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        // let barrier2 = vk::ImageMemoryBarrier2 {
+        //     src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        //     src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        //     dst_stage_mask: vk::PipelineStageFlags2::NONE,
+        //     dst_access_mask: vk::AccessFlags2::empty(),
 
-        let dep2 = vk::DependencyInfo {
-            image_memory_barrier_count: 1,
-            p_image_memory_barriers: &barrier2,
-            ..Default::default()
-        };
+        //     // XXX pre-present barrier was incorrect
+        //     // old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        //     old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        //     new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
 
-        unsafe {
-            vk_context
-                .device
-                .cmd_pipeline_barrier2(target.command_buffer, &dep2)
-        };
+        //     image: target.image,
+        //     subresource_range: vk::ImageSubresourceRange {
+        //         aspect_mask: vk::ImageAspectFlags::COLOR,
+        //         level_count: 1,
+        //         layer_count: 1,
+        //         ..Default::default()
+        //     },
+        //     ..Default::default()
+        // };
+
+        // let dep2 = vk::DependencyInfo {
+        //     image_memory_barrier_count: 1,
+        //     p_image_memory_barriers: &barrier2,
+        //     ..Default::default()
+        // };
+
+        // unsafe {
+        //     vk_context
+        //         .device
+        //         .cmd_pipeline_barrier2(target.command_buffer, &dep2)
+        // };
 
         unsafe {
             vk_context

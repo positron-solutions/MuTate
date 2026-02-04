@@ -6,4 +6,5 @@
 //! Drawing and presentation go here.
 
 pub mod present;
+pub mod spectrum;
 pub mod triangle;

@@ -10,6 +10,7 @@ mod util;
 mod video;
 mod vk_context;
 
+use ash::vk;
 use clap::Parser;
 use winit::{
     application::ApplicationHandler,
@@ -40,11 +41,12 @@ struct App {
     window_present: Option<video::present::WindowPresent>,
 
     // These fields will turn into a graph when graphs are ready
-    render_node: Option<video::triangle::TriangleNode>,
+    render_node: Option<video::spectrum::SpectrumNode>,
     raw_audio: audio::raw::RawAudioNode,
-    rms: audio::rms::RmsNode,
-    k_weights: audio::kweight::KWeightsNode,
-    colors: audio::colors::AudioColorsNode,
+    // rms: audio::rms::RmsNode,
+    // k_weights: audio::kweight::KWeightsNode,
+    // colors: audio::colors::AudioColorsNode,
+    cqt: audio::cqt::CqtNode,
 }
 
 impl App {
@@ -57,38 +59,37 @@ impl App {
 
         // NEXT dynamically waiting down to the approximate latch timing to late bind the last
         // possible audio.
-        std::thread::sleep(std::time::Duration::from_millis(12));
+        std::thread::sleep(std::time::Duration::from_millis(6));
 
         // NOTE A manually driven, unrolled render graph.  These are the associations that must
         // be described in the eventual graph connectivity APIs.
         let raw_state = self.raw_audio.consume().unwrap();
         let raw_out = self.raw_audio.produce().unwrap();
-        self.k_weights.consume(&raw_out);
+        self.cqt.consume(&raw_out);
 
         // The control loop, unrolled
         if raw_state == crate::graph::node::SeekState::UnderProduced {
             let raw_out = self.raw_audio.produce().unwrap();
-            self.k_weights.consume(&raw_out);
+            self.cqt.consume(&raw_out);
         };
 
-        let kweights_out = self.k_weights.produce();
-        self.rms.consume(&kweights_out);
-        let rms_out = self.rms.produce();
-        self.colors.consume(&rms_out);
-        let colors = self.colors.produce();
+        let cqt = self.cqt.produce();
+
+        let clear = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
 
         // Obtain swapchain image and hot command buffer
-        let (sync, target) = wp.render_target(vk_context, colors.clear);
+        let (sync, target) = wp.render_target(vk_context, clear);
 
         // Node draws to command buffer.  The idea we've isolated is that drawing to a target has
         // little to do with the source or fate of that target.
-        self.render_node.as_ref().unwrap().draw(
-            target.command_buffer,
-            vk_context,
-            colors.color,
-            colors.scale,
-            &target.extent,
-        );
+        self.render_node
+            .as_mut()
+            .unwrap()
+            .draw(&target, cqt, &self.vk_context, &target.extent);
 
         // Presentation closes the command buffer, submits to queue, transforms image, and presents.
         // Also waits on presentation.
@@ -99,15 +100,22 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let vk_context = &self.vk_context;
-        let device = &vk_context.device;
         let wp = video::present::WindowPresent::new(vk_context, event_loop, &self.args);
 
-        // Render nodes need a device in order to allocate things.  They will need an entire vk_context to
-        // properly interact with memory management.
-        self.render_node = Some(video::triangle::TriangleNode::new(
-            device,
-            wp.surface_format.format.clone(),
-        ));
+        let mut render_node =
+            video::spectrum::SpectrumNode::new(vk_context, wp.surface_format.format.clone());
+        render_node
+            .provision(
+                vk_context,
+                // XXX made up size :-)
+                vk::Extent2D {
+                    height: 800,
+                    width: 800,
+                },
+            )
+            .unwrap();
+        self.render_node = Some(render_node);
+
         self.window_present = Some(wp);
     }
 
@@ -163,7 +171,11 @@ impl ApplicationHandler for App {
                 let device = &vk_context.device();
 
                 device.device_wait_idle().unwrap();
-                self.render_node.as_ref().unwrap().destroy(&device);
+                self.render_node
+                    .as_ref()
+                    .unwrap()
+                    .destroy(&vk_context)
+                    .unwrap();
                 self.window_present.as_ref().unwrap().destroy(vk_context);
                 vk_context.destroy();
 
@@ -191,9 +203,8 @@ fn main() -> Result<(), utate::MutateError> {
         render_node: None,
 
         raw_audio: audio::raw::RawAudioNode::new().unwrap(),
-        k_weights: audio::kweight::KWeightsNode::new(),
-        rms: audio::rms::RmsNode::new(),
-        colors: audio::colors::AudioColorsNode::new(),
+
+        cqt: audio::cqt::CqtNode::new(600, 48000, 60.0),
     };
     event_loop.run_app(&mut app).unwrap();
     app.raw_audio.destroy();

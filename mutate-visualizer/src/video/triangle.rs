@@ -170,12 +170,13 @@ impl TriangleNode {
 
     pub fn draw(
         &self,
-        cb: vk::CommandBuffer,
+        target: &crate::video::present::DrawTarget,
         context: &crate::VkContext,
         rgb: palette::Srgb<f32>,
         scale: f32,
         extent: &vk::Extent2D,
     ) {
+        let cb = target.command_buffer;
         let device = context.device();
         let pipeline = self.pipelines[0];
         unsafe {
