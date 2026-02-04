@@ -150,56 +150,64 @@ impl CqtBin {
 
         // Roll on the new data
         // XXX phase actually breaks if the input is too large for the ring.
-        let mut phase = self.phase;
         unsafe {
             self.terms.advance_write_index(read_len);
         }
+        assert_eq!(self.terms.occupied_len(), self.terms.capacity().into());
+
         let (head, tail) = self.terms.as_mut_slices();
-        // if we can write into just the tail, do it, otherwise write into a chain of head and tail.
         let tail_len = tail.len();
         let head_len = head.len();
 
-        // If read_len is larger than the slice, something is probably wrong.  If the slices we are
-        // cutting off are not the same size as the read_len, something is wrong.
-        // This assertion is trivially always true, so the code below seems good.
-        // assert_eq!(read_len, (head_len - (read_len - tail_len)) + (read_len - tail_len));
-        let head_index = if read_len >= tail_len {
-            (head_len + tail_len).saturating_sub(read_len)
-        } else {
-            0
-        };
-        let output = head[head_index..]
-            .iter_mut()
-            .chain(tail[tail_len.saturating_sub(read_len)..].iter_mut());
+        let mut phase_real = self.phase.real;
+        let mut phase_imag = self.phase.imag;
+        let mut read_idx = 0;
+        let dec = self.decimation;
+        let vel_real = self.velocity.real;
+        let vel_imag = self.velocity.imag;
 
-        input
-            .iter()
-            .step_by(self.decimation)
-            .take(read_len)
-            .zip(output)
-            .for_each(|(input, out)| {
-                let left_real = input.left * phase.real;
-                let left_imag = -input.left * phase.imag;
-                let right_real = input.right * phase.real;
-                let right_imag = -input.right * phase.imag;
-
-                *out = AudioComplex {
+        // write into the head if the tail is not large enough
+        if read_len > tail_len {
+            let head_offset = (head_len + tail_len).saturating_sub(read_len);
+            for i in 0..(read_len - tail_len) {
+                let sample = input[read_idx];
+                read_idx += dec;
+                head[head_offset + i] = AudioComplex {
                     left: Complex {
-                        real: left_real,
-                        imag: left_imag,
+                        real: sample.left * phase_real,
+                        imag: -sample.left * phase_imag,
                     },
                     right: Complex {
-                        real: right_real,
-                        imag: right_imag,
+                        real: sample.right * phase_real,
+                        imag: -sample.right * phase_imag,
                     },
                 };
-                phase = Complex {
-                    real: phase.real * self.velocity.real - phase.imag * self.velocity.imag,
-                    imag: phase.real * self.velocity.imag + phase.imag * self.velocity.real,
-                };
-            });
-        assert_eq!(self.terms.occupied_len(), self.terms.capacity().into());
-        self.phase = phase;
+                let new_phase_real = phase_real * vel_real - phase_imag * vel_imag;
+                phase_imag = phase_real * vel_imag + phase_imag * vel_real;
+                phase_real = new_phase_real;
+            }
+        }
+        let tail_offset = tail_len.saturating_sub(read_len);
+        for i in 0..read_len.min(tail_len) {
+            let sample = input[read_idx];
+            read_idx += dec;
+            tail[tail_offset + i] = AudioComplex {
+                left: Complex {
+                    real: sample.left * phase_real,
+                    imag: -sample.left * phase_imag,
+                },
+                right: Complex {
+                    real: sample.right * phase_real,
+                    imag: -sample.right * phase_imag,
+                },
+            };
+            let new_phase_real = phase_real * vel_real - phase_imag * vel_imag;
+            phase_imag = phase_real * vel_imag + phase_imag * vel_real;
+            phase_real = new_phase_real;
+        }
+
+        self.phase.real = phase_real;
+        self.phase.imag = phase_imag;
     }
 
     // The filter bins have essentially extracted the harmonic component and when we do the RMS
