@@ -26,6 +26,7 @@ pub struct Complex {
 
 impl Complex {
     /// Magnitude
+    #[inline(always)]
     pub fn mag(&self) -> f32 {
         self.power().sqrt()
     }
@@ -36,6 +37,7 @@ impl Complex {
     }
 
     /// Phase angle in radians
+    #[inline(always)]
     pub fn phase(self) -> f32 {
         self.imag.atan2(self.real)
     }
