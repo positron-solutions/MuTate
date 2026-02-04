@@ -25,6 +25,7 @@ pub struct VkContext {
 
     pub queue_family_index: u32,
     pub command_pool: vk::CommandPool,
+    pub descriptor_pool: vk::DescriptorPool,
 }
 
 static VALIDATION_LAYER: &CStr =
@@ -174,6 +175,22 @@ impl VkContext {
         };
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
+        // DEBT memory management.  We obviously don't want to recreate descriptor pools for every visual.
+        let pool_sizes = [vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 32, // we're promoting bindless, so this is plenty?
+        }];
+
+        let pool_info = vk::DescriptorPoolCreateInfo {
+            max_sets: 1,
+            pool_size_count: pool_sizes.len() as u32,
+            p_pool_sizes: pool_sizes.as_ptr(),
+            flags: vk::DescriptorPoolCreateFlags::empty(),
+            ..Default::default()
+        };
+
+        let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
+
         let command_pool_info = vk::CommandPoolCreateInfo {
             flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
             queue_family_index,
@@ -199,6 +216,7 @@ impl VkContext {
             compute_queue: queue.clone(),
             transfer_queue: queue,
 
+            descriptor_pool,
             command_pool,
             queue_family_index,
         }
@@ -219,6 +237,8 @@ impl VkContext {
     // XXX in reality, this consumes the context, but ownership friction needs worked out.
     pub fn destroy(&self) {
         unsafe {
+            self.device
+                .destroy_descriptor_pool(self.descriptor_pool, None);
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None)
