@@ -35,7 +35,7 @@ pub struct AssetDirs {
     default: Option<PathBuf>,
 }
 
-const DEFAULT_ASSET_DIR: Option<&str> = option_env!("MUTATE_ASSETS_DIR");
+const DEFAULT_ASSET_DIR: Option<&str> = option_env!("MUTATE_BUILD_ASSETS_DIR");
 
 impl AssetDirs {
     /// Checks asset search directories once on construction.
@@ -43,7 +43,17 @@ impl AssetDirs {
         let env = std::env::var("MUTATE_ASSETS_DIR")
             .ok()
             .map(PathBuf::from)
-            .filter(|path| path.exists());
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .filter(|path| {
+                let valid = path.exists() && path.is_dir();
+                if !valid {
+                    eprintln!(
+                        "warning: invalid MUTATE_ASSETS_DIR (path not found): {}",
+                        path.to_string_lossy()
+                    );
+                }
+                valid
+            });
 
         let local = dirs::data_local_dir()
             .map(|p| p.join("mutate"))

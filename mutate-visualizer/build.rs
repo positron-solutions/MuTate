@@ -58,9 +58,8 @@ fn set_asset_default_dir() {
     let cargo = fs::read_to_string("Cargo.toml").unwrap();
     let parsed: toml::Value = toml::from_str(&cargo).unwrap();
 
-    let mutate_asset_dir = parsed["package"]["metadata"]["mutate"]["asset_dir"]
+    let mutate_build_assets_dir = parsed["package"]["metadata"]["mutate"]["asset_dir"]
         .as_str()
         .unwrap_or("assets");
-
-    println!("cargo:rustc-env=MUTATE_ASSET_DIR={mutate_asset_dir}");
+    println!("cargo:rustc-env=MUTATE_BUILD_ASSETS_DIR={mutate_build_assets_dir}");
 }
