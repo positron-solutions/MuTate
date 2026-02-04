@@ -322,7 +322,7 @@ impl CqtNode {
                 // Whenever we have over two times as many samples as we need, decimate the sample
                 // rate by two.  This keeps the information margins low.  The extra 2.0 keeps bin
                 // sizes relatively consistent, around 200 samples.
-                let decimation = 2u32.pow((freq_max / (bin_nyquist * 2.0)).log2() as u32);
+                let decimation = 2u32.pow((freq_max / (bin_nyquist * 8.0)).log2() as u32);
                 let size = (q * sample_rate as f32 / freq).ceil() as usize;
                 CqtBin::new(freq, size.max(size_min), decimation as usize)
             })
