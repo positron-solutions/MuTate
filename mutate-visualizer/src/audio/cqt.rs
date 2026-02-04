@@ -292,6 +292,11 @@ pub struct CqtNode {
 
 /// Scale the "Quality" factor.
 const Q_FACTOR: f32 = 0.2;
+/// Old people and rock stars cannot hear above certain frequencies.  Even if the sampling rate will
+/// allow us to resolve higher frequencies, there is little visually interesting above them, and
+/// only trouble makers who carry on and talk back seem to respond to them anyway.  🦕🦕🦕🦕
+const OLD_PEOPLE_MAX: f32 = 12_333.0;
+
 impl CqtNode {
     /// * `resolution` - Number of frequency bins.
     /// * `sample_rate` - Audio input samples per second.
@@ -299,7 +304,7 @@ impl CqtNode {
     ///    length since higher frequencies will just use all of the samples  in each frame.
     pub fn new(resolution: usize, sample_rate: u32, update_rate: f32) -> Self {
         let freq_min = 20.0f32;
-        let freq_max = (sample_rate / 2) as f32; // Nyquist Limit
+        let freq_max = ((sample_rate / 2) as f32).min(OLD_PEOPLE_MAX); // Nyquist Limit
 
         let log_min = freq_min.log2();
         let log_max = freq_max.log2();
