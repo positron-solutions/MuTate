@@ -88,9 +88,9 @@ struct CqtBin {
     // DEBT memory management
     terms: LocalRb<Heap<AudioComplex>>,
     /// As we slide the window, the phase becomes offset relative to where we started.
-    phase: f32,
+    phase: Complex,
     /// Constant modifier accounting for sample versus natural rate.
-    velocity: f32,
+    velocity: Complex,
     /// Decimate the input by only reading every nth sample.
     decimation: usize,
     /// When reading decimated inputs, if we did not skip enough inputs for consistent decimation,
@@ -104,6 +104,12 @@ impl CqtBin {
         // at frequencies that couple with the chunk size.
         let size = (size as f32 / decimation as f32).ceil() as usize;
         let mut terms = LocalRb::new(size);
+        // DEBT format rate
+        let scalar_velocity = (std::f32::consts::TAU * center * (decimation as f32)) / 48_000_f32;
+        let velocity = Complex {
+            real: scalar_velocity.cos(),
+            imag: scalar_velocity.sin(),
+        };
         unsafe {
             terms.advance_write_index(size);
         }
@@ -113,8 +119,11 @@ impl CqtBin {
             center,
             iso226_offset: iso226::iso226_gain(center).unwrap(),
             terms,
-            phase: 0.0,
-            velocity: (std::f32::consts::TAU * center * (decimation as f32)) / 48_000_f32, // DEBT format rate
+            phase: Complex {
+                real: 1.0,
+                imag: 0.0,
+            }, // NOTE sin & cosine of phase angle
+            velocity,
             decimation,
             skip: 0,
         }
@@ -126,7 +135,6 @@ impl CqtBin {
         // between calls to produce,  but it needs to be numerically stable.
         let mut input = input;
         if self.skip != 0 {
-            self.phase += self.velocity;
             input = &input[self.skip..];
         }
         let read_len = input.len() / self.decimation;
@@ -170,11 +178,10 @@ impl CqtBin {
             .take(read_len)
             .zip(output)
             .for_each(|(input, out)| {
-                let (c, s) = phase.sin_cos();
-                let left_real = input.left * c;
-                let left_imag = -input.left * s;
-                let right_real = input.right * c;
-                let right_imag = -input.right * s;
+                let left_real = input.left * phase.real;
+                let left_imag = -input.left * phase.imag;
+                let right_real = input.right * phase.real;
+                let right_imag = -input.right * phase.imag;
 
                 *out = AudioComplex {
                     left: Complex {
@@ -186,10 +193,10 @@ impl CqtBin {
                         imag: right_imag,
                     },
                 };
-                phase += self.velocity;
-                if phase > std::f32::consts::TAU {
-                    phase -= std::f32::consts::TAU;
-                }
+                phase = Complex {
+                    real: phase.real * self.velocity.real - phase.imag * self.velocity.imag,
+                    imag: phase.real * self.velocity.imag + phase.imag * self.velocity.real,
+                };
             });
         assert_eq!(self.terms.occupied_len(), self.terms.capacity().into());
         self.phase = phase;
