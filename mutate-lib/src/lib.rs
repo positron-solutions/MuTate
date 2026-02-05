@@ -667,7 +667,7 @@ fn create_stream<'c>(
                     let datas = buffer.datas_mut(); // drop implicitly dequeues
 
                     match user_data.tx.write(datas) {
-                        _ => {}
+                        Ok(_) => {}
                         Err(e) => {
                             eprintln!("Stream write error: {:?}", e)
                         }
