@@ -604,6 +604,7 @@ fn create_stream<'c>(
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Music",
         *pw::keys::STREAM_CAPTURE_SINK => "true",
+        *pw::keys::NODE_LATENCY => "128/48000",
         // FIXME this is not yet respected 😠
         *pw::keys::TARGET_OBJECT => choice.global_id.to_string(),
     };
