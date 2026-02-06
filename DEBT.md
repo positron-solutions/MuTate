@@ -106,6 +106,22 @@ Error handling has traditionally been an area of ergonomic innovation in Rust.  
 - Return Result types from fallible operations to ensure proper combinator usages.
 - Unwrap and panic liberally (but do **not** clone haphazardly!)
 
+## Shader Boilerplate
+
+Shaders must declare their inputs.  Rust must align push constants, descriptors etc.  It's 1:1 and should be automated.
+
+- Embed slang code into Rust via macro declaring its inputs.
+- Generate headers for slang and output to slang files
+- Compile to spirv or MSL etc
+
+This will require building the Rust program to cause the macros to output slang.  At some point, we probably end up having to do a similar trick as cargo leptos to build to generate shader source, compile the shader source, and then finally run the program.
+
+### For Now
+
+- Load them as bytes from spirv.  The build script will trigger after running if you have modified a shader file.
+
+- Plan on using Molten on Apple.  The slang compiler can target (Metal Shader Language).  You need an Apple tool for MSL ⇒ metallibs that can be loaded on Molten.  No idea how to load these, but `assets` will need an update.
+
 ## Vulkan Versions & Device Compatibility
 
 Anticipate monolithic platform builds that switch at runtime for more specific support.
