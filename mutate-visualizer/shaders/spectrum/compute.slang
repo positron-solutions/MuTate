@@ -30,14 +30,14 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     // red
     float left_low = power_ramp(s.left_mag, 0.0, 0.01, 1.0);
     float right_low = power_ramp(s.right_mag, 0.0, 0.01, 1.0);
-
     float both_ramped = (left_low + right_low) * 0.5;
+
     // green
     float left_ramped = power_ramp(s.left_decibels, -84.5, -16.5, 4.1);
+
     // blue
     float right_ramped = power_ramp(s.right_decibels, -52.5, -28.5, 3.8);
 
-    // NOTE Hill function also kind of clamps.
     uint packed = (255 << 24)
                   | ((uint)round(both_ramped * 255.0) << 16)
                   | ((uint)round(left_ramped * 255.0) << 8)
@@ -49,7 +49,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 
 // Power ramp is a simple function that maps a fixed range from 0 to 1 and can
-// dampen or accerate the curve.  Powers greater than 1.0 cause dampening.
+// dampen or accelerate the curve.  Powers greater than 1.0 cause dampening.
 // Powers less than 1.0 will magnify very small values quickly.
 // NEXT add an asymptote to preserve a tiny amount of dynamic range on excessive values.
 float power_ramp (float x, float min, float max, float power) {
