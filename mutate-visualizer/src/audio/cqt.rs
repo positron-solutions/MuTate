@@ -250,8 +250,8 @@ impl CqtBin {
         let right_spl = 20.0 * right_c_rms.log10() + self.iso226_offset;
 
         Cqt {
-            left: sum.left,
-            right: sum.right,
+            left: sum.left.scale(norm),
+            right: sum.right.scale(norm),
             left_perceptual: left_spl,
             right_perceptual: right_spl,
             freq: self.center,
