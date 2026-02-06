@@ -28,13 +28,14 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     SpectrumSample s = spectrum[window_size.y - (pixel.y + 1)];
 
     // red
-    float left_low = hill_function(s.left_mag, 80.0, 1.0, 4.1);
-    float right_low = hill_function(s.right_mag, 80.0, 1.0, 4.1);
+    float left_low = power_ramp(s.left_mag, 0.0, 0.01, 1.0);
+    float right_low = power_ramp(s.right_mag, 0.0, 0.01, 1.0);
+
     float both_ramped = (left_low + right_low) * 0.5;
     // green
-    float left_ramped = hill_function((s.left_decibels + 50.5), 22.5, 1.0, 4.1);
+    float left_ramped = power_ramp(s.left_decibels, -84.5, -16.5, 4.1);
     // blue
-    float right_ramped = hill_function((s.right_decibels + 50.5), 22.5, 1.0, 4.1);
+    float right_ramped = power_ramp(s.right_decibels, -52.5, -28.5, 3.8);
 
     // NOTE Hill function also kind of clamps.
     uint packed = (255 << 24)
@@ -47,18 +48,10 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 }
 
 
-/// Hill function starts at zero, has a controllable halfway point, asymptote, and shape.
-///
-/// - x: the variable input, expected to be on-scale
-/// - half_x: x value that reaches half of the asymptote
-/// - max: the asymptote
-/// - c_hill: Hill coefficient (> 1.0 gives sharper / double-inflection shapes)
-float hill_function(
-    float x,
-    float half_x,
-    float max,
-    float c_hill)
-{
-    float t_n = pow(x, c_hill);
-    return max * (t_n / (t_n + pow(half_x, c_hill)));
+// Power ramp is a simple function that maps a fixed range from 0 to 1 and can
+// dampen or accerate the curve.  Powers greater than 1.0 cause dampening.
+// Powers less than 1.0 will magnify very small values quickly.
+// NEXT add an asymptote to preserve a tiny amount of dynamic range on excessive values.
+float power_ramp (float x, float min, float max, float power) {
+      return pow((clamp(x, min, max) - min) / (max - min), power);
 }
