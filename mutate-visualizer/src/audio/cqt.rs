@@ -8,12 +8,14 @@ use crate::audio::iso226;
 use crate::audio::raw::Audio;
 use crate::graph::GraphEvent;
 
-// NEXT Windowing functions.  Windowed values must be re-applied on rolling sum portions.
+// NEXT The quality factor for high-frequency bins is too much, leading to insufficient magnitudes.
+// Use short-time windowed summing on bins that violate the quality factor goal due to visual frame
+// length
 // NEXT ML corrections for harmonics and leakages, inferring absence of true tones from presence of
-// sympathetic tones.
+// sympathetic tones.  Also engineering tests & calibration for uniform-ish sensitivity.
 // NEXT Low-pass filters for long-wavelength bins to reduce accumulation of decimation aliasing
 // noise.
-// NEXT pre-compute twiddles and use phase adjustment for accumulation
+// NEXT This is ready to move to GPU.  Let's just do it.
 // DEBT sample rate
 // DEBT format channels
 
