@@ -6,6 +6,21 @@ This is a record of "crimes" and the plans to later un-crime them.  Debt specifi
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
+## Spectrum Analyzer
+
+The first-pass at the CQT has a number of problems that have excellent solutions available.
+
+- Rather than constant Q (quality factor), some high frequency bins end up with 800 samples making them too precise making us miss energy between bins
+- Low frequency iso226 correction is to extreme or the bins we are applying it to are missing energy due to accuracy issues and then the correction drops them out entirely
+- No roll-on / roll-off behavior to speed up summing
+- Decimation does not low-pass off the high pitches, so we fold noise from higher pitches until it dominates lower bins
+
+There is more.  Filter banks require *engineering*.  See the [longer discussion](https://github.com/positron-solutions/MuTate/discussions/1)
+
+The problem that is almost in the way of development is that even with `--release` the frame time at 1440p will be around 12ms of *just* audio processing time. That is too much.  We need to move this onto the GPU and try to kill some of the other issues as soon as possible.
+
+Rather than making the CQT faster on the CPU, which will mainly involve doing things that worsen quality or fight very hard to avoid making it terrible, we should focus on moving to the GPU where we can suddenly do "expensive" things like adding a lot more filter bins and then make it cheaper because ... it's the right thing to do even though we have 512 cores or so 😉.
+
 ## Lifetime Alignment
 
 Build structs to gather firmly bound lifetimes.  Consider multiple window setups.  Nodes encapsulate resources exclusive to their lifetimes.  Boundaries emerging:
