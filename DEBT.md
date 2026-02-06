@@ -50,7 +50,7 @@ Each element includes two parts:
 
 ## Audio Formats
 
-The type of the input buffers is **not** bytes.  We should either coerce all input streams to one format or handle multiple formats if we cannot coerce all target platforms to a common denominator (and convert ourselves under the hood).
+The type of the input buffers is **not** bytes.  We should either coerce all input streams to one format or handle multiple formats if we cannot coerce all target platforms to a common denominator (and convert ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make this easy by doing it all the time with a good set of tools.
 
 ### For Now
 
@@ -76,13 +76,19 @@ Nodes are just given a device context (also WIP) and create and destroy their ow
 
 Don't go crazy avoiding copies just yet.  The sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.
 
-## Graph Scheduling & Plumbing
+## Dependency Graph
 
-Starting with a solution to the general problem would be appealing.  We know there are CPU and GPU dependencies.  We know DAGs can model exclusive dependencies etc.
+DAGs can model exclusive dependencies.  Topics of dependency:
 
-Calculating what needs to be done and what opportunities can be taken is a coupled set of problems.  Some things will benefit more from explicit control.  Some from automation.  There is usually overlap to fill gaps and automation tends to subsume manual interventions.
+- Execution ordering & synchronization
+- Communicating handles that belong to dependencies into dependents to record their commands and so on
+- Reactive configuration updates
+- Calculating memory requirements
+- Deciding where to put barriers and transformations
 
-The current strategy being selected uses the following building blocks:
+**The dataflow graph for Audio and for command buffer recording is almost totally different.**  One uses mostly actual data and is push-based.  One will primarily use mementos that describe memory...somewhere.  It may be easier to calculate some dependencies in reverse, from final dependents backward into dependencies.
+
+Here's a proposal for implementing a timing strategy
 
 - high precision timing thread.
 - worker threads for workloads that don't obviously need their own thread.
@@ -92,7 +98,9 @@ The current strategy being selected uses the following building blocks:
 
 ### For Now
 
-Just do whatever works and attempt to read the tea leaves until it's clear which hard things need precise treatment and what data model they impose.
+The current graph module is not actually implemented and contains mainly ideas.  The `GraphBuffer` is an example of a super half-baked piece.  It should be a ring buffer.  Some types communicate with scalars.  It's not clear who is caching or where caches would live.  Not all nodes want their input padded or dropped the same way when deadlines are missed.
+
+**Just do whatever works and attempt to read the tea leaves until it's clear which hard things need precise treatment and what data model they impose.**
 
 ## Error Handling
 
