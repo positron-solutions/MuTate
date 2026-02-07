@@ -12,10 +12,9 @@
 
 use ash::vk;
 
-use mutate_lib as utate;
+use mutate_lib::{self as utate, context::VkContext};
 
 use crate::util;
-use crate::vk_context::VkContext;
 
 /// The memory and dimensions for an allocated Vulkan Image.
 pub struct Image {

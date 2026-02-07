@@ -13,7 +13,8 @@ use ash::{khr::present_wait::Device as PwDevice, khr::xlib_surface, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use crate::vk_context::VkContext;
+use mutate_lib::{self as utate, context::VkContext};
+
 use crate::Args;
 
 pub struct DrawSync {

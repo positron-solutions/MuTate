@@ -8,7 +8,6 @@ mod graph;
 mod image;
 mod util;
 mod video;
-mod vk_context;
 
 use ash::vk;
 use clap::Parser;
@@ -20,9 +19,7 @@ use winit::{
     keyboard as kb,
 };
 
-use vk_context::VkContext;
-
-use mutate_lib as utate;
+use mutate_lib::{self as utate, context::VkContext};
 
 use graph::node;
 

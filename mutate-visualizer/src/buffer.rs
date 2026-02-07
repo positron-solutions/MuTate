@@ -14,10 +14,9 @@ use std::ptr::NonNull;
 
 use ash::vk;
 
-use mutate_lib as utate;
+use mutate_lib::{self as utate, context::VkContext};
 
 use crate::util;
-use crate::vk_context::VkContext;
 
 // DEBT memory management
 pub struct MappedAllocation<T> {
