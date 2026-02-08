@@ -83,7 +83,7 @@ impl WindowPresent {
                 .surface_loader
                 .get_physical_device_surface_support(
                     vk_context.physical_device,
-                    vk_context.queue_family_index,
+                    vk_context.queues.graphics_family_index,
                     surface,
                 )
                 .unwrap()
@@ -182,10 +182,10 @@ impl WindowPresent {
             })
             .collect();
 
-        let command_pool = *vk_context.graphics_pool();
+        let command_pool = vk_context.queues.graphics_pool();
 
         let alloc_info = vk::CommandBufferAllocateInfo {
-            command_pool,
+            command_pool: command_pool,
             command_buffer_count: 3,
             ..Default::default()
         };
@@ -522,7 +522,7 @@ impl WindowPresent {
             ..Default::default()
         };
 
-        let queue = vk_context.graphics_queue();
+        let queue = &vk_context.queues.graphics_queue();
         unsafe {
             vk_context
                 .device

@@ -16,6 +16,10 @@
 
 pub mod context;
 
+pub mod prelude {
+    pub use crate::MutateError;
+}
+
 // NEXT To extend the AudioContext module for other platforms, just add cfg flags wherever
 // implementations and fields are platform specific.  Take a look at CPAL but consider using
 // platform bindings more directly if CPAL can't give us precise timing data or control.  We might

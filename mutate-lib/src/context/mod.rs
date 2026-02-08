@@ -1,30 +1,33 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-/// VkContext encapsulates the global resources, independent of presentation mode.  This includes
-/// hardware and create-once abstractions of hardware.
+//! Context
+//!
+//! Fundamentally required resources, including the entry, instance, hardware devices
+//! are encapsulated by `VkContext`.
+//!
+//! Initializing a physical device for use results in a logical `ash::Device`, which is used in most
+//! calls to Vulkan.
+//!
+//! *NEXT* The Devices and memory management are much more tightly bound together than the
+//! `ash::Entry` and `ash::Instance`, so these will be separated when convenient.
+pub mod queue;
+
 use std::ffi::{c_void, CStr};
 
 use ash::vk;
 
-// Hardware, drivers, and the lowest level abstractions of hardware should be encapsulated within
-// this module.  Devices may need to be split out later for use of multiple devices.  Memory
-// likewise may be globally managed but will stay with associated devices.
 pub struct VkContext {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
-    pub physical_device: vk::PhysicalDevice,
-    pub device: ash::Device,
+    /// Used to access surface creation functions
     pub surface_loader: ash::khr::surface::Instance,
 
-    graphics_queue: vk::Queue,
-    #[allow(dead_code)]
-    compute_queue: vk::Queue,
-    #[allow(dead_code)]
-    transfer_queue: vk::Queue,
-
-    pub queue_family_index: u32,
-    pub command_pool: vk::CommandPool,
+    pub physical_device: vk::PhysicalDevice,
+    /// Vulkan logical device
+    pub device: ash::Device,
+    /// Queues and command buffers for device in use.
+    pub queues: queue::Queues,
     pub descriptor_pool: vk::DescriptorPool,
 }
 
@@ -32,6 +35,12 @@ static VALIDATION_LAYER: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
 
 impl VkContext {
+    /// Obtain an entry, instance, and initialized device.
+    ///
+    /// LIES *debugging:* In debug builds, validation layers are enabled.
+    ///
+    /// NEXT Device initialization should be moved into a separate method to support UIs that
+    /// enumerate and may even switch devices.
     pub fn new() -> Self {
         let entry = unsafe { ash::Entry::load().expect("failed to load Vulkan library") };
         let available_exts = unsafe {
@@ -56,6 +65,7 @@ impl VkContext {
             ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
         ];
 
+        // LIES needs env variable and config switch, MUTATE_VALIDATION, any non-empty value.
         let validation_layers = [VALIDATION_LAYER.as_ptr()];
 
         let app_info = vk::ApplicationInfo {
@@ -79,30 +89,8 @@ impl VkContext {
                 .enumerate_physical_devices()
                 .expect("No Vulkan devices")
         };
+        // NEXT support choices, via config, environment, and heuristics (discrete vs on-CPU)!)
         let physical_device = physical_devices[0];
-
-        let queue_family_index = unsafe {
-            instance
-                .get_physical_device_queue_family_properties(physical_device)
-                .iter()
-                .enumerate()
-                .find_map(|(index, q)| {
-                    if q.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-                        Some(index as u32)
-                    } else {
-                        None
-                    }
-                })
-                .expect("No graphics queue family found")
-        };
-
-        let queue_priorities = [1.0];
-        let queue_info = [vk::DeviceQueueCreateInfo {
-            queue_family_index,
-            queue_count: 1,
-            p_queue_priorities: queue_priorities.as_ptr(),
-            ..Default::default()
-        }];
 
         let device_extensions = [
             ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
@@ -159,21 +147,23 @@ impl VkContext {
             ..Default::default()
         };
 
+        let queue_families = queue::QueueFamilies::new(&instance, &physical_device);
+        let queue_priorities = [1.0];
+        let queue_infos = queue_families.queue_infos(&queue_priorities);
         let device_info = vk::DeviceCreateInfo {
-            queue_create_info_count: 1,
-            p_queue_create_infos: queue_info.as_ptr(),
+            queue_create_info_count: queue_infos.len() as u32,
+            p_queue_create_infos: queue_infos.as_ptr(),
             pp_enabled_extension_names: device_extensions.as_ptr(),
             enabled_extension_count: device_extensions.len() as u32,
             p_next: &mut features2 as *mut _ as *mut c_void,
             ..Default::default()
         };
-
         let device = unsafe {
             instance
                 .create_device(physical_device, &device_info, None)
                 .unwrap()
         };
-        let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+        let queues = queue::Queues::new(&device, queue_families);
 
         // DEBT memory management.  We obviously don't want to recreate descriptor pools for every visual.
         let pool_sizes = [vk::DescriptorPoolSize {
@@ -191,18 +181,6 @@ impl VkContext {
 
         let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
 
-        let command_pool_info = vk::CommandPoolCreateInfo {
-            flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-            queue_family_index,
-            ..Default::default()
-        };
-
-        let command_pool = unsafe {
-            device
-                .create_command_pool(&command_pool_info, None)
-                .unwrap()
-        };
-
         let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
         Self {
@@ -212,22 +190,10 @@ impl VkContext {
             device,
             surface_loader,
 
-            graphics_queue: queue.clone(),
-            compute_queue: queue.clone(),
-            transfer_queue: queue,
+            queues,
 
             descriptor_pool,
-            command_pool,
-            queue_family_index,
         }
-    }
-
-    pub fn graphics_queue(&self) -> &vk::Queue {
-        &self.graphics_queue
-    }
-
-    pub fn graphics_pool(&self) -> &vk::CommandPool {
-        &self.command_pool
     }
 
     pub fn device(&self) -> &ash::Device {
@@ -239,7 +205,7 @@ impl VkContext {
         unsafe {
             self.device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
-            self.device.destroy_command_pool(self.command_pool, None);
+            self.queues.destroy(&self.device);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None)
         };
