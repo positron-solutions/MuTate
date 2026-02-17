@@ -31,7 +31,7 @@ use mutate_lib::{
 #[command(name = "workbench")]
 #[command(about = "Engineering tuning for filters and spectrogram filter bank.", long_about = None)]
 #[command(arg_required_else_help = true)]
-struct Args {
+struct EntryPoint {
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -43,7 +43,7 @@ enum WorkbenchError {
 }
 
 fn main() -> Result<(), WorkbenchError> {
-    let args = Args::parse();
+    let args = EntryPoint::parse();
 
     match args.command {
         None => unreachable!(),
