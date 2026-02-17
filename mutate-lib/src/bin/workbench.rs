@@ -128,6 +128,65 @@ enum Command {
     Bin(BinArgs),
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+/// Supported window functions.
+// NOTE clap only supports valueless enums, and we don't want clap as a dependency in the dsp
+// module, so this enum is duplicated from dsp::WindowChoice.
+pub enum WindowChoice {
+    /// Aka "rectangle" or "no window".  -13.3dB Peak Side Lobe Level (PSLL).
+    Boxcar,
+    /// The hump.  High weights, but still -21.3dB PSLL.
+    Welch,
+    /// Aka "triangle".  -26.5dB PSLL.
+    Bartlett,
+    /// A hill in the middle.  Good first side lobe cancellation.  -42.7dB PSLL.
+    Hamming,
+    /// Optimal and parametric.  Narrowest possible main lobe for any *chosen* PSLL.
+    DolphChebyshev,
+}
+
+#[derive(Debug, clap::Args, Clone, Copy)]
+// XXX not implemented
+pub struct WindowArgs {
+    #[arg(long)]
+    /// Sets a noise floor.  *All* side lobes are below the floor.  Only used by Dolph Chebyshev.
+    pub attentuation_db: f32,
+}
+
+#[derive(Debug, clap::Args)]
+/// Override default settings for each filter.
+pub struct CommonFilterArgs {
+    #[arg(long)]
+    /// Center frequency
+    // XXX Not implemented
+    pub center: Option<f64>,
+
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..)) ]
+    /// Number of stages to cascade (for filters that support it)
+    // XXX Not implemented
+    pub stages: Option<u32>,
+
+    #[arg(long)]
+    /// Perturbs upper stage frequencies by factors of the given *product*.
+    // XXX Not implemented
+    pub detune: Option<f64>,
+
+    /// Use butterworth Q ratios to flatten pass-bands.
+    #[arg(long)]
+    // XXX Not implemented
+    pub butterworth: bool,
+
+    /// Use an alternative Quality factor (center / bandwidth).
+    #[arg(short, long = "quality")]
+    // XXX Not implemented
+    pub q: Option<f64>,
+
+    #[arg(long)]
+    /// Window function.  Only used by filters like DFT that integrate over a window.
+    // XXX Not implemented
+    pub window: Option<WindowChoice>,
+}
+
 #[derive(clap::Args, Debug)]
 struct GainArgs {
     /// Filters to test, or `all`
