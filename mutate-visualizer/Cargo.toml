@@ -10,6 +10,8 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+default-run = "mutate-visualizer"
+
 [dependencies]
 ash.workspace = true
 clap = {workspace = true, features = ["derive"]}
