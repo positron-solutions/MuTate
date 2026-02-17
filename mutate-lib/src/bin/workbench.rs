@@ -192,6 +192,10 @@ struct GainArgs {
     /// Filters to test, or `all`
     #[arg(index = 1, value_delimiter = ',')]
     filters: Vec<FilterSelector>,
+
+    /// Common filter args.
+    #[command(flatten)]
+    common: CommonFilterArgs,
 }
 
 #[derive(clap::Args, Debug)]
@@ -231,14 +235,6 @@ struct BandwidthArgs {
     /// Threshold in dB (default -3dB)
     #[arg(long)]
     threshold: Option<f32>,
-
-    /// Center frequency in Hz
-    #[arg(long)]
-    center: Option<f32>,
-
-    /// Q factor override
-    #[arg(long = "q-factor")]
-    q_factor: Option<f32>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -528,27 +524,37 @@ fn cmd_noise(_args: NoiseArgs) {
     // Find the +/- shoulder and sweep out to edges, looking for secondary modes.
 }
 
-fn cmd_gain(args: GainArgs) {
-    let filter_choices = expand_filter_choices(args.filters);
+fn cmd_gain(cmd_args: GainArgs) {
     header!("Gain Test");
 
-    let args = WorkbenchConfig::defaults().args();
+    let filter_choices = expand_filter_choices(cmd_args.filters);
+    let mut filter_args = WorkbenchConfig::defaults().args();
 
-    let f0 = args.center;
-    let fs = args.fs;
-    let q = args.q;
+    // NEXT this manual merging scales pretty poorly.  Merge command line defaults over the
+    // Workbench defaults (which themselves should come from toml defaults).
+    // NEXT supporting Cartesian iteration will involve some kind of Planner structure that
+    // prioritizes dimensions where multiple values were given and then runs the test over the
+    // dimensions as ordered.  Three dimensions can be printed with tables.  More will have to be
+    // iterated in sequence.
+    filter_args.center = cmd_args.common.center.unwrap_or(filter_args.center);
+    filter_args.q = cmd_args.common.q.unwrap_or(filter_args.q);
 
-    for scale in [1.0, 0.5, 0.25, 0.05] {
-        println!("test volume = {scale:2.1}");
+    let f0 = filter_args.center;
+    let fs = filter_args.fs;
+    let q = filter_args.q;
+
+    // NEXT make amplitudes part of the arguments
+    for input_amp in [1.0, 0.5, 0.25, 0.05] {
+        println!("input amplitude = {input_amp:2.1}");
         for fc in filter_choices.iter() {
-            let mut filter = fc.instantiate(&args);
-            let mut sg = dsp::sine_gen_48k(f0);
-            let samples = (128.0 * fs / f0) as usize;
+            let mut filter = fc.instantiate(&filter_args);
+            let mut sg = filter_args.sine_gen();
+            let samples = sg.nsamples(128.0);
             let mut max: f32 = 0.0;
             for s in 0..samples {
-                max = max.max(filter.process(sg.next().unwrap() * scale));
+                max = max.max(filter.process(sg.next().unwrap() * input_amp).abs());
             }
-            println!("  gain for {fc:?}: {max:7.5}");
+            println!("  {fc:?}: {max:7.5}");
         }
     }
 }
