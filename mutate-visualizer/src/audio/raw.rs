@@ -14,7 +14,7 @@
 //! requirements should be handled by downstream nodes, either dedicated nodes or internal behaviors
 //! of nodes.
 
-use mutate_lib as utate;
+use mutate_lib::{self as utate, audio};
 
 // NEXT prelude & module structure
 use crate::{
@@ -23,8 +23,8 @@ use crate::{
 };
 
 pub struct RawAudioNode {
-    context: utate::AudioContext,
-    rx: utate::AudioConsumer,
+    context: audio::AudioContext,
+    rx: audio::AudioConsumer,
     buffer: graph::GraphBuffer<Audio>,
     // NEXT GraphBuffer will need the Read trait or something to work better with the upstream ring
     // buffer.
@@ -67,10 +67,10 @@ impl RawAudioNode {
     pub fn new() -> Result<Self, utate::MutateError> {
         // NEXT choice is a dependency required by the node to be created.  Handle via config, then
         // defaults, user input if necessary / specified on command line.
-        let context = utate::AudioContext::new()?;
+        let context = audio::AudioContext::new()?;
         println!("Choose the audio source:");
         let mut first_choices = Vec::new();
-        let check = |choices: &[utate::AudioChoice]| {
+        let check = |choices: &[audio::AudioChoice]| {
             first_choices.extend_from_slice(choices);
         };
         context.with_choices_blocking(check).unwrap();
