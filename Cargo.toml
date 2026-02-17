@@ -28,6 +28,9 @@ thiserror = "2.0.17"
 toml = "0.9.8"
 winit = "0.30.12"
 
+num-complex = "0.4.6"
+num-traits = "0.2.19"
+
 # member
 mutate-lib = {path = "./mutate-lib"}
 

@@ -16,9 +16,19 @@ ringbuf.workspace = true
 thiserror.workspace = true
 ash.workspace = true
 
+# dsp dependencies
+num-complex = {workspace = true, optional = true}
+num-traits = {workspace = true, optional = true}
+
+# workbench dependencies
+clap = {workspace = true, features=["derive"], optional = true}
 [dev-dependencies]
 ctrlc.workspace = true
 
 [[example]]
 name = "pipewire"
 path = "src/pipewire.rs"
+
+[features]
+dsp = ["dep:num-complex", "dep:num-traits"]
+default = ["dsp"]
