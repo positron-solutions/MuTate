@@ -9,7 +9,7 @@ library, using Vulkan and local AI models in Rust.
 
 ### Build & Run
 
-This repository (optionally) provides non-Rust dependencies via a Nix shell with direnv integration available.
+This repository (optionally) provides non-Rust dependencies via a Nix shell with direnv integration available.  `direnv allow` or `nix develop .#x11` etc will load an environment.  Use `nix flake show` to list other shells for other platforms and runtime situations.
 
 #### Visualizer
 
