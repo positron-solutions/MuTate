@@ -32,6 +32,13 @@
           llvmPackages.libclang.lib
       ];
 
+      # `--release` binaries are built to have their assets paths baked into the
+      # binary in order to make distribution reliable (by failing early).  This
+      # variable is set in dev shells so that `cargo run --release` "just works."
+      setAssetsDir = ''
+        export MUTATE_ASSETS_DIR="$(realpath mutate-visualizer/assets)"
+      '';
+
       x11Deps = with pkgs; [
           xorg.libX11
           xorg.libXcursor
@@ -46,6 +53,7 @@
 
         # Make sure dynamic linker can find libX11 at runtime
         shellHook = ''
+          ${setAssetsDir}
           ${vulkanEnv}
           ${pipewireEnv}
           LD_LIBRARY_PATH=${pkgs.xorg.libX11}/lib:$LD_LIBRARY_PATH
@@ -72,6 +80,7 @@
 
         # Make sure dynamic linker can find libX11 at runtime
         shellHook = ''
+          ${setAssetsDir}
           ${vulkanEnv}
           ${pipewireEnv}
           LD_LIBRARY_PATH=${pkgs.wayland}/lib:$LD_LIBRARY_PATH
