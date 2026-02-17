@@ -8,6 +8,14 @@
 //! visualization.  This crate is kept separate so that µTate behaviors can be embedded directly
 //! into 3rd party applications without the need to run a separate daemon.
 //!
+//! ## Workbench
+//!
+//! This crate also contains the engineering support to design and hardcode filter banks, which is
+//! behind the **workbench** feature.  See the workbench binary and most of its functionality,
+//! within the dsp module.
+// XXX Re-deNY
+#![allow(dead_code)]
+#![allow(unused)]
 
 // You need to break up the audio module into per-platform modules and implement AudioContext.  Only
 // Linux via pipewire is supported right now.  You will support it.  Welcome to open source

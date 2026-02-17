@@ -9,11 +9,21 @@ library, using Vulkan and local AI models in Rust.
 
 ### Build & Run
 
-This repository (optionally) provides non-Rust dependencies via a Nix shell with direnv integration available.  The default binary selected by `cargo run` is the Vulkan frontend, found in the mutate-visualizer crate.
+This repository (optionally) provides non-Rust dependencies via a Nix shell with direnv integration available.
+
+#### Visualizer
+
+The default binary selected by `cargo run` is the Vulkan frontend, found in the mutate-visualizer crate.
+
+#### DSP Workbench
+
+`cargo run --bin workbench --help` will list the CLI interface for the workbench, a CLI program being developed to assist in engineering and maintaining filter bank configurations to be used on the GPU.
 
 ## Status
 
-The music moving a triangle phase is complete.  Work to create a real architecture is underway:
+The music moving a triangle phase is complete.  A first-pass of the spectrogram was completed.  The next milestone is to move the improved DSP work onto the GPU.
+
+Work to create a real architecture is underway:
 
 - [x] Fullscreen support (includes resizing and swapchain re-creation)
 - [ ] Reactive updates for render graph dependents, such as images that depend on the window
@@ -67,7 +77,7 @@ Tool selections are aiming to be as modern as possible without becoming pioneeri
   
 Past visualizers users simple beat detection based on simple heuristics like volume thresholds.  These are easily faked out.  They don't understand patterns or layering.  Only a handful of dynamic values and waveform textures were available to preset authors, so the results were inevitably highly abstract programmer art that cannot reflect the mood or spirit of the music being played.
 
-### Machine Learning
+### Fast Local Machine Learning
 
 Rather than integrating slow, network-dependent generative AI based on heavy transformers and integrating via MCP, this project seeks to attract development of extremely lightweight alternatives, focusing on architecture sophistication above all.
 
