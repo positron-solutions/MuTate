@@ -33,7 +33,7 @@ path = "src/pipewire.rs"
 [features]
 dsp = ["dep:num-complex", "dep:num-traits"]
 default = ["dsp", "workbench"]
-workbench = ["dep:clap", "dep:rustdct", "dsp"]
+workbench = ["dep:clap", "dsp"]
 
 [[bin]]
 name = "workbench"
