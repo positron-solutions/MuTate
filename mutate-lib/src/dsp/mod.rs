@@ -115,7 +115,7 @@ pub struct FilterArgs {
     pub stages: usize,
 
     /// For DFT based filters, the weights that will be used to sum the window.
-    pub window_choice: dft::WindowChoice,
+    pub window_choice: dft::WindowFunction,
 }
 
 impl FilterArgs {
@@ -143,7 +143,7 @@ impl Default for FilterArgs {
             butterworth: false,
             stagger: None,
             stages: 4,
-            window_choice: dft::WindowChoice::DolphChebyshev {
+            window_choice: dft::WindowFunction::DolphChebyshev {
                 attenuation_db: 40.0,
             },
         }

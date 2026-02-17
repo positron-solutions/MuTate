@@ -653,14 +653,14 @@ impl WorkbenchConfig {
     }
 
     /// DFT window choice
-    fn dft_window(&self) -> dft::WindowChoice {
-        dft::WindowChoice::DolphChebyshev {
+    fn dft_window(&self) -> dft::WindowFunction {
+        dft::WindowFunction::DolphChebyshev {
             attenuation_db: 22.5,
         }
-        // dft::WindowChoice::BoxCar
-        // dft::WindowChoice::Bartlett
-        // dft::WindowChoice::Hamming
-        // dft::WindowChoice::Welch
+        // dft::WindowFunction::BoxCar
+        // dft::WindowFunction::Bartlett
+        // dft::WindowFunction::Hamming
+        // dft::WindowFunction::Welch
     }
 }
 

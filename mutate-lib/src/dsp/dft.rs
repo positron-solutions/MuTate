@@ -44,7 +44,7 @@ use crate::dsp;
 /// weaker tones.  A small light on a dark night appears twice as bright.  They were right about
 /// choosing Shakuras.
 #[derive(Debug, Clone, Copy)]
-pub enum WindowChoice {
+pub enum WindowFunction {
     /// Also known as the Rectangle.  Very bad, not good at all, -13.3dB first side-lobe.  When you
     /// account for needing to fill the entire window, response time is about double and in many
     /// cases the window never fills.  Smears everything.  Avoid.
@@ -74,7 +74,7 @@ pub enum WindowChoice {
     // Ultraspherical,
 }
 
-impl WindowChoice {
+impl WindowFunction {
     pub fn make_window(&self, size: usize) -> Vec<f64> {
         match self {
             Self::BoxCar => bin_weights(&boxcar, size),
@@ -141,7 +141,7 @@ impl WindowChoice {
     }
 }
 
-impl Default for WindowChoice {
+impl Default for WindowFunction {
     fn default() -> Self {
         Self::DolphChebyshev {
             attenuation_db: 40.0,
@@ -174,7 +174,7 @@ impl Default for WindowChoice {
 pub struct Dft {
     /// Do the right thing and choose either Dolph-Chebyshev or write a new window and combine it
     /// with a a pre-filter.
-    window_choice: WindowChoice,
+    window_choice: WindowFunction,
     /// Multiplying the ring buffer by the window yields an output.  This CPU DFT only implements
     /// one window.  Parallelization takes place on the GPU implementation.
     window_factors: Vec<f32>,
@@ -262,7 +262,12 @@ impl dsp::Filter for Dft {
 }
 
 impl Dft {
-    pub fn new(center: f64, sample_rate: f64, length: usize, window_choice: WindowChoice) -> Self {
+    pub fn new(
+        center: f64,
+        sample_rate: f64,
+        length: usize,
+        window_choice: WindowFunction,
+    ) -> Self {
         let window_factors = window_choice.make_window_32(length);
         let window_repeat = window_choice.repeat(length);
         let mut goertzel_terms = LocalRb::new(length);
@@ -613,7 +618,7 @@ mod test {
     #[test]
     fn test_dft_sanity() {
         let mut args = dsp::FilterArgs::default();
-        args.window_choice = WindowChoice::DolphChebyshev {
+        args.window_choice = WindowFunction::DolphChebyshev {
             attenuation_db: 80.0,
         };
         args.q = 32.0;
