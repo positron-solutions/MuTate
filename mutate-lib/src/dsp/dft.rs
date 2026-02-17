@@ -12,7 +12,6 @@ use num_complex::Complex;
 use num_traits::Zero;
 use ringbuf::traits::{Consumer, Observer, Producer};
 use ringbuf::{storage::Heap, LocalRb};
-use rustdct::DctPlanner;
 
 use crate::dsp;
 
