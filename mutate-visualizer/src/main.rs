@@ -14,9 +14,9 @@ use clap::Parser;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::ActiveEventLoop,
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard as kb,
+    platform::wayland::{EventLoopBuilderExtWayland, EventLoopExtWayland},
 };
 
 use mutate_lib::{self as utate, context::VkContext};
@@ -188,7 +188,15 @@ impl ApplicationHandler for App {
 fn main() -> Result<(), utate::MutateError> {
     // NEXT Merge over toml config values obtained as resources
     let args = Args::parse();
-    let event_loop = EventLoop::new().unwrap();
+    let mut builder = EventLoop::builder();
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            builder.with_wayland();
+        }
+    }
+    let event_loop = builder.build().unwrap();
+
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
         args,
