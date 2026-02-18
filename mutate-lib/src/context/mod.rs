@@ -31,13 +31,10 @@ pub struct VkContext {
     pub descriptor_pool: vk::DescriptorPool,
 }
 
-static VALIDATION_LAYER: &CStr =
-    unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
+const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
 
 impl VkContext {
     /// Obtain an entry, instance, and initialized device.
-    ///
-    /// LIES *debugging:* In debug builds, validation layers are enabled.
     ///
     /// NEXT Device initialization should be moved into a separate method to support UIs that
     /// enumerate and may even switch devices.
@@ -50,6 +47,7 @@ impl VkContext {
         };
 
         // FIXME insufficiently accurate platform check
+        // FIXME look for the other features before just exploding later?
         assert!(
             available_exts.iter().any(|ext| unsafe {
                 CStr::from_ptr(ext.extension_name.as_ptr()) == ash::vk::KHR_WAYLAND_SURFACE_NAME
@@ -65,24 +63,16 @@ impl VkContext {
             ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
         ];
 
-        // LIES needs env variable and config switch, MUTATE_VALIDATION, any non-empty value.
+        let app_info =
+            vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
         let validation_layers = [VALIDATION_LAYER.as_ptr()];
 
-        let app_info = vk::ApplicationInfo {
-            api_version: vk::make_api_version(0, 1, 3, 0),
-            ..Default::default()
-        };
+        let instance_ci = vk::InstanceCreateInfo::default()
+            .application_info(&app_info)
+            .enabled_extension_names(&required_exts)
+            .enabled_layer_names(&validation_layers);
 
-        let create_info = vk::InstanceCreateInfo {
-            p_application_info: &app_info,
-            enabled_extension_count: required_exts.len() as u32,
-            pp_enabled_extension_names: required_exts.as_ptr(),
-            enabled_layer_count: validation_layers.len() as u32,
-            pp_enabled_layer_names: validation_layers.as_ptr(),
-            ..Default::default()
-        };
-
-        let instance = unsafe { entry.create_instance(&create_info, None).unwrap() };
+        let instance = unsafe { entry.create_instance(&instance_ci, None).unwrap() };
 
         let physical_devices = unsafe {
             instance
