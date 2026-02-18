@@ -96,68 +96,76 @@ impl VkContext {
             ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
             ash::vk::KHR_SYNCHRONIZATION2_NAME.as_ptr(),
             ash::vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
+            ash::vk::KHR_DYNAMIC_RENDERING_NAME.as_ptr(),
             ash::vk::EXT_EXTENDED_DYNAMIC_STATE_NAME.as_ptr(),
             ash::vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME.as_ptr(),
             ash::vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME.as_ptr(),
-            ash::vk::KHR_DYNAMIC_RENDERING_NAME.as_ptr(),
-            ash::vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
+            ash::vk::KHR_PIPELINE_LIBRARY_NAME.as_ptr(),
+            // NOTE Descriptor sets are kind of a "choose your fighter" moment in using Vulkan.  We
+            // are going for a bindless scheme where we use 1-2 descriptor sets per scene, one
+            // descriptor slot per type, and in each slot, we hold a descriptor array with the
+            // maximum number of things we might actually use simultaneously.
+            //
+            // Long story short, if we have a type, we need to be able to store it in a descriptor
+            // array, not a single slot of a descriptor set, which would force us to overwrite those
+            // descriptors a lot.  Push descriptors can still be used.  Push constants can also be
+            // used.  For the most part, get them into an array and then we only have to dynamically
+            // give the indexes (and types!) to the shader programs.
+            ash::vk::EXT_INLINE_UNIFORM_BLOCK_NAME.as_ptr(),
             ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
             ash::vk::EXT_DESCRIPTOR_INDEXING_NAME.as_ptr(),
-            ash::vk::KHR_PIPELINE_LIBRARY_NAME.as_ptr(),
-            ash::vk::EXT_MEMORY_BUDGET_NAME.as_ptr(),
+            ash::vk::KHR_DESCRIPTOR_UPDATE_TEMPLATE_NAME.as_ptr(),
+            ash::vk::KHR_PUSH_DESCRIPTOR_NAME.as_ptr(),
+            ash::vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
+            // Not strictly in use, but anticipated
             ash::vk::KHR_SHADER_NON_SEMANTIC_INFO_NAME.as_ptr(),
+            // ash::vk::KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME.as_ptr(),
+            ash::vk::EXT_MEMORY_BUDGET_NAME.as_ptr(),
             // ROLL holding off on this until other hardware vendors have supporting drivers
-            // ash::vk::EXT_SHADER_OBJECT_NAME.as_ptr(),
+            // ash::vk::EXT_SHADER_OBJECT_NAME,
             ash::vk::KHR_MAINTENANCE1_NAME.as_ptr(),
             ash::vk::KHR_MAINTENANCE2_NAME.as_ptr(),
             ash::vk::KHR_MAINTENANCE3_NAME.as_ptr(),
             ash::vk::KHR_MAINTENANCE4_NAME.as_ptr(),
             // ROLL VK_EXT_present_timing is still too new.  Support must be dynamic and... someone
             // needs a card / driver that supports it to develop the support.
-            // ash::vk::EXT_PRESENT_TIMING_NAME.as_ptr(),
+            // ash::vk::EXT_PRESENT_TIMING_NAME,
             ash::vk::KHR_PRESENT_WAIT_NAME.as_ptr(),
             ash::vk::KHR_PRESENT_ID_NAME.as_ptr(),
         ];
 
-        let mut present_wait_id = vk::PhysicalDevicePresentIdFeaturesKHR {
-            present_id: vk::TRUE,
-            ..Default::default()
-        };
+        let mut pwid_features = vk::PhysicalDevicePresentIdFeaturesKHR::default();
+        pwid_features.present_id = vk::TRUE;
 
-        let mut present_wait = vk::PhysicalDevicePresentWaitFeaturesKHR {
-            p_next: &mut present_wait_id as *mut _ as *mut c_void,
-            present_wait: vk::TRUE,
-            ..Default::default()
-        };
+        let mut pw_features = vk::PhysicalDevicePresentWaitFeaturesKHR::default();
+        pw_features.present_wait = vk::TRUE;
 
-        let mut sync2_features = vk::PhysicalDeviceSynchronization2Features {
-            p_next: &mut present_wait as *mut _ as *mut c_void,
-            synchronization2: vk::TRUE,
-            ..Default::default()
-        };
+        let mut sync2_features = vk::PhysicalDeviceSynchronization2Features::default();
+        sync2_features.synchronization2 = vk::TRUE;
 
-        let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures {
-            p_next: &mut sync2_features as *mut _ as *mut c_void,
-            dynamic_rendering: vk::TRUE,
-            ..Default::default()
-        };
+        let mut dr_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
+        dr_features.dynamic_rendering = vk::TRUE;
 
-        let mut features2 = vk::PhysicalDeviceFeatures2 {
-            p_next: &mut dynamic_rendering_features as *mut _ as *mut c_void,
-            ..Default::default()
-        };
+        let mut bda_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
+        bda_features.buffer_device_address = vk::TRUE;
+
+        let mut features2 = vk::PhysicalDeviceFeatures2::default()
+            .push_next(&mut bda_features)
+            .push_next(&mut dr_features)
+            .push_next(&mut sync2_features)
+            .push_next(&mut pw_features)
+            .push_next(&mut pwid_features);
 
         let queue_families = queue::QueueFamilies::new(&instance, &physical_device);
         let queue_priorities = [1.0];
-        let queue_infos = queue_families.queue_infos(&queue_priorities);
-        let device_info = vk::DeviceCreateInfo {
-            queue_create_info_count: queue_infos.len() as u32,
-            p_queue_create_infos: queue_infos.as_ptr(),
-            pp_enabled_extension_names: device_extensions.as_ptr(),
-            enabled_extension_count: device_extensions.len() as u32,
-            p_next: &mut features2 as *mut _ as *mut c_void,
+        let queue_cis = queue_families.queue_cis(&queue_priorities);
+        let mut device_info = vk::DeviceCreateInfo {
             ..Default::default()
-        };
+        }
+        .push_next(&mut features2)
+        .queue_create_infos(&queue_cis)
+        .enabled_extension_names(&device_extensions);
+
         let device = unsafe {
             instance
                 .create_device(physical_device, &device_info, None)

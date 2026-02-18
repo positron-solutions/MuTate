@@ -6,6 +6,10 @@ This is a record of "crimes" and the plans to later un-crime them.  Debt specifi
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
+## Ash & Raw Pointers
+
+As we go, replace C pointer casting and `as_ptr()` calls with `push_next` and structure methods.  These accept more Rusty types and are safer (pointer castings is pretty unsafe).  See this commit in blame.
+
 ## Spectrum Analyzer
 
 The first-pass at the CQT has a number of problems that have excellent solutions available.

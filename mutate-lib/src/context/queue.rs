@@ -138,7 +138,7 @@ impl QueueFamilies {
         }
     }
 
-    pub fn queue_infos(&self, priorities: &[f32]) -> Vec<vk::DeviceQueueCreateInfo> {
+    pub fn queue_cis(&self, priorities: &[f32]) -> Vec<vk::DeviceQueueCreateInfo> {
         [Some(self.graphics), self.compute, self.transfer]
             .into_iter()
             .filter_map(|opt| opt)
