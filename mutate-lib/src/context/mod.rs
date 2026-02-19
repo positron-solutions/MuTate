@@ -165,12 +165,27 @@ impl VkContext {
         let mut bda_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
         bda_features.buffer_device_address = vk::TRUE;
 
+        let mut di_features = vk::PhysicalDeviceDescriptorIndexingFeatures::default();
+        di_features.shader_sampled_image_array_non_uniform_indexing = vk::TRUE;
+        di_features.shader_storage_buffer_array_non_uniform_indexing = vk::TRUE;
+        di_features.shader_storage_image_array_non_uniform_indexing = vk::TRUE;
+        di_features.descriptor_binding_partially_bound = vk::TRUE;
+        di_features.runtime_descriptor_array = vk::TRUE;
+        di_features.descriptor_binding_variable_descriptor_count = vk::TRUE;
+
+        let mut db_features = vk::PhysicalDeviceDescriptorBufferFeaturesEXT::default();
+        db_features.descriptor_buffer = vk::TRUE;
+        db_features.descriptor_buffer_capture_replay = vk::TRUE;
+        db_features.descriptor_buffer_image_layout_ignored = vk::TRUE;
+
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .push_next(&mut bda_features)
             .push_next(&mut dr_features)
             .push_next(&mut sync2_features)
             .push_next(&mut pw_features)
-            .push_next(&mut pwid_features);
+            .push_next(&mut pwid_features)
+            .push_next(&mut di_features)
+            .push_next(&mut db_features);
 
         let queue_families = queue::QueueFamilies::new(&instance, &physical_device);
         let queue_priorities = [1.0];
