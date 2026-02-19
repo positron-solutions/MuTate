@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = [ "mutate-lib", "mutate-visualizer"]
+members = [ "mutate-lib", "mutate-visualizer",  "crates/*"]
 
 [workspace.package]
 categories = ["multimedia", "graphics", "rendering", "visualization"]
@@ -30,8 +30,15 @@ winit = "0.30.12"
 num-complex = "0.4.6"
 num-traits = "0.2.19"
 
-# member
+# macros
+syn = "2.0.104"
+proc-macro2 = "1.0.95"
+quote = "1.0.40"
+paste = "1.0.15"
+
+# members
 mutate-lib = {path = "./mutate-lib"}
+mutate-macros = {path = "./crates/macros"}
 
 # Build fast dependencies
 [profile.dev.package."*"]
