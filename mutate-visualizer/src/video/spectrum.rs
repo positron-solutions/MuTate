@@ -33,6 +33,9 @@ pub struct SpectrumNode {
     descriptor_set: vk::DescriptorSet,
     spectrum_buffer: Option<buffer::MappedAllocation<SpectrumSample>>,
     output_buffer: Option<buffer::MappedAllocation<rgb::Rgba<u8>>>,
+
+    descriptor_pool: vk::DescriptorPool,
+    layout: vk::DescriptorSetLayout,
 }
 
 const ENTRY_POINT: &[u8] = b"main\0";
@@ -75,14 +78,23 @@ impl SpectrumNode {
             size: std::mem::size_of::<[f32; 2]>() as u32,
         };
 
-        let layouts = [util::descriptor_set_layout(device).unwrap()];
+        let pool_sizes = [vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 2,
+        }];
 
-        let alloc_info = vk::DescriptorSetAllocateInfo {
-            descriptor_pool: context.descriptor_pool,
-            descriptor_set_count: layouts.len() as u32,
-            p_set_layouts: layouts.as_ptr(),
-            ..Default::default()
-        };
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(&pool_sizes);
+
+        let pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
+
+        let layout = util::descriptor_set_layout(device).unwrap();
+        let layouts = [layout];
+
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(pool)
+            .set_layouts(&layouts);
 
         let descriptor_set = unsafe { device.allocate_descriptor_sets(&alloc_info).unwrap()[0] };
 
@@ -122,6 +134,9 @@ impl SpectrumNode {
 
             spectrum_buffer: None,
             output_buffer: None,
+
+            descriptor_pool: pool,
+            layout: layout,
         }
     }
 
@@ -314,6 +329,8 @@ impl SpectrumNode {
         unsafe {
             device.destroy_pipeline(self.compute_pipeline, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
+            device.destroy_descriptor_set_layout(self.layout, None);
+            device.destroy_descriptor_pool(self.descriptor_pool, None);
 
             if let Some(allocated) = &self.spectrum_buffer {
                 allocated.destroy(&context)?;
