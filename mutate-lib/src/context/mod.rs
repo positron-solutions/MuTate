@@ -12,10 +12,11 @@
 //! *NEXT* The Devices and memory management are much more tightly bound together than the
 //! `ash::Entry` and `ash::Instance`, so these will be separated when convenient.
 pub mod queue;
+pub mod descriptors;
 
 use std::ffi::{c_void, CStr};
 
-use ash::vk;
+use ash::{ext::subgroup_size_control, vk};
 
 pub struct VkContext {
     pub entry: ash::Entry,
@@ -28,7 +29,9 @@ pub struct VkContext {
     pub device: ash::Device,
     /// Queues and command buffers for device in use.
     pub queues: queue::Queues,
+    #[deprecated(note = "Moving to bindless.  Don't write new descriptors.")]
     pub descriptor_pool: vk::DescriptorPool,
+    descriptors: descriptors::Descriptors,
 }
 
 const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
@@ -204,21 +207,34 @@ impl VkContext {
         };
         let queues = queue::Queues::new(&device, queue_families);
 
-        // DEBT memory management.  We obviously don't want to recreate descriptor pools for every visual.
-        let pool_sizes = [vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: 32, // we're promoting bindless, so this is plenty?
-        }];
+        // DEBT Max descriptor size calculation / management.
+        let pool_sizes = [
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 256
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::SAMPLED_IMAGE,
+                descriptor_count: 256
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: 256
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_IMAGE,
+                descriptor_count: 256
+            },
+        ];
 
-        let pool_info = vk::DescriptorPoolCreateInfo {
-            max_sets: 1,
-            pool_size_count: pool_sizes.len() as u32,
-            p_pool_sizes: pool_sizes.as_ptr(),
-            flags: vk::DescriptorPoolCreateFlags::empty(),
-            ..Default::default()
-        };
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(&pool_sizes)
+            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND);
 
         let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
+
+        let descriptors = descriptors::Descriptors::new(&device, &descriptor_pool).unwrap();
 
         let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
@@ -232,6 +248,7 @@ impl VkContext {
             queues,
 
             descriptor_pool,
+            descriptors,
         }
     }
 
@@ -242,6 +259,7 @@ impl VkContext {
     // XXX in reality, this consumes the context, but ownership friction needs worked out.
     pub fn destroy(&self) {
         unsafe {
+            self.descriptors.destroy(&self.device);
             self.device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
             self.queues.destroy(&self.device);
