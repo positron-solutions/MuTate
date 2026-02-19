@@ -46,26 +46,52 @@ impl VkContext {
                 .expect("Failed to enumerate instance extensions")
         };
 
-        // FIXME insufficiently accurate platform check
-        // FIXME look for the other features before just exploding later?
-        assert!(
-            available_exts.iter().any(|ext| unsafe {
-                CStr::from_ptr(ext.extension_name.as_ptr()) == ash::vk::KHR_WAYLAND_SURFACE_NAME
-            }),
-            "Only xlib is currently supported"
-        );
+        let platform_ext = if cfg!(target_os = "linux") {
+                if std::env::var("WAYLAND_DISPLAY").is_ok() {
+                    ash::vk::KHR_WAYLAND_SURFACE_NAME.as_ptr()
+                } else {
+                    ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr()
+                }
+        } else if cfg!(target_os = "macos") {
+            ash::vk::MVK_MACOS_SURFACE_NAME.as_ptr()
+        } else if cfg!(target_os = "ios") {
+            ash::vk::MVK_IOS_SURFACE_NAME.as_ptr()
+        } else if cfg!(target_os = "android") {
+            ash::vk::KHR_ANDROID_SURFACE_NAME.as_ptr()
+        } else if cfg!(target_os = "windows") {
+            ash::vk::KHR_WIN32_SURFACE_NAME.as_ptr()
+        } else {
+            ash::vk::EXT_HEADLESS_SURFACE_NAME.as_ptr()
+        };
 
+        // FIXME these are not the only ones we require.
         let required_exts = [
             ash::vk::KHR_SURFACE_NAME.as_ptr(),
-            ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr(),
-            ash::vk::KHR_WAYLAND_SURFACE_NAME.as_ptr(),
-            // NEXT CLI switch gate
-            ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
+            platform_ext
         ];
+
+        for &req in &required_exts {
+            let found = available_exts.iter().any(|ext| unsafe {
+                let ext_cstr = CStr::from_ptr(ext.extension_name.as_ptr());
+                let req_cstr = CStr::from_ptr(req);
+                ext_cstr == req_cstr
+            });
+            assert!(
+                found,
+                "Required Vulkan extension {} not found",
+                unsafe { CStr::from_ptr(req).to_str().unwrap() }
+            );
+        }
 
         let app_info =
             vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
-        let validation_layers = [VALIDATION_LAYER.as_ptr()];
+
+        let validation_layers = [
+            // #[cfg(debug_assertions)]
+            // NOTE Leaving this on all the time because there are still issues in `--release`
+            // builds and we need to default to leaving it on via the dev shells or something.
+            VALIDATION_LAYER.as_ptr()
+        ];
 
         let instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
