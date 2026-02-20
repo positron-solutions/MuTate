@@ -10,7 +10,7 @@
 
 use ash::vk;
 
-use crate::assets;
+use mutate_assets as assets;
 
 // This will be an interface after more nodes exist
 pub struct TriangleNode {

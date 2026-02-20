@@ -39,6 +39,7 @@ paste = "1.0.15"
 # members
 mutate-lib = {path = "./mutate-lib"}
 mutate-macros = {path = "./crates/macros"}
+mutate-assets = {path = "./crates/assets"}
 
 # Build fast dependencies
 [profile.dev.package."*"]

@@ -1,0 +1,21 @@
+[package]
+name = "mutate-assets"
+description = "Build support to discover, package, and use static files."
+readme = "../README.md"
+
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+dirs = {workspace = true, optional = true}
+thiserror = {workspace = true, optional = true}
+toml = {workspace = true, optional = true}
+
+[features]
+default = ["build", "runtime"]
+runtime = ["dep:dirs", "dep:thiserror"]
+build = ["dep:toml"]

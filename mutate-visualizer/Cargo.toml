@@ -15,7 +15,6 @@ default-run = "mutate-visualizer"
 [dependencies]
 ash.workspace = true
 clap = {workspace = true, features = ["derive"]}
-dirs.workspace = true
 palette.workspace = true
 rand.workspace = true
 raw-window-handle.workspace = true
@@ -25,13 +24,15 @@ thiserror.workspace = true
 winit.workspace = true
 
 mutate-lib.workspace = true
+mutate-assets = {workspace = true, features = ["runtime"]}
 
 [build-dependencies]
 toml.workspace = true
+mutate-assets = {workspace = true, features = ["build"]}
 
 [package.metadata.mutate]
 # 📦 Attention packagers!  The build.rs sets MUTATE_BUILD_ASSETS_DIR for
-# hardcoding into assets.rs.  Set the path absolutely or relative to the
-# installed binary.  This setting does not affect debug builds.  See
-# MUTATE_ASSETS_DIR for runtime settings.
+# hardcoding into default asset lookups.  Set the path absolutely or relative to
+# the installed binary.  This setting does not affect debug binary behavior.
+# See MUTATE_ASSETS_DIR for runtime settings.
 asset_dir="../shared/mutate/assets"

@@ -1,8 +1,13 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! # Assets
+//!
 //! The assets module encapsulates how lookups can vary across platforms and between usage and
 //! development.  `AssetDirs` is a set of realized directories where lookups may search.
+//!
+//! It has some implicit dependency on having run the build script (or having set env variables
+//! manually, but why would you do that?).
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -103,6 +108,10 @@ impl AssetDirs {
         self.find(name, kind)
             .ok_or(AssetError::NotFound(name.to_owned()))
             .and_then(|found| std::fs::read(found).map_err(|e| e.into()))
+    }
+
+    pub fn find_shader(self, name: &str) -> Result<Vec<u8>, AssetError> {
+        self.find_bytes(name, AssetKind::Shader)
     }
 }
 
