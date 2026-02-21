@@ -10,8 +10,12 @@
 //! manually, but why would you do that?).
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
+#[derive(Debug)]
 pub enum AssetKind {
     Shader,
 }
@@ -84,12 +88,27 @@ impl AssetDirs {
     pub fn find(&self, name: &str, kind: AssetKind) -> Option<PathBuf> {
         let mut file = PathBuf::from(kind.subdir()).join(name);
         file.set_extension(kind.ext());
-        let crate_assets = Some(Path::new(std::env!("CARGO_MANIFEST_DIR")).join("assets"));
-        [self.env.as_deref(), crate_assets.as_deref()]
+
+        let crate_assets = std::env::var("CARGO_MANIFEST_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .map(|p| p.join("assets"));
+
+        let checked: Vec<PathBuf> = [self.env.as_deref(), crate_assets.as_deref()]
             .into_iter()
             .flatten()
             .map(|root| root.join(&file))
-            .find(|candidate| candidate.exists())
+            .collect();
+
+        if let Some(found) = checked.iter().find(|candidate| candidate.exists()) {
+            return Some(found.clone());
+        } else {
+            eprintln!("warning: {kind:?} {name:} not found.");
+            checked.iter().for_each(|pb| {
+                eprintln!("  checked: {pb:?}");
+            });
+            None
+        }
     }
 
     #[cfg(not(debug_assertions))]
