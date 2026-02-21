@@ -112,6 +112,8 @@ impl AssetDirs {
     }
 
     #[cfg(not(debug_assertions))]
+    /// Checks asset paths for `name`.  Debug builds only look for build tree assets.  Use
+    /// environment variables to override.
     pub fn find(&self, name: &str, kind: AssetKind) -> Option<PathBuf> {
         let mut file = PathBuf::from(kind.subdir()).join(name);
         file.set_extension(kind.ext());
@@ -129,8 +131,33 @@ impl AssetDirs {
             .and_then(|found| std::fs::read(found).map_err(|e| e.into()))
     }
 
-    pub fn find_shader(self, name: &str) -> Result<Vec<u8>, AssetError> {
-        self.find_bytes(name, AssetKind::Shader)
+    pub fn find_shader(&self, name: &str) -> Result<Vec<u32>, AssetError> {
+        let path = self
+            .find(name, AssetKind::Shader)
+            .ok_or_else(|| AssetError::NotFound(name.to_owned()))?;
+
+        let mut file = std::fs::File::open(&path)?;
+
+        let byte_len = file.metadata()?.len() as usize;
+
+        if byte_len % size_of::<u32>() != 0 {
+            return Err(AssetError::InvalidShader(format!(
+                "SPIR-V length not multiple of 4: {} bytes",
+                byte_len
+            )));
+        }
+
+        let word_len = byte_len / size_of::<u32>();
+        let mut words = Vec::<u32>::with_capacity(word_len);
+
+        // Treating things as just things, as things were meant to be!  🤗
+        unsafe {
+            words.set_len(word_len);
+            let byte_slice =
+                std::slice::from_raw_parts_mut(words.as_mut_ptr() as *mut u8, byte_len);
+            file.read_exact(byte_slice)?;
+        }
+        Ok(words)
     }
 }
 
@@ -140,4 +167,6 @@ pub enum AssetError {
     ReadError(#[from] std::io::Error),
     #[error("file not found: {:?}", .0)]
     NotFound(String),
+    #[error("load spirv failed: {:?}", .0)]
+    InvalidShader(String),
 }

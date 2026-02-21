@@ -29,8 +29,12 @@ pub mod dsp;
 #[cfg(target_os = "linux")]
 use pipewire as pw;
 
+use mutate_assets as assets;
+
 pub mod prelude {
     pub use crate::MutateError;
+    // NEXT feature flag the Vulkan stuff in one crate
+    pub use crate::context::VkContext;
 }
 
 // NEXT Audio will be its own kind of error that must fit into the MutateError hierarchy.
@@ -57,6 +61,9 @@ pub enum MutateError {
 
     #[error("Vulkan: {0}")]
     Vulkan(#[from] ash::vk::Result),
+
+    #[error("AssetError: {0}")]
+    AssetError(#[from] assets::AssetError),
 }
 
 impl<T> From<std::sync::PoisonError<T>> for MutateError {
