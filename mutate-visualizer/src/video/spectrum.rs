@@ -48,15 +48,9 @@ impl SpectrumNode {
         let device = context.device();
         let assets = assets::AssetDirs::new();
 
-        let compute_spv = assets
-            .find_bytes("spectrum/compute", assets::AssetKind::Shader)
-            .unwrap();
+        let compute_spv = assets.find_shader("spectrum/compute").unwrap();
 
-        let compute_module_ci = vk::ShaderModuleCreateInfo {
-            code_size: compute_spv.len(),
-            p_code: compute_spv.as_ptr() as *const u32,
-            ..Default::default()
-        };
+        let compute_module_ci = vk::ShaderModuleCreateInfo::default().code(&compute_spv);
 
         let compute_shader_module = unsafe {
             device
