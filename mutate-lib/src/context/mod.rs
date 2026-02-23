@@ -34,8 +34,6 @@ pub struct VkContext {
     descriptors: descriptors::Descriptors,
 }
 
-const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
-
 impl VkContext {
     /// Obtain an entry, instance, and initialized device.
     ///
@@ -93,7 +91,7 @@ impl VkContext {
             // #[cfg(debug_assertions)]
             // NOTE Leaving this on all the time because there are still issues in `--release`
             // builds and we need to default to leaving it on via the dev shells or something.
-            VALIDATION_LAYER.as_ptr()
+            c"VK_LAYER_KHRONOS_validation".as_ptr()
         ];
 
         let instance_ci = vk::InstanceCreateInfo::default()
