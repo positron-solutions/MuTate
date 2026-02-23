@@ -109,6 +109,8 @@ impl VkContext {
         // NEXT support choices, via config, environment, and heuristics (discrete vs on-CPU)!)
         let physical_device = physical_devices[0];
 
+        assert_api_level(&instance, physical_device);
+
         let device_extensions = [
             ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
             ash::vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
@@ -263,6 +265,22 @@ impl VkContext {
             self.device.destroy_device(None);
             self.instance.destroy_instance(None)
         };
+    }
+}
+
+fn assert_api_level (instance: &ash::Instance,physical_device: vk::PhysicalDevice) {
+    let props = unsafe {
+        instance.get_physical_device_properties(physical_device)
+    };
+
+    let api_version = props.api_version;
+
+    let major = vk::api_version_major(api_version);
+    let minor = vk::api_version_minor(api_version);
+    let patch = vk::api_version_patch(api_version);
+
+    if major == 1 && minor < 3 {
+        panic!("Vulkan 1.3 required, found {}.{}.{}", major, minor, patch);
     }
 }
 
