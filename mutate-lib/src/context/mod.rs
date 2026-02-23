@@ -27,6 +27,8 @@ use std::ffi::{c_void, CStr};
 
 use ash::{ext::subgroup_size_control, vk};
 
+use mutate_assets as assets;
+
 pub struct VkContext {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
@@ -41,6 +43,9 @@ pub struct VkContext {
     #[deprecated(note = "Moving to bindless.  Don't write new descriptors.")]
     pub descriptor_pool: vk::DescriptorPool,
     descriptors: descriptors::Descriptors,
+
+    /// Initialized assets
+    assets: assets::AssetDirs,
 }
 
 impl VkContext {
@@ -288,6 +293,8 @@ impl VkContext {
 
             descriptor_pool,
             descriptors,
+
+            assets: assets::AssetDirs::new(),
         }
     }
 
