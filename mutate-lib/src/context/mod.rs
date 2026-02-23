@@ -1,18 +1,27 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Context
+//! # Vulkan Context
 //!
 //! Fundamentally required resources, including the entry, instance, hardware devices
 //! are encapsulated by `VkContext`.
 //!
-//! Initializing a physical device for use results in a logical `ash::Device`, which is used in most
-//! calls to Vulkan.
-//!
 //! *NEXT* The Devices and memory management are much more tightly bound together than the
 //! `ash::Entry` and `ash::Instance`, so these will be separated when convenient.
-pub mod queue;
+//!
+//! ## Enabled Features
+//!
+//! We aim to support a minimum set of modern tactics to offer a complete, high performance
+//! experience:
+//!
+//! - Buffer device address.
+//! - One big descriptor set with one descriptor array per type (bindless).
+//! - Flexible push constants & UBOs with scalar layout and 8/16-bit support.
+//! - Vulkan 1.3+ minimum support, 1.4 when reasonable.
+//! - Dynamic rendering
+
 pub mod descriptors;
+pub mod queue;
 
 use std::ffi::{c_void, CStr};
 
@@ -41,7 +50,9 @@ impl VkContext {
     /// enumerate and may even switch devices.
     pub fn new() -> Self {
         let entry = unsafe { ash::Entry::load().expect("failed to load Vulkan library") };
-        let available_exts = unsafe {
+        assert_loader_version(&entry);
+
+        let available_entry_extensions = unsafe {
             entry
                 .enumerate_instance_extension_properties(None)
                 .expect("Failed to enumerate instance extensions")
@@ -65,14 +76,18 @@ impl VkContext {
             ash::vk::EXT_HEADLESS_SURFACE_NAME.as_ptr()
         };
 
-        // FIXME these are not the only ones we require.
         let required_exts = [
             ash::vk::KHR_SURFACE_NAME.as_ptr(),
+
+            // Evidently this is a cool new way to tune validation layer settings.  Also see another
+            // instance extension, VK_EXT_validation_features.
+            // ash::vk::EXT_LAYER_SETTINGS_NAME.as_ptr(),
+
             platform_ext
         ];
 
         for &req in &required_exts {
-            let found = available_exts.iter().any(|ext| unsafe {
+            let found = available_entry_extensions.iter().any(|ext| unsafe {
                 let ext_cstr = CStr::from_ptr(ext.extension_name.as_ptr());
                 let req_cstr = CStr::from_ptr(req);
                 ext_cstr == req_cstr
@@ -92,6 +107,7 @@ impl VkContext {
             // NOTE Leaving this on all the time because there are still issues in `--release`
             // builds and we need to default to leaving it on via the dev shells or something.
             c"VK_LAYER_KHRONOS_validation".as_ptr()
+
         ];
 
         let instance_ci = vk::InstanceCreateInfo::default()
@@ -109,46 +125,67 @@ impl VkContext {
         // NEXT support choices, via config, environment, and heuristics (discrete vs on-CPU)!)
         let physical_device = physical_devices[0];
 
-        assert_api_level(&instance, physical_device);
+        assert_physical_device_version(&instance, physical_device);
+        assert_physical_device_features(&instance, physical_device);
 
         let device_extensions = [
             ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
-            ash::vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
+
+
             ash::vk::EXT_EXTENDED_DYNAMIC_STATE_NAME.as_ptr(),
             ash::vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME.as_ptr(),
             ash::vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME.as_ptr(),
-            ash::vk::KHR_PIPELINE_LIBRARY_NAME.as_ptr(),
-            // NOTE Descriptor sets are kind of a "choose your fighter" moment in using Vulkan.  We
-            // are going for a bindless scheme where we use 1-2 descriptor sets per scene, one
-            // descriptor slot per type, and in each slot, we hold a descriptor array with the
-            // maximum number of things we might actually use simultaneously.
-            //
-            // Long story short, if we have a type, we need to be able to store it in a descriptor
-            // array, not a single slot of a descriptor set, which would force us to overwrite those
-            // descriptors a lot.  Push descriptors can still be used.  Push constants can also be
-            // used.  For the most part, get them into an array and then we only have to dynamically
-            // give the indexes (and types!) to the shader programs.
-            ash::vk::EXT_INLINE_UNIFORM_BLOCK_NAME.as_ptr(),
-            ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
-            ash::vk::KHR_DESCRIPTOR_UPDATE_TEMPLATE_NAME.as_ptr(),
-            ash::vk::KHR_PUSH_DESCRIPTOR_NAME.as_ptr(),
+
             ash::vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
-            // Not strictly in use, but anticipated
+
+            // NEXT better debug gating (see validation layer activation above).
+            // Enables some debug functionality in shaders.
             ash::vk::KHR_SHADER_NON_SEMANTIC_INFO_NAME.as_ptr(),
-            // ash::vk::KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME.as_ptr(),
-            ash::vk::EXT_MEMORY_BUDGET_NAME.as_ptr(),
-            // ROLL holding off on this until other hardware vendors have supporting drivers
+            ash::vk::EXT_TOOLING_INFO_NAME.as_ptr(),
+            // MAYBE I might just need to install something, but this fails at runtime on my machine.
+            // ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
+
+            // MAYBE If we start running into lots of pipeline creation costs for slight variants,
+            // we are advised to look at this extension.
+            // ash::vk::EXT_GRAPHICS_PIPELINE_LIBRARY_NAME.as_ptr(),
+            // ROLL holding off on this until other hardware vendors have supporting drivers.  This
+            // is another path to reducing the cost of pipeline combinatorics.
             // ash::vk::EXT_SHADER_OBJECT_NAME,
-            ash::vk::KHR_MAINTENANCE1_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE2_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE3_NAME.as_ptr(),
-            ash::vk::KHR_MAINTENANCE4_NAME.as_ptr(),
+
+            // "gives an implementation the opportunity to reduce the number of indirections an
+            // implementation takes to access uniform values, when only a few values are used"
+            ash::vk::EXT_INLINE_UNIFORM_BLOCK_NAME.as_ptr(),
+
+            // MAYBE So we can proactively change our memory behavior, downsampling etc.
+            // ash::vk::EXT_MEMORY_BUDGET_NAME.as_ptr(),
+            // ash::vk::EXT_MEMORY_PRIORITY_NAME.as_ptr(),
+
+            ash::vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
             // ROLL VK_EXT_present_timing is still too new.  Support must be dynamic and... someone
             // needs a card / driver that supports it to develop the support.
             // ash::vk::EXT_PRESENT_TIMING_NAME,
             ash::vk::KHR_PRESENT_WAIT_NAME.as_ptr(),
             ash::vk::KHR_PRESENT_ID_NAME.as_ptr(),
         ];
+
+        let available_device_extensions = unsafe {
+            instance.enumerate_device_extension_properties(physical_device)
+                .expect("Failed to enumerate device extensions")
+        };
+
+        for &req in &device_extensions {
+            let found = available_device_extensions.iter().any(|ext| unsafe {
+                let ext_cstr = CStr::from_ptr(ext.extension_name.as_ptr());
+                let req_cstr = CStr::from_ptr(req);
+                ext_cstr == req_cstr
+            });
+
+            assert!(
+                found,
+                "Required Vulkan device extension {} not found",
+                unsafe { CStr::from_ptr(req).to_str().unwrap() }
+            );
+        }
 
         let mut pwid_features = vk::PhysicalDevicePresentIdFeaturesKHR::default()
             .present_id(true);
@@ -166,6 +203,9 @@ impl VkContext {
             .buffer_device_address(true)
             .descriptor_binding_partially_bound(true)
             .descriptor_binding_variable_descriptor_count(true)
+            .descriptor_binding_sampled_image_update_after_bind(true)
+            .descriptor_binding_storage_buffer_update_after_bind(true)
+            .descriptor_binding_storage_image_update_after_bind(true)
             .runtime_descriptor_array(true)
             .scalar_block_layout(true)
             .shader_float16(true)
@@ -268,7 +308,7 @@ impl VkContext {
     }
 }
 
-fn assert_api_level (instance: &ash::Instance,physical_device: vk::PhysicalDevice) {
+fn assert_physical_device_version (instance: &ash::Instance, physical_device: vk::PhysicalDevice) {
     let props = unsafe {
         instance.get_physical_device_properties(physical_device)
     };
@@ -281,6 +321,61 @@ fn assert_api_level (instance: &ash::Instance,physical_device: vk::PhysicalDevic
 
     if major == 1 && minor < 3 {
         panic!("Vulkan 1.3 required, found {}.{}.{}", major, minor, patch);
+    }
+}
+
+fn assert_physical_device_features(instance: &ash::Instance, physical_device: vk::PhysicalDevice) {
+    let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
+    let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
+    let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
+
+    let mut features2 = vk::PhysicalDeviceFeatures2::default()
+        .features(vk::PhysicalDeviceFeatures::default())
+        .push_next(&mut features_1_3)
+        .push_next(&mut features_1_2)
+        .push_next(&mut features_1_1);
+
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+
+    assert_eq!(features2.features.shader_int16, vk::TRUE);
+
+    assert_eq!(features_1_1.storage_buffer16_bit_access, vk::TRUE);
+    assert_eq!(features_1_1.storage_input_output16, vk::TRUE);
+    assert_eq!(features_1_1.storage_push_constant16, vk::TRUE);
+    assert_eq!(features_1_1.uniform_and_storage_buffer16_bit_access, vk::TRUE);
+
+    assert_eq!(features_1_2.buffer_device_address, vk::TRUE);
+    assert_eq!(features_1_2.descriptor_binding_partially_bound, vk::TRUE);
+    assert_eq!(features_1_2.descriptor_binding_sampled_image_update_after_bind, vk::TRUE);
+    assert_eq!(features_1_2.descriptor_binding_storage_buffer_update_after_bind, vk::TRUE);
+    assert_eq!(features_1_2.descriptor_binding_storage_image_update_after_bind, vk::TRUE);
+    assert_eq!(features_1_2.descriptor_binding_variable_descriptor_count, vk::TRUE);
+    assert_eq!(features_1_2.runtime_descriptor_array, vk::TRUE);
+    assert_eq!(features_1_2.scalar_block_layout , vk::TRUE);
+    assert_eq!(features_1_2.shader_float16, vk::TRUE);
+    assert_eq!(features_1_2.shader_int8, vk::TRUE);
+    assert_eq!(features_1_2.shader_sampled_image_array_non_uniform_indexing, vk::TRUE);
+    assert_eq!(features_1_2.shader_storage_buffer_array_non_uniform_indexing, vk::TRUE);
+    assert_eq!(features_1_2.shader_storage_image_array_non_uniform_indexing, vk::TRUE);
+    assert_eq!(features_1_2.storage_buffer8_bit_access, vk::TRUE);
+    assert_eq!(features_1_2.storage_push_constant8, vk::TRUE);
+    assert_eq!(features_1_2.uniform_and_storage_buffer8_bit_access, vk::TRUE);
+
+    assert_eq!(features_1_3.maintenance4, vk::TRUE);
+    assert_eq!(features_1_3.synchronization2, vk::TRUE);
+}
+
+fn assert_loader_version (entry: &ash::Entry) {
+    let loader_version = unsafe {
+        entry.try_enumerate_instance_version()
+            .unwrap_or(Some(vk::make_api_version(0, 1, 0, 0)))
+            .unwrap()
+    };
+
+    if loader_version < vk::make_api_version(0, 1, 3, 0) {
+        panic!("Loader does not support Vulkan 1.3");
     }
 }
 
