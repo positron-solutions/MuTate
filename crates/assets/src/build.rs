@@ -26,6 +26,10 @@ pub fn build_shaders() {
         let mut out_ensured = false;
         let out_dir = dest_root.join(dir.strip_prefix(src_root).unwrap());
 
+        // NEXT for Apple to use pre-compiled Metal libs instead of runtime translated (once) Spirv,
+        // emit the MSL targets and call the Apple tooling.  During introspection, proc macros can
+        // determine the layout differences from introspection and convert declarations to the
+        // appropriate code for each pipeline.
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
@@ -36,15 +40,18 @@ pub fn build_shaders() {
                     fs::create_dir_all(&out_dir).unwrap();
                     out_ensured = true;
                 }
-                let out = dest_root
-                    .join(path.strip_prefix(src_root).unwrap())
-                    .with_extension("spv");
+                let stem = path.strip_prefix(src_root).unwrap();
+                let out = dest_root.join(stem).with_extension("spv");
+                let mut out_reflect = dest_root.join(stem).with_extension("reflection.json");
 
-                // Run slangc: `slangc <input> -o <output>`
+                // Run slangc:
+                // `slangc <input> -o <out> -reflection-json -o <out-reflect>`
                 let status = process::Command::new("slangc")
                     .arg(path.as_os_str())
                     .arg("-o")
-                    .arg(out.as_os_str())
+                    .arg(out)
+                    .arg("-reflection-json")
+                    .arg(out_reflect)
                     .status()
                     .unwrap();
 
