@@ -48,6 +48,7 @@ pub fn build_shaders() {
                 // `slangc <input> -o <out> -reflection-json -o <out-reflect>`
                 let status = process::Command::new("slangc")
                     .arg(path.as_os_str())
+                    .arg("-fvk-use-scalar-layout")
                     .arg("-o")
                     .arg(out)
                     .arg("-reflection-json")

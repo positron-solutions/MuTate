@@ -48,11 +48,11 @@ impl VkContext {
         };
 
         let platform_ext = if cfg!(target_os = "linux") {
-                if std::env::var("WAYLAND_DISPLAY").is_ok() {
-                    ash::vk::KHR_WAYLAND_SURFACE_NAME.as_ptr()
-                } else {
-                    ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr()
-                }
+            if std::env::var("WAYLAND_DISPLAY").is_ok() {
+                ash::vk::KHR_WAYLAND_SURFACE_NAME.as_ptr()
+            } else {
+                ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr()
+            }
         } else if cfg!(target_os = "macos") {
             ash::vk::MVK_MACOS_SURFACE_NAME.as_ptr()
         } else if cfg!(target_os = "ios") {
@@ -111,9 +111,7 @@ impl VkContext {
 
         let device_extensions = [
             ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
-            ash::vk::KHR_SYNCHRONIZATION2_NAME.as_ptr(),
             ash::vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
-            ash::vk::KHR_DYNAMIC_RENDERING_NAME.as_ptr(),
             ash::vk::EXT_EXTENDED_DYNAMIC_STATE_NAME.as_ptr(),
             ash::vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME.as_ptr(),
             ash::vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME.as_ptr(),
@@ -130,7 +128,6 @@ impl VkContext {
             // give the indexes (and types!) to the shader programs.
             ash::vk::EXT_INLINE_UNIFORM_BLOCK_NAME.as_ptr(),
             ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
-            ash::vk::EXT_DESCRIPTOR_INDEXING_NAME.as_ptr(),
             ash::vk::KHR_DESCRIPTOR_UPDATE_TEMPLATE_NAME.as_ptr(),
             ash::vk::KHR_PUSH_DESCRIPTOR_NAME.as_ptr(),
             ash::vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
@@ -149,66 +146,46 @@ impl VkContext {
             // ash::vk::EXT_PRESENT_TIMING_NAME,
             ash::vk::KHR_PRESENT_WAIT_NAME.as_ptr(),
             ash::vk::KHR_PRESENT_ID_NAME.as_ptr(),
-
-            // Layout flexibility.  Scalar block enables alignment to each scalar size.  8 and 16
-            // bit scalars enable passing smaller types where sufficient.
-            ash::vk::EXT_SCALAR_BLOCK_LAYOUT_NAME.as_ptr(),
-            ash::vk::KHR_16BIT_STORAGE_NAME.as_ptr(),
-            ash::vk::KHR_8BIT_STORAGE_NAME.as_ptr(),
         ];
 
-        let mut pwid_features = vk::PhysicalDevicePresentIdFeaturesKHR::default();
-        pwid_features.present_id = vk::TRUE;
+        let mut pwid_features = vk::PhysicalDevicePresentIdFeaturesKHR::default()
+            .present_id(true);
 
-        let mut pw_features = vk::PhysicalDevicePresentWaitFeaturesKHR::default();
-        pw_features.present_wait = vk::TRUE;
+        let mut pw_features = vk::PhysicalDevicePresentWaitFeaturesKHR::default()
+            .present_wait(true);
 
-        let mut sync2_features = vk::PhysicalDeviceSynchronization2Features::default();
-        sync2_features.synchronization2 = vk::TRUE;
+        let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default()
+            .storage_buffer16_bit_access(true)
+            .storage_push_constant16(true)
+            .storage_input_output16(true)
+            .uniform_and_storage_buffer16_bit_access(true);
 
-        let mut dr_features = vk::PhysicalDeviceDynamicRenderingFeatures::default();
-        dr_features.dynamic_rendering = vk::TRUE;
+        let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default()
+            .buffer_device_address(true)
+            .descriptor_binding_partially_bound(true)
+            .descriptor_binding_variable_descriptor_count(true)
+            .runtime_descriptor_array(true)
+            .scalar_block_layout(true)
+            .shader_float16(true)
+            .shader_int8(true)
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .shader_storage_buffer_array_non_uniform_indexing(true)
+            .shader_storage_image_array_non_uniform_indexing(true)
+            .storage_buffer8_bit_access(true)
+            .storage_push_constant8(true)
+            .uniform_and_storage_buffer8_bit_access(true);
 
-        let mut bda_features = vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
-        bda_features.buffer_device_address = vk::TRUE;
-
-        let mut di_features = vk::PhysicalDeviceDescriptorIndexingFeatures::default();
-        di_features.shader_sampled_image_array_non_uniform_indexing = vk::TRUE;
-        di_features.shader_storage_buffer_array_non_uniform_indexing = vk::TRUE;
-        di_features.shader_storage_image_array_non_uniform_indexing = vk::TRUE;
-        di_features.descriptor_binding_partially_bound = vk::TRUE;
-        di_features.runtime_descriptor_array = vk::TRUE;
-        di_features.descriptor_binding_variable_descriptor_count = vk::TRUE;
-
-        let mut db_features = vk::PhysicalDeviceDescriptorBufferFeaturesEXT::default();
-        db_features.descriptor_buffer = vk::TRUE;
-        db_features.descriptor_buffer_capture_replay = vk::TRUE;
-        db_features.descriptor_buffer_image_layout_ignored = vk::TRUE;
-
-        let mut sbl_features = vk::PhysicalDeviceScalarBlockLayoutFeaturesEXT::default();
-        sbl_features.scalar_block_layout = vk::TRUE;
-
-        let mut s8b_features = vk::PhysicalDevice8BitStorageFeaturesKHR::default();
-        s8b_features.storage_buffer8_bit_access = vk::TRUE;
-        s8b_features.uniform_and_storage_buffer8_bit_access = vk::TRUE;
-        s8b_features.storage_push_constant8 = vk::TRUE;
-
-        let mut s16b_features = vk::PhysicalDevice16BitStorageFeaturesKHR::default();
-        s16b_features.storage_buffer16_bit_access = vk::TRUE;
-        s16b_features.uniform_and_storage_buffer16_bit_access = vk::TRUE;
-        s16b_features.storage_push_constant16 = vk::TRUE;
+        let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default()
+            .synchronization2(true)
+            .maintenance4(true);
 
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
-            .push_next(&mut bda_features)
-            .push_next(&mut dr_features)
-            .push_next(&mut sync2_features)
+            .features(vk::PhysicalDeviceFeatures::default().shader_int16(true))
             .push_next(&mut pw_features)
             .push_next(&mut pwid_features)
-            .push_next(&mut di_features)
-            .push_next(&mut db_features)
-            .push_next(&mut sbl_features)
-            .push_next(&mut s8b_features)
-            .push_next(&mut s16b_features);
+            .push_next(&mut features_1_3)
+            .push_next(&mut features_1_2)
+            .push_next(&mut features_1_1);
 
         let queue_families = queue::QueueFamilies::new(&instance, &physical_device);
         let queue_priorities = [1.0];
@@ -216,9 +193,9 @@ impl VkContext {
         let mut device_info = vk::DeviceCreateInfo {
             ..Default::default()
         }
-        .push_next(&mut features2)
-        .queue_create_infos(&queue_cis)
-        .enabled_extension_names(&device_extensions);
+            .push_next(&mut features2)
+            .queue_create_infos(&queue_cis)
+            .enabled_extension_names(&device_extensions);
 
         let device = unsafe {
             instance
