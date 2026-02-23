@@ -151,6 +151,12 @@ impl VkContext {
             // ash::vk::EXT_PRESENT_TIMING_NAME,
             ash::vk::KHR_PRESENT_WAIT_NAME.as_ptr(),
             ash::vk::KHR_PRESENT_ID_NAME.as_ptr(),
+
+            // Layout flexibility.  Scalar block enables alignment to each scalar size.  8 and 16
+            // bit scalars enable passing smaller types where sufficient.
+            ash::vk::EXT_SCALAR_BLOCK_LAYOUT_NAME.as_ptr(),
+            ash::vk::KHR_16BIT_STORAGE_NAME.as_ptr(),
+            ash::vk::KHR_8BIT_STORAGE_NAME.as_ptr(),
         ];
 
         let mut pwid_features = vk::PhysicalDevicePresentIdFeaturesKHR::default();
@@ -181,6 +187,19 @@ impl VkContext {
         db_features.descriptor_buffer_capture_replay = vk::TRUE;
         db_features.descriptor_buffer_image_layout_ignored = vk::TRUE;
 
+        let mut sbl_features = vk::PhysicalDeviceScalarBlockLayoutFeaturesEXT::default();
+        sbl_features.scalar_block_layout = vk::TRUE;
+
+        let mut s8b_features = vk::PhysicalDevice8BitStorageFeaturesKHR::default();
+        s8b_features.storage_buffer8_bit_access = vk::TRUE;
+        s8b_features.uniform_and_storage_buffer8_bit_access = vk::TRUE;
+        s8b_features.storage_push_constant8 = vk::TRUE;
+
+        let mut s16b_features = vk::PhysicalDevice16BitStorageFeaturesKHR::default();
+        s16b_features.storage_buffer16_bit_access = vk::TRUE;
+        s16b_features.uniform_and_storage_buffer16_bit_access = vk::TRUE;
+        s16b_features.storage_push_constant16 = vk::TRUE;
+
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .push_next(&mut bda_features)
             .push_next(&mut dr_features)
@@ -188,7 +207,10 @@ impl VkContext {
             .push_next(&mut pw_features)
             .push_next(&mut pwid_features)
             .push_next(&mut di_features)
-            .push_next(&mut db_features);
+            .push_next(&mut db_features)
+            .push_next(&mut sbl_features)
+            .push_next(&mut s8b_features)
+            .push_next(&mut s16b_features);
 
         let queue_families = queue::QueueFamilies::new(&instance, &physical_device);
         let queue_priorities = [1.0];
