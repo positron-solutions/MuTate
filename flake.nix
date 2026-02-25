@@ -5,12 +5,14 @@
   inputs = {
     pins.url = "git+https://github.com/positron-solutions/pins.git";
     nixpkgs.follows = "pins/nixpkgs";
+    nixpkgs-unstable.follows = "pins/nixpkgs-unstable";
   };
 
-  outputs = { self, nixpkgs, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, ... }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+      pkgs-unstable = import nixpkgs-unstable { inherit system; };
 
       vulkanEnv = ''
           export VK_LAYER_PATH=${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d
@@ -24,7 +26,7 @@
           vulkan-headers
           vulkan-tools
           vulkan-validation-layers
-          shader-slang
+          pkgs-unstable.shader-slang
       ];
 
       pipewireEnv = ''
