@@ -35,6 +35,8 @@ syn = "2.0.104"
 proc-macro2 = "1.0.95"
 quote = "1.0.40"
 paste = "1.0.15"
+# introspection metadata layout agreement
+xxhash-rust = "0.8.15"
 
 # members
 mutate-lib = {path = "./mutate-lib"}

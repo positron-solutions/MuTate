@@ -14,8 +14,9 @@ version.workspace = true
 dirs = {workspace = true, optional = true}
 thiserror = {workspace = true, optional = true}
 toml = {workspace = true, optional = true}
+xxhash-rust = {workspace = true, optional = true, features = ["xxh3"]}
 
 [features]
 default = ["build", "runtime"]
 runtime = ["dep:dirs", "dep:thiserror"]
-build = ["dep:toml"]
+build = ["dep:toml", "xxhash-rust"]

@@ -5,7 +5,14 @@
 //!
 //! This module contains the build time functionality.
 
-use std::{ffi, fs, path::Path, process};
+use std::{
+    ffi, fs,
+    io::{BufReader, Read, Write},
+    path::Path,
+    process,
+};
+
+use xxhash_rust::xxh3::Xxh3;
 
 /// Use slangc to recursively compile shaders from shaders to assets/shaders.
 // NEXT emit metadata from slangc
@@ -26,6 +33,10 @@ pub fn build_shaders() {
         let mut out_ensured = false;
         let out_dir = dest_root.join(dir.strip_prefix(src_root).unwrap());
 
+        // NOTE see xxhash_rust's DEFAULT_SECRET.  We expect this to be consistent between runs
+        let mut hasher = Xxh3::new();
+        let mut buffer = [0u8; 8192];
+
         // NEXT for Apple to use pre-compiled Metal libs instead of runtime translated (once) Spirv,
         // emit the MSL targets and call the Apple tooling.  During introspection, proc macros can
         // determine the layout differences from introspection and convert declarations to the
@@ -42,7 +53,8 @@ pub fn build_shaders() {
                 }
                 let stem = path.strip_prefix(src_root).unwrap();
                 let out = dest_root.join(stem).with_extension("spv");
-                let mut out_reflect = dest_root.join(stem).with_extension("reflection.json");
+                let out_reflect = dest_root.join(stem).with_extension("reflection.json");
+                let out_hash = dest_root.join(stem).with_extension("xx3h");
 
                 // Run slangc:
                 // `slangc <input> -o <out> -reflection-json -o <out-reflect>`
@@ -59,6 +71,20 @@ pub fn build_shaders() {
                 if !status.success() {
                     panic!("slangc failed for {:?}", path);
                 }
+
+                let file = fs::File::open(&path).unwrap();
+                let mut reader = BufReader::new(file);
+                hasher.reset();
+                loop {
+                    let read_bytes = reader.read(&mut buffer).unwrap();
+                    if read_bytes == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..read_bytes]);
+                }
+                let hex_string = format!("{:x}\n", hasher.digest());
+                let mut out_file = fs::File::create(&out_hash).unwrap();
+                out_file.write_all(&hex_string.as_bytes()).unwrap();
             }
         }
     }
