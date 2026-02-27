@@ -18,9 +18,6 @@ pub struct TriangleNode {
     pipelines: Vec<vk::Pipeline>,
 }
 
-// NEXT these names are pretty consistent and can likely be turned into asset loading functionality.
-const ENTRY_POINT: &[u8] = b"main\0";
-
 impl TriangleNode {
     pub fn new(device: &ash::Device, format: vk::Format) -> Self {
         let assets = assets::AssetDirs::new();
@@ -48,19 +45,19 @@ impl TriangleNode {
         let frag_shader_module =
             unsafe { device.create_shader_module(&frag_module_ci, None).unwrap() };
 
+        let vert_stage_ci = vk::PipelineShaderStageCreateInfo::default()
+            .stage (vk::ShaderStageFlags::VERTEX)
+            .name(c"main")
+            .module(vert_shader_module);
+
+        let frag_stage_ci = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_shader_module)
+            .name(c"main");
+
         let shader_stages = [
-            vk::PipelineShaderStageCreateInfo {
-                stage: vk::ShaderStageFlags::VERTEX,
-                module: vert_shader_module,
-                p_name: ENTRY_POINT.as_ptr() as *const std::os::raw::c_char,
-                ..Default::default()
-            },
-            vk::PipelineShaderStageCreateInfo {
-                stage: vk::ShaderStageFlags::FRAGMENT,
-                module: frag_shader_module,
-                p_name: ENTRY_POINT.as_ptr() as *const std::os::raw::c_char,
-                ..Default::default()
-            },
+            vert_stage_ci,
+            frag_stage_ci,
         ];
 
         // I messed around with two ranges but the validation of the shader code made me believe
@@ -72,7 +69,6 @@ impl TriangleNode {
             size: std::mem::size_of::<[f32; 5]>() as u32,
         };
 
-        // UPSTREAM shouldn't the transitive Default take care of this?
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo {
@@ -110,6 +106,14 @@ impl TriangleNode {
             ..Default::default()
         };
 
+        let color_formats = [format];
+        let pipeline_rendering_info = vk::PipelineRenderingCreateInfo {
+            view_mask: 0,
+            color_attachment_count: 1,
+            p_color_attachment_formats: color_formats.as_ptr(),
+            ..Default::default()
+        };
+
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic_state_info = vk::PipelineDynamicStateCreateInfo {
             dynamic_state_count: dynamic_states.len() as u32,
@@ -128,14 +132,7 @@ impl TriangleNode {
                 .unwrap()
         };
 
-        let color_formats = [format];
-        let pipeline_rendering_info = vk::PipelineRenderingCreateInfo {
-            view_mask: 0,
-            color_attachment_count: 1,
-            p_color_attachment_formats: color_formats.as_ptr(),
-            ..Default::default()
-        };
-
+        // XXX these defaults :-(
         let pipeline_ci = vk::GraphicsPipelineCreateInfo {
             layout: pipeline_layout,
             p_color_blend_state: &color_blend,
