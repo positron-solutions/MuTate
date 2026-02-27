@@ -6,11 +6,52 @@ This is a record of "crimes" and the plans to later un-crime them.  Debt specifi
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
+## Logs & Tracing
+
+Along with error handling in type signatures, we're starting to need some real infra for errors.  Having a library crate in addition to binaries opens lots of questions that just need decisions.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
+
 ## Ash & Raw Pointers
 
 As we go, replace C pointer casting and `as_ptr()` calls with `push_next` and structure methods.  These accept more Rusty types and are safer (pointer castings is pretty unsafe).  See this commit in blame.
 
-## Spectrum Analyzer
+## Shader Boilerplate
+
+Shaders must declare their inputs.  Push constant ranges and types must align.  Indexes must be typed for the right kinds of descriptors etc.  It's 1:1 and should be automated.
+
+- Emit slang introspection data during build
+  + Compile to spirv or MSL etc
+- Read introspection data in macros to check agreement or generate agreeing structs
+- Declaration macros and types they will express are in heavy development.
+
+It's really only once we have a collection of pipelines for a coherent technique that we can see all dependencies for a single Visual.
+
+## Devices vs VkContext
+
+The way we find and initialize devices is still pretty noobish.  The VkContext needs to abstract over **multiple** devices, both for multi-GPU setups and perhaps to offload learning & inference.
+
+## Task Graphs
+
+We have multiple loops (audio, render, allocation, destruction, transfer, training, inference, compute) all driven independently and externally.  When these synchronize, they form *kind of a graph?*  It's a bit more like several event loops with systems that run on those loops.
+
+In any case, there will be schedulers for these loops and things that want to run stuff will be able to inject function calls.  Dynamic dispatch so that we don't lock ourselves into an OOP style fill-in-the-blank set of choices about when to run things.
+
+Buffers etc things will be allocated and then the scheduled tasks will be allowed to run on the next tick.  Do everything in reverse for teardown.
+
+The somewhat well-trodden idea of the render graph will likely be obliterated by our needs for **crossfading different render styles**.  This is really different than a simple render graphs inserting barriers (an automation so cheap we can lazily decide it at runtime while recording buffers).
+
+What we really care about are ergonomics and enabling style crossfades.  That requires deeper awareness of the semantic meaning of buffer contents, not just their types.  We have to be able to interleave different pipelines.  Just throw the idea of statically decided render graphs out the window.  They will not be flexible enough.
+
+This is about to be under heavy development and will completely replace how all current visuals and task orderings are currently hand coded.
+
+## Reactive Updates
+
+Dependents should be notified reactively when their dependencies change configuration.  The first instance problem coming up is to resize a screen-dimension-sensitive visual when the screen size changes.  We have to re-allocate the buffers and re-size the internal data structures.  The resize information comes from the presentation target, and the reactive system must transmit this change to the dependent nodes.
+
+Downstream reactions will usually affect the lifetime of fields and allocations such as buffers, not the lifetimes of structs such as nodes themselves.
+
+The way this seems likely to be implemented is similar to other reactive systems but not nearly as granular.  Register inputs.  Re-instantiate on changes.  Swap resource pointers when ready.  Re-scale old resources when not yet ready.  This is coupled with the spec/hydration system being developed.
+
+## Moving Spectrum Analyzer to GPU
 
 The first-pass at the CQT has a number of problems that have excellent solutions available.
 
@@ -24,26 +65,6 @@ There is more.  Filter banks require *engineering*.  See the [longer discussion]
 The problem that is almost in the way of development is that even with `--release` the frame time at 1440p will be around 12ms of *just* audio processing time. That is too much.  We need to move this onto the GPU and try to kill some of the other issues as soon as possible.
 
 Rather than making the CQT faster on the CPU, which will mainly involve doing things that worsen quality or fight very hard to avoid making it terrible, we should focus on moving to the GPU where we can suddenly do "expensive" things like adding a lot more filter bins and then make it cheaper because ... it's the right thing to do even though we have 512 cores or so 😉.
-
-## Lifetime Alignment
-
-Build structs to gather firmly bound lifetimes.  Consider multiple window setups.  Nodes encapsulate resources exclusive to their lifetimes.  Boundaries emerging:
-
-- Instance, entry
-- Device, physical device, memory
-- Presentation targets
-- Drawing nodes
-- Other processing nodes
-- Transfer & deletion mementos
-- Timing graph
-
-User setting updates, dynamic scripting, and generation will all as usual require a lot of re-creation and re-allocation that can share duty with teardown, destruction being the first step of re-creation.
-
-## Reactive Node Updates
-
-Graph dependents should be notified reactively when their dependencies change configuration.  The first instance problem coming up is to resize a screen-dimension-sensitive CTQ when the screen size changes.  We have to re-allocate the buffers and re-size the internal data structures.  The resize information comes from the presentation target, and the graph must transmit this change to the dependent nodes.
-
-Downstream reactions will usually affect the lifetime of fields and allocations such as buffers, not the lifetimes of structs such as nodes themselves.
 
 # Charging Interest
 
@@ -62,49 +83,17 @@ Hardcode and mark with `// DEBT`
 
 ## Memory Management
 
-There are two sides to this, GPU and CPU.  On the CPU, we want to have zero-copy and avoid allocations when moving data around the render graph.  Even if memory is unpredictable over the lifetime of the graph because the graph is updated, the memory use from frame to frame should be relatively steady.
+Expectations are that memory usage will be relatively low but less predictable due to generation, transitions, and scripting.
 
-Several tools are like VMA bindings or the gpu-allocator crate are being looked at.  Expectations are that memory usage will be relatively low but less predictable due to generation and scripting.  Bindless rendering will certainly be coupled to the memory use strategy.  The tradeoffs of existing approaches are not clear yet, but the need to manage a pool and dependent addresses does suggest more rather than less work will pay off.
-
-The CQT (Constant Q Transform) Window-resize problem is really informative.  There are several valid strategies to replace a missized CQT:
-
-- Create a parallel CQT and switch the downstream binding when the replacement is ready, then mark the previous for garbage collection and stop scheduling it.
-- Use the existing CQT output, up-sampled for 1-2 frames while creating the new CQT.  Once the new CQT is producing outputs, the downstream bindings will see new updates.
-- Immediately stop drawing downstreams until the new upstream is ready.
-
-The first technique will lead to the best fidelity, but requires extra memory.  The last option is the easiest to implement (and will usually be on time and should be used first).  Under memory / compute pressure, high-cost asset rotations can fall back to low-cost ones.
+Where we're going, Visuals will provide their resource requirements as specs (which Images, SSBOs, Uniforms need to exist) and these will be instantiated by some allocator when they don't exist (discovered by Id etc).  These specs should give us some good, predictable high water marks for more intentional allocation strategies.
 
 ### For Now
 
-Nodes are just given a device context (also WIP) and create and destroy their own assets.  The node interface needs to emerge along with the render graph behaviors to interrogate the nodes for what operations need to be done.
+We don't really have any infra for one-big-allocation or deletion & compaction.  Specs will just hydrate kind of dumbly at first while we nail the ergonomics.
 
-Don't go crazy avoiding copies just yet.  The sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.
+Don't go crazy avoiding copies just yet, especially where sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.
 
-## Dependency Graph
-
-DAGs can model exclusive dependencies.  Topics of dependency:
-
-- Execution ordering & synchronization
-- Communicating handles that belong to dependencies into dependents to record their commands and so on
-- Reactive configuration updates
-- Calculating memory requirements
-- Deciding where to put barriers and transformations
-
-**The dataflow graph for Audio and for command buffer recording is almost totally different.**  One uses mostly actual data and is push-based.  One will primarily use mementos that describe memory...somewhere.  It may be easier to calculate some dependencies in reverse, from final dependents backward into dependencies.
-
-Here's a proposal for implementing a timing strategy
-
-- high precision timing thread.
-- worker threads for workloads that don't obviously need their own thread.
-- dedicated threads where parallelism is guaranteed anyway.
-- rendering phases will be explicitly modeled and timed
-- late binding wherever possible, re-using frame n data when n+1 is not available
-
-### For Now
-
-The current graph module is not actually implemented and contains mainly ideas.  The `GraphBuffer` is an example of a super half-baked piece.  It should be a ring buffer.  Some types communicate with scalars.  It's not clear who is caching or where caches would live.  Not all nodes want their input padded or dropped the same way when deadlines are missed.
-
-**Just do whatever works and attempt to read the tea leaves until it's clear which hard things need precise treatment and what data model they impose.**
+There is a better ring buffer crate for the task graph use case.  The existing `GraphBuffer` will / should die soon.
 
 ## Error Handling
 
@@ -114,31 +103,16 @@ Error handling has traditionally been an area of ergonomic innovation in Rust.  
 
 ### For Now
 
-- Use any MuTate error that seams appropriate or make a new one, and be honest about it use when documenting.
+- Use any MuTate error that seams appropriate or make a new one, and be honest about its use when documenting.
 - Return Result types from fallible operations to ensure proper combinator usages.
-- Unwrap and panic liberally (but do **not** clone haphazardly!)
+- Unwrap and panic liberally
 
-## Shader Boilerplate
+## Vulkan Versions, Device & Platform Compatibility
 
-Shaders must declare their inputs.  Rust must align push constants, descriptors etc.  It's 1:1 and should be automated.
-
-- Embed slang code into Rust via macro declaring its inputs.
-- Generate headers for slang and output to slang files
-- Compile to spirv or MSL etc
-
-This will require building the Rust program to cause the macros to output slang.  At some point, we probably end up having to do a similar trick as cargo leptos to build to generate shader source, compile the shader source, and then finally run the program.
-
-### For Now
-
-- Load them as bytes from spirv.  The build script will trigger after running if you have modified a shader file.
-
-- Plan on using Molten on Apple.  The slang compiler can target (Metal Shader Language).  You need an Apple tool for MSL ⇒ metallibs that can be loaded on Molten.  No idea how to load these, but `assets` will need an update.
-
-## Vulkan Versions & Device Compatibility
-
-Anticipate monolithic platform builds that switch at runtime for more specific support.
+Anticipate monolithic platform builds.
 
 ### For Now
 
 - Use 1.3+ and any extensions from 1.4 that enhance productivity significantly
 - Use `cfg` gates only for platforms, not for Vulkan versions.  To switch on Vulkan support, use runtime conditions.
+- Plan on using Molten on Apple.  The slang compiler can target (Metal Shader Language) but likley first pass, just rely on Molten to translate.  You need an Apple tool for MSL ⇒ metallibs.   If we switch to MSL though, the type agreement must use Apple-specific introspection data and modified macro logic!
