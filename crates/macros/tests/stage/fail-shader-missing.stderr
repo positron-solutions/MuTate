@@ -1,0 +1,5 @@
+error: Missing required resource file: some-shader
+ --> tests/stage/fail-shader-missing.rs:7:1
+  |
+7 | struct BadStage {}
+  | ^^^^^^^^^^^^^^^^^^
