@@ -6,7 +6,7 @@ use std::sync::{atomic, atomic::Ordering, Arc};
 
 use ringbuf::traits::*;
 
-use mutate_lib::{AudioChoice, AudioContext};
+use mutate_lib::audio::{AudioChoice, AudioContext};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let context = AudioContext::new()?;

@@ -10,6 +10,8 @@ Crimes where the solution has been chosen and all new work should burn down exis
 
 Along with error handling in type signatures, we're starting to need some real infra for errors.  Having a library crate in addition to binaries opens lots of questions that just need decisions.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
 
+Tracing selected.  We can do log fallback later for people who don't want tracing.  Silent release build option.
+
 ## Ash & Raw Pointers
 
 As we go, replace C pointer casting and `as_ptr()` calls with `push_next` and structure methods.  These accept more Rusty types and are safer (pointer castings is pretty unsafe).  See this commit in blame.

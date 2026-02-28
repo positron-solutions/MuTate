@@ -13,6 +13,8 @@
 // variable and FIFO for fixed rate.  This requires looking at the actual swapchain image count
 // before allocating per-image resources like command buffers.
 
+// XXX move into Vulkan!
+
 use ash::{khr::present_wait::Device as PwDevice, khr::xlib_surface, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{event_loop::ActiveEventLoop, window::Window};
