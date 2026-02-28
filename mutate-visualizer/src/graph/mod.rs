@@ -4,7 +4,8 @@
 //! # The Graph.
 //!
 //! ⚠️ Most of this module documentation is not yet implemented.  Take inspiration from the problem
-//! descriptions.
+//! descriptions.  **Update** this module does not seem like the future and will likely be broken
+//! apart and stripped for parts and ideas.
 //!
 //! Rendering audio to various frontends has many aspects of dependency:
 //!

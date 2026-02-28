@@ -10,14 +10,14 @@
 //! - `VkContext`
 //! - `Stage`
 //! - `Pipeline`
-//! - Shader inputs
+//! - **Shader inputs**
 //!   * `PushConstants`
 //!     + `PushConstantRange`
 //!   * `Descriptors`
 //!   * `Image`
 //!   * `Buffer`
 //!   * `Uniform`
-//! - Targets
+//! - **Targets**
 //!   * `ComputeTarget`
 //!   * `GraphicsTarget`
 
