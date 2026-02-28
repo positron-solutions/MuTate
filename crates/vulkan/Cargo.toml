@@ -1,0 +1,17 @@
+[package]
+name = "mutate-vulkan"
+description = "Vulkan engine components."
+readme = "../README.md"
+
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+ash.workspace = true
+thiserror.workspace = true
+
+mutate-assets = {workspace = true, features = ["runtime"]}

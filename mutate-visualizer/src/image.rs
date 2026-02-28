@@ -12,7 +12,7 @@
 
 use ash::vk;
 
-use mutate_lib::{self as utate, context::VkContext};
+use mutate_lib::{self as utate, prelude::*};
 
 use crate::util;
 
@@ -65,7 +65,7 @@ impl Image {
             &mem_props,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )
-        .ok_or(utate::MutateError::Vulkan(
+        .ok_or(utate::MutateError::Ash(
             vk::Result::ERROR_OUT_OF_DEVICE_MEMORY,
         ))?;
 

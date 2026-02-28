@@ -44,6 +44,7 @@ xxhash-rust = "0.8.15"
 mutate-lib = {path = "./mutate-lib"}
 mutate-macros = {path = "./crates/macros"}
 mutate-assets = {path = "./crates/assets"}
+mutate-vulkan = {path = "./crates/vulkan"}
 
 # Build fast dependencies
 [profile.dev.package."*"]

@@ -11,8 +11,8 @@
 //!
 //! ## Enabled Features
 //!
-//! We aim to support a minimum set of modern tactics to offer a complete, high performance
-//! experience:
+//! We aim to support a minimum set of modern tactics while still offering a complete, high
+//! performance experience:
 //!
 //! - Buffer device address.
 //! - One big descriptor set with one descriptor array per type (bindless).
@@ -20,14 +20,14 @@
 //! - Vulkan 1.3+ minimum support, 1.4 when reasonable.
 //! - Dynamic rendering
 
-pub mod descriptors;
-pub mod queue;
-
 use std::ffi::{c_void, CStr};
 
-use ash::{ext::subgroup_size_control, vk};
+use ash::vk;
 
 use mutate_assets as assets;
+
+use crate::queue;
+use crate::descriptors;
 
 pub struct VkContext {
     pub entry: ash::Entry,

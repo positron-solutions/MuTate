@@ -10,7 +10,7 @@
 use ash::vk;
 
 use mutate_assets as assets;
-use mutate_lib::{self as utate, context::VkContext};
+use mutate_lib::{self as utate, prelude::*};
 
 use crate::buffer;
 use crate::image;

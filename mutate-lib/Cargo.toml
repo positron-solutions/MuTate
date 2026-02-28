@@ -24,6 +24,7 @@ num-traits = {workspace = true, optional = true}
 clap = {workspace = true, features=["derive"], optional = true}
 
 mutate-assets = {workspace = true, features = ["runtime"]}
+mutate-vulkan = {workspace = true, optional = true}
 
 [build-dependencies]
 mutate-assets = {workspace = true, features = ["build"]}
@@ -39,6 +40,7 @@ path = "src/pipewire.rs"
 dsp = ["dep:num-complex", "dep:num-traits"]
 default = ["dsp", "workbench"]
 workbench = ["dep:clap", "dsp"]
+vulkan = ["dep:mutate-vulkan"]
 
 [[bin]]
 name = "workbench"

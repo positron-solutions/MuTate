@@ -50,7 +50,7 @@ pub struct Descriptors {
 }
 
 impl Descriptors {
-    pub fn new(device: &ash::Device, pool: &ash::vk::DescriptorPool) -> Result<Self, MutateError> {
+    pub fn new(device: &ash::Device, pool: &ash::vk::DescriptorPool) -> Result<Self, VulkanError> {
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)

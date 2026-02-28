@@ -23,18 +23,20 @@
 #[cfg(target_os = "linux")]
 pub mod audio;
 
-pub mod context;
 #[cfg(feature = "dsp")]
 pub mod dsp;
 #[cfg(target_os = "linux")]
 use pipewire as pw;
 
-use mutate_assets as assets;
+pub use mutate_assets as assets;
+#[cfg(feature = "vulkan")]
+pub use mutate_vulkan as vulkan;
 
 pub mod prelude {
     pub use crate::MutateError;
     // NEXT feature flag the Vulkan stuff in one crate
-    pub use crate::context::VkContext;
+    #[cfg(feature = "vulkan")]
+    pub use mutate_vulkan::context::VkContext;
 }
 
 // NEXT Audio will be its own kind of error that must fit into the MutateError hierarchy.
@@ -59,11 +61,16 @@ pub enum MutateError {
     #[error("Timeout: {0}")]
     Timeout(&'static str),
 
-    #[error("Vulkan: {0}")]
-    Vulkan(#[from] ash::vk::Result),
-
-    #[error("AssetError: {0}")]
+    #[error("Assets: {0}")]
     AssetError(#[from] assets::AssetError),
+
+    #[cfg(feature = "vulkan")]
+    #[error("Vulkan: {0}")]
+    VulkanError(#[from] vulkan::VulkanError),
+
+    // NEXT most of these are actually going to be VulkanError
+    #[error("Ash (replace with VulkanError): {0}")]
+    Ash(#[from] ash::vk::Result),
 }
 
 impl<T> From<std::sync::PoisonError<T>> for MutateError {

@@ -18,7 +18,7 @@ use winit::{
     platform::wayland::{EventLoopBuilderExtWayland, EventLoopExtWayland},
 };
 
-use mutate_lib::{self as utate, context::VkContext};
+use mutate_lib::{self as utate, prelude::*};
 
 use graph::node;
 

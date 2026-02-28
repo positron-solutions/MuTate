@@ -14,7 +14,7 @@ use std::ptr::NonNull;
 
 use ash::vk;
 
-use mutate_lib::{self as utate, context::VkContext};
+use mutate_lib::{self as utate, prelude::*};
 
 use crate::util;
 
@@ -55,7 +55,7 @@ impl<T> MappedAllocation<T> {
             &mem_props,
             vk::MemoryPropertyFlags::HOST_VISIBLE,
         )
-        .ok_or(utate::MutateError::Vulkan(
+        .ok_or(utate::MutateError::Ash(
             vk::Result::ERROR_OUT_OF_DEVICE_MEMORY,
         ))?;
 

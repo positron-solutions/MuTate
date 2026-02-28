@@ -23,7 +23,7 @@ ringbuf.workspace = true
 thiserror.workspace = true
 winit.workspace = true
 
-mutate-lib.workspace = true
+mutate-lib = {workspace = true, features = ["vulkan"]}
 mutate-assets = {workspace = true, features = ["runtime"]}
 
 [build-dependencies]
