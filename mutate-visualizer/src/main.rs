@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod audio;
-mod buffer;
 mod graph;
-mod image;
-mod util;
 mod video;
 
 use ash::vk;

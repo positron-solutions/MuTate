@@ -3,14 +3,12 @@
 
 //! # Vulkan Utils
 //!
-//! Junk drawer.
+//! Junk drawer.  Move things out when there is a place for them to belong.
 //!
 
 use ash::vk;
 
-use mutate_lib as utate;
-
-// Move things out when it becomes clear where they belong.
+use crate::VulkanError;
 
 /// Implementation is just a first pass to get going.
 // Probably goes in a dedicated memory management module.
@@ -35,9 +33,7 @@ pub fn find_memory_type_index(
 /// Layouts and descriptor management in general are annoying.
 // Probably goes into a dedicated binding module.
 // DEBT memory
-pub fn descriptor_set_layout(
-    device: &ash::Device,
-) -> Result<vk::DescriptorSetLayout, utate::MutateError> {
+pub fn descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout, VulkanError> {
     let bindings = [
         vk::DescriptorSetLayoutBinding {
             binding: 0, // spectrum

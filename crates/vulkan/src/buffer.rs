@@ -14,9 +14,7 @@ use std::ptr::NonNull;
 
 use ash::vk;
 
-use mutate_lib::{self as utate, prelude::*};
-
-use crate::util;
+use crate::{context::VkContext, util, VulkanError};
 
 // DEBT memory management
 pub struct MappedAllocation<T> {
@@ -32,7 +30,7 @@ pub struct MappedAllocation<T> {
 
 // DEBT memory allocation.  Consolidate device concerns up into VkContext.devices
 impl<T> MappedAllocation<T> {
-    pub fn new(size: usize, context: &VkContext) -> Result<Self, utate::MutateError> {
+    pub fn new(size: usize, context: &VkContext) -> Result<Self, VulkanError> {
         let device = context.device();
         let buffer_info = vk::BufferCreateInfo {
             size: (std::mem::size_of::<T>() * size) as u64,
@@ -55,9 +53,7 @@ impl<T> MappedAllocation<T> {
             &mem_props,
             vk::MemoryPropertyFlags::HOST_VISIBLE,
         )
-        .ok_or(utate::MutateError::Ash(
-            vk::Result::ERROR_OUT_OF_DEVICE_MEMORY,
-        ))?;
+        .ok_or(VulkanError::Ash(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY))?;
 
         let alloc_info = vk::MemoryAllocateInfo {
             allocation_size: mem_req.size,
@@ -86,7 +82,7 @@ impl<T> MappedAllocation<T> {
 
     // DEBT memory management.  We just need to devolve the allocation into a memento that can be
     // recycled or destroyed asynchronously.
-    pub fn destroy(&self, context: &VkContext) -> Result<(), utate::MutateError> {
+    pub fn destroy(&self, context: &VkContext) -> Result<(), VulkanError> {
         let device = context.device();
         unsafe {
             device.unmap_memory(self.memory);
@@ -102,7 +98,7 @@ impl<T> MappedAllocation<T> {
     }
 
     /// Move writes to device memory.
-    pub fn flush(&mut self, context: &VkContext) -> Result<(), utate::MutateError> {
+    pub fn flush(&mut self, context: &VkContext) -> Result<(), VulkanError> {
         let flush_range = vk::MappedMemoryRange {
             memory: self.memory,
             offset: 0,

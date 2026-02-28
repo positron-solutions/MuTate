@@ -12,7 +12,7 @@
 
 use ash::vk;
 
-use mutate_lib::{self as utate, prelude::*};
+use crate::{context::VkContext, VulkanError};
 
 use crate::util;
 
@@ -30,7 +30,7 @@ impl Image {
         extent: vk::Extent2D,
         format: vk::Format,
         usage: vk::ImageUsageFlags,
-    ) -> Result<Self, utate::MutateError> {
+    ) -> Result<Self, VulkanError> {
         let device = context.device();
 
         let image_ci = vk::ImageCreateInfo {
@@ -65,9 +65,7 @@ impl Image {
             &mem_props,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )
-        .ok_or(utate::MutateError::Ash(
-            vk::Result::ERROR_OUT_OF_DEVICE_MEMORY,
-        ))?;
+        .ok_or(VulkanError::Ash(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY))?;
 
         let alloc_info = vk::MemoryAllocateInfo {
             allocation_size: mem_req.size,
@@ -86,7 +84,7 @@ impl Image {
         })
     }
 
-    pub fn destroy(self, context: &VkContext) -> Result<(), utate::MutateError> {
+    pub fn destroy(self, context: &VkContext) -> Result<(), VulkanError> {
         let device = context.device();
         unsafe {
             device.destroy_image(self.image, None);
@@ -99,7 +97,7 @@ impl Image {
         &self,
         context: &VkContext,
         subresource_range: vk::ImageSubresourceRange,
-    ) -> Result<ImageView, utate::MutateError> {
+    ) -> Result<ImageView, VulkanError> {
         let device = context.device();
 
         let view_ci = vk::ImageViewCreateInfo {
@@ -120,7 +118,7 @@ impl Image {
         })
     }
 
-    pub fn default_view(&self, context: &VkContext) -> Result<ImageView, utate::MutateError> {
+    pub fn default_view(&self, context: &VkContext) -> Result<ImageView, VulkanError> {
         let subresource_range = range();
         self.view(context, subresource_range)
     }
@@ -214,7 +212,7 @@ pub struct ImageView {
 }
 
 impl ImageView {
-    pub fn destroy(self, context: &VkContext) -> Result<(), utate::MutateError> {
+    pub fn destroy(self, context: &VkContext) -> Result<(), VulkanError> {
         unsafe {
             context.device().destroy_image_view(self.view, None);
         }
