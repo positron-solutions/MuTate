@@ -43,7 +43,18 @@ use crate::prelude::*;
 pub struct Descriptors {
     set: vk::DescriptorSet,
     layout: vk::DescriptorSetLayout,
+
+    // Track the next never-used index.  This is implicitly a high-water mark for properly sizing
+    // arrays.
+    next_sampled_image: u32,
+    next_sampler: u32,
+    next_storage_image: u32,
+    next_ubo: u32,
+    next_ssbo: u32,
+
+    // Keep any re-usable indexes.
     freelist_sampled_images: VecDeque<u32>,
+    freelist_samplers: VecDeque<u32>,
     freelist_storage_images: VecDeque<u32>,
     freelist_ubos: VecDeque<u32>,
     freelist_ssbos: VecDeque<u32>,
@@ -51,24 +62,30 @@ pub struct Descriptors {
 
 impl Descriptors {
     pub fn new(device: &ash::Device, pool: &ash::vk::DescriptorPool) -> Result<Self, VulkanError> {
+        // NEXT obviously users might want to specify different limits.
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .descriptor_count(256) // max entries in freelist
+                .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(2)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(3)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(256)
+                .stage_flags(vk::ShaderStageFlags::ALL),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
@@ -87,7 +104,15 @@ impl Descriptors {
         Ok(Self {
             set,
             layout,
+
+            next_sampled_image: 0,
+            next_sampler: 0,
+            next_storage_image: 0,
+            next_ubo: 0,
+            next_ssbo: 0,
+
             freelist_sampled_images: VecDeque::with_capacity(256),
+            freelist_samplers: VecDeque::with_capacity(256),
             freelist_storage_images: VecDeque::with_capacity(256),
             freelist_ubos: VecDeque::with_capacity(256),
             freelist_ssbos: VecDeque::with_capacity(256),
