@@ -254,19 +254,23 @@ impl VkContext {
         // DEBT Max descriptor size calculation / management.
         let pool_sizes = [
             vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 256
-            },
-            vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
                 descriptor_count: 256
             },
             vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                ty: vk::DescriptorType::SAMPLER,
                 descriptor_count: 256
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_IMAGE,
+                descriptor_count: 256
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 256
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
                 descriptor_count: 256
             },
         ];
