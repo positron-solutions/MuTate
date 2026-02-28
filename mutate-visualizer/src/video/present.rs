@@ -5,6 +5,10 @@
 // all render targets need presentation, but a swapchain does.  Aligning the fields and structs with
 // this abstraction is underway.
 
+// NEXT It is said that we can replace most of the fences with timeline semaphores.  Not sure what
+// extensions are involved, but if so, it would be preferable to synchronize on the more flexible
+// timeline semaphores.
+
 // NEXT enable options for variable and fixed frame rate rendering, likely using MAILBOX for
 // variable and FIFO for fixed rate.  This requires looking at the actual swapchain image count
 // before allocating per-image resources like command buffers.

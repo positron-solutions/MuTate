@@ -27,10 +27,12 @@ struct SpectrumSample {
 pub struct SpectrumNode {
     pipeline_layout: vk::PipelineLayout,
     compute_pipeline: vk::Pipeline,
-    descriptor_set: vk::DescriptorSet,
+
     spectrum_buffer: Option<buffer::MappedAllocation<SpectrumSample>>,
     output_buffer: Option<buffer::MappedAllocation<rgb::Rgba<u8>>>,
 
+    // XXX the bindless style will need to take over.
+    descriptor_set: vk::DescriptorSet,
     descriptor_pool: vk::DescriptorPool,
     layout: vk::DescriptorSetLayout,
 }

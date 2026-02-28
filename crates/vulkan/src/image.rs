@@ -3,8 +3,8 @@
 
 //! # Image
 //!
-//! The `Image` and `ImageView` gather up related Vulkan functionality.  We don't do everything that
-//! the spec does, so as duplication emerges, attempt to generalize the functionality and
+//! The `Image` and `ImageView` gather up related Vulkan functionality.  Nobody does everything that
+//! the spec allows, so duplication emerges.   Attempt to generalize the functionality and
 //! boilerplate down to a sub-language that does everything we need.
 //!
 //! This treatment does not use any kind of RAII.  You have validation layers and other Vulkan

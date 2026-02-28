@@ -12,8 +12,8 @@
 //! > descriptors.  You pass around pointer and indices into the set via push constants. And then
 //! > you never think about descriptor sets ever again. **- Afiery1**
 //!
-//! The implementation of this scheme requires thinking just one more time.  If it's not clear, the
-//! resulting geometry is:
+//! The implementation requires thinking about descriptors just one more time.  If it's not clear,
+//! the resulting geometry is:
 //!
 //!   `[DescriptorSet[DescriptorArray[Index]]]`
 //!
