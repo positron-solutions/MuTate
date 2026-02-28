@@ -12,6 +12,10 @@ Along with error handling in type signatures, we're starting to need some real i
 
 Tracing selected.  We can do log fallback later for people who don't want tracing.  Silent release build option.
 
+## Buffer Item Layouts
+
+We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).  Manually align while we implement the contracts around the ergonomics.
+
 ## Ash & Raw Pointers
 
 As we go, replace C pointer casting and `as_ptr()` calls with `push_next` and structure methods.  These accept more Rusty types and are safer (pointer castings is pretty unsafe).  See this commit in blame.
