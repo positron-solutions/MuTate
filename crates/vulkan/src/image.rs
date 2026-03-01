@@ -52,27 +52,25 @@ impl Image {
         };
 
         let image = unsafe { device.create_image(&image_ci, None)? };
-        let mem_req = unsafe { device.get_image_memory_requirements(image) };
 
+        // DEBT memory management
+        let mem_req = unsafe { device.get_image_memory_requirements(image) };
         let mem_props = unsafe {
             context
                 .instance
                 .get_physical_device_memory_properties(context.physical_device)
         };
-
         let memory_type_index = util::find_memory_type_index(
             &mem_req,
             &mem_props,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )
         .ok_or(VulkanError::Ash(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY))?;
-
         let alloc_info = vk::MemoryAllocateInfo {
             allocation_size: mem_req.size,
             memory_type_index,
             ..Default::default()
         };
-
         let memory = unsafe { device.allocate_memory(&alloc_info, None)? };
         unsafe { device.bind_image_memory(image, memory, 0)? };
 
@@ -93,6 +91,7 @@ impl Image {
         Ok(())
     }
 
+    /// Obtain a view of the image.
     pub fn view(
         &self,
         context: &VkContext,
@@ -222,28 +221,24 @@ impl ImageView {
 
 /// Full color range, the most common.
 pub fn range() -> vk::ImageSubresourceRange {
-    vk::ImageSubresourceRange {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        base_mip_level: 0,
-        level_count: 1,
-        base_array_layer: 0,
-        layer_count: 1,
-    }
+    vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .level_count(1)
+        .layer_count(1)
 }
 
 /// Full depth/stencil range.
 pub fn range_stencil() -> vk::ImageSubresourceRange {
-    vk::ImageSubresourceRange {
-        aspect_mask: vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
-        base_mip_level: 0,
-        level_count: 1,
-        base_array_layer: 0,
-        layer_count: 1,
-    }
+    vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL)
+        .level_count(1)
+        .layer_count(1)
 }
 
 /// Transition image layout with an appropriate barrier.  Automatically infers src/dst masks and
 /// pipeline stages for common usage patterns.  `Image` uses this implementation.
+// MAYBE some recommended using `vk::ImageLayout::GENERAL` layouts everywhere if supported, but
+// these transitions are extremely straightforward to automate compared to other hazards.
 pub fn transition_layout(
     image: vk::Image,
     cmd_buffer: &vk::CommandBuffer,
