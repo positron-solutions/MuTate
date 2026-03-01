@@ -40,9 +40,9 @@ pub struct VkContext {
     pub device: ash::Device,
     /// Queues and command buffers for device in use.
     pub queues: queue::Queues,
-    #[deprecated(note = "Moving to bindless.  Don't write new descriptors.")]
-    pub descriptor_pool: vk::DescriptorPool,
-    descriptors: descriptors::Descriptors,
+    descriptor_pool: vk::DescriptorPool,
+    // XXX pass through?
+    pub descriptors: descriptors::Descriptors,
 
     /// Initialized assets
     assets: assets::AssetDirs,
@@ -304,6 +304,13 @@ impl VkContext {
 
     pub fn device(&self) -> &ash::Device {
         &self.device
+    }
+
+    pub fn bind_sampled_image(&mut self, view: vk::ImageView, layout: vk::ImageLayout) ->
+    crate::descriptors::SampledImageIndex {
+        let device = &self.device;
+        let descriptors = &mut self.descriptors;
+        descriptors.bind_sampled_image(device, view, layout)
     }
 
     // XXX in reality, this consumes the context, but ownership friction needs worked out.

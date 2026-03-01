@@ -30,10 +30,11 @@
 //! It has a static fixed size because any kind of dynamic growth messes up the descriptor slots and
 //! forces us to think about descriptors.  Okay, glad we are experts at Vulkan now!
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, slice};
 
 use ash::vk;
 
+use crate::image::ImageView;
 use crate::prelude::*;
 
 // Plural to make it kind of obvious that these are array slot indexes.
@@ -136,5 +137,38 @@ impl Descriptors {
         unsafe {
             device.destroy_descriptor_set_layout(self.layout, None);
         }
+    }
+
+    /// `layout` must be the layout that is intended for use, not the image's current layout.  If
+    /// you need multiple layouts, you need multiple descriptors.  The returned index may be used in
+    /// shaders and will later type-check against DescriptorHandles during introspection.
+    pub fn bind_sampled_image(
+        &mut self,
+        device: &ash::Device,
+        view: vk::ImageView,
+        layout: vk::ImageLayout,
+    ) -> SampledImageIndex {
+        let descriptor_info = vk::DescriptorImageInfo::default()
+            .image_layout(layout)
+            .image_view(view);
+
+        let index = self.freelist_sampled_images.pop_back().unwrap_or_else(|| {
+            let next = self.next_sampled_image;
+            self.next_sampled_image += 1;
+            next
+        });
+
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.set)
+            .dst_binding(SLOT_SAMPLED_IMAGES)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .dst_array_element(index)
+            .image_info(slice::from_ref(&descriptor_info));
+
+        unsafe {
+            device.update_descriptor_sets(slice::from_ref(&write), &[]);
+        }
+
+        SampledImageIndex(index)
     }
 }

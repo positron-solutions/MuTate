@@ -217,6 +217,18 @@ impl ImageView {
         }
         Ok(())
     }
+
+    pub fn sampled(
+        &self,
+        context: &mut VkContext,
+        layout: vk::ImageLayout,
+    ) -> crate::descriptors::SampledImageIndex {
+        // MAYBE not so sure about the layout choice
+        let device = &context.device;
+        let descriptors = &mut context.descriptors;
+        descriptors.bind_sampled_image(device, self.view, layout)
+        // context.bind_sampled_image(self.view, layout)
+    }
 }
 
 /// Full color range, the most common.
