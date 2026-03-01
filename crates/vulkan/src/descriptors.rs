@@ -36,6 +36,13 @@ use ash::vk;
 
 use crate::prelude::*;
 
+// Plural to make it kind of obvious that these are array slot indexes.
+pub const SLOT_SAMPLED_IMAGES: u32 = 0;
+pub const SLOT_SAMPLERS: u32 = 1;
+pub const SLOT_STORAGE_IMAGES: u32 = 2;
+pub const SLOT_UNIFORM_BUFFERS: u32 = 3;
+pub const SLOT_STORAGE_BUFFERS: u32 = 4;
+
 // NEXT Type indexes
 // NEXT Methods to hand out and recycle indexes, likely guarded through the context interface.
 // Planning on coordinating Image and Buffer creation because not having descriptors would make them
@@ -65,27 +72,27 @@ impl Descriptors {
         // NEXT obviously users might want to specify different limits.
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
+                .binding(SLOT_SAMPLED_IMAGES)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
+                .binding(SLOT_SAMPLERS)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
+                .binding(SLOT_STORAGE_IMAGES)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
+                .binding(SLOT_UNIFORM_BUFFERS)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
+                .binding(SLOT_STORAGE_BUFFERS)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
