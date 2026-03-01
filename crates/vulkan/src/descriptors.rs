@@ -43,6 +43,12 @@ pub const SLOT_STORAGE_IMAGES: u32 = 2;
 pub const SLOT_UNIFORM_BUFFERS: u32 = 3;
 pub const SLOT_STORAGE_BUFFERS: u32 = 4;
 
+pub struct SampledImageIndex(u32);
+pub struct SamplerIndex(u32);
+pub struct StorageImageIndex(u32);
+pub struct UniformBufferIndex(u32);
+pub struct StorageBufferIndex(u32);
+
 // NEXT Type indexes
 // NEXT Methods to hand out and recycle indexes, likely guarded through the context interface.
 // Planning on coordinating Image and Buffer creation because not having descriptors would make them
