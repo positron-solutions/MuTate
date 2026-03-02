@@ -471,7 +471,7 @@ mod test {
         for q in [0.5, 1.0, 2.0, 5.0, 10.0, 100.0, 1000.0] {
             let mut f = CytomicSvf::new(f0, fs, q, mode);
             let mut peak = 0.0f32;
-            let mut sine_gen = crate::dsp::sine_gen_48k(f0);
+            let mut sine_gen = crate::dsp::SineSweeper::new(f0, fs);
 
             // Scan for peak amplitude for 2s
             for x in sine_gen.take((fs * 2.0) as usize) {
@@ -500,7 +500,7 @@ mod test {
 
             let mut f = Cascade::<CytomicSvf>::from_args(&args);
             let mut peak = 0.0f32;
-            let mut sine_gen = crate::dsp::sine_gen_48k(f0);
+            let mut sine_gen = crate::dsp::SineSweeper::new(f0, fs);
 
             // Scan for peak amplitude for 1s
             for x in sine_gen.take((fs * 1.0) as usize) {

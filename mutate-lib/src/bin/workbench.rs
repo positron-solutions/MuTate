@@ -432,7 +432,7 @@ fn cmd_rise(args: RiseArgs) {
 
     header!("Rise Test");
     for goal in [0.1, 0.25, 0.5, 0.75, 0.9] {
-        let mut sg = dsp::sine_gen_48k(f0);
+        let mut sg = dsp::SineSweeper::new(f0, fs);
         let mut filters: Vec<Box<dyn Filter>> = filter_choices
             .iter()
             .map(|fc| fc.instantiate(&args))
@@ -817,7 +817,7 @@ fn normalized_gains(choices: &[FilterChoice], args: &FilterArgs) -> Vec<f32> {
 fn normalized_gain(choice: &FilterChoice, args: &FilterArgs) -> f32 {
     // XXX check mode
 
-    let mut sg = dsp::sine_gen(args.center, args.fs);
+    let mut sg = args.sine_gen();
     let mut filter = choice.instantiate(args);
 
     // NEXT dynamic max gain detection.  No new peaks in n samples etc.

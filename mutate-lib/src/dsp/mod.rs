@@ -173,30 +173,6 @@ pub trait Filter {
         Self: Sized;
 }
 
-/// Fixed sine wave generator.  Truncates to f32.
-// NEXT replace all usages with the more versatile SineSweeper.
-pub fn sine_gen(f0: f64, fs: f64) -> impl Iterator<Item = f32> {
-    let omega = TAU64 * f0 / fs;
-    let mut re = 1.0;
-    let mut im = 0.0;
-    let cos = omega.cos();
-    let sin = omega.sin();
-
-    std::iter::from_fn(move || {
-        let out = im as f32;
-        let new_re = re * cos - im * sin;
-        let new_im = re * sin + im * cos;
-        re = new_re;
-        im = new_im;
-        Some(out)
-    })
-}
-
-/// 48k sample rate sine wave generator
-pub fn sine_gen_48k(f0: f64) -> impl Iterator<Item = f32> {
-    sine_gen(f0, 48_000.0)
-}
-
 /// Sine wave generator with frequency modulation.  Use to generate rough chirps to quickly look for
 /// changes in filter response.
 pub struct SineSweeper {
@@ -259,10 +235,10 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_sine_gen_phase_amplitude() {
+    fn test_sine_sweeper_phase_amplitude() {
         let f0: f64 = 123.0;
         let fs: f64 = 48_000.0;
-        let mut s = sine_gen(f0, fs);
+        let mut s = SineSweeper::new(f0, fs);
 
         // NOTE we burn a sample when initializing last, so n should be zero, but because we
         // estimate the peak and trough from zero, not 1, it will still take n omegas to hit
@@ -302,10 +278,10 @@ mod test {
     }
 
     #[test]
-    fn test_sine_gen_cycles() {
+    fn test_sine_sweeper_cycles() {
         let f0: f64 = 123.0;
         let fs: f64 = 48_000.0;
-        let mut s = sine_gen(f0, fs);
+        let mut s = SineSweeper::new(f0, fs);
 
         let mut last = 0.0;
         let mut n = 0;
@@ -333,42 +309,6 @@ mod test {
             last = current;
             n += 1;
         }
-    }
-
-    #[test]
-    fn test_sine_gen_rms() {
-        let f0: f64 = 123.0;
-        let fs: f64 = 48_000.0;
-        let amplitude: f64 = 1.0;
-
-        let mut s = sine_gen(f0, fs);
-
-        let target_cycles = 7777usize;
-        let expected_samples = (target_cycles as f64 * fs / f0).ceil() as usize;
-
-        let mut sum_sq: f64 = 0.0;
-        let mut n = 0usize;
-
-        let mut last = s.next().unwrap();
-
-        for _ in (0..expected_samples) {
-            let current = s.next().unwrap() as f64;
-            sum_sq += current.powi(2);
-            n += 1;
-        }
-
-        let rms = (sum_sq / n as f64).sqrt() as f64;
-        let expected_rms = amplitude / std::f64::consts::SQRT_2;
-
-        // rms = 0.7071067612059638, expected = 0.7071067811865475
-        let tolerance = 0.0000001;
-
-        assert!(
-            (rms - expected_rms).abs() < tolerance,
-            "rms = {}, expected = {}",
-            rms,
-            expected_rms
-        );
     }
 
     #[test]
