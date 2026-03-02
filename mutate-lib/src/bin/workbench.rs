@@ -590,7 +590,7 @@ fn cmd_gain(cmd_args: GainArgs) {
 
             sg.set_frequency(test_freq);
 
-            let samples = sg.nsamples(128.0);
+            let samples = sg.nsamples(64.0);
             let mut max: f32 = 0.0;
             for s in 0..samples {
                 max = max.max(filter.process(sg.next().unwrap() * input_amp).abs());
