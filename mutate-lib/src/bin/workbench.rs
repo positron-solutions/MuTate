@@ -567,10 +567,10 @@ fn cmd_gain(cmd_args: GainArgs) {
     // iterated in sequence.
     filter_args.center = cmd_args.common.center.unwrap_or(filter_args.center);
     filter_args.q = cmd_args.common.q.unwrap_or(filter_args.q);
+    filter_args.butterworth = true;
 
     let f0 = filter_args.center;
     let fs = filter_args.fs;
-    let q = filter_args.q;
 
     // NEXT make amplitudes part of the arguments
     for input_amp in [1.0, 0.5, 0.25, 0.05] {
@@ -580,14 +580,16 @@ fn cmd_gain(cmd_args: GainArgs) {
             let mut sg = filter_args.sine_gen();
 
             // NEXT report the test point and normalize the gain on the pass side of the filter.
-            match filter_args.mode {
-                FilterMode::LowPass => {
-                    sg.set_frequency(dsp::MIN_FREQ_CHEAP_DRIVERS.max(0.8 * f0));
-                }
-                FilterMode::HighPass => sg.set_frequency(fs.min(1.25 * f0)),
-                FilterMode::BandPass => {}
+            // XXX for pass band, test cutoff, center, and
+            let test_freq = match filter_args.mode {
+                FilterMode::LowPass => dsp::MIN_FREQ_CHEAP_DRIVERS.max(1.0 * f0),
+                FilterMode::HighPass => fs.min(1.0 * f0),
+                FilterMode::BandPass => f0,
                 _ => todo!(),
-            }
+            };
+
+            sg.set_frequency(test_freq);
+
             let samples = sg.nsamples(128.0);
             let mut max: f32 = 0.0;
             for s in 0..samples {
@@ -695,6 +697,8 @@ fn expand_filter_choices(selectors: Vec<FilterSelector>) -> Vec<FilterChoice> {
 struct WorkbenchConfig {
     mode: FilterMode,
     stages: usize,
+    center: f64,
+    q: f64,
     // NEXT keep going.  Wonder if we just need an internal args field... probably a lot more
     // straightforward to delegate instead of duplicate FilterArgs fields.
 }
@@ -708,6 +712,8 @@ impl WorkbenchConfig {
         WorkbenchConfig {
             mode: from_config.mode,
             stages: from_config.stages,
+            center: from_config.center,
+            q: from_config.q,
         }
     }
 
@@ -718,6 +724,12 @@ impl WorkbenchConfig {
         }
         if let Some(stages) = args.stages {
             self.stages = stages;
+        }
+        if let Some(center) = args.center {
+            self.center = center;
+        }
+        if let Some(q) = args.q {
+            self.q = q;
         }
         self
     }
@@ -744,7 +756,7 @@ impl WorkbenchConfig {
 
     /// Default target bandwidth ratio.
     fn q(&self) -> f64 {
-        8.0
+        self.q
     }
 
     /// Default gain threshold for bandwidth estimation.
@@ -759,7 +771,7 @@ impl WorkbenchConfig {
 
     /// Default center frequency
     fn center(&self) -> f64 {
-        1000.0
+        self.center
     }
 
     /// Default pass style (bandpass, highpass etc).
@@ -774,13 +786,14 @@ impl WorkbenchConfig {
 
     /// Toggle for Butterworth Q distribution in cascaded filters.
     fn cascade_butterworth(&self) -> bool {
-        false
+        // XXX ALWAYS BUTTERWORTH FOR BANDPASS!
+        true
     }
 
     /// Default de-tuning for cascaded filters.
     fn cascade_detune(&self) -> Option<f64> {
-        Some(1.01)
-        // None
+        // Some(1.01)
+        None
     }
 
     /// DFT window choice
@@ -802,6 +815,8 @@ fn normalized_gains(choices: &[FilterChoice], args: &FilterArgs) -> Vec<f32> {
 
 /// Find maximum gain.
 fn normalized_gain(choice: &FilterChoice, args: &FilterArgs) -> f32 {
+    // XXX check mode
+
     let mut sg = dsp::sine_gen(args.center, args.fs);
     let mut filter = choice.instantiate(args);
 
