@@ -167,13 +167,13 @@ impl Svf {
 
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
-        let hp = (x - (self.k + self.g) * self.s1 - self.s2) * self.a1;
+        let hp = (x - self.s1.mul_add(self.k + self.g, self.s2)) * self.a1;
 
-        let bp = self.g * hp + self.s1;
-        let lp = self.g * bp + self.s2;
+        let bp = self.g.mul_add(hp, self.s1);
+        let lp = self.g.mul_add(bp, self.s2);
 
-        self.s1 = self.g * hp + bp;
-        self.s2 = self.g * bp + lp;
+        self.s1 = self.g.mul_add(hp, bp);
+        self.s2 = self.g.mul_add(bp, lp);
 
         match self.mode {
             FilterMode::HighPass => hp,
