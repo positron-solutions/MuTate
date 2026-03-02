@@ -187,58 +187,60 @@ impl Svf {
 
 /// Cytomic derivation of the SVF is said to be very precise even at high Qs and low frequencies.
 pub struct CytomicSvf {
-    s1: f32, // Integrator 1 state
-    s2: f32, // Integrator 2 state
-    a1: f32, // Pre-calculated multiplier 1
-    a2: f32, // Pre-calculated multiplier 2
-    a3: f32, // Pre-calculated multiplier 3
-
-    norm: f32,
-
+    s1: f32,
+    s2: f32,
+    a1: f32,
+    a2: f32,
+    a3: f32,
+    m0: f32,
+    m1: f32,
+    m2: f32,
     mode: FilterMode,
+    k: f32,
 }
 
 impl CytomicSvf {
     pub fn new(f0: f64, fs: f64, q: f64, mode: FilterMode) -> Self {
-        let g = (PI64 * f0 / fs).tan();
+        let g = (std::f64::consts::PI * f0 / fs).tan();
         let k = 1.0 / q;
         let denom = 1.0 + g * (g + k);
-        let norm = 1.0_f64 / q;
+        let a1 = (1.0 / denom) as f32;
+        let a2 = (g / denom) as f32;
+        let a3 = (g * g / denom) as f32;
+
+        let (m0, m1, m2) = match mode {
+            FilterMode::LowPass => (0.0, 0.0, 1.0),
+            FilterMode::BandPass => (0.0, k as f32, 0.0),
+            FilterMode::HighPass => (1.0, -(k as f32), -1.0),
+            // XXX Untested
+            FilterMode::Notch => (1.0, -(k as f32), 0.0),
+            FilterMode::AllPass => (1.0, -2.0 * (k as f32), 0.0),
+        };
 
         Self {
             s1: 0.0,
             s2: 0.0,
-            a1: (1.0 / denom) as f32,
-            a2: (g / denom) as f32,
-            a3: (g * g / denom) as f32,
-            norm: norm as f32,
-
-            mode: mode,
+            a1,
+            a2,
+            a3,
+            m0,
+            m1,
+            m2,
+            mode,
+            k: k as f32,
         }
     }
 
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
-        // High-precision math (under development)
-        let a2s1 = self.a2 * self.s1;
-
-        let tmp = self.a2.mul_add(self.s1, self.s2);
-
-        let v3 = x - tmp + a2s1;
-
+        let v3 = x - self.s2;
         let v1 = self.a1.mul_add(self.s1, self.a2 * v3);
-        let v2 = self.a3.mul_add(v3, tmp);
+        let v2 = self.s2 + self.a2 * self.s1 + self.a3 * v3;
 
-        self.s1 = 2.0f32.mul_add(v1, -self.s1);
-        self.s2 = 2.0f32.mul_add(v2, -self.s2);
+        self.s1 = 2.0 * v1 - self.s1;
+        self.s2 = 2.0 * v2 - self.s2;
 
-        (match self.mode {
-            FilterMode::HighPass => v3 * self.norm,
-            FilterMode::BandPass => v1 * self.norm,
-            FilterMode::LowPass => v2 * self.norm,
-            FilterMode::Notch => (x - v1 * self.norm),
-            FilterMode::AllPass => todo!(),
-        })
+        self.m0 * x + self.m1 * v1 + self.m2 * v2
     }
 }
 
