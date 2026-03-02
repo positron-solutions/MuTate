@@ -136,44 +136,52 @@ impl Biquad {
 
 /// Simple state variable filter, using the Toplogy Preserving Transform
 pub struct Svf {
+    g: f32, // Pre-warped frequency
+    k: f32, // 1/Q (damping)
+    a1: f32,
+    mode: FilterMode,
+
     s1: f32, // Integrator 1 state
     s2: f32, // Integrator 2 state
-    g: f32,  // Alpha (tuned frequency)
-    r: f32,  // 1/Q (damping)
-    h: f32,  // Feedback gain
 }
 
 impl Svf {
+    /// f0 = cutoff/center frequency (Hz)
+    /// fs = sample rate (Hz)
+    /// q  = quality factor
+    /// mode = band-pass, low-pass, high-pass
     pub fn new(f0: f64, fs: f64, q: f64, mode: FilterMode) -> Self {
-        assert_eq!(FilterMode::BandPass, mode);
-
-        let g = (PI64 * f0 / fs).tan();
-        let r = 1.0 / q;
-        let h = 1.0 / (1.0 + r * g + g * g);
+        let g = (PI64 * f0 / fs).tan(); // bilinear transform
+        let k = 1.0 / q;
+        let den = 1.0 + g * (g + k);
 
         Self {
+            g: g as f32,
+            k: k as f32,
+            a1: (1.0 / den) as f32,
+            mode,
+
             s1: 0.0,
             s2: 0.0,
-            g: g as f32,
-            r: r as f32,
-            h: h as f32,
         }
     }
 
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
-        // NEXT tighten up f32 precision without changing the filter itself.
-        let hp = (x - (self.r + self.g) * self.s1 - self.s2) * self.h;
+        let hp = (x - (self.k + self.g) * self.s1 - self.s2) * self.a1;
 
-        let v1 = self.g * hp;
-        let bp = v1 + self.s1;
-        self.s1 = bp + v1;
+        let bp = self.g * hp + self.s1;
+        let lp = self.g * bp + self.s2;
 
-        let v2 = self.g * bp;
-        let lp = v2 + self.s2;
-        self.s2 = lp + v2;
+        self.s1 = self.g * hp + bp;
+        self.s2 = self.g * bp + lp;
 
-        bp * self.r
+        match self.mode {
+            FilterMode::HighPass => hp,
+            FilterMode::BandPass => bp * self.k,
+            FilterMode::LowPass => lp,
+            _ => todo!(),
+        }
     }
 }
 
