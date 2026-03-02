@@ -126,10 +126,9 @@ impl Biquad {
 
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
-        // NEXT clean up f32 math while preserving structure
-        let y = self.b0 * x + self.s1;
-        self.s1 = self.b1 * x - self.a1 * y + self.s2;
-        self.s2 = self.b2 * x - self.a2 * y;
+        let y = self.b0.mul_add(x, self.s1);
+        self.s1 = self.b1.mul_add(x, self.s2 - self.a1 * y);
+        self.s2 = self.b2.mul_add(x, -self.a2 * y);
         y
     }
 }
