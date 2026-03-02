@@ -20,9 +20,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use mutate_lib::{
     self as utate,
     dsp::{
-        self, dft,
+        self,
+        dft::{self, WindowFunction},
         iir::{self, Biquad, Cascade, CytomicSvf, Svf},
-        Filter, FilterArgs, SineSweeper,
+        Filter, FilterArgs, FilterMode, SineSweeper,
     },
     prelude::*,
 };
@@ -153,6 +154,27 @@ pub struct WindowArgs {
     pub attentuation_db: f32,
 }
 
+#[derive(clap::ValueEnum, PartialEq, Clone, Copy, Debug)]
+pub enum FilterModeChoice {
+    HighPass,
+    LowPass,
+    BandPass,
+    Notch,
+    AllPass,
+}
+
+impl From<FilterModeChoice> for FilterMode {
+    fn from(choice: FilterModeChoice) -> Self {
+        match choice {
+            FilterModeChoice::HighPass => FilterMode::HighPass,
+            FilterModeChoice::LowPass => FilterMode::LowPass,
+            FilterModeChoice::BandPass => FilterMode::BandPass,
+            FilterModeChoice::Notch => FilterMode::Notch,
+            FilterModeChoice::AllPass => FilterMode::AllPass,
+        }
+    }
+}
+
 #[derive(Debug, clap::Args)]
 /// Override default settings for each filter.
 pub struct CommonFilterArgs {
@@ -161,10 +183,10 @@ pub struct CommonFilterArgs {
     // XXX Not implemented
     pub center: Option<f64>,
 
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..)) ]
+    #[arg(long)]
     /// Number of stages to cascade (for filters that support it)
     // XXX Not implemented
-    pub stages: Option<u32>,
+    pub stages: Option<usize>,
 
     #[arg(long)]
     /// Perturbs upper stage frequencies by factors of the given *product*.
@@ -180,6 +202,10 @@ pub struct CommonFilterArgs {
     #[arg(short, long = "quality")]
     // XXX Not implemented
     pub q: Option<f64>,
+
+    #[arg(long)]
+    /// Change filter mode (default band-pass)
+    pub filter_mode: Option<FilterModeChoice>,
 
     #[arg(long)]
     /// Window function.  Only used by filters like DFT that integrate over a window.
@@ -527,8 +553,11 @@ fn cmd_noise(_args: NoiseArgs) {
 fn cmd_gain(cmd_args: GainArgs) {
     header!("Gain Test");
 
+    let mut filter_args = WorkbenchConfig::defaults()
+        .merge_with_args(&cmd_args.common)
+        .args();
+
     let filter_choices = expand_filter_choices(cmd_args.filters);
-    let mut filter_args = WorkbenchConfig::defaults().args();
 
     // NEXT this manual merging scales pretty poorly.  Merge command line defaults over the
     // Workbench defaults (which themselves should come from toml defaults).
@@ -549,6 +578,16 @@ fn cmd_gain(cmd_args: GainArgs) {
         for fc in filter_choices.iter() {
             let mut filter = fc.instantiate(&filter_args);
             let mut sg = filter_args.sine_gen();
+
+            // NEXT report the test point and normalize the gain on the pass side of the filter.
+            match filter_args.mode {
+                FilterMode::LowPass => {
+                    sg.set_frequency(dsp::MIN_FREQ_CHEAP_DRIVERS.max(0.8 * f0));
+                }
+                FilterMode::HighPass => sg.set_frequency(fs.min(1.25 * f0)),
+                FilterMode::BandPass => {}
+                _ => todo!(),
+            }
             let samples = sg.nsamples(128.0);
             let mut max: f32 = 0.0;
             for s in 0..samples {
@@ -653,13 +692,34 @@ fn expand_filter_choices(selectors: Vec<FilterSelector>) -> Vec<FilterChoice> {
 
 /// A stub for an actual configuration that has merged flags and defaults and can produce a set of
 /// FilterArgs.
-/// NEXT instantiate this by reading the config file
-struct WorkbenchConfig {}
+struct WorkbenchConfig {
+    mode: FilterMode,
+    stages: usize,
+    // NEXT keep going.  Wonder if we just need an internal args field... probably a lot more
+    // straightforward to delegate instead of duplicate FilterArgs fields.
+}
 
 impl WorkbenchConfig {
-    /// XXX not truly implemented stubbed out.  Go read code.
+    /// Return a config with only defaults,
+    /// NEXT instantiate this by reading the config file
     fn defaults() -> Self {
-        WorkbenchConfig {}
+        // LIES not from config lol
+        let from_config = FilterArgs::default();
+        WorkbenchConfig {
+            mode: from_config.mode,
+            stages: from_config.stages,
+        }
+    }
+
+    /// XXX only supports `mode`!
+    fn merge_with_args(mut self, args: &CommonFilterArgs) -> Self {
+        if let Some(mode) = args.filter_mode {
+            self.mode = mode.into();
+        }
+        if let Some(stages) = args.stages {
+            self.stages = stages;
+        }
+        self
     }
 
     /// Return the default arguments used to build a filter.
@@ -670,6 +730,7 @@ impl WorkbenchConfig {
             fs: self.sample_rate(),
             gain_factor: 1.00,
             butterworth: self.cascade_butterworth(),
+            mode: self.filter_mode(),
             stagger: self.cascade_detune(),
             stages: self.cascade_stages(),
             window_choice: self.dft_window(),
@@ -701,9 +762,14 @@ impl WorkbenchConfig {
         1000.0
     }
 
+    /// Default pass style (bandpass, highpass etc).
+    fn filter_mode(&self) -> FilterMode {
+        self.mode
+    }
+
     /// Default stages for cascaded filters.
     fn cascade_stages(&self) -> usize {
-        1
+        self.stages
     }
 
     /// Toggle for Butterworth Q distribution in cascaded filters.

@@ -93,6 +93,16 @@ pub const MIN_FREQ_CHEAP_DRIVERS: f64 = 24.0;
 // const PEAK_80DB: f64 = peak_amplitude_from_db(80.0);
 // const PEAK_40DB: f64 = peak_amplitude_from_db(40.0);
 
+/// Many filters can be operated in several modes with essentially no change in architecture.
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum FilterMode {
+    HighPass,
+    LowPass,
+    BandPass,
+    Notch,
+    AllPass,
+}
+
 #[derive(Clone, Copy)]
 pub struct FilterArgs {
     /// Quality factor equal to `center` / `bandwidth`.
@@ -103,8 +113,10 @@ pub struct FilterArgs {
     pub fs: f64,
     /// A final gain factor.  This is applied to the output of an individual filter or to the final
     /// output of any cascade of filters.  Individual filters should be gain normalized where
-    /// possible to make gain levelling easier for banks of filters.
+    /// possible to make gain leveling easier for banks of filters.
     pub gain_factor: f64,
+    /// Bandpass, lowpass, highpass, and notch usually.  Not all filters support all modes.
+    pub mode: FilterMode,
 
     /// Butterworth
     pub butterworth: bool,
@@ -141,6 +153,7 @@ impl Default for FilterArgs {
             fs: 48_000.0,
             gain_factor: 1.0,
             butterworth: false,
+            mode: FilterMode::BandPass,
             stagger: None,
             stages: 4,
             window_choice: dft::WindowFunction::DolphChebyshev {

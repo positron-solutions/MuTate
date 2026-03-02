@@ -36,7 +36,7 @@ use std::f64::consts::{PI as PI64, TAU as TAU64};
 use num_complex::{Complex, Complex64};
 use num_traits::Zero;
 
-use super::{Filter, FilterArgs};
+use super::{Filter, FilterArgs, FilterMode};
 
 /// First order complex resonator, one of the simplest IIRs
 pub struct ComplexResonator<T> {
@@ -49,7 +49,9 @@ pub struct ComplexResonator<T> {
 // Cannot use this filter (for comparison, it's just a toy implementation) until the constructor is
 // fixed.  Good place to make the floating point generic while creating 1st order section.
 impl<T: num_traits::Float> ComplexResonator<T> {
-    pub fn new(f0: T, fs: T, q: T) -> Self {
+    pub fn new(f0: T, fs: T, q: T, mode: FilterMode) -> Self {
+        assert_eq!(FilterMode::BandPass, mode);
+
         let pi = T::from(PI64).unwrap();
         let k = pi * f0 / fs;
 
@@ -79,7 +81,9 @@ pub struct Biquad {
 }
 
 impl Biquad {
-    pub fn new(f0: f64, fs: f64, q: f64) -> Self {
+    pub fn new(f0: f64, fs: f64, q: f64, mode: FilterMode) -> Self {
+        assert_eq!(FilterMode::BandPass, mode);
+
         let w0 = TAU64 * f0 / fs;
         let alpha = w0.sin() / (2.0 * q);
 
@@ -121,7 +125,9 @@ pub struct Svf {
 }
 
 impl Svf {
-    pub fn new(f0: f64, fs: f64, q: f64) -> Self {
+    pub fn new(f0: f64, fs: f64, q: f64, mode: FilterMode) -> Self {
+        assert_eq!(FilterMode::BandPass, mode);
+
         let g = (PI64 * f0 / fs).tan();
         let r = 1.0 / q;
         let h = 1.0 / (1.0 + r * g + g * g);
@@ -161,10 +167,12 @@ pub struct CytomicSvf {
     a3: f32, // Pre-calculated multiplier 3
 
     norm: f32,
+
+    mode: FilterMode,
 }
 
 impl CytomicSvf {
-    pub fn new(f0: f64, fs: f64, q: f64) -> Self {
+    pub fn new(f0: f64, fs: f64, q: f64, mode: FilterMode) -> Self {
         let g = (PI64 * f0 / fs).tan();
         let k = 1.0 / q;
         let denom = 1.0 + g * (g + k);
@@ -177,6 +185,8 @@ impl CytomicSvf {
             a2: (g / denom) as f32,
             a3: (g * g / denom) as f32,
             norm: norm as f32,
+
+            mode: mode,
         }
     }
 
@@ -186,6 +196,7 @@ impl CytomicSvf {
         let a2s1 = self.a2 * self.s1;
 
         let tmp = self.a2.mul_add(self.s1, self.s2);
+
         let v3 = x - tmp + a2s1;
 
         let v1 = self.a1.mul_add(self.s1, self.a2 * v3);
@@ -194,16 +205,23 @@ impl CytomicSvf {
         self.s1 = 2.0f32.mul_add(v1, -self.s1);
         self.s2 = 2.0f32.mul_add(v2, -self.s2);
 
-        v1 * self.norm
+        (match self.mode {
+            FilterMode::HighPass => v3 * self.norm,
+            FilterMode::BandPass => v1 * self.norm,
+            FilterMode::LowPass => v2 * self.norm,
+            FilterMode::Notch => (x - v1 * self.norm),
+            FilterMode::AllPass => todo!(),
+        })
     }
 }
 
 /// Second-order Sections, filters that can be cascaded.
 pub trait SoS: Filter {
-    fn new(center: f64, fs: f64, q: f64) -> Self;
+    fn new(center: f64, fs: f64, q: f64, mode: FilterMode) -> Self;
 }
 
 /// Cascade of Second-order Sections, a filter made out of filters.
+// NEXT support asymmetric high/low and other combinations.
 pub struct Cascade<T: SoS> {
     stages: Vec<T>,
     args: FilterArgs,
@@ -214,6 +232,11 @@ impl<T: SoS> Filter for Cascade<T> {
     fn from_args(args: &FilterArgs) -> Self {
         // NEXT Not implemented, but a First order section like the regular complex resonator will
         // use arg.stages * 1.
+
+        // DEBT weakly supported.  Possibly the `FilterArgs` constructor is the best place to check
+        // for incoherent settings.
+        let mode = args.mode;
+
         let bqfs = butterworth_q_factors(args.stages * 2);
         let mut staggers = args
             .stagger
@@ -236,7 +259,7 @@ impl<T: SoS> Filter for Cascade<T> {
                 } else {
                     args.q * q_norm
                 };
-                T::new(f0, args.fs, q)
+                T::new(f0, args.fs, q, mode)
             })
             .collect();
 
@@ -259,8 +282,8 @@ impl<T: SoS> Filter for Cascade<T> {
 macro_rules! impl_sos {
     ($t:ty) => {
         impl SoS for $t {
-            fn new(center: f64, fs: f64, q: f64) -> Self {
-                <$t>::new(center, fs, q)
+            fn new(center: f64, fs: f64, q: f64, mode: FilterMode) -> Self {
+                <$t>::new(center, fs, q, mode)
             }
         }
     };
@@ -279,7 +302,7 @@ macro_rules! impl_filter {
             }
 
             fn from_args(args: &FilterArgs) -> Self {
-                <$ty>::new(args.center, args.fs, args.q)
+                <$ty>::new(args.center, args.fs, args.q, args.mode)
             }
         }
     };
@@ -393,8 +416,9 @@ mod test {
     fn test_iir_cytonic_gain_vs_q() {
         let f0 = 1024.0;
         let fs = 48000.0;
+        let mode = FilterMode::BandPass;
         for q in [0.5, 1.0, 2.0, 5.0, 10.0, 100.0, 1000.0] {
-            let mut f = CytomicSvf::new(f0, fs, q);
+            let mut f = CytomicSvf::new(f0, fs, q, mode);
             let mut peak = 0.0f32;
             let mut sine_gen = crate::dsp::sine_gen_48k(f0);
 
