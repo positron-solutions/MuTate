@@ -173,6 +173,120 @@ pub trait Filter {
         Self: Sized;
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum ResampleRatio {
+    /// Create an `IntegerDownsampler`.
+    IntegerDownsample { input: usize },
+    /// Create a `RationalDownsampler`.
+    RationalDownsample { input: usize, output: usize },
+    /// Create a `RealDownsampler`.
+    RealDownsample(f64),
+}
+
+#[derive(Clone, Copy)]
+/// Generic arguments for testing multiple re-samplers side by side.  Because we only need
+/// downsampling to simplify other kinds of filters (like DFTs), upsampling is not actually
+/// supported.
+///
+/// The cutoff frequency is controlled by the input `sample_rate` and the `resample_ratio`.  Once we
+/// figure out the new sample rate, we know the new Nyquist limit.  The stop band will be set to
+/// reach the `attenuation` right at the new Nyquist limit / stop band.  Everything up to
+/// the `cutoff_ratio` fraction of the new stop band will be useable pass band.
+pub struct ResamplerArgs {
+    /// What fraction of the new Nyquist limit will be passband.  The remainder will be transition
+    /// band.  The stop band will begin at the new Nyquist limit, which is always half of the new
+    /// sample rate.
+    cutoff_ratio: f64,
+    /// How much to reduce signal in the stop band to control aliasing.
+    attenuation: f64,
+    /// Rate of input to output.
+    resample_ratio: ResampleRatio,
+    /// Sample rate of inputs, per second.
+    input_rate: usize,
+}
+
+impl ResamplerArgs {
+    /// The frequency where we should be in the stop band, near the target attenuation.
+    pub fn stop(&self) -> f64 {
+        // Find the stop by using the Nyquist of the new output rate.
+        match self.resample_ratio {
+            ResampleRatio::IntegerDownsample { input: rate } => {
+                let f_output = self.input_rate as f64 / rate as f64;
+                f_output / 2.0
+            }
+            _ => todo!(),
+        }
+    }
+
+    /// The frequency where the transition begins.  Gain begins to ripple or roll off and phase
+    /// begins to distort (more).
+    pub fn cutoff(&self) -> f64 {
+        // Cutoff is a fraction of the new Nyquist limit, which is also where the stop band begins
+        self.stop() * self.cutoff_ratio
+    }
+
+    /// Return sine generator centered at the beginning of the new stop band frequency, emitting
+    /// samples at the input sample rate.  Use when generating stop band signal to test for folding
+    /// into pass band.
+    pub fn sinegen_stop(&self) -> SineSweeper {
+        SineSweeper::new(self.stop(), self.input_rate as f64)
+    }
+
+    /// Return sine generator centered at half of the cutoff frequency, emitting samples at the
+    /// input rate.  Use to verify integrity and delay of signals at the cutoff frequency.  Gain is
+    /// likely slightly below unity.  Phase is likely to begin distorting.  Modulate down to find an
+    /// acceptable practical cutoff.
+    pub fn sinegen_cutoff(&self) -> SineSweeper {
+        SineSweeper::new(self.cutoff(), self.input_rate as f64)
+    }
+
+    /// Return sine generator centered at half of the cutoff frequency, emitting samples at the
+    /// input rate.  Use to verify integrity of signals within the passband and delay
+    /// characteristics (by modulating the sine generator's wave amplitude in time).
+    pub fn sinegen_pass(&self) -> SineSweeper {
+        SineSweeper::new(self.cutoff() * 0.5, self.input_rate as f64)
+    }
+}
+
+impl Default for ResamplerArgs {
+    fn default() -> Self {
+        ResamplerArgs {
+            cutoff_ratio: 0.8,
+            attenuation: 60.0,
+            input_rate: 48000,
+            resample_ratio: ResampleRatio::IntegerDownsample { input: 2 },
+        }
+    }
+}
+
+/// Without input and output bounds, `process` is basically a generic function.
+pub trait Resampler {
+    type Input;
+    type Output;
+
+    fn process(&mut self, input: Self::Input) -> Self::Output;
+
+    /// Create the resampler from generic arguments.
+    fn from_args(args: &ResamplerArgs) -> Self
+    where
+        Self: Sized;
+}
+
+/// A Downsampler that converts every Nth input into an output and only consumes N sized input chunks.
+pub trait IntegerDownsampler<T, const N: usize>: Resampler<Input = [T; N], Output = T> {}
+
+/// A Downsampler that converts N inputs into M outputs at a fixed ratio and only operates on N sized
+/// chunks.  It is named for the rational N / M ratio.
+pub trait RationalDownsampler<T, const N: usize, const M: usize>:
+    Resampler<Input = [T; N], Output = [T; M]>
+{
+    const ASSERT_DOWNSAMPLE: () = assert!(M < N, "Rational downsampling requires M < N");
+}
+
+/// If M to N is real rather than rational, we must accept that we cannot always anticipate a new
+/// output sample and instead return an Option.
+pub trait RealDownsampler<T>: Resampler<Input = T, Output = Option<T>> {}
+
 /// Sine wave generator with frequency modulation.  Use to generate rough chirps to quickly look for
 /// changes in filter response.
 pub struct SineSweeper {
