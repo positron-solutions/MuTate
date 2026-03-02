@@ -187,26 +187,36 @@ impl Svf {
 
 /// Cytomic derivation of the SVF is said to be very precise even at high Qs and low frequencies.
 pub struct CytomicSvf {
-    s1: f32,
-    s2: f32,
+    k: f32,
     a1: f32,
     a2: f32,
     a3: f32,
+    ic1eq: f32,
+    ic2eq: f32,
+    mode: FilterMode,
+
     m0: f32,
     m1: f32,
     m2: f32,
-    mode: FilterMode,
-    k: f32,
+
+    s1: f32,
+    s2: f32,
 }
 
 impl CytomicSvf {
     pub fn new(f0: f64, fs: f64, q: f64, mode: FilterMode) -> Self {
         let g = (std::f64::consts::PI * f0 / fs).tan();
         let k = 1.0 / q;
-        let denom = 1.0 + g * (g + k);
-        let a1 = (1.0 / denom) as f32;
-        let a2 = (g / denom) as f32;
-        let a3 = (g * g / denom) as f32;
+
+        let denom = g.mul_add(g + k, 1.0);
+        let inv_denom = 1.0 / denom;
+
+        let a1 = inv_denom;
+        let a2 = g * inv_denom;
+        let a3 = g * a2;
+
+        let ic1eq = (1.0 - g * (g + k)) * inv_denom;
+        let ic2eq = 2.0 * g * inv_denom;
 
         let (m0, m1, m2) = match mode {
             FilterMode::LowPass => (0.0, 0.0, 1.0),
@@ -214,33 +224,46 @@ impl CytomicSvf {
             FilterMode::HighPass => (1.0, -(k as f32), -1.0),
             // XXX Untested
             FilterMode::Notch => (1.0, -(k as f32), 0.0),
-            FilterMode::AllPass => (1.0, -2.0 * (k as f32), 0.0),
+            FilterMode::AllPass => (1.0, (-2.0 * k) as f32, 0.0),
         };
 
         Self {
-            s1: 0.0,
-            s2: 0.0,
-            a1,
-            a2,
-            a3,
+            k: k as f32,
+            a1: a1 as f32,
+            a2: a2 as f32,
+            a3: a3 as f32,
+            ic1eq: ic1eq as f32,
+            ic2eq: ic2eq as f32,
+
+            mode,
+
             m0,
             m1,
             m2,
-            mode,
-            k: k as f32,
+
+            s1: 0.0,
+            s2: 0.0,
         }
     }
 
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
-        let v3 = x - self.s2;
-        let v1 = self.a1.mul_add(self.s1, self.a2 * v3);
-        let v2 = self.s2 + self.a2 * self.s1 + self.a3 * v3;
+        let s1 = self.s1;
+        let s2 = self.s2;
 
-        self.s1 = 2.0 * v1 - self.s1;
-        self.s2 = 2.0 * v2 - self.s2;
+        let v3 = x - s2;
 
-        self.m0 * x + self.m1 * v1 + self.m2 * v2
+        let v1 = self.a1.mul_add(s1, self.a2 * v3);
+        let v2 = self.a2.mul_add(s1, self.a3 * v3) + s2;
+
+        // Pre-scale contributions to reduce dynamic range
+        let v3_2a2 = 2.0 * self.a2 * v3;
+        let v3_2a3 = 2.0 * self.a3 * v3;
+
+        self.s1 = self.ic1eq.mul_add(s1, v3_2a2);
+        self.s2 = self.ic2eq.mul_add(s1, s2 + v3_2a3);
+
+        self.m0.mul_add(x, self.m1.mul_add(v1, self.m2 * v2))
     }
 }
 
