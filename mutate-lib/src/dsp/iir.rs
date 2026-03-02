@@ -82,17 +82,36 @@ pub struct Biquad {
 
 impl Biquad {
     pub fn new(f0: f64, fs: f64, q: f64, mode: FilterMode) -> Self {
-        assert_eq!(FilterMode::BandPass, mode);
-
         let w0 = TAU64 * f0 / fs;
         let alpha = w0.sin() / (2.0 * q);
 
-        let b0 = alpha;
-        let b1 = 0.0;
-        let b2 = -alpha;
-        let a0 = 1.0 + alpha;
-        let a1 = -2.0 * w0.cos();
-        let a2 = 1.0 - alpha;
+        let (b0, b1, b2, a0, a1, a2) = match mode {
+            FilterMode::LowPass => (
+                (1.0 - w0.cos()) / 2.0,
+                1.0 - w0.cos(),
+                (1.0 - w0.cos()) / 2.0,
+                1.0 + alpha,
+                -2.0 * w0.cos(),
+                1.0 - alpha,
+            ),
+            FilterMode::HighPass => (
+                (1.0 + w0.cos()) / 2.0,
+                -(1.0 + w0.cos()),
+                (1.0 + w0.cos()) / 2.0,
+                1.0 + alpha,
+                -2.0 * w0.cos(),
+                1.0 - alpha,
+            ),
+            FilterMode::BandPass => (
+                alpha, // peak gain = Q
+                0.0,
+                -alpha,
+                1.0 + alpha,
+                -2.0 * w0.cos(),
+                1.0 - alpha,
+            ),
+            _ => todo!(),
+        };
 
         Self {
             s1: 0.0,
