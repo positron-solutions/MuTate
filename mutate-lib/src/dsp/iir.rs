@@ -284,7 +284,7 @@ impl<T: SoS> Filter for Cascade<T> {
 
                 let q_norm = (1.0 / args.stages as f64).sqrt();
                 let q = if args.butterworth {
-                    args.q * (bqfs[i] * q_norm)
+                    bqfs[i]
                 } else {
                     args.q * q_norm
                 };
