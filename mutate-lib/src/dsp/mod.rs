@@ -1,4 +1,4 @@
-// Copyright 2026 The MuTate Contributorjs
+// Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! # Digital Signal Processing
@@ -104,6 +104,8 @@ pub enum FilterMode {
 }
 
 #[derive(Clone, Copy)]
+/// To enable testing many filters side by side, all filters can be constructed from a relatively
+/// common set of arguments.
 pub struct FilterArgs {
     /// Quality factor equal to `center` / `bandwidth`.
     pub q: f64,
@@ -118,9 +120,15 @@ pub struct FilterArgs {
     /// Bandpass, lowpass, highpass, and notch usually.  Not all filters support all modes.
     pub mode: FilterMode,
 
-    /// Butterworth
+    /// Use butterworth Q ratios (highpass and lowpass only) for maximally flat pass band.
+    // DEBT this is very much not enforced and was better supported than it should have been in the
+    // first pass.  Please clean this up.  Only highpass and lowpass need to support this.  The
+    // question is when and how to tell the user / compiler.
     pub butterworth: bool,
-    /// Stagger frequencies
+    /// Stagger frequencies to "dull" ringing.  With normalized gains, dull filters can "ring" like
+    /// hitting a steel plate buried in the ground.  It might have a sharp pass band for a preferred
+    /// frequency, but it can't store energy.  **See implementation.  Not a lot of control for
+    /// stagger ratios yet.**
     pub stagger: Option<f64>,
     /// Stages.  12dB per octave per stage.  80dB per octave, meaning a max comfortable signal at
     /// twice the frequency will become visible, is about 7 stages, or a 14th order IIR.
@@ -313,7 +321,8 @@ impl SineSweeper {
         }
     }
 
-    /// Update the frequency on the fly
+    /// Update the frequency on the fly.  Does not modify the current phase, only the angular
+    /// velocity.
     pub fn set_frequency(&mut self, f0: f64) {
         self.omega = TAU64 * f0 / self.fs;
         self.cos = self.omega.cos();
