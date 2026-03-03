@@ -20,10 +20,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use mutate_lib::{
     self as utate,
     dsp::{
-        self,
-        dft::{self, WindowFunction},
+        self, dft,
         iir::{self, Biquad, Cascade, CytomicSvf, Svf},
-        Filter, FilterArgs, FilterMode, SineSweeper,
+        window, Filter, FilterArgs, FilterMode, SineSweeper,
     },
     prelude::*,
 };
@@ -132,7 +131,7 @@ enum Command {
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 /// Supported window functions.
 // NOTE clap only supports valueless enums, and we don't want clap as a dependency in the dsp
-// module, so this enum is duplicated from dsp::WindowChoice.
+// module, so this enum is duplicated from window::WindowChoice.
 pub enum WindowChoice {
     /// Aka "rectangle" or "no window".  -13.3dB Peak Side Lobe Level (PSLL).
     Boxcar,
@@ -797,14 +796,14 @@ impl WorkbenchConfig {
     }
 
     /// DFT window choice
-    fn dft_window(&self) -> dft::WindowFunction {
-        dft::WindowFunction::DolphChebyshev {
+    fn dft_window(&self) -> window::WindowFunction {
+        window::WindowFunction::DolphChebyshev {
             attenuation_db: 22.5,
         }
-        // dft::WindowFunction::BoxCar
-        // dft::WindowFunction::Bartlett
-        // dft::WindowFunction::Hamming
-        // dft::WindowFunction::Welch
+        // window::WindowFunction::BoxCar
+        // window::WindowFunction::Bartlett
+        // window::WindowFunction::Hamming
+        // window::WindowFunction::Welch
     }
 }
 

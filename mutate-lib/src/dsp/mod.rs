@@ -66,6 +66,7 @@ pub mod dft;
 pub mod iir;
 pub mod iso226; // XXX remove from use in visualizer
 pub mod spectrogram;
+pub mod window;
 
 /// Old people and rock stars cannot hear above certain frequencies.  Even if the sampling rate will
 /// allow us to resolve higher frequencies, there is little visually interesting above them, and
@@ -135,7 +136,7 @@ pub struct FilterArgs {
     pub stages: usize,
 
     /// For DFT based filters, the weights that will be used to sum the window.
-    pub window_choice: dft::WindowFunction,
+    pub window_choice: window::WindowFunction,
 }
 
 impl FilterArgs {
@@ -164,7 +165,7 @@ impl Default for FilterArgs {
             mode: FilterMode::BandPass,
             stagger: None,
             stages: 4,
-            window_choice: dft::WindowFunction::DolphChebyshev {
+            window_choice: window::WindowFunction::DolphChebyshev {
                 attenuation_db: 40.0,
             },
         }
