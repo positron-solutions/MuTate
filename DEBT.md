@@ -97,9 +97,17 @@ Where we're going, Visuals will provide their resource requirements as specs (wh
 
 We don't really have any infra for one-big-allocation or deletion & compaction.  Specs will just hydrate kind of dumbly at first while we nail the ergonomics.
 
-Don't go crazy avoiding copies just yet, especially where sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.
+Don't go crazy avoiding copies just yet, especially where sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.  Until we have a solution that will do better than the driver, just allocate for each image / buffer.
 
 There is a better ring buffer crate for the task graph use case.  The existing `GraphBuffer` will / should die soon.
+
+## General Image Layouts
+
+This is a pretty boring area of automation in terms of design.  Tracking or computing layouts is not hard.  We are supposed to do it.. for mobile?  Someday.  There are much more interesting things to automate that don't really depend on layouts.
+
+### For Now
+
+The performance of `vk::ImageLayout::GENERAL` is just not bad.  It is sometimes guaranteed to be negligible and the driver is supposed to figure things out.  To keep ergonomics simple, let's lean on general where possible and then consider adding other layouts back in to be about device support & performance.
 
 ## Error Handling
 
