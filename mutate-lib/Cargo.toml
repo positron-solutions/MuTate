@@ -26,6 +26,7 @@ clap = {workspace = true, features=["derive"], optional = true}
 
 mutate-assets = {workspace = true, features = ["runtime"]}
 mutate-vulkan = {workspace = true, optional = true}
+mutate-slide = {workspace = true, optional = true}
 
 [build-dependencies]
 mutate-assets = {workspace = true, features = ["build"]}

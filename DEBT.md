@@ -99,7 +99,7 @@ We don't really have any infra for one-big-allocation or deletion & compaction. 
 
 Don't go crazy avoiding copies just yet, especially where sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.  Until we have a solution that will do better than the driver, just allocate for each image / buffer.
 
-There is a better ring buffer crate for the task graph use case.  The existing `GraphBuffer` will / should die soon.
+There is a better ring buffer crate for the task graph use case.  The existing `GraphBuffer` will / should die soon.  See the `mutate-slide` crate with its `SlidingWindow` as a foundation.  Probably we have to loan out slices and manually protect those borrows from torn read with render loop pacing sync instead of using the slices or window as sync primitives themselves.
 
 ## General Image Layouts
 

@@ -26,6 +26,7 @@ winit.workspace = true
 
 mutate-lib = {workspace = true, features = ["vulkan"]}
 mutate-assets = {workspace = true, features = ["runtime"]}
+mutate-slide.workspace = true
 
 [build-dependencies]
 toml.workspace = true

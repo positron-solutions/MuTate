@@ -11,9 +11,8 @@ use std::f64::consts::{PI as PI64, TAU as TAU64};
 use num_complex::Complex;
 use num_traits::Zero;
 
-// DEBT switch to the better ring buffer already!!!!
-use ringbuf::traits::{Consumer, Observer, Producer};
-use ringbuf::{storage::Heap, LocalRb};
+use crate::tree::TreeSum;
+use mutate_slide::SlidingWindow;
 
 use crate::dsp::{self, window};
 
@@ -50,7 +49,7 @@ pub struct Dft {
     window_norm: f32,
     /// The window of complex numbers resulting from the Goertzel algorithm application.  This must
     /// be windowed and summed to produce an output.
-    goertzel_terms: LocalRb<Heap<Complex<f32>>>,
+    goertzel_terms: SlidingWindow<Vec<Complex<f32>>>,
     /// The center frequency for this filter
     center: f32,
     /// Pre-calculated gain to apply.  Set this to 1.0 when calibrating.
@@ -71,30 +70,10 @@ pub struct Dft {
 impl dsp::Filter for Dft {
     /// Remember,the DFT yields identical results for each window_repeat samples!
     fn process(&mut self, sample: f32) -> f32 {
-        // DEBT The ring buffer really feels like it has two-sided semantics even in the local case.
-        // If we know we are literally just interested in keeping a fixed size window, it's a little
-        // hacky and the semantics don't really feel right.  Either we need our own ring buffer or
-        // to make this one express the semantics that we want.
-        let mut last_added = self.goertzel_terms.first_mut();
-        let inner = last_added.as_mut().unwrap();
-
-        // Goertzel
-        let term = Complex {
+        self.goertzel_terms.push(Complex {
             re: sample * self.phase.re,
             im: -sample * self.phase.im,
-        };
-
-        **inner = term;
-        unsafe {
-            self.goertzel_terms.advance_read_index(1);
-        }
-        unsafe {
-            self.goertzel_terms.advance_write_index(1);
-        }
-        assert_eq!(
-            self.goertzel_terms.occupied_len(),
-            self.window_factors.len()
-        );
+        });
 
         // Rotate phase by velocity
         self.phase = Complex {
@@ -107,10 +86,10 @@ impl dsp::Filter for Dft {
             let sum: Complex<f32> = self
                 .goertzel_terms
                 .iter()
-                .zip(self.window_factors.iter())
-                .fold(Complex::zero(), |accum, (g, window_factor)| {
-                    accum + (g * window_factor)
-                });
+                .copied()
+                .zip(self.window_factors.iter().copied())
+                .map(|(g, w)| g.scale(w))
+                .tree_sum();
             self.last_output = 2.0 * sum.norm() / self.window_norm;
 
             // Normalize the phase to prevent drift over time.
@@ -138,9 +117,7 @@ impl Dft {
     ) -> Self {
         let window_factors = window_choice.make_window_32(length);
         let window_repeat = window_choice.repeat(length);
-        let mut goertzel_terms = LocalRb::new(length);
-        unsafe { goertzel_terms.advance_write_index(length) };
-        goertzel_terms.iter_mut().for_each(|a| *a = Complex::zero());
+        let goertzel_terms = SlidingWindow::<Vec<Complex<f32>>>::new_heap(length);
         let scalar_velocity = (TAU64 * center) / sample_rate;
         let (sin, cos) = scalar_velocity.sin_cos();
         let velocity = Complex {
