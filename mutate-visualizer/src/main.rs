@@ -52,11 +52,12 @@ impl App {
 
         // NEXT dynamically waiting down to the approximate latch timing to late bind the last
         // possible audio.
-        std::thread::sleep(std::time::Duration::from_millis(6));
+        // std::thread::sleep(std::time::Duration::from_millis(6));
 
         // NOTE A manually driven, unrolled render graph.  These are the associations that must
         // be described in the eventual graph connectivity APIs.
         let raw_state = self.raw_audio.consume().unwrap();
+
         let raw_out = self.raw_audio.produce().unwrap();
         self.cqt.consume(&raw_out);
 

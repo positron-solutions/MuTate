@@ -139,15 +139,14 @@ struct CqtBin {
 
 impl CqtBin {
     pub fn new(center: f32, size: usize, decimation: usize) -> Self {
-        // Ensure the effective size is longer than the typical window to avoid energy accumulation
-        // at frequencies that couple with the chunk size.
         let size = (size as f32 / decimation as f32).ceil() as usize;
         let mut terms = SlidingWindow::<Vec<AudioComplex>>::new_heap(size);
         // DEBT format rate
         let scalar_velocity = (std::f32::consts::TAU * center * (decimation as f32)) / 48_000_f32;
+        let (svi, svr) = scalar_velocity.sin_cos();
         let velocity = Complex {
-            real: scalar_velocity.cos(),
-            imag: scalar_velocity.sin(),
+            real: svr,
+            imag: svi,
         };
         Self {
             center,
@@ -165,8 +164,8 @@ impl CqtBin {
 
     // DEBT sample rate
     pub fn consume(&mut self, input: &[Audio]) {
-        // XXX Seek events etc are just not handled.  The way to handle them is via accumulation
-        // between calls to produce,  but it needs to be numerically stable.
+        // XXX Seek events etc are just not handled.
+        // Align the decimation remainder
         let mut input = input;
         if self.skip != 0 {
             input = &input[self.skip..];
@@ -295,7 +294,7 @@ impl CqtNode {
                 // Whenever we have over two times as many samples as we need, decimate the sample
                 // rate by two.  This keeps the information margins low.  The extra 2.0 keeps bin
                 // sizes relatively consistent, around 200 samples.
-                let decimation = 2u32.pow((freq_max / (bin_nyquist * 8.0)).log2() as u32);
+                let decimation = 2u32.pow((freq_max / (bin_nyquist * 1.0)).log2() as u32);
                 let size = (q * sample_rate as f32 / freq).ceil() as usize;
                 CqtBin::new(freq, size.max(size_min), decimation as usize)
             })
@@ -348,7 +347,6 @@ mod test {
     fn test_cqt_bin_lengths() {
         let cqt = CqtNode::new(128, 48000, 60.0);
 
-        // uncomment to output reference values
         // for (i, b) in cqt.bins.iter().enumerate() {
         //     println!(
         //         "i: {}, frequency: {}, effective_length: {},  length: {}",
