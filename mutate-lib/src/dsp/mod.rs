@@ -64,7 +64,7 @@ use num_complex::Complex;
 pub mod bank;
 pub mod dft;
 pub mod iir;
-pub mod iso226; // XXX remove from use in visualizer
+pub mod iso226;
 pub mod spectrogram;
 pub mod window;
 

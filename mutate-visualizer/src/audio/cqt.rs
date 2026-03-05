@@ -5,10 +5,9 @@ use std::ops::Add;
 
 use num_traits::Zero;
 
-use mutate_lib::tree::TreeSum;
+use mutate_lib::{dsp::iso226, tree::TreeSum};
 use mutate_slide::SlidingWindow;
 
-use crate::audio::iso226;
 use crate::audio::raw::Audio;
 use crate::graph::GraphEvent;
 
@@ -150,7 +149,7 @@ impl CqtBin {
         };
         Self {
             center,
-            iso226_offset: iso226::iso226_gain(center).unwrap(),
+            iso226_offset: iso226::iso226_gain(center as f64).unwrap() as f32,
             terms,
             phase: Complex {
                 real: 1.0,
