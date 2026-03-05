@@ -27,6 +27,8 @@ thiserror = "2.0.17"
 toml = "0.9.8"
 winit = "0.30.12"
 
+# DSP
+aligned = "0.4.3"
 num-complex = "0.4.6"
 num-traits = "0.2.19"
 

@@ -17,6 +17,7 @@ thiserror.workspace = true
 ash.workspace = true
 
 # dsp dependencies
+aligned = {workspace = true, optional = true}
 num-complex = {workspace = true, optional = true}
 num-traits = {workspace = true, optional = true}
 
@@ -37,7 +38,7 @@ name = "pipewire"
 path = "src/pipewire.rs"
 
 [features]
-dsp = ["dep:num-complex", "dep:num-traits"]
+dsp = ["dep:num-complex", "dep:num-traits", "dep:scirs2-signal", "dep:pm-remez", "dep:mutate-slide", "dep:aligned"]
 default = ["dsp", "workbench"]
 workbench = ["dep:clap", "dsp"]
 vulkan = ["dep:mutate-vulkan"]

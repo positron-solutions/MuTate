@@ -17,6 +17,9 @@
 #![allow(dead_code)]
 #![allow(unused)]
 
+// Just a little fast, accurate tree-sum helper that might find its way into another crate later.
+pub mod tree;
+
 // You need to break up the audio module into per-platform modules and implement AudioContext.  Only
 // Linux via pipewire is supported right now.  You will support it.  Welcome to open source
 // development.
