@@ -31,6 +31,15 @@
 //! filters seem well-behaved at pretty aggressive settings, but the off-bin gains of biquads have
 //! been observed to be larger than expected at low frequencies and high Q.
 
+// NOTE there is a curious dip in the testing outputs around 8kHz for the IIR bandpasses.  If you
+// check out this commit and run:
+//
+// $ cargo run --bin workbench  gain cytomic,svf,biquad --stages=5 --center 8000 -q 1.0
+//
+// You will note about a 14% departure from unity gain.  Other frequencies seem not to be affected
+// but it is curious that all are affected right now.  There does not seem to be a precision issue
+// since all three IIR types are in complete agreement (five decimal display).
+
 use std::f64::consts::{PI as PI64, TAU as TAU64};
 
 use num_complex::{Complex, Complex64};
@@ -150,7 +159,7 @@ impl Svf {
     /// q  = quality factor
     /// mode = band-pass, low-pass, high-pass
     pub fn new(f0: f64, fs: f64, q: f64, mode: FilterMode) -> Self {
-        let g = (PI64 * f0 / fs).tan(); // bilinear transform
+        let g = (PI64 * f0 / fs).tan();
         let k = 1.0 / q;
         let den = 1.0 + g * (g + k);
 
