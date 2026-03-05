@@ -210,7 +210,7 @@ impl CqtBin {
     pub fn produce(&self) -> Cqt {
         // let now = std::time::Instant::now();
 
-        let sum = self.terms.iter().copied().tree_sum();
+        let sum: AudioComplex = self.terms.iter().copied().tree_sum();
         let norm = 1.0 / self.len() as f32;
         // `c` because this RMS is off by some constant factor we don't care about.
         let left_c_rms = sum.left.scale(norm * std::f32::consts::SQRT_2).mag();

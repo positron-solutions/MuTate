@@ -86,9 +86,8 @@ impl dsp::Filter for Dft {
             let sum: Complex<f32> = self
                 .goertzel_terms
                 .iter()
-                .copied()
-                .zip(self.window_factors.iter().copied())
-                .map(|(g, w)| g.scale(w))
+                .zip(self.window_factors.iter())
+                .map(|(g, w)| g.scale(*w))
                 .tree_sum();
             self.last_output = 2.0 * sum.norm() / self.window_norm;
 

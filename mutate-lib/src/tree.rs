@@ -63,12 +63,12 @@ pub trait TreeSum: Iterator {
 
 impl<F, I> TreeSum for I
 where
-    F: Zero + Add<Output = F> + Copy,
+    F: Zero + Add<Output = F> + Clone,
     I: Iterator<Item = F>,
 {
     type Output = F;
     fn tree_sum(mut self) -> F {
-        let mut stack: Aligned<A64, [Option<F>; 32]> = Aligned([None; 32]);
+        let mut stack: Aligned<A64, [Option<F>; 32]> = Aligned(std::array::from_fn(|_| None));
         for s in self {
             let mut carry = s;
             for slot in stack.iter_mut() {
@@ -78,7 +78,7 @@ where
                         break;
                     }
                     Some(existing) => {
-                        carry = *existing + carry;
+                        carry = existing.clone() + carry;
                         *slot = None;
                     }
                 }
@@ -88,7 +88,7 @@ where
             .iter()
             .rev()
             .flatten()
-            .copied()
+            .cloned()
             .fold(F::zero(), |acc, x| acc + x)
     }
 }
@@ -135,16 +135,16 @@ pub trait WindowedTreeSum: Iterator {
 
 impl<F, I> WindowedTreeSum for I
 where
-    F: Zero + Add<Output = F> + Mul<Output = F> + MulAdd<Output = F> + Copy,
+    F: Zero + Add<Output = F> + Mul<Output = F> + MulAdd<Output = F> + Clone,
     I: Iterator<Item = (F, F)>,
 {
     type Output = F;
 
     fn windowed_tree_sum(mut self) -> F {
-        let mut stack: Aligned<A64, [Option<F>; 32]> = Aligned([None; 32]);
+        let mut stack: Aligned<A64, [Option<F>; 32]> = Aligned(std::array::from_fn(|_| None));
         // "manually" unrolled 🤖 to let give the compiler more room.
         for (s, w) in self {
-            let product = s * w;
+            let product = s.clone() * w.clone();
 
             // Slot 0
             let carry = match stack[0].take() {
@@ -205,7 +205,7 @@ where
             .iter()
             .rev()
             .flatten()
-            .copied()
+            .cloned()
             .fold(F::zero(), |acc, x| acc + x)
     }
 }
