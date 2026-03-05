@@ -1,0 +1,15 @@
+[package]
+name = "mutate-slide"
+description = "Sliding window"
+readme = "../README.md"
+
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = ["alloc"]
+alloc = []

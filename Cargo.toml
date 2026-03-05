@@ -47,6 +47,7 @@ mutate-lib = {path = "./mutate-lib"}
 mutate-macros = {path = "./crates/macros"}
 mutate-assets = {path = "./crates/assets"}
 mutate-vulkan = {path = "./crates/vulkan"}
+mutate-slide = {path = "./crates/slide"}
 
 # Build fast dependencies
 [profile.dev.package."*"]
