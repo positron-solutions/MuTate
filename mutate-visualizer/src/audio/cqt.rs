@@ -1,8 +1,12 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use ringbuf::traits::{Consumer, Observer, Producer};
-use ringbuf::{storage::Heap, LocalRb};
+use std::ops::Add;
+
+use num_traits::Zero;
+
+use mutate_lib::tree::TreeSum;
+use mutate_slide::SlidingWindow;
 
 use crate::audio::iso226;
 use crate::audio::raw::Audio;
@@ -53,6 +57,37 @@ impl Complex {
     }
 }
 
+impl Zero for AudioComplex {
+    fn zero() -> Self {
+        Self::default()
+    }
+
+    fn is_zero(&self) -> bool {
+        self.left.real == 0.0
+            && self.left.imag == 0.0
+            && self.right.real == 0.0
+            && self.right.imag == 0.0
+    }
+}
+
+impl Add for AudioComplex {
+    type Output = Self;
+
+    #[inline(always)]
+    fn add(self, rhs: Self) -> Self::Output {
+        AudioComplex {
+            left: Complex {
+                real: self.left.real + rhs.left.real,
+                imag: self.left.imag + rhs.left.imag,
+            },
+            right: Complex {
+                real: self.right.real + rhs.right.real,
+                imag: self.right.imag + rhs.right.imag,
+            },
+        }
+    }
+}
+
 #[derive(Default, Copy, Clone)]
 pub struct AudioComplex {
     pub left: Complex,
@@ -90,7 +125,7 @@ struct CqtBin {
     /// ISO226 correction dB.
     iso226_offset: f32,
     // DEBT memory management
-    terms: LocalRb<Heap<AudioComplex>>,
+    terms: SlidingWindow<Vec<AudioComplex>>,
     /// As we slide the window, the phase becomes offset relative to where we started.
     phase: Complex,
     /// Constant modifier accounting for sample versus natural rate.
@@ -107,18 +142,13 @@ impl CqtBin {
         // Ensure the effective size is longer than the typical window to avoid energy accumulation
         // at frequencies that couple with the chunk size.
         let size = (size as f32 / decimation as f32).ceil() as usize;
-        let mut terms = LocalRb::new(size);
+        let mut terms = SlidingWindow::<Vec<AudioComplex>>::new_heap(size);
         // DEBT format rate
         let scalar_velocity = (std::f32::consts::TAU * center * (decimation as f32)) / 48_000_f32;
         let velocity = Complex {
             real: scalar_velocity.cos(),
             imag: scalar_velocity.sin(),
         };
-        unsafe {
-            terms.advance_write_index(size);
-        }
-        assert!((size * decimation) >= 800);
-        terms.iter_mut().for_each(|a| *a = AudioComplex::default());
         Self {
             center,
             iso226_offset: iso226::iso226_gain(center).unwrap(),
@@ -144,25 +174,6 @@ impl CqtBin {
         let read_len = input.len() / self.decimation;
         self.skip = (self.decimation - (input.len() % self.decimation)) % self.decimation;
 
-        // Roll off old data
-        if read_len == self.len() {
-            // XXX watch for input > terms.. it's not correctly handled
-            self.terms.clear(); // NOTE advances read index
-        } else {
-            unsafe { self.terms.advance_read_index(read_len) };
-        }
-
-        // Roll on the new data
-        // XXX phase actually breaks if the input is too large for the ring.
-        unsafe {
-            self.terms.advance_write_index(read_len);
-        }
-        assert_eq!(self.terms.occupied_len(), self.terms.capacity().into());
-
-        let (head, tail) = self.terms.as_mut_slices();
-        let tail_len = tail.len();
-        let head_len = head.len();
-
         let mut phase_real = self.phase.real;
         let mut phase_imag = self.phase.imag;
         let mut read_idx = 0;
@@ -171,31 +182,10 @@ impl CqtBin {
         let vel_imag = self.velocity.imag;
 
         // write into the head if the tail is not large enough
-        if read_len > tail_len {
-            let head_offset = (head_len + tail_len).saturating_sub(read_len);
-            for i in 0..(read_len - tail_len) {
-                let sample = input[read_idx];
-                read_idx += dec;
-                head[head_offset + i] = AudioComplex {
-                    left: Complex {
-                        real: sample.left * phase_real,
-                        imag: -sample.left * phase_imag,
-                    },
-                    right: Complex {
-                        real: sample.right * phase_real,
-                        imag: -sample.right * phase_imag,
-                    },
-                };
-                let new_phase_real = phase_real * vel_real - phase_imag * vel_imag;
-                phase_imag = phase_real * vel_imag + phase_imag * vel_real;
-                phase_real = new_phase_real;
-            }
-        }
-        let tail_offset = tail_len.saturating_sub(read_len);
-        for i in 0..read_len.min(tail_len) {
+        for i in 0..read_len {
             let sample = input[read_idx];
             read_idx += dec;
-            tail[tail_offset + i] = AudioComplex {
+            self.terms.push(AudioComplex {
                 left: Complex {
                     real: sample.left * phase_real,
                     imag: -sample.left * phase_imag,
@@ -204,7 +194,8 @@ impl CqtBin {
                     real: sample.right * phase_real,
                     imag: -sample.right * phase_imag,
                 },
-            };
+            });
+
             let new_phase_real = phase_real * vel_real - phase_imag * vel_imag;
             phase_imag = phase_real * vel_imag + phase_imag * vel_real;
             phase_real = new_phase_real;
@@ -219,31 +210,9 @@ impl CqtBin {
     // need RMS to have a consistent path to applying an inverse ISO226 curve correction, enabling
     // our machine to see sound somewhat like a human.
     pub fn produce(&self) -> Cqt {
-        // This unrolled add was quite a bit faster.  Can't be wasting time on these sums on the CPU.
-        let mut l_real = 0.0f32;
-        let mut l_imag = 0.0f32;
-        let mut r_real = 0.0f32;
-        let mut r_imag = 0.0f32;
+        // let now = std::time::Instant::now();
 
-        assert_eq!(self.terms.occupied_len(), self.terms.capacity().into());
-        for x in self.terms.iter() {
-            l_real += x.left.real;
-            l_imag += x.left.imag;
-            r_real += x.right.real;
-            r_imag += x.right.imag;
-        }
-
-        let sum = AudioComplex {
-            left: Complex {
-                real: l_real,
-                imag: l_imag,
-            },
-            right: Complex {
-                real: r_real,
-                imag: r_imag,
-            },
-        };
-
+        let sum = self.terms.iter().copied().tree_sum();
         let norm = 1.0 / self.len() as f32;
         // `c` because this RMS is off by some constant factor we don't care about.
         let left_c_rms = sum.left.scale(norm * std::f32::consts::SQRT_2).mag();
@@ -273,7 +242,7 @@ impl CqtBin {
     /// The length of the internal buffer, which is only filled after decimation.  This is **not**
     /// the window length for this filter bin.
     pub fn len(&self) -> usize {
-        self.terms.capacity().into()
+        self.terms.len()
     }
 }
 
