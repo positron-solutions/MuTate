@@ -204,7 +204,7 @@ impl<T: Copy + Default> SlidingWindow<Vec<T>> {
 }
 
 impl<T: Copy + Default, const N: usize> SlidingWindow<[T; N]> {
-    /// Create a zero-initialised stack-backed window.
+    /// Create a zero-initialized stack-backed window.
     ///
     /// The capacity is fixed at compile time by the array length `N`.
     pub fn new() -> Self {
@@ -220,12 +220,6 @@ impl<T: Copy + Default, const N: usize> SlidingWindow<[T; N]> {
     }
 }
 
-impl<T: Copy + Default, const N: usize> Default for SlidingWindow<[T; N]> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<S> Debug for SlidingWindow<S>
 where
     S: Storage,
@@ -233,6 +227,36 @@ where
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl<S> Copy for SlidingWindow<S>
+where
+    S: Storage + Copy,
+    S::Item: Copy,
+{
+}
+
+impl<S> Clone for SlidingWindow<S>
+where
+    S: Storage + Copy,
+    S::Item: Copy,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Default for SlidingWindow<S>
+where
+    S: Storage + Default,
+    S::Item: Default,
+{
+    fn default() -> Self {
+        Self {
+            buf: S::default(),
+            write: 0,
+        }
     }
 }
 
