@@ -37,7 +37,9 @@ use mutate_slide::SlidingWindow;
 
 use crate::tree::WindowedTreeSum;
 
-use crate::dsp::{self, window::WindowFunction, Filter, FilterArgs};
+use crate::dsp::{
+    self, window::WindowFunction, Filter, FilterArgs, IntegerDownsampler, Resampler, ResamplerArgs,
+};
 
 pub struct FirLowpass<const N: usize> {
     states: SlidingWindow<[f32; N]>,
@@ -137,6 +139,68 @@ impl Filter for DynamicFirLowpass {
         DynamicFirLowpass::new(23, args.window_choice, args.center / args.fs)
     }
 }
+
+// XXX This implementation has been designed and this is a sketch of the code, left private for now.
+// The implementation makes sense and will show up at engineering time to be sure that our combined
+// filters are gain normalized at each bin.  Same result will be implemented on the GPU.
+struct Polyphase<const D: usize, const H: usize> {
+    states: [SlidingWindow<[f32; H]>; D],
+    coeffs: [[f32; H]; D],
+    phase: usize,
+}
+
+impl<const D: usize, const H: usize> Polyphase<D, H> {
+    pub fn from_prototype(h: &[f32]) -> Self {
+        assert_eq!(
+            h.len(),
+            D * H,
+            "prototype must have exactly D * H = {} taps, got {}",
+            D * H,
+            h.len()
+        );
+
+        let mut coeffs = [[0f32; H]; D];
+        for (k, &coeff) in h.iter().enumerate() {
+            coeffs[k % D][k / D] = coeff;
+        }
+
+        Self {
+            states: [SlidingWindow::from_storage([0f32; H]); D],
+            coeffs,
+            phase: 0,
+        }
+    }
+}
+
+impl<const D: usize, const H: usize> Resampler for Polyphase<D, H> {
+    type Input = [f32; D];
+    type Output = f32;
+
+    fn process(&mut self, input: [f32; D]) -> f32 {
+        // Each input sample goes to exactly its own sub-filter — no overlap.
+        for (i, &sample) in input.iter().enumerate() {
+            self.states[i].push(sample);
+        }
+
+        // Sum across all D sub-filters.
+        self.coeffs
+            .iter()
+            .zip(self.states.iter())
+            .map(|(c, s)| {
+                c.iter()
+                    .zip(s.iter())
+                    .map(|(&coeff, &state)| coeff * state)
+                    .sum::<f32>()
+            })
+            .sum()
+    }
+
+    fn from_args(args: &ResamplerArgs) -> Self {
+        todo!("caller should supply prototype via from_prototype; use ResamplerArgs to derive tap count and cutoff externally")
+    }
+}
+
+impl<const D: usize, const H: usize> IntegerDownsampler<f32, D> for Polyphase<D, H> {}
 
 #[cfg(test)]
 mod test {
