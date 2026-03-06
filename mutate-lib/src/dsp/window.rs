@@ -9,6 +9,8 @@ use std::f64::consts::{PI as PI64, TAU as TAU64};
 
 use num_complex::Complex;
 
+use crate::tree::TreeSum;
+
 use crate::dsp;
 
 /// ## Window Choice
@@ -68,9 +70,13 @@ pub enum WindowFunction {
     // Paired with another filter to suppress the side lobe growth, this may offer a more precise
     // main lobe.  Parameterized to 1, it *is* the Dolph-Chebyshev window.
     // Ultraspherical,
+    /// A literal window for pre-calculated weights or just any obtained from another method.  This
+    /// variant exists to enable using hardcoded windows in the same interface.
+    Literal { weights: &'static [f32] },
 }
 
 impl WindowFunction {
+    /// * `size` - Length of the window.
     pub fn make_window(&self, size: usize) -> Vec<f64> {
         match self {
             Self::BoxCar => bin_weights(&boxcar, size),
@@ -80,7 +86,20 @@ impl WindowFunction {
             Self::DolphChebyshev { attenuation_db } => {
                 dolph_chebyshev_window(size, *attenuation_db)
             }
+            Self::Literal { weights } => weights.iter().map(|w| *w as f64).collect(),
         }
+    }
+
+    /// Create a windowed list of sinc weights for constructing an FIR lowpass filter.
+    /// * `size` - Length of the window.  Must be odd.
+    /// * `cutoff` - Fraction of Nyquist limit, in (0.0, 0.5].
+    pub fn make_windowed_sinc(&self, size: usize, cutoff: f64) -> Vec<f64> {
+        let window = self.make_window(size);
+        let sinc = sinc_weights(cutoff, size);
+        let weights: Vec<f64> = window.iter().zip(sinc.iter()).map(|(w, s)| w * s).collect();
+        let sum = weights.iter().copied().tree_sum();
+        let norm = 1.0 / sum;
+        weights.iter().map(|w| w * norm).collect()
     }
 
     /// Windows are calculated in f64 for accuracy, but on the GPU, we use f32, so we have to use
@@ -106,6 +125,7 @@ impl WindowFunction {
             // MAYBE COLA values for Dolph Chebyshev need some experimental tuning.  Higher
             // attenuation was said to demand more overlap.  Workbench!
             Self::DolphChebyshev { attenuation_db } => (length as f64 / 4.0).ceil() as u32,
+            Self::Literal { weights } => (length as f64 / 4.0).ceil() as u32,
         }
     }
 
@@ -121,6 +141,7 @@ impl WindowFunction {
             Self::Bartlett => 1.0,
             Self::Hamming => 1.0,
             Self::DolphChebyshev { attenuation_db } => 1.0,
+            Self::Literal { weights } => 1.0,
         }
     }
 
@@ -133,7 +154,22 @@ impl WindowFunction {
             Self::Bartlett => 1.0,
             Self::Hamming => 1.0,
             Self::DolphChebyshev { attenuation_db } => 1.0,
+            Self::Literal { weights } => 1.0,
         }
+    }
+}
+
+impl std::fmt::Display for WindowFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::BoxCar => "BoxCar",
+            Self::Welch => "Welch",
+            Self::Bartlett => "Bartlett",
+            Self::Hamming => "Hamming",
+            Self::DolphChebyshev { attenuation_db } => "Dolph-Chebyshev",
+            Self::Literal { weights } => "Literal",
+        };
+        write!(f, "{name}")
     }
 }
 
@@ -383,6 +419,45 @@ pub fn dolph_chebyshev_window(n: usize, attenuation_db: f64) -> Vec<f64> {
     let max_val = out.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     out.iter_mut().for_each(|v| *v /= max_val);
     out
+}
+
+/// Normalized sinc function
+fn sinc(x: f64) -> f64 {
+    if x == 0.0 {
+        1.0
+    } else {
+        let px = PI64 * x;
+        px.sin() / px
+    }
+}
+
+/// Generates a symmetric array of sinc weights.
+///
+/// # Arguments
+/// * `cutoff`     - Normalized cutoff frequency in (0.0, 0.5]. 0.5 = Nyquist frequency.
+/// * `num_taps`   - Filter taps (number of inputs that inform each output sample).
+///
+/// # Returns
+/// A `Vec<f64>` of length `num_taps` containing the raw sinc weights, unnormalized.
+///
+/// # Panics
+/// Panics if `num_taps` is zero, even or if `cutoff` is not in (0.0, 0.5].
+fn sinc_weights(cutoff: f64, num_taps: usize) -> Vec<f64> {
+    assert!(num_taps > 0, "num_taps must be greater than zero");
+    assert!(num_taps % 2 == 1, "num_taps must be odd");
+    assert!(
+        cutoff > 0.0 && cutoff <= 0.5,
+        "cutoff must be in (0.0, 0.5]"
+    );
+
+    let half = (num_taps as f64 - 1.0) / 2.0;
+    (0..num_taps)
+        .map(|i| {
+            let n = i as f64 - half;
+            // Scale argument so the first null of sinc(x) lands at the cutoff
+            sinc(2.0 * cutoff * n)
+        })
+        .collect()
 }
 
 #[cfg(test)]

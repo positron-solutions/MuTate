@@ -63,6 +63,7 @@ use num_complex::Complex;
 
 pub mod bank;
 pub mod dft;
+pub mod fir;
 pub mod iir;
 pub mod iso226;
 pub mod spectrogram;

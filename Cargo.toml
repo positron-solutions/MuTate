@@ -31,6 +31,8 @@ winit = "0.30.12"
 aligned = "0.4.3"
 num-complex = "0.4.6"
 num-traits = "0.2.19"
+# PMR
+pm-remez = "0.2.5"
 
 # macros
 syn = "2.0.104"

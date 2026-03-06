@@ -24,6 +24,9 @@ num-traits = {workspace = true, optional = true}
 # workbench dependencies
 clap = {workspace = true, features=["derive"], optional = true}
 
+# PMR dependencies
+pm-remez = {workspace = true, optional = true}
+
 mutate-assets = {workspace = true, features = ["runtime"]}
 mutate-vulkan = {workspace = true, optional = true}
 mutate-slide = {workspace = true, optional = true}
@@ -39,14 +42,20 @@ name = "pipewire"
 path = "src/pipewire.rs"
 
 [features]
-dsp = ["dep:num-complex", "dep:num-traits", "dep:scirs2-signal", "dep:pm-remez", "dep:mutate-slide", "dep:aligned"]
-default = ["dsp", "workbench"]
-workbench = ["dep:clap", "dsp"]
+default = []
+# DEBT move tree into dsp
+dsp = ["dep:num-complex", "dep:num-traits", "dep:mutate-slide", "dep:aligned"]
 vulkan = ["dep:mutate-vulkan"]
+workbench = ["dep:clap", "dsp"]
+pmr = ["dep:pm-remez", "dep:clap", "dsp"]
 
 [[bin]]
 name = "workbench"
-required-features = ["dsp"]
+required-features = ["workbench"]
+
+[[bin]]
+name = "pmr"
+required-features = ["pmr"]
 
 [package.metadata.mutate]
 # 📦 Attention packagers!  The build.rs sets MUTATE_BUILD_ASSETS_DIR for

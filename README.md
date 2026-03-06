@@ -25,7 +25,7 @@ The default binary selected by `cargo run` is the Vulkan frontend, found in the 
 
 #### DSP Workbench
 
-`cargo run --bin workbench --help` will list the CLI interface for the workbench, a CLI program being developed to assist in engineering and maintaining filter bank configurations to be used on the GPU.
+`cargo workbench --help` will list the CLI interface for the workbench, a CLI program being developed to assist in engineering filter bank configurations for use on the GPU.  A separate `pmr` bin (requires pm_remez) can generate static FIR filter settings. Try `cargo pmr lowpass --taps 23`.
 
 ## Status
 

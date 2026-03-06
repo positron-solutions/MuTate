@@ -24,7 +24,7 @@ ringbuf.workspace = true
 thiserror.workspace = true
 winit.workspace = true
 
-mutate-lib = {workspace = true, features = ["vulkan"]}
+mutate-lib = {workspace = true, features = ["vulkan", "dsp"]}
 mutate-assets = {workspace = true, features = ["runtime"]}
 mutate-slide.workspace = true
 

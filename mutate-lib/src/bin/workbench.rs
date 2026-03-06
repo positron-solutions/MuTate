@@ -14,6 +14,8 @@
 //! Remember that dog in Star Fox that said, "Good luck!"?  That's what you get.
 //!
 //! (Try --help)
+//!
+//! Need some human help?  Don't be a dunce.  Contact the maintainers.
 
 use clap::{Parser, Subcommand, ValueEnum};
 
