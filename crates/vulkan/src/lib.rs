@@ -23,6 +23,7 @@
 
 pub mod context;
 pub mod descriptors;
+pub mod pipeline;
 pub mod queue;
 pub mod resource;
 pub mod util;
