@@ -12,6 +12,7 @@ version.workspace = true
 
 [dependencies]
 ash.workspace = true
+half.workspace = true
 thiserror.workspace = true
 
 mutate-assets = {workspace = true, features = ["runtime"]}
