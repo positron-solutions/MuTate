@@ -21,11 +21,10 @@
 //!   * `ComputeTarget`
 //!   * `GraphicsTarget`
 
-pub mod buffer;
 pub mod context;
 pub mod descriptors;
-pub mod image;
 pub mod queue;
+pub mod resource;
 pub mod util;
 
 use ash::vk;

@@ -34,8 +34,8 @@ use std::{collections::VecDeque, slice};
 
 use ash::vk;
 
-use crate::image::ImageView;
 use crate::prelude::*;
+use crate::resource::image::ImageView;
 
 // Plural to make it kind of obvious that these are array slot indexes.
 pub const SLOT_SAMPLED_IMAGES: u32 = 0;

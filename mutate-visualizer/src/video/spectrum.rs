@@ -11,7 +11,10 @@ use ash::vk;
 
 use mutate_assets as assets;
 use mutate_lib::{self as utate, prelude::*};
-use utate::vulkan::{buffer, image, util};
+use utate::vulkan::{
+    resource::{buffer, image},
+    util,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy)]

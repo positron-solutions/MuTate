@@ -12,7 +12,10 @@
 
 use ash::vk;
 
-use crate::{context::VkContext, VulkanError};
+use crate::{
+    context::{descriptors, VkContext},
+    VulkanError,
+};
 
 use crate::util;
 
@@ -222,7 +225,7 @@ impl ImageView {
         &self,
         context: &mut VkContext,
         layout: vk::ImageLayout,
-    ) -> crate::descriptors::SampledImageIndex {
+    ) -> descriptors::SampledImageIndex {
         // MAYBE not so sure about the layout choice
         let device = &context.device;
         let descriptors = &mut context.descriptors;
