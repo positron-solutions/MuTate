@@ -26,8 +26,8 @@ use ash::vk;
 
 use mutate_assets as assets;
 
-use crate::queue;
-use crate::descriptors;
+pub mod queue;
+pub mod descriptors;
 
 pub struct VkContext {
     pub entry: ash::Entry,
@@ -307,7 +307,7 @@ impl VkContext {
     }
 
     pub fn bind_sampled_image(&mut self, view: vk::ImageView, layout: vk::ImageLayout) ->
-    crate::descriptors::SampledImageIndex {
+    descriptors::SampledImageIndex {
         let device = &self.device;
         let descriptors = &mut self.descriptors;
         descriptors.bind_sampled_image(device, view, layout)
