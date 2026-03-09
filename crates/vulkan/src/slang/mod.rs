@@ -303,7 +303,7 @@ slang_scalar!(Float16, f16, SlangType::Float16, "float16_t");
 slang_scalar!(Float32, f32, SlangType::Float32, "float");
 slang_scalar!(Float64, f64, SlangType::Float64, "double");
 
-pub trait IsDeviceAddress: sealed::Sealed {}
+pub trait IsDeviceAddress {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable, Pod)]
 #[repr(transparent)]
@@ -331,7 +331,7 @@ impl From<u64> for DeviceAddress {
         Self(UInt64::from(v))
     }
 }
-impl sealed::Sealed for DeviceAddress {}
+
 impl IsDeviceAddress for DeviceAddress {}
 
 impl<L: LayoutRule> GpuType<L> for DeviceAddress {
@@ -369,7 +369,6 @@ macro_rules! device_address_newtype {
             }
         }
 
-        impl sealed::Sealed for $name {}
         impl IsDeviceAddress for $name {}
 
         impl<L: LayoutRule> GpuType<L> for $name {
@@ -383,7 +382,7 @@ macro_rules! device_address_newtype {
     };
 }
 
-pub trait DescriptorIndex: sealed::Sealed {
+pub trait DescriptorIndex {
     /// u32::MAX is reserved as the invalid/unpopulated sentinel, consistent with common Vulkan
     /// bindless conventions.
     const INVALID_RAW: u32 = u32::MAX;
@@ -420,7 +419,6 @@ macro_rules! descriptor_base {
             }
         }
 
-        impl sealed::Sealed for $name {}
         impl DescriptorIndex for $name {}
 
         impl<L: LayoutRule> GpuType<L> for $name {
@@ -486,7 +484,6 @@ macro_rules! descriptor_newtype {
             }
         }
 
-        impl sealed::Sealed for $name {}
         impl DescriptorIndex for $name {}
 
         impl<L: LayoutRule> GpuType<L> for $name
