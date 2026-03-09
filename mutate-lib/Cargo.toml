@@ -42,7 +42,7 @@ name = "pipewire"
 path = "src/pipewire.rs"
 
 [features]
-default = []
+default = ["dsp"]
 # DEBT move tree into dsp
 dsp = ["dep:num-complex", "dep:num-traits", "dep:mutate-slide", "dep:aligned"]
 vulkan = ["dep:mutate-vulkan"]
