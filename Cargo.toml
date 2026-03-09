@@ -13,6 +13,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 ash = "0.38.0"
+bytemuck = "1.25.0"
 clap = "4.5.53"
 ctrlc = "3.5.1"
 dirs = "6.0.0"
@@ -43,6 +44,7 @@ trybuild = "1.0.116"
 
 # introspection metadata layout agreement
 xxhash-rust = "0.8.15"
+half = "2.7.1"
 
 # members
 mutate-lib = {path = "./mutate-lib"}
