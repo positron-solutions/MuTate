@@ -44,7 +44,7 @@ pub fn build_shaders() {
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
-            if path.is_dir() {
+            if path.is_dir() && path.file_name() != Some(ffi::OsStr::new("lib")) {
                 compile_dir(&path, &src_root, &dest_root, &ext);
             } else if path.extension() == Some(ext) {
                 if !out_ensured {

@@ -6,6 +6,10 @@ This is a record of "crimes" and the plans to later un-crime them.  Debt specifi
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
+## Expose Shader Libs to Dependent Crates
+
+The descriptors.slang should be imported using links & `DEP_MUTATE_LIB_SLANG_INCLUDE` variable (build script to builds script dependency).  This is our way to include slang files automatically for dependents.
+
 ## Logs & Tracing
 
 Along with error handling in type signatures, we're starting to need some real infra for errors.  Having a library crate in addition to binaries opens lots of questions that just need decisions.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
