@@ -11,7 +11,10 @@ use std::ptr::NonNull;
 
 use ash::vk;
 
-use crate::{context::VkContext, util, VulkanError};
+use crate::{
+    context::{descriptors, VkContext},
+    util, VulkanError,
+};
 
 // DEBT memory management
 pub struct MappedAllocation<T> {
@@ -109,6 +112,15 @@ impl<T> MappedAllocation<T> {
                 .flush_mapped_memory_ranges(&[flush_range])?;
         }
         Ok(())
+    }
+
+    // XXX argument order
+    pub fn bound(&self, context: &mut VkContext) -> descriptors::SsboIndex {
+        let device = &context.device;
+        let descriptors = &mut context.descriptors;
+        // XXX do this more cleaner 🤡
+        let byte_size = (std::mem::size_of::<T>() * self.len) as u64;
+        descriptors.bind_ssbo(device, self.buffer, 0, byte_size)
     }
 
     /// After-compute shader barrier.  Use after some compute shader writes to a buffer.

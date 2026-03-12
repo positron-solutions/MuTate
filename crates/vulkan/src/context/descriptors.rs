@@ -44,11 +44,12 @@ pub const SLOT_STORAGE_IMAGES: u32 = 2;
 pub const SLOT_UNIFORM_BUFFERS: u32 = 3;
 pub const SLOT_STORAGE_BUFFERS: u32 = 4;
 
+// XXX Not yet hooked up for slang types.
 pub struct SampledImageIndex(u32);
 pub struct SamplerIndex(u32);
 pub struct StorageImageIndex(u32);
-pub struct UniformBufferIndex(u32);
-pub struct StorageBufferIndex(u32);
+pub struct UboIndex(u32);
+pub struct SsboIndex(u32);
 
 // NEXT Type indexes
 // NEXT Methods to hand out and recycle indexes, likely guarded through the context interface.
@@ -170,5 +171,42 @@ impl Descriptors {
         }
 
         SampledImageIndex(index)
+    }
+
+    pub fn bind_ssbo(
+        &mut self,
+        device: &ash::Device,
+        buffer: vk::Buffer,
+        offset: vk::DeviceSize,
+        size: vk::DeviceSize,
+    ) -> SsboIndex {
+        let descriptor_info = vk::DescriptorBufferInfo::default()
+            .buffer(buffer)
+            .offset(offset)
+            .range(size);
+
+        let index = self.freelist_ssbos.pop_back().unwrap_or_else(|| {
+            let next = self.next_ssbo;
+            self.next_ssbo += 1;
+            next
+        });
+
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.set)
+            .dst_binding(SLOT_STORAGE_BUFFERS)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .dst_array_element(index)
+            .buffer_info(slice::from_ref(&descriptor_info));
+
+        unsafe {
+            device.update_descriptor_sets(slice::from_ref(&write), &[]);
+        }
+
+        SsboIndex(index)
+    }
+
+    /// Return the default layout.  Useful for creating pipelines etc.
+    pub fn layout(&self) -> &[vk::DescriptorSetLayout] {
+        std::slice::from_ref(&self.layout)
     }
 }
