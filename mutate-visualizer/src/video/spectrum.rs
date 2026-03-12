@@ -51,15 +51,12 @@ impl SpectrumNode {
         let assets = assets::AssetDirs::new();
 
         let compute_spv = assets.find_shader("spectrum/compute").unwrap();
-
         let compute_module_ci = vk::ShaderModuleCreateInfo::default().code(&compute_spv);
-
         let compute_shader_module = unsafe {
             device
                 .create_shader_module(&compute_module_ci, None)
                 .unwrap()
         };
-
         let shader_stage = vk::PipelineShaderStageCreateInfo {
             stage: vk::ShaderStageFlags::COMPUTE,
             module: compute_shader_module,
@@ -78,20 +75,15 @@ impl SpectrumNode {
             ty: vk::DescriptorType::STORAGE_BUFFER,
             descriptor_count: 2,
         }];
-
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(1)
             .pool_sizes(&pool_sizes);
-
         let pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
-
         let layout = util::descriptor_set_layout(device).unwrap();
         let layouts = [layout];
-
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(pool)
             .set_layouts(&layouts);
-
         let descriptor_set = unsafe { device.allocate_descriptor_sets(&alloc_info).unwrap()[0] };
 
         let pipeline_layout_ci = vk::PipelineLayoutCreateInfo {
@@ -278,6 +270,7 @@ impl SpectrumNode {
         let dispatch_y = (extent.height + workgroup_size_y - 1) / workgroup_size_y;
 
         // Draw into the output buffer :-)
+        // XXX descriptor set binding needs a shadow
         unsafe {
             device.cmd_bind_descriptor_sets(
                 cb,

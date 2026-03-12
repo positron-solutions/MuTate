@@ -6,9 +6,6 @@
 //! The `MappedAllocation` is just a first pass at wrapping up a persistently mapped Vulkan buffer
 //! that we will flush to the GPU on every frame.  This module should grow to provide a decent
 //! baseline of SSBO techniques.
-//!
-//! This treatment does not use any kind of RAII.  You have validation layers and other Vulkan
-//! debugging tools to spot lifecycle issues.
 
 use std::ptr::NonNull;
 
@@ -23,12 +20,13 @@ pub struct MappedAllocation<T> {
     pub ptr: NonNull<T>,
     pub len: usize,
 
-    // XXX Why?
+    // MAYBE Some kind of loaned subviews would be nice instead of supporting ranges by allowing
+    // sizes to be passed in.
     pub size_bytes: vk::DeviceSize,
     pub memory_type_index: u32,
 }
 
-// DEBT memory allocation.  Consolidate device concerns up into VkContext.devices
+// DEBT memory allocation.
 impl<T> MappedAllocation<T> {
     pub fn new(size: usize, context: &VkContext) -> Result<Self, VulkanError> {
         let device = context.device();
@@ -167,7 +165,6 @@ impl<T> MappedAllocation<T> {
     }
 }
 
-// NEXT we will need support for slicing up the screen for the multiple choice UI.
 pub fn buffer_image_copy_full(extent: vk::Extent2D) -> vk::BufferImageCopy {
     vk::BufferImageCopy {
         buffer_offset: 0,
