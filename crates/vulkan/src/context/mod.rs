@@ -45,7 +45,7 @@ pub struct VkContext {
     pub descriptors: descriptors::Descriptors,
 
     /// Initialized assets
-    assets: assets::AssetDirs,
+    pub assets: assets::AssetDirs,
 }
 
 impl VkContext {
