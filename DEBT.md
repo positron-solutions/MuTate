@@ -84,8 +84,11 @@ Each element includes two parts:
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
 
 ## Audio Formats
+## Bytemuck & Slang
 
 The type of the input buffers is **not** bytes.  We should either coerce all input streams to one format or handle multiple formats if we cannot coerce all target platforms to a common denominator (and convert ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make this easy by doing it all the time with a good set of tools.
+Current code is a rough draft.  Need Pod and Zeroable but the derive macro really struggles *inside* the crate.  Proper fix might be to split the crate and do integration tests downstream.
+
 
 ### For Now
 

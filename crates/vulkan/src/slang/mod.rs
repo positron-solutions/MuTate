@@ -180,8 +180,7 @@ pub unsafe trait GpuPod<L: LayoutRule>: GpuType<L> + Pod {}
 ///   - allows From<$base> but NOT From<NewType> for base (one direction only)
 macro_rules! slang_scalar {
     ($name:ident, $base:ty, $variant:expr, $slang_name:literal) => {
-        #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Zeroable, Pod)]
-        #[bytemuck(crate = "::bytemuck")]
+        #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
         #[repr(transparent)]
         pub struct $name(pub(crate) $base);
 
@@ -207,6 +206,10 @@ macro_rules! slang_scalar {
             const ALIGN: usize = std::mem::align_of::<$base>();
         }
 
+        // DEBT bytemuck
+        unsafe impl $crate::__bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__bytemuck::Pod for $name {}
+
         unsafe impl<L: LayoutRule> GpuPod<L> for $name {}
     };
 }
@@ -220,8 +223,7 @@ macro_rules! slang_scalar {
 #[macro_export]
 macro_rules! slang_newtype {
     ($name:ident, $inner:ty, $slang_name:literal) => {
-        #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Zeroable, Pod)]
-        #[bytemuck(crate = "::mutate_vulkan::__bytemuck")]
+        #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
         #[repr(transparent)]
         pub struct $name(pub(crate) $inner);
 
@@ -248,6 +250,10 @@ macro_rules! slang_newtype {
             const SIZE: usize = <$inner as GpuType<L>>::SIZE;
             const ALIGN: usize = <$inner as GpuType<L>>::ALIGN;
         }
+
+        // DEBT bytemuck
+        unsafe impl $crate::__bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__bytemuck::Pod for $name {}
 
         unsafe impl<L: LayoutRule> GpuPod<L> for $name where $inner: GpuType<L> {}
     };
@@ -346,8 +352,7 @@ unsafe impl<L: LayoutRule> GpuPod<L> for DeviceAddress {}
 #[macro_export]
 macro_rules! device_address_newtype {
     ($name:ident, $slang_name:literal) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable, Pod)]
-        #[bytemuck(crate = "::mutate_vulkan::__bytemuck")]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[repr(transparent)]
         pub struct $name(pub(crate) DeviceAddress);
 
@@ -378,6 +383,10 @@ macro_rules! device_address_newtype {
             const ALIGN: usize = 8;
         }
 
+        // DEBT bytemuck
+        unsafe impl $crate::__bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__bytemuck::Pod for $name {}
+
         unsafe impl<L: LayoutRule> GpuPod<L> for $name {}
     };
 }
@@ -395,8 +404,7 @@ pub trait DescriptorIndex {
 /// introspection agreement.
 macro_rules! descriptor_base {
     ($name:ident, $slang_name:literal) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable, Pod)]
-        #[bytemuck(crate = "::bytemuck")]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[repr(transparent)]
         pub struct $name(pub(crate) UInt32);
 
@@ -428,6 +436,10 @@ macro_rules! descriptor_base {
             const ALIGN: usize = 4;
         }
 
+        // DEBT bytemuck
+        unsafe impl $crate::__bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__bytemuck::Pod for $name {}
+
         unsafe impl<L: LayoutRule> GpuPod<L> for $name {}
     };
 }
@@ -448,8 +460,7 @@ descriptor_base!(StorageBufferIdx, "StorageBufferIdx");
 #[macro_export]
 macro_rules! descriptor_newtype {
     ($name:ident, $inner:ty, $slang_name:literal) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Zeroable, Pod)]
-        #[bytemuck(crate = "::mutate_vulkan::__bytemuck")]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[repr(transparent)]
         pub struct $name(pub(crate) $inner);
 
@@ -495,6 +506,10 @@ macro_rules! descriptor_newtype {
             const SIZE: usize = 4;
             const ALIGN: usize = 4;
         }
+
+        // DEBT bytemuck
+        unsafe impl $crate::__bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__bytemuck::Pod for $name {}
 
         unsafe impl<L: LayoutRule> GpuPod<L> for $name where $inner: GpuType<L> {}
     };
