@@ -6,6 +6,10 @@ This is a record of "crimes" and the plans to later un-crime them.  Debt specifi
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
+## Command Pool Reset
+
+Command Buffer reset is cheaper, so we will use it.  It does require restructuring the ownership boundaries for our render targets.
+
 ## Expose Shader Libs to Dependent Crates
 
 The descriptors.slang should be imported using links & `DEP_MUTATE_LIB_SLANG_INCLUDE` variable (build script to builds script dependency).  This is our way to include slang files automatically for dependents.
