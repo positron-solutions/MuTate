@@ -74,6 +74,8 @@ pub struct Descriptors {
     freelist_storage_images: VecDeque<u32>,
     freelist_ubos: VecDeque<u32>,
     freelist_ssbos: VecDeque<u32>,
+
+    default_samplers: [vk::Sampler; samplers::N_DEFAULTS],
 }
 
 impl Descriptors {
@@ -117,12 +119,39 @@ impl Descriptors {
 
         let set = unsafe { device.allocate_descriptor_sets(&alloc_info)?[0] };
 
+        // NOTE Stack storage like this common for Vulkan conversations
+        let mut default_samplers = [vk::Sampler::null(); samplers::N_DEFAULTS];
+        let mut image_infos = [vk::DescriptorImageInfo::default(); samplers::N_DEFAULTS];
+        let mut writes = [vk::WriteDescriptorSet::default(); samplers::N_DEFAULTS];
+
+        for (i, ((sampler, image_info), write)) in default_samplers
+            .iter_mut()
+            .zip(image_infos.iter_mut())
+            .zip(writes.iter_mut())
+            .enumerate()
+        {
+            let ci = &samplers::default_samplers()[i];
+            *sampler = unsafe { device.create_sampler(ci, None)? };
+            *image_info = vk::DescriptorImageInfo {
+                sampler: *sampler,
+                image_view: vk::ImageView::null(),
+                image_layout: vk::ImageLayout::UNDEFINED,
+            };
+            *write = vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(SLOT_SAMPLERS)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .dst_array_element(i as u32)
+                .image_info(std::slice::from_ref(image_info));
+        }
+        unsafe { device.update_descriptor_sets(&writes, &[]) };
+
         Ok(Self {
             set,
             layout,
 
             next_sampled_image: 0,
-            next_sampler: 0,
+            next_sampler: samplers::N_DEFAULTS as u32,
             next_storage_image: 0,
             next_ubo: 0,
             next_ssbo: 0,
@@ -132,10 +161,15 @@ impl Descriptors {
             freelist_storage_images: VecDeque::with_capacity(256),
             freelist_ubos: VecDeque::with_capacity(256),
             freelist_ssbos: VecDeque::with_capacity(256),
+
+            default_samplers,
         })
     }
 
     pub fn destroy(&self, device: &ash::Device) {
+        for &s in &self.default_samplers {
+            unsafe { device.destroy_sampler(s, None) };
+        }
         unsafe {
             device.destroy_descriptor_set_layout(self.layout, None);
         }
@@ -209,5 +243,81 @@ impl Descriptors {
     /// Return the default layout.  Useful for creating pipelines etc.
     pub fn layout(&self) -> &[vk::DescriptorSetLayout] {
         std::slice::from_ref(&self.layout)
+    }
+}
+
+pub(crate) mod samplers {
+    use super::*;
+
+    pub const NEAREST_CLAMP: SamplerIndex = SamplerIndex(0);
+    /// Bilinear, clamp-to-edge.  Smooth, no tiling.
+    pub const LINEAR_CLAMP: SamplerIndex = SamplerIndex(1);
+    /// Bilinear, repeat.  Standard tiling textures.
+    pub const LINEAR_REPEAT: SamplerIndex = SamplerIndex(2);
+    /// Bilinear + trilinear mip interpolation, clamp.  World geometry etc.
+    pub const LINEAR_MIP: SamplerIndex = SamplerIndex(3);
+    /// Linear, clamp, border=1.  For `sampler2DShadow` PCF.
+    pub const SHADOW: SamplerIndex = SamplerIndex(4);
+
+    pub const N_DEFAULTS: usize = 5;
+
+    pub(crate) fn default_samplers() -> [vk::SamplerCreateInfo<'static>; N_DEFAULTS] {
+        [
+            // 0 — NEAREST_CLAMP
+            vk::SamplerCreateInfo {
+                mag_filter: vk::Filter::NEAREST,
+                min_filter: vk::Filter::NEAREST,
+                mipmap_mode: vk::SamplerMipmapMode::NEAREST,
+                address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                ..vk::SamplerCreateInfo::default()
+            },
+            // 1 — LINEAR_CLAMP
+            vk::SamplerCreateInfo {
+                mag_filter: vk::Filter::LINEAR,
+                min_filter: vk::Filter::LINEAR,
+                mipmap_mode: vk::SamplerMipmapMode::NEAREST,
+                address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                ..vk::SamplerCreateInfo::default()
+            },
+            // 2 — LINEAR_REPEAT
+            vk::SamplerCreateInfo {
+                mag_filter: vk::Filter::LINEAR,
+                min_filter: vk::Filter::LINEAR,
+                mipmap_mode: vk::SamplerMipmapMode::NEAREST,
+                address_mode_u: vk::SamplerAddressMode::REPEAT,
+                address_mode_v: vk::SamplerAddressMode::REPEAT,
+                address_mode_w: vk::SamplerAddressMode::REPEAT,
+                ..vk::SamplerCreateInfo::default()
+            },
+            // 3 — LINEAR_MIP
+            vk::SamplerCreateInfo {
+                mag_filter: vk::Filter::LINEAR,
+                min_filter: vk::Filter::LINEAR,
+                mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                min_lod: 0.0,
+                max_lod: vk::LOD_CLAMP_NONE,
+                ..vk::SamplerCreateInfo::default()
+            },
+            // 4 — SHADOW
+            vk::SamplerCreateInfo {
+                mag_filter: vk::Filter::LINEAR,
+                min_filter: vk::Filter::LINEAR,
+                mipmap_mode: vk::SamplerMipmapMode::NEAREST,
+                address_mode_u: vk::SamplerAddressMode::CLAMP_TO_BORDER,
+                address_mode_v: vk::SamplerAddressMode::CLAMP_TO_BORDER,
+                address_mode_w: vk::SamplerAddressMode::CLAMP_TO_BORDER,
+                border_color: vk::BorderColor::FLOAT_OPAQUE_WHITE,
+                compare_enable: vk::TRUE,
+                compare_op: vk::CompareOp::LESS_OR_EQUAL,
+                ..vk::SamplerCreateInfo::default()
+            },
+        ]
     }
 }
