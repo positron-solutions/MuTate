@@ -234,10 +234,10 @@ macro_rules! slang_newtype {
             }
         }
 
-        impl From<$inner> for $name {
+        impl From<$name> for $inner {
             #[inline(always)]
-            fn from(v: $inner) -> Self {
-                Self(v)
+            fn from(v: $name) -> Self {
+                v.0
             }
         }
 
