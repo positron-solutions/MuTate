@@ -36,6 +36,15 @@ use ash::vk;
 
 use crate::prelude::*;
 use crate::resource::image::ImageView;
+use crate::slang::{prelude::*, Int32};
+use crate::slang_newtype;
+
+// NEXT these SlangType strings will need some correlation with newtype wrappers in Slang.
+slang_newtype!(SampledImageIndex, u32, "SampledImageIndex");
+slang_newtype!(SamplerIndex, u32, "SamplerIndex");
+slang_newtype!(StorageImageIndex, u32, "StorageImageIndex");
+slang_newtype!(UboIndex, u32, "UboIndex");
+slang_newtype!(SsboIndex, u32, "SsboIndex");
 
 // Plural to make it kind of obvious that these are array slot indexes.
 pub const SLOT_SAMPLED_IMAGES: u32 = 0;
@@ -44,14 +53,6 @@ pub const SLOT_STORAGE_IMAGES: u32 = 2;
 pub const SLOT_UNIFORM_BUFFERS: u32 = 3;
 pub const SLOT_STORAGE_BUFFERS: u32 = 4;
 
-// XXX Not yet hooked up for slang types.
-pub struct SampledImageIndex(u32);
-pub struct SamplerIndex(u32);
-pub struct StorageImageIndex(u32);
-pub struct UboIndex(u32);
-pub struct SsboIndex(u32);
-
-// NEXT Type indexes
 // NEXT Methods to hand out and recycle indexes, likely guarded through the context interface.
 // Planning on coordinating Image and Buffer creation because not having descriptors would make them
 // kind of useless.
