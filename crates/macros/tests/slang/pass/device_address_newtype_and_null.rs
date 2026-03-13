@@ -5,6 +5,8 @@
 // NULL sentinel, and satisfies GpuPod. device_address_newtype! derivatives
 // must inherit all of these properties.
 
+use ash::vk;
+
 use mutate_vulkan::slang::prelude::*;
 
 device_address_newtype!(MeshletBufferPtr, "MeshletBufferPtr");
@@ -57,4 +59,8 @@ fn main() {
 
     let wrapped = MeshletBufferPtr::from(DeviceAddress::from(42u64));
     assert_eq!(wrapped.raw(), 42u64);
+
+    // The newtype alias of courese just works
+    let device_address: vk::DeviceAddress = 0;
+    let from_alias = DeviceAddress::from(device_address);
 }

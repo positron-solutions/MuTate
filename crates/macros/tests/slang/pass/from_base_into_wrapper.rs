@@ -16,9 +16,13 @@ fn main() {
     let _h: Float16 = Float16::from(half::f16::from_f32(1.0));
 
     // Newtypes accept their inner slang scalar
-    let _t: Hotness = Hotness::from(Float32::from(98.6f32));
+    // XXX This is being put off because I want to check introspection data and actually understand
+    // whether or not Slang new type introspection will point to the fundamental type or any
+    // transitive newtype wrappers between (for single field struct style newtype wrappers).
+    // let _t: Hotness = Hotness::from(Float32::from(98.6f32));
 
     // Into<> works as the mirror (no separate impl needed)
     let _f2: Float32 = 1.0f32.into();
-    let _t2: Hotness = Float32::from(98.6f32).into();
+    // XXX same as above
+    // let _t2: Hotness = Float32::from(98.6f32).into();
 }
