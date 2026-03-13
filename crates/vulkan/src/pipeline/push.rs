@@ -39,6 +39,13 @@
 //! rather than a specific names.  This allows us to let machine learning participate in the
 //! modulation.
 
+//! # Push Constants
+//!
+//! Every pipeline that implements PushConstants will have an array of bytes for PushConstants.
+//! These are typed to assist reduction in silly errors.
+//!
+//! All PushConstants can be accessed raw or as ranges.
+
 // pub struct PushConstantBuffer([u8; 128]);
 
 // impl<const B: usize> PushConstantBuffer<B> {

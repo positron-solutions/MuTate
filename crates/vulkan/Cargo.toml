@@ -12,7 +12,8 @@ version.workspace = true
 
 [dependencies]
 ash.workspace = true
-half.workspace = true
+bytemuck = {workspace = true, features = ["derive"]}
+half = { workspace = true, features = ["bytemuck"] }
 thiserror.workspace = true
 
 mutate-assets = {workspace = true, features = ["runtime"]}
