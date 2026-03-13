@@ -23,5 +23,6 @@ mutate-assets = {workspace = true, features = ["macro-time"]}
 
 [dev-dependencies]
 trybuild.workspace = true
+ash.workspace = true
 
 [features]

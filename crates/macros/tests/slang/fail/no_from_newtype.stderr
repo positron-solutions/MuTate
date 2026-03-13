@@ -1,0 +1,17 @@
+error[E0308]: mismatched types
+  --> tests/slang/fail/no_from_newtype.rs:12:27
+   |
+12 |     let h = Hotness::from(Float32::from(98.6f32));
+   |             ------------- ^^^^^^^^^^^^^^^^^^^^^^ expected `Hotness`, found `Float32`
+   |             |
+   |             arguments to this function are incorrect
+   |
+note: associated function defined here
+  --> $RUST/core/src/convert/mod.rs
+   |
+   |     fn from(value: T) -> Self;
+   |        ^^^^
+help: try wrapping the expression in `Hotness`
+   |
+12 |     let h = Hotness::from(Hotness(Float32::from(98.6f32)));
+   |                           ++++++++                      +
