@@ -52,6 +52,8 @@ pub struct WindowPresent {
     command_buffers: Vec<vk::CommandBuffer>,
 
     surface: vk::SurfaceKHR,
+    surface_loader: ash::khr::surface::Instance,
+
     pub surface_format: vk::SurfaceFormatKHR,
     pub window: Window,
 
@@ -64,6 +66,8 @@ pub struct WindowPresent {
 impl WindowPresent {
     pub fn new(context: &VkContext, event_loop: &ActiveEventLoop, args: &Args) -> Self {
         let vk_context = &context.crap_o_context;
+
+        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
         let mut attrs = Window::default_attributes().with_title("µTate");
         if args.fullscreen {
@@ -79,16 +83,14 @@ impl WindowPresent {
         let surface = window_surface(&window, &vk_context);
 
         let formats = unsafe {
-            vk_context
-                .surface_loader
-                .get_physical_device_surface_formats(vk_context.physical_device, surface)
+            surface_loader
+                .get_physical_device_surface_formats(context.physical_device, surface)
                 .unwrap()
         };
         let surface_format = formats[0];
 
         let supported = unsafe {
-            vk_context
-                .surface_loader
+            surface_loader
                 .get_physical_device_surface_support(
                     context.physical_device,
                     context.queues.graphics_family_index,
@@ -99,8 +101,7 @@ impl WindowPresent {
         assert!(supported, "Physical device must support this surface!");
 
         let surface_caps = unsafe {
-            vk_context
-                .surface_loader
+            surface_loader
                 .get_physical_device_surface_capabilities(context.physical_device, surface)
                 .unwrap()
         };
@@ -213,6 +214,7 @@ impl WindowPresent {
             swapchain_images: images,
             swapchain_loader,
 
+            surface_loader,
             surface,
             surface_format,
             window,
@@ -240,9 +242,7 @@ impl WindowPresent {
             self.in_flight_fences.iter().for_each(|f| {
                 device.destroy_fence(*f, None);
             });
-            vk_context
-                .surface_loader
-                .destroy_surface(self.surface, None);
+            self.surface_loader.destroy_surface(self.surface, None);
         }
     }
 
@@ -266,7 +266,7 @@ impl WindowPresent {
         // Recreation
         unsafe {
             let vk_context = &context.crap_o_context;
-            let surface_caps = vk_context
+            let surface_caps = self
                 .surface_loader
                 .get_physical_device_surface_capabilities(physical_device, self.surface)
                 .unwrap();

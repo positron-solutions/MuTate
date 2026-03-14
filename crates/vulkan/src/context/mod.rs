@@ -32,10 +32,6 @@ pub mod descriptors;
 pub struct CrapOContext {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
-
-    // XXX INTO target
-    /// Used to access surface creation functions
-    pub surface_loader: ash::khr::surface::Instance,
 }
 
 impl CrapOContext {
@@ -107,12 +103,10 @@ impl CrapOContext {
 
         let instance = unsafe { entry.create_instance(&instance_ci, None).unwrap() };
 
-        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
         Self {
             entry,
             instance,
-            surface_loader,
         }
     }
 
@@ -147,7 +141,7 @@ impl VkContext {
     pub fn new() -> Self {
 
         let crap_o_context = CrapOContext::new();
-        let CrapOContext { entry, instance, surface_loader } = &crap_o_context;
+        let CrapOContext { entry, instance} = &crap_o_context;
 
         let physical_devices = unsafe {
             instance
