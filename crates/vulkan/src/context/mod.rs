@@ -35,7 +35,7 @@ pub struct CrapOContext {
 }
 
 impl CrapOContext {
-    fn new () -> Self {
+    pub fn new () -> Self {
         let entry = unsafe { ash::Entry::load().expect("failed to load Vulkan library") };
         assert_loader_version(&entry);
 
@@ -116,9 +116,6 @@ impl CrapOContext {
 }
 
 pub struct VkContext {
-    /// Temp context to split the struct
-    pub crap_o_context: CrapOContext,
-
     // XXX Wrap it up dawg
     pub physical_device: vk::PhysicalDevice,
     /// Vulkan logical device
@@ -138,9 +135,7 @@ impl VkContext {
     ///
     /// NEXT Device initialization should be moved into a separate method to support UIs that
     /// enumerate and may even switch devices.
-    pub fn new() -> Self {
-
-        let crap_o_context = CrapOContext::new();
+    pub fn new(crap_o_context: &CrapOContext) -> Self {
         let CrapOContext { entry, instance} = &crap_o_context;
 
         let physical_devices = unsafe {
@@ -278,8 +273,6 @@ impl VkContext {
         };
 
         Self {
-            crap_o_context,
-
             physical_device,
             device,
             memory_props,
@@ -308,7 +301,6 @@ impl VkContext {
             self.descriptors.destroy(&self.device);
             self.queues.destroy(&self.device);
             self.device.destroy_device(None);
-            self.crap_o_context.destroy();
         };
     }
 }

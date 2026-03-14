@@ -64,9 +64,13 @@ pub struct WindowPresent {
 }
 
 impl WindowPresent {
-    pub fn new(context: &VkContext, event_loop: &ActiveEventLoop, args: &Args) -> Self {
-        let vk_context = &context.crap_o_context;
-
+    pub fn new(
+        context: &VkContext,
+        vk_context: &CrapOContext,
+        event_loop: &ActiveEventLoop,
+        args: &Args,
+    ) -> Self {
+        let CrapOContext { entry, instance } = &vk_context;
         let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
         let mut attrs = Window::default_attributes().with_title("µTate");
@@ -226,7 +230,6 @@ impl WindowPresent {
 
     pub fn destroy(&self, context: &VkContext) {
         let device = &context.device;
-        let vk_context = &context.crap_o_context;
         unsafe {
             for view in &self.swapchain_image_views {
                 device.destroy_image_view(*view, None);
@@ -265,7 +268,6 @@ impl WindowPresent {
 
         // Recreation
         unsafe {
-            let vk_context = &context.crap_o_context;
             let surface_caps = self
                 .surface_loader
                 .get_physical_device_surface_capabilities(physical_device, self.surface)

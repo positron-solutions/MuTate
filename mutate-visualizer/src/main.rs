@@ -15,7 +15,7 @@ use winit::{
     platform::wayland::{EventLoopBuilderExtWayland, EventLoopExtWayland},
 };
 
-use mutate_lib::{self as utate, prelude::*};
+use mutate_lib::{self as utate, prelude::*, vulkan::context::CrapOContext};
 
 use graph::node;
 
@@ -30,7 +30,8 @@ struct App {
     args: Args,
     running: bool,
 
-    vk_context: VkContext,
+    vk_context: CrapOContext,
+    context: VkContext,
     window_present: Option<video::present::WindowPresent>,
 
     // These fields will turn into a graph when graphs are ready
@@ -44,11 +45,11 @@ struct App {
 
 impl App {
     fn draw_frame(&mut self) {
-        let vk_context = &self.vk_context;
+        let context = &self.context;
 
         let wp = self.window_present.as_mut().unwrap();
         // LIES the previous frame fence is implicitly always signaled already
-        wp.draw_wait(vk_context);
+        wp.draw_wait(context);
 
         // NEXT dynamically waiting down to the approximate latch timing to late bind the last
         // possible audio.
@@ -76,31 +77,32 @@ impl App {
         };
 
         // Obtain swapchain image and hot command buffer
-        let (sync, target) = wp.render_target(vk_context, clear);
+        let (sync, target) = wp.render_target(context, clear);
 
         // Node draws to command buffer.  The idea we've isolated is that drawing to a target has
         // little to do with the source or fate of that target.
         self.render_node
             .as_mut()
             .unwrap()
-            .draw(&target, cqt, &self.vk_context, &target.extent);
+            .draw(&target, cqt, &self.context, &target.extent);
 
         // Presentation closes the command buffer, submits to queue, transforms image, and presents.
         // Also waits on presentation.
-        wp.post_draw(vk_context, sync, target);
+        wp.post_draw(context, sync, target);
     }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let vk_context = &self.vk_context;
-        let wp = video::present::WindowPresent::new(vk_context, event_loop, &self.args);
+        let context = &self.context;
+        let wp = video::present::WindowPresent::new(context, vk_context, event_loop, &self.args);
 
         let mut render_node =
-            video::spectrum::SpectrumNode::new(vk_context, wp.surface_format.format.clone());
+            video::spectrum::SpectrumNode::new(context, wp.surface_format.format.clone());
         render_node
             .provision(
-                vk_context,
+                context,
                 // XXX made up size :-)
                 vk::Extent2D {
                     height: 800,
@@ -142,11 +144,11 @@ impl ApplicationHandler for App {
                 if size.width == 0 || size.height == 0 {
                     println!("window resize reported degenerate size");
                 } else {
-                    let vk_context = &self.vk_context;
+                    let context = &self.context;
                     self.window_present
                         .as_mut()
                         .unwrap()
-                        .recreate_images(vk_context);
+                        .recreate_images(context);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -161,18 +163,18 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CloseRequested => unsafe {
                 self.running = false;
-                let vk_context = &self.vk_context;
-                let device = &vk_context.device();
+                let context = &self.context;
+                let device = &context.device();
 
                 device.device_wait_idle().unwrap();
                 self.render_node
                     .as_ref()
                     .unwrap()
-                    .destroy(&vk_context)
+                    .destroy(&context)
                     .unwrap();
-                self.window_present.as_ref().unwrap().destroy(vk_context);
-                vk_context.destroy();
-
+                self.window_present.as_ref().unwrap().destroy(context);
+                self.context.destroy();
+                self.vk_context.destroy();
                 event_loop.exit();
             },
             _ => (),
@@ -195,17 +197,18 @@ fn main() -> Result<(), utate::MutateError> {
     let event_loop = builder.build().unwrap();
 
     event_loop.set_control_flow(ControlFlow::Poll);
+
+    let vk_context = CrapOContext::new();
+    let context = VkContext::new(&vk_context);
     let mut app = App {
         args,
         running: true,
+        context,
+        vk_context,
 
-        vk_context: VkContext::new(),
         window_present: None,
-
         render_node: None,
-
         raw_audio: audio::raw::RawAudioNode::new().unwrap(),
-
         cqt: audio::cqt::CqtNode::new(600, 48000, 60.0),
     };
     event_loop.run_app(&mut app).unwrap();
