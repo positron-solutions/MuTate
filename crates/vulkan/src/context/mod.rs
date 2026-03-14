@@ -40,7 +40,6 @@ pub struct VkContext {
     pub device: ash::Device,
     /// Queues and command buffers for device in use.
     pub queues: queue::Queues,
-    descriptor_pool: vk::DescriptorPool,
     // XXX pass through?
     pub descriptors: descriptors::Descriptors,
 
@@ -112,7 +111,6 @@ impl VkContext {
             // NOTE Leaving this on all the time because there are still issues in `--release`
             // builds and we need to default to leaving it on via the dev shells or something.
             c"VK_LAYER_KHRONOS_validation".as_ptr()
-
         ];
 
         let instance_ci = vk::InstanceCreateInfo::default()
@@ -250,40 +248,7 @@ impl VkContext {
                 .unwrap()
         };
         let queues = queue::Queues::new(&device, queue_families);
-
-        // DEBT Max descriptor size calculation / management.
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::SAMPLED_IMAGE,
-                descriptor_count: 256
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::SAMPLER,
-                descriptor_count: 256
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: 256
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 256
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 256
-            },
-        ];
-
-        let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(1)
-            .pool_sizes(&pool_sizes)
-            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND);
-
-        let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
-
-        let descriptors = descriptors::Descriptors::new(&device, &descriptor_pool).unwrap();
-
+        let descriptors = descriptors::Descriptors::new(&device).unwrap();
         let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
         Self {
@@ -291,13 +256,12 @@ impl VkContext {
             instance,
             physical_device,
             device,
+
             surface_loader,
-
             queues,
-
-            descriptor_pool,
             descriptors,
 
+            // XXX there is another context
             assets: assets::AssetDirs::new(),
         }
     }
@@ -317,8 +281,6 @@ impl VkContext {
     pub fn destroy(&self) {
         unsafe {
             self.descriptors.destroy(&self.device);
-            self.device
-                .destroy_descriptor_pool(self.descriptor_pool, None);
             self.queues.destroy(&self.device);
             self.device.destroy_device(None);
             self.instance.destroy_instance(None)

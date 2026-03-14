@@ -57,6 +57,7 @@ pub const SLOT_STORAGE_BUFFERS: u32 = 4;
 // Planning on coordinating Image and Buffer creation because not having descriptors would make them
 // kind of useless.
 pub struct Descriptors {
+    pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
     layout: vk::DescriptorSetLayout,
 
@@ -79,7 +80,38 @@ pub struct Descriptors {
 }
 
 impl Descriptors {
-    pub fn new(device: &ash::Device, pool: &ash::vk::DescriptorPool) -> Result<Self, VulkanError> {
+    pub fn new(device: &ash::Device) -> Result<Self, VulkanError> {
+        // DEBT Max descriptor size calculation / management.
+        let pool_sizes = [
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::SAMPLED_IMAGE,
+                descriptor_count: 256,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::SAMPLER,
+                descriptor_count: 256,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_IMAGE,
+                descriptor_count: 256,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: 256,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: 256,
+            },
+        ];
+
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(1)
+            .pool_sizes(&pool_sizes)
+            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND);
+
+        let pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
+
         // NEXT obviously users might want to specify different limits.
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
@@ -114,7 +146,7 @@ impl Descriptors {
         let layout = unsafe { device.create_descriptor_set_layout(&layout_info, None)? };
         let layouts = [layout];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(*pool)
+            .descriptor_pool(pool)
             .set_layouts(&layouts);
 
         let set = unsafe { device.allocate_descriptor_sets(&alloc_info)?[0] };
@@ -147,6 +179,7 @@ impl Descriptors {
         unsafe { device.update_descriptor_sets(&writes, &[]) };
 
         Ok(Self {
+            pool,
             set,
             layout,
 
@@ -167,11 +200,12 @@ impl Descriptors {
     }
 
     pub fn destroy(&self, device: &ash::Device) {
-        for &s in &self.default_samplers {
-            unsafe { device.destroy_sampler(s, None) };
-        }
         unsafe {
+            for &s in &self.default_samplers {
+                device.destroy_sampler(s, None);
+            }
             device.destroy_descriptor_set_layout(self.layout, None);
+            device.destroy_descriptor_pool(self.pool, None);
         }
     }
 
