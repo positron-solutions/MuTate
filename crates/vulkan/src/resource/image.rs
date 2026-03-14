@@ -56,24 +56,24 @@ impl Image {
 
         let image = unsafe { device.create_image(&image_ci, None)? };
 
-        // DEBT memory management
+        // DEBT memory management centralize onto the thingy.
         let mem_req = unsafe { device.get_image_memory_requirements(image) };
-        let mem_props = unsafe {
-            context
-                .instance
-                .get_physical_device_memory_properties(context.physical_device)
-        };
+
+        // Ah, bind up into a memory object
         let memory_type_index = util::find_memory_type_index(
             &mem_req,
-            &mem_props,
+            &context.memory_props,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )
         .ok_or(VulkanError::Ash(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY))?;
+
         let alloc_info = vk::MemoryAllocateInfo {
             allocation_size: mem_req.size,
             memory_type_index,
             ..Default::default()
         };
+
+        // Hmmm....
         let memory = unsafe { device.allocate_memory(&alloc_info, None)? };
         unsafe { device.bind_image_memory(image, memory, 0)? };
 
@@ -221,6 +221,7 @@ impl ImageView {
         Ok(())
     }
 
+    // XXX extremely raw.  Bludgeon if found.
     pub fn sampled(
         &self,
         context: &mut VkContext,

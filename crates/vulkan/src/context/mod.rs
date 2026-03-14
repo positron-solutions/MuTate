@@ -29,30 +29,17 @@ use mutate_assets as assets;
 pub mod queue;
 pub mod descriptors;
 
-pub struct VkContext {
+pub struct CrapOContext {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
+
+    // XXX INTO target
     /// Used to access surface creation functions
     pub surface_loader: ash::khr::surface::Instance,
-
-    pub physical_device: vk::PhysicalDevice,
-    /// Vulkan logical device
-    pub device: ash::Device,
-    /// Queues and command buffers for device in use.
-    pub queues: queue::Queues,
-    // XXX pass through?
-    pub descriptors: descriptors::Descriptors,
-
-    /// Initialized assets
-    pub assets: assets::AssetDirs,
 }
 
-impl VkContext {
-    /// Obtain an entry, instance, and initialized device.
-    ///
-    /// NEXT Device initialization should be moved into a separate method to support UIs that
-    /// enumerate and may even switch devices.
-    pub fn new() -> Self {
+impl CrapOContext {
+    fn new () -> Self {
         let entry = unsafe { ash::Entry::load().expect("failed to load Vulkan library") };
         assert_loader_version(&entry);
 
@@ -119,6 +106,48 @@ impl VkContext {
             .enabled_layer_names(&validation_layers);
 
         let instance = unsafe { entry.create_instance(&instance_ci, None).unwrap() };
+
+        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
+
+        Self {
+            entry,
+            instance,
+            surface_loader,
+        }
+    }
+
+    pub fn destroy(&self) {
+        unsafe {self.instance.destroy_instance(None)}
+    }
+}
+
+pub struct VkContext {
+    /// Temp context to split the struct
+    pub crap_o_context: CrapOContext,
+
+    // XXX Wrap it up dawg
+    pub physical_device: vk::PhysicalDevice,
+    /// Vulkan logical device
+    pub device: ash::Device,
+    /// Queues and command buffers for device in use.
+    pub queues: queue::Queues,
+    pub memory_props: vk::PhysicalDeviceMemoryProperties,
+    pub descriptors: descriptors::Descriptors,
+
+    // XXX some other higher context?
+    /// Initialized assets
+    pub assets: assets::AssetDirs,
+}
+
+impl VkContext {
+    /// Obtain an entry, instance, and initialized device.
+    ///
+    /// NEXT Device initialization should be moved into a separate method to support UIs that
+    /// enumerate and may even switch devices.
+    pub fn new() -> Self {
+
+        let crap_o_context = CrapOContext::new();
+        let CrapOContext { entry, instance, surface_loader } = &crap_o_context;
 
         let physical_devices = unsafe {
             instance
@@ -249,15 +278,17 @@ impl VkContext {
         };
         let queues = queue::Queues::new(&device, queue_families);
         let descriptors = descriptors::Descriptors::new(&device).unwrap();
-        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
+
+        let memory_props = unsafe {
+            instance.get_physical_device_memory_properties(physical_device)
+        };
 
         Self {
-            entry,
-            instance,
+            crap_o_context,
+
             physical_device,
             device,
-
-            surface_loader,
+            memory_props,
             queues,
             descriptors,
 
@@ -283,7 +314,7 @@ impl VkContext {
             self.descriptors.destroy(&self.device);
             self.queues.destroy(&self.device);
             self.device.destroy_device(None);
-            self.instance.destroy_instance(None)
+            self.crap_o_context.destroy();
         };
     }
 }

@@ -19,7 +19,7 @@ use ash::{khr::present_wait::Device as PwDevice, khr::xlib_surface, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use mutate_lib::{self as utate, prelude::*};
+use mutate_lib::{self as utate, prelude::*, vulkan::context::CrapOContext};
 
 use crate::Args;
 
@@ -62,7 +62,9 @@ pub struct WindowPresent {
 }
 
 impl WindowPresent {
-    pub fn new(vk_context: &VkContext, event_loop: &ActiveEventLoop, args: &Args) -> Self {
+    pub fn new(context: &VkContext, event_loop: &ActiveEventLoop, args: &Args) -> Self {
+        let vk_context = &context.crap_o_context;
+
         let mut attrs = Window::default_attributes().with_title("µTate");
         if args.fullscreen {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
@@ -88,8 +90,8 @@ impl WindowPresent {
             vk_context
                 .surface_loader
                 .get_physical_device_surface_support(
-                    vk_context.physical_device,
-                    vk_context.queues.graphics_family_index,
+                    context.physical_device,
+                    context.queues.graphics_family_index,
                     surface,
                 )
                 .unwrap()
@@ -99,7 +101,7 @@ impl WindowPresent {
         let surface_caps = unsafe {
             vk_context
                 .surface_loader
-                .get_physical_device_surface_capabilities(vk_context.physical_device, surface)
+                .get_physical_device_surface_capabilities(context.physical_device, surface)
                 .unwrap()
         };
         // TODO Watch for degenerate extents
@@ -108,7 +110,7 @@ impl WindowPresent {
         let composite_alpha = pick_alpha(&surface_caps);
 
         let swapchain_loader =
-            ash::khr::swapchain::Device::new(&vk_context.instance, &vk_context.device);
+            ash::khr::swapchain::Device::new(&vk_context.instance, &context.device());
         let swapchain_info = vk::SwapchainCreateInfoKHR {
             surface: surface,
             min_image_count: 3,
@@ -149,12 +151,7 @@ impl WindowPresent {
                     },
                     ..Default::default()
                 };
-                unsafe {
-                    vk_context
-                        .device
-                        .create_image_view(&view_info, None)
-                        .unwrap()
-                }
+                unsafe { context.device.create_image_view(&view_info, None).unwrap() }
             })
             .collect();
 
@@ -164,7 +161,7 @@ impl WindowPresent {
         };
 
         let in_flight_fences: Vec<vk::Fence> = (0..3)
-            .map(|_| unsafe { vk_context.device.create_fence(&fence_info, None).unwrap() })
+            .map(|_| unsafe { context.device().create_fence(&fence_info, None).unwrap() })
             .collect();
 
         let semaphore_info = vk::SemaphoreCreateInfo::default();
@@ -172,8 +169,8 @@ impl WindowPresent {
         // FIXME propagate image counts
         let image_available_semaphores = (0..3)
             .map(|_| unsafe {
-                vk_context
-                    .device
+                context
+                    .device()
                     .create_semaphore(&semaphore_info, None)
                     .unwrap()
             })
@@ -181,14 +178,14 @@ impl WindowPresent {
 
         let render_finished_semaphores = (0..3)
             .map(|_| unsafe {
-                vk_context
-                    .device
+                context
+                    .device()
                     .create_semaphore(&semaphore_info, None)
                     .unwrap()
             })
             .collect();
 
-        let command_pool = vk_context.queues.graphics_pool();
+        let command_pool = context.queues.graphics_pool();
 
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool: command_pool,
@@ -197,7 +194,7 @@ impl WindowPresent {
         };
 
         let command_buffers = unsafe {
-            vk_context
+            context
                 .device
                 .allocate_command_buffers(&alloc_info)
                 .unwrap()
@@ -220,13 +217,14 @@ impl WindowPresent {
             surface_format,
             window,
 
-            pw_device: PwDevice::new(&vk_context.instance, &vk_context.device),
+            pw_device: PwDevice::new(&vk_context.instance, &context.device()),
             present_id: 0,
         }
     }
 
     pub fn destroy(&self, context: &VkContext) {
         let device = &context.device;
+        let vk_context = &context.crap_o_context;
         unsafe {
             for view in &self.swapchain_image_views {
                 device.destroy_image_view(*view, None);
@@ -242,13 +240,15 @@ impl WindowPresent {
             self.in_flight_fences.iter().for_each(|f| {
                 device.destroy_fence(*f, None);
             });
-            context.surface_loader.destroy_surface(self.surface, None);
+            vk_context
+                .surface_loader
+                .destroy_surface(self.surface, None);
         }
     }
 
-    pub fn recreate_images(&mut self, vk_context: &VkContext) {
-        let device = &vk_context.device;
-        let physical_device = vk_context.physical_device;
+    pub fn recreate_images(&mut self, context: &VkContext) {
+        let device = &context.device;
+        let physical_device = context.physical_device;
 
         unsafe {
             device.device_wait_idle().unwrap();
@@ -265,6 +265,7 @@ impl WindowPresent {
 
         // Recreation
         unsafe {
+            let vk_context = &context.crap_o_context;
             let surface_caps = vk_context
                 .surface_loader
                 .get_physical_device_surface_capabilities(physical_device, self.surface)
@@ -450,8 +451,8 @@ impl WindowPresent {
     }
 
     /// Sync presentation image transform and present
-    pub fn post_draw(&mut self, vk_context: &VkContext, sync: DrawSync, target: DrawTarget) {
-        let device = vk_context.device();
+    pub fn post_draw(&mut self, context: &VkContext, sync: DrawSync, target: DrawTarget) {
+        let device = context.device();
 
         // XXX Needed for graphics
         // unsafe { device.cmd_end_rendering(target.command_buffer) };
@@ -490,7 +491,7 @@ impl WindowPresent {
         // };
 
         unsafe {
-            vk_context
+            context
                 .device
                 .end_command_buffer(target.command_buffer)
                 .unwrap()
@@ -528,10 +529,10 @@ impl WindowPresent {
             ..Default::default()
         };
 
-        let queue = &vk_context.queues.graphics_queue();
+        let queue = &context.queues.graphics_queue();
         unsafe {
-            vk_context
-                .device
+            context
+                .device()
                 .queue_submit2(*queue, &[submit], sync.in_flight)
                 .unwrap();
         }
@@ -643,7 +644,7 @@ fn window_size(window: &Window) -> vk::Extent2D {
     }
 }
 
-fn window_surface(window: &Window, vk_context: &VkContext) -> vk::SurfaceKHR {
+fn window_surface(window: &Window, vk_context: &CrapOContext) -> vk::SurfaceKHR {
     let win_handle = window.window_handle().unwrap().as_raw();
     let display_handle = window.display_handle().unwrap().as_raw();
 

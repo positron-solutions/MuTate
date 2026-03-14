@@ -43,24 +43,19 @@ impl<T> MappedAllocation<T> {
         };
         let buffer = unsafe { device.create_buffer(&buffer_info, None).unwrap() };
         let mem_req = unsafe { device.get_buffer_memory_requirements(buffer) };
-        let mem_props = unsafe {
-            context
-                .instance
-                .get_physical_device_memory_properties(context.physical_device)
-        };
-
         let memory_type_index = util::find_memory_type_index(
             &mem_req,
-            &mem_props,
+            &context.memory_props,
             vk::MemoryPropertyFlags::HOST_VISIBLE,
         )
         .ok_or(VulkanError::Ash(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY))?;
 
-        let alloc_info = vk::MemoryAllocateInfo {
-            allocation_size: mem_req.size,
-            memory_type_index,
-            ..Default::default()
-        };
+        let mut flags =
+            vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_req.size)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut flags);
         let memory = unsafe { device.allocate_memory(&alloc_info, None)? };
         unsafe {
             device.bind_buffer_memory(buffer, memory, 0)?;
