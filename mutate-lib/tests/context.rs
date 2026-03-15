@@ -8,6 +8,9 @@ use mutate_lib::vulkan;
 
 #[test]
 fn test_context_lifecycle() {
-    let context = vulkan::context::VkContext::new();
+    // XXX not actually good
+    let vk_context = vulkan::context::CrapOContext::new();
+    let context = vulkan::context::VkContext::new(&vk_context);
     context.destroy();
+    vk_context.destroy();
 }

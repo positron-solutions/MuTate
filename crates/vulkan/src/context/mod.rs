@@ -305,6 +305,44 @@ impl VkContext {
     }
 }
 
+/// Runs a block with an initialized Vulkan context, handling creation and destruction automatically.
+///
+/// Two forms are available depending on whether you need access to the underlying [`CrapOContext`]:
+///
+/// # Usage
+///
+/// ```rust
+/// // With context only:
+/// with_context!(|context| {
+///     // `context: VkContext` is available here
+/// });
+///
+/// // With both context and vk_context:
+/// with_context!(|context, vk_context| {
+///     // `context: VkContext` is available here
+///     // `vk_context: CrapOContext` is available here
+/// });
+/// ```
+#[macro_export]
+macro_rules! with_context {
+    (|$context:ident| $($body:tt)*) => {{
+        let mut vk_context = $crate::context::CrapOContext::new();
+        let mut $context = $crate::context::VkContext::new(&vk_context);
+        let __result = (|| { $($body)* })();
+        $context.destroy();
+        vk_context.destroy();
+        __result
+    }};
+    (|$context:ident, mut $vk_context:ident| $($body:tt)*) => {{
+        let mut $vk_context = $crate::context::CrapOContext::new();
+        let mut $context = $crate::context::VkContext::new(&$vk_context);
+        let __result = (|| { $($body)* })();
+        $context.destroy();
+        $vk_context.destroy();
+        __result
+    }};
+}
+
 fn assert_physical_device_version (instance: &ash::Instance, physical_device: vk::PhysicalDevice) {
     let props = unsafe {
         instance.get_physical_device_properties(physical_device)

@@ -9,4 +9,5 @@
 
 pub mod buffer;
 pub mod image;
+pub mod shader;
 pub mod ubo;
