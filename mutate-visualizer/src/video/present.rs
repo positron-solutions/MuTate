@@ -15,13 +15,13 @@
 
 // XXX move into Vulkan!
 
-use ash::{khr::present_wait::Device as PwDevice, khr::xlib_surface, vk};
+use ash::{khr::present_wait::Device as PwDevice, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
 use mutate_lib::{self as utate, prelude::*, vulkan::context::VkContext};
 
-use crate::Args;
+use crate::window::WindowExt;
 
 pub struct DrawSync {
     pub in_flight: vk::Fence,
@@ -36,7 +36,7 @@ pub struct DrawTarget {
     pub command_buffer: vk::CommandBuffer,
 }
 
-pub struct WindowPresent {
+pub struct SurfacePresent {
     pub frames: usize,
     pub frame_index: usize,
     pub image_available_semaphores: Vec<vk::Semaphore>,
@@ -55,7 +55,6 @@ pub struct WindowPresent {
     surface_loader: ash::khr::surface::Instance,
 
     pub surface_format: vk::SurfaceFormatKHR,
-    pub window: Window,
 
     pub pw_device: PwDevice,
     /// Even values are usable ids.  Odd successors indicate waiting on that id has not been
@@ -63,28 +62,16 @@ pub struct WindowPresent {
     pub present_id: u64,
 }
 
-impl WindowPresent {
+impl SurfacePresent {
     pub fn new(
         context: &DeviceContext,
         vk_context: &VkContext,
         event_loop: &ActiveEventLoop,
-        args: &Args,
+        window: &Window,
+        surface: vk::SurfaceKHR,
     ) -> Self {
         let VkContext { entry, instance } = &vk_context;
         let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
-
-        let mut attrs = Window::default_attributes().with_title("µTate");
-        if args.fullscreen {
-            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
-        }
-        let window = event_loop
-            .create_window(attrs)
-            .expect("Failed to create window");
-
-        if args.fullscreen {
-            window.set_cursor_visible(false);
-        }
-        let surface = window_surface(&window, &vk_context);
 
         let formats = unsafe {
             surface_loader
@@ -109,7 +96,7 @@ impl WindowPresent {
                 .get_physical_device_surface_capabilities(context.physical_device, surface)
                 .unwrap()
         };
-        // TODO Watch for degenerate extents
+        // XXX Watch for degenerate extents
         let extent = surface_caps.current_extent;
 
         let composite_alpha = pick_alpha(&surface_caps);
@@ -221,7 +208,6 @@ impl WindowPresent {
             surface_loader,
             surface,
             surface_format,
-            window,
 
             pw_device: PwDevice::new(&vk_context.instance, &context.device()),
             present_id: 0,
@@ -249,7 +235,7 @@ impl WindowPresent {
         }
     }
 
-    pub fn recreate_images(&mut self, context: &DeviceContext) {
+    pub fn recreate_images(&mut self, default_extent: vk::Extent2D, context: &DeviceContext) {
         let device = &context.device;
         let physical_device = context.physical_device;
 
@@ -277,8 +263,7 @@ impl WindowPresent {
                 self.swapchain_extent = current_extent;
                 self.swapchain_extent
             } else {
-                // FIXME a number of cases this can be wrong.
-                window_size(&self.window)
+                default_extent
             };
             let surface = &self.surface;
             let surface_format = &self.surface_format;
@@ -336,6 +321,7 @@ impl WindowPresent {
         }
     }
 
+    // XXX Needs to use self-pacing deadline timing stuff.
     /// Wait for the last queue submission to clear.
     pub fn draw_wait(&mut self, context: &DeviceContext) {
         let device = &context.device;
@@ -453,7 +439,13 @@ impl WindowPresent {
     }
 
     /// Sync presentation image transform and present
-    pub fn post_draw(&mut self, context: &DeviceContext, sync: DrawSync, target: DrawTarget) {
+    pub fn post_draw(
+        &mut self,
+        context: &DeviceContext,
+        sync: DrawSync,
+        target: DrawTarget,
+        window: &Window,
+    ) {
         let device = context.device();
 
         // XXX Needed for graphics
@@ -562,7 +554,7 @@ impl WindowPresent {
 
         // Winit says this helps align the window system latching with REDRAW_REQUESTED events.
         // However, it is supported only on Wayland at this time.
-        self.window.pre_present_notify();
+        window.pre_present_notify();
 
         unsafe {
             match self.swapchain_loader.queue_present(*queue, &present_info) {
@@ -601,20 +593,6 @@ impl WindowPresent {
             }
         }
     }
-
-    pub fn toggle_fullscreen(&self) {
-        let win = &self.window;
-        match win.fullscreen() {
-            Some(winit::window::Fullscreen::Borderless(None)) => {
-                win.set_fullscreen(None);
-                win.set_cursor_visible(true);
-            }
-            _ => {
-                win.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
-                win.set_cursor_visible(false);
-            }
-        }
-    }
 }
 
 fn pick_alpha(&surface_caps: &vk::SurfaceCapabilitiesKHR) -> vk::CompositeAlphaFlagsKHR {
@@ -635,54 +613,5 @@ fn pick_alpha(&surface_caps: &vk::SurfaceCapabilitiesKHR) -> vk::CompositeAlphaF
         vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED
     } else {
         vk::CompositeAlphaFlagsKHR::INHERIT
-    }
-}
-
-fn window_size(window: &Window) -> vk::Extent2D {
-    let size = window.inner_size();
-    vk::Extent2D {
-        width: size.width,
-        height: size.height,
-    }
-}
-
-// XXX platform specific
-fn window_surface(window: &Window, vk_context: &VkContext) -> vk::SurfaceKHR {
-    let win_handle = window.window_handle().unwrap().as_raw();
-    let display_handle = window.display_handle().unwrap().as_raw();
-
-    match (win_handle, display_handle) {
-        (RawWindowHandle::Xlib(win_handle), RawDisplayHandle::Xlib(display_handle)) => {
-            let win_thing = win_handle.window;
-            let xlib_create_info = vk::XlibSurfaceCreateInfoKHR {
-                window: win_thing.into(),
-                dpy: display_handle.display.unwrap().as_ptr(),
-                ..Default::default()
-            };
-            let xlib_surface_loader =
-                xlib_surface::Instance::new(&vk_context.entry, &vk_context.instance);
-
-            unsafe { xlib_surface_loader.create_xlib_surface(&xlib_create_info, None) }
-                .expect("Failed to create surface")
-        }
-        (RawWindowHandle::Wayland(win_handle), RawDisplayHandle::Wayland(display_handle)) => {
-            let wayland_create_info = vk::WaylandSurfaceCreateInfoKHR {
-                display: display_handle.display.as_ptr(),
-                surface: win_handle.surface.as_ptr(),
-                ..Default::default()
-            };
-
-            let wayland_surface_loader =
-                ash::khr::wayland_surface::Instance::new(&vk_context.entry, &vk_context.instance);
-
-            unsafe {
-                wayland_surface_loader
-                    .create_wayland_surface(&wayland_create_info, None)
-                    .expect("Failed to create Wayland surface")
-            }
-        }
-        (_, _) => {
-            panic!("Unsupported surface type!");
-        }
     }
 }

@@ -4,6 +4,7 @@
 mod audio;
 mod graph;
 mod video;
+mod window;
 
 use ash::vk;
 use clap::Parser;
@@ -13,11 +14,13 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard as kb,
     platform::wayland::{EventLoopBuilderExtWayland, EventLoopExtWayland},
+    window::Window,
 };
 
 use mutate_lib::{self as utate, prelude::*, vulkan::context::VkContext};
 
 use graph::node;
+use window::WindowExt;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -32,7 +35,8 @@ struct App {
 
     vk_context: VkContext,
     context: DeviceContext,
-    window_present: Option<video::present::WindowPresent>,
+    surface_present: Option<video::present::SurfacePresent>,
+    window: Option<winit::window::Window>,
 
     // These fields will turn into a graph when graphs are ready
     render_node: Option<video::spectrum::SpectrumNode>,
@@ -47,9 +51,9 @@ impl App {
     fn draw_frame(&mut self) {
         let context = &self.context;
 
-        let wp = self.window_present.as_mut().unwrap();
+        let sp = self.surface_present.as_mut().unwrap();
         // LIES the previous frame fence is implicitly always signaled already
-        wp.draw_wait(context);
+        sp.draw_wait(context);
 
         // NEXT dynamically waiting down to the approximate latch timing to late bind the last
         // possible audio.
@@ -77,7 +81,7 @@ impl App {
         };
 
         // Obtain swapchain image and hot command buffer
-        let (sync, target) = wp.render_target(context, clear);
+        let (sync, target) = sp.render_target(context, clear);
 
         // Node draws to command buffer.  The idea we've isolated is that drawing to a target has
         // little to do with the source or fate of that target.
@@ -88,7 +92,8 @@ impl App {
 
         // Presentation closes the command buffer, submits to queue, transforms image, and presents.
         // Also waits on presentation.
-        wp.post_draw(context, sync, target);
+        let window = self.window.as_ref().unwrap();
+        sp.post_draw(context, sync, target, window);
     }
 }
 
@@ -96,10 +101,13 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let vk_context = &self.vk_context;
         let context = &self.context;
-        let wp = video::present::WindowPresent::new(context, vk_context, event_loop, &self.args);
+        let window = Window::from_args(&self.args, event_loop);
+        let surface = window.surface(&vk_context);
+        let sp =
+            video::present::SurfacePresent::new(context, vk_context, event_loop, &window, surface);
 
         let mut render_node =
-            video::spectrum::SpectrumNode::new(context, wp.surface_format.format.clone());
+            video::spectrum::SpectrumNode::new(context, sp.surface_format.format.clone());
         render_node
             .provision(
                 context,
@@ -111,8 +119,8 @@ impl ApplicationHandler for App {
             )
             .unwrap();
         self.render_node = Some(render_node);
-
-        self.window_present = Some(wp);
+        self.window = Some(window);
+        self.surface_present = Some(sp);
     }
 
     fn window_event(
@@ -130,7 +138,7 @@ impl ApplicationHandler for App {
                 if !event.repeat && event.state == winit::event::ElementState::Pressed {
                     match event.physical_key {
                         kb::PhysicalKey::Code(kb::KeyCode::KeyF) => {
-                            self.window_present.as_ref().unwrap().toggle_fullscreen();
+                            self.window.as_ref().unwrap().toggle_fullscreen();
                         }
                         kb::PhysicalKey::Code(kb::KeyCode::KeyQ)
                         | kb::PhysicalKey::Code(kb::KeyCode::Escape) => {
@@ -145,20 +153,23 @@ impl ApplicationHandler for App {
                     println!("window resize reported degenerate size");
                 } else {
                     let context = &self.context;
-                    self.window_present
+                    let window = self.window.as_ref().unwrap();
+                    // FIXME a number of cases this can be wrong.
+                    let size = window.inner_size();
+                    let extent = vk::Extent2D {
+                        width: size.width,
+                        height: size.height,
+                    };
+                    self.surface_present
                         .as_mut()
                         .unwrap()
-                        .recreate_images(context);
+                        .recreate_images(extent, context);
                 }
             }
             WindowEvent::RedrawRequested => {
                 if self.running {
                     self.draw_frame();
-                    self.window_present
-                        .as_ref()
-                        .unwrap()
-                        .window
-                        .request_redraw();
+                    self.window.as_ref().unwrap().request_redraw();
                 }
             }
             WindowEvent::CloseRequested => unsafe {
@@ -172,7 +183,7 @@ impl ApplicationHandler for App {
                     .unwrap()
                     .destroy(&context)
                     .unwrap();
-                self.window_present.as_ref().unwrap().destroy(context);
+                self.surface_present.as_ref().unwrap().destroy(context);
                 self.context.destroy();
                 self.vk_context.destroy();
                 event_loop.exit();
@@ -206,7 +217,8 @@ fn main() -> Result<(), utate::MutateError> {
         context,
         vk_context,
 
-        window_present: None,
+        window: None,
+        surface_present: None,
         render_node: None,
         raw_audio: audio::raw::RawAudioNode::new().unwrap(),
         cqt: audio::cqt::CqtNode::new(600, 48000, 60.0),
