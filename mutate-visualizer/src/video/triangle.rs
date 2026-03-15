@@ -168,7 +168,7 @@ impl TriangleNode {
     pub fn draw(
         &self,
         target: &crate::video::present::DrawTarget,
-        context: &crate::VkContext,
+        context: &crate::DeviceContext,
         rgb: palette::Srgb<f32>,
         scale: f32,
         extent: &vk::Extent2D,

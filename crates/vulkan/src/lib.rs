@@ -85,8 +85,9 @@
 //!
 //! ## Context
 //!
-//! The `VkContext` covers most of the only-once things.  There's one Instance.  We initialize
-//! devices and things only once.  We create descriptor tables once.
+//! The `Context` covers only-once or very rarely touched things.  There's one Instance.  We
+//! initialize devices and things only once-ish.  We create descriptor tables once per-device.
+//! Queue families are probed once at device creation.
 //!
 //! ## Resource
 //!
@@ -122,7 +123,7 @@ use ash::vk;
 
 pub mod prelude {
     pub use super::VulkanError;
-    pub use crate::context::VkContext;
+    pub use crate::context::DeviceContext;
 }
 
 // Re-export for slang's macros

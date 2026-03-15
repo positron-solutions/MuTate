@@ -34,7 +34,7 @@ use std::marker::PhantomData;
 
 use ash::vk;
 
-use crate::{context::VkContext, VulkanError};
+use crate::{context::DeviceContext, VulkanError};
 
 // Marker traits for capabilities
 trait TransferCap {}
@@ -82,7 +82,10 @@ impl<Cap> CommandBuffer<Cap, Initial> {
     /// Begin recording.  Consumes the `Initial` buffer and returns it in the `Recording` state.
     ///
     /// Corresponds to `vkBeginCommandBuffer`.
-    pub fn begin(self, context: &VkContext) -> Result<CommandBuffer<Cap, Recording>, VulkanError> {
+    pub fn begin(
+        self,
+        context: &DeviceContext,
+    ) -> Result<CommandBuffer<Cap, Recording>, VulkanError> {
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
@@ -102,7 +105,10 @@ impl<Cap> CommandBuffer<Cap, Recording> {
     /// Finish recording.  Consumes the `Recording` buffer and returns it in the `Executable` state.
     ///
     /// Corresponds to `vkEndCommandBuffer`.
-    pub fn end(self, context: &VkContext) -> Result<CommandBuffer<Cap, Executable>, VulkanError> {
+    pub fn end(
+        self,
+        context: &DeviceContext,
+    ) -> Result<CommandBuffer<Cap, Executable>, VulkanError> {
         unsafe { context.device().end_command_buffer(self.raw)? };
         Ok(CommandBuffer {
             raw: self.raw,

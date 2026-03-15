@@ -25,7 +25,7 @@ struct ComputePipeline {
 //     fn new(
 //         stage: vk::PipelineShaderStageCreateInfo,
 //         ranges: &[vk::PushConstantRange],
-//         context: &VkContext,
+//         context: &DeviceContext,
 //     ) -> Result<Self, VulkanError> {
 //         let device = context.device();
 //         let layout_ci = vk::PipelineLayoutCreateInfo::default()

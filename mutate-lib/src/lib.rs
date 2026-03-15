@@ -39,7 +39,7 @@ pub mod prelude {
     pub use crate::MutateError;
     // NEXT feature flag the Vulkan stuff in one crate
     #[cfg(feature = "vulkan")]
-    pub use mutate_vulkan::context::VkContext;
+    pub use mutate_vulkan::context::DeviceContext;
 }
 
 // NEXT Audio will be its own kind of error that must fit into the MutateError hierarchy.

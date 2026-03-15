@@ -10,7 +10,7 @@ use ash::vk;
 
 use mutate_assets as assets;
 
-use crate::{context::VkContext, VulkanError};
+use crate::{context::DeviceContext, VulkanError};
 
 // Let me see that sla--
 //                       -aaa-
@@ -22,7 +22,7 @@ pub struct ShaderModule<'ctx> {
 }
 
 impl<'ctx> ShaderModule<'ctx> {
-    pub fn load(path: &'static str, context: &'ctx VkContext) -> Result<Self, VulkanError> {
+    pub fn load(path: &'static str, context: &'ctx DeviceContext) -> Result<Self, VulkanError> {
         // NEXT We could further type shader names to verify that hardcoded names exist.  Dynamic names for
         // source files doesn't really make sense unless the GPU has gone AGI and is emitting fresh slang
         // code to hot swap with itself.  Static shader file names would do some justice.

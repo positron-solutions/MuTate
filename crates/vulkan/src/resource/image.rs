@@ -13,7 +13,7 @@
 use ash::vk;
 
 use crate::{
-    context::{descriptors, VkContext},
+    context::{descriptors, DeviceContext},
     VulkanError,
 };
 
@@ -29,7 +29,7 @@ pub struct Image {
 
 impl Image {
     pub fn new(
-        context: &VkContext,
+        context: &DeviceContext,
         extent: vk::Extent2D,
         format: vk::Format,
         usage: vk::ImageUsageFlags,
@@ -85,7 +85,7 @@ impl Image {
         })
     }
 
-    pub fn destroy(self, context: &VkContext) -> Result<(), VulkanError> {
+    pub fn destroy(self, context: &DeviceContext) -> Result<(), VulkanError> {
         let device = context.device();
         unsafe {
             device.destroy_image(self.image, None);
@@ -97,7 +97,7 @@ impl Image {
     /// Obtain a view of the image.
     pub fn view(
         &self,
-        context: &VkContext,
+        context: &DeviceContext,
         subresource_range: vk::ImageSubresourceRange,
     ) -> Result<ImageView, VulkanError> {
         let device = context.device();
@@ -120,7 +120,7 @@ impl Image {
         })
     }
 
-    pub fn default_view(&self, context: &VkContext) -> Result<ImageView, VulkanError> {
+    pub fn default_view(&self, context: &DeviceContext) -> Result<ImageView, VulkanError> {
         let subresource_range = range();
         self.view(context, subresource_range)
     }
@@ -132,7 +132,7 @@ impl Image {
         subresource_range: vk::ImageSubresourceRange,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
-        context: &VkContext,
+        context: &DeviceContext,
     ) {
         transition_layout(
             self.image,
@@ -145,7 +145,11 @@ impl Image {
     }
 
     /// Transition from UNDEFINED → TRANSFER_DST_OPTIMAL for uploading data.
-    pub fn transition_to_transfer_dst(&self, cmd_buffer: vk::CommandBuffer, context: &VkContext) {
+    pub fn transition_to_transfer_dst(
+        &self,
+        cmd_buffer: vk::CommandBuffer,
+        context: &DeviceContext,
+    ) {
         self.transition_layout(
             cmd_buffer,
             range(), // full color range
@@ -156,7 +160,11 @@ impl Image {
     }
 
     /// Transition from TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL for sampling in shaders.
-    pub fn transition_to_shader_read(&self, cmd_buffer: vk::CommandBuffer, context: &VkContext) {
+    pub fn transition_to_shader_read(
+        &self,
+        cmd_buffer: vk::CommandBuffer,
+        context: &DeviceContext,
+    ) {
         self.transition_layout(
             cmd_buffer,
             range(), // full color range
@@ -171,7 +179,7 @@ impl Image {
     pub fn transition_to_depth_attachment(
         &self,
         cmd_buffer: vk::CommandBuffer,
-        context: &VkContext,
+        context: &DeviceContext,
     ) {
         self.transition_layout(
             cmd_buffer,
@@ -183,7 +191,7 @@ impl Image {
     }
 
     /// Transition from COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR for presenting swapchain images.
-    pub fn transition_to_present(&self, cmd_buffer: vk::CommandBuffer, context: &VkContext) {
+    pub fn transition_to_present(&self, cmd_buffer: vk::CommandBuffer, context: &DeviceContext) {
         self.transition_layout(
             cmd_buffer,
             range(), // full color range
@@ -194,7 +202,7 @@ impl Image {
     }
 
     /// Transition from PRESENT_SRC_KHR → COLOR_ATTACHMENT_OPTIMAL for rendering to swapchain images.
-    pub fn transition_from_present(&self, cmd_buffer: vk::CommandBuffer, context: &VkContext) {
+    pub fn transition_from_present(&self, cmd_buffer: vk::CommandBuffer, context: &DeviceContext) {
         self.transition_layout(
             cmd_buffer,
             range(), // full color range
@@ -214,7 +222,7 @@ pub struct ImageView {
 }
 
 impl ImageView {
-    pub fn destroy(self, context: &VkContext) -> Result<(), VulkanError> {
+    pub fn destroy(self, context: &DeviceContext) -> Result<(), VulkanError> {
         unsafe {
             context.device().destroy_image_view(self.view, None);
         }
@@ -224,7 +232,7 @@ impl ImageView {
     // XXX extremely raw.  Bludgeon if found.
     pub fn sampled(
         &self,
-        context: &mut VkContext,
+        context: &mut DeviceContext,
         layout: vk::ImageLayout,
     ) -> descriptors::SampledImageIndex {
         // MAYBE not so sure about the layout choice
@@ -261,7 +269,7 @@ pub fn transition_layout(
     subresource_range: vk::ImageSubresourceRange,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
-    context: &VkContext,
+    context: &DeviceContext,
 ) {
     // Infer barrier settings based on old/new layout
     let (src_stage, dst_stage, src_access, dst_access) = match (old_layout, new_layout) {

@@ -19,7 +19,7 @@ use ash::{khr::present_wait::Device as PwDevice, khr::xlib_surface, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use mutate_lib::{self as utate, prelude::*, vulkan::context::CrapOContext};
+use mutate_lib::{self as utate, prelude::*, vulkan::context::VkContext};
 
 use crate::Args;
 
@@ -65,12 +65,12 @@ pub struct WindowPresent {
 
 impl WindowPresent {
     pub fn new(
-        context: &VkContext,
-        vk_context: &CrapOContext,
+        context: &DeviceContext,
+        vk_context: &VkContext,
         event_loop: &ActiveEventLoop,
         args: &Args,
     ) -> Self {
-        let CrapOContext { entry, instance } = &vk_context;
+        let VkContext { entry, instance } = &vk_context;
         let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
 
         let mut attrs = Window::default_attributes().with_title("µTate");
@@ -228,7 +228,7 @@ impl WindowPresent {
         }
     }
 
-    pub fn destroy(&self, context: &VkContext) {
+    pub fn destroy(&self, context: &DeviceContext) {
         let device = &context.device;
         unsafe {
             for view in &self.swapchain_image_views {
@@ -249,7 +249,7 @@ impl WindowPresent {
         }
     }
 
-    pub fn recreate_images(&mut self, context: &VkContext) {
+    pub fn recreate_images(&mut self, context: &DeviceContext) {
         let device = &context.device;
         let physical_device = context.physical_device;
 
@@ -337,7 +337,7 @@ impl WindowPresent {
     }
 
     /// Wait for the last queue submission to clear.
-    pub fn draw_wait(&mut self, context: &VkContext) {
+    pub fn draw_wait(&mut self, context: &DeviceContext) {
         let device = &context.device;
         let idx = self.frame_index as usize;
         let in_flight = self.in_flight_fences[idx];
@@ -353,7 +353,7 @@ impl WindowPresent {
     /// Return a hot command buffer, image, and associated information used for drawing.
     pub fn render_target(
         &mut self,
-        context: &VkContext,
+        context: &DeviceContext,
         clear: vk::ClearValue,
     ) -> (DrawSync, DrawTarget) {
         let device = &context.device;
@@ -453,7 +453,7 @@ impl WindowPresent {
     }
 
     /// Sync presentation image transform and present
-    pub fn post_draw(&mut self, context: &VkContext, sync: DrawSync, target: DrawTarget) {
+    pub fn post_draw(&mut self, context: &DeviceContext, sync: DrawSync, target: DrawTarget) {
         let device = context.device();
 
         // XXX Needed for graphics
@@ -646,7 +646,8 @@ fn window_size(window: &Window) -> vk::Extent2D {
     }
 }
 
-fn window_surface(window: &Window, vk_context: &CrapOContext) -> vk::SurfaceKHR {
+// XXX platform specific
+fn window_surface(window: &Window, vk_context: &VkContext) -> vk::SurfaceKHR {
     let win_handle = window.window_handle().unwrap().as_raw();
     let display_handle = window.display_handle().unwrap().as_raw();
 

@@ -15,7 +15,7 @@ use winit::{
     platform::wayland::{EventLoopBuilderExtWayland, EventLoopExtWayland},
 };
 
-use mutate_lib::{self as utate, prelude::*, vulkan::context::CrapOContext};
+use mutate_lib::{self as utate, prelude::*, vulkan::context::VkContext};
 
 use graph::node;
 
@@ -30,8 +30,8 @@ struct App {
     args: Args,
     running: bool,
 
-    vk_context: CrapOContext,
-    context: VkContext,
+    vk_context: VkContext,
+    context: DeviceContext,
     window_present: Option<video::present::WindowPresent>,
 
     // These fields will turn into a graph when graphs are ready
@@ -198,8 +198,8 @@ fn main() -> Result<(), utate::MutateError> {
 
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let vk_context = CrapOContext::new();
-    let context = VkContext::new(&vk_context);
+    let vk_context = VkContext::new();
+    let context = DeviceContext::new(&vk_context);
     let mut app = App {
         args,
         running: true,

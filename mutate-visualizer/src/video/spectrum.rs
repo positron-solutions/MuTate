@@ -46,7 +46,7 @@ impl SpectrumNode {
     // NEXT what is format doing here?  why must it be passed with new?  Seems like presentation
     // details leaking into new, but it's reasonable drawing nodes need to learn about their
     // presentation targets.  This could also be considered provision time?
-    pub fn new(context: &VkContext, format: vk::Format) -> Self {
+    pub fn new(context: &DeviceContext, format: vk::Format) -> Self {
         let device = context.device();
         let assets = assets::AssetDirs::new();
 
@@ -132,7 +132,7 @@ impl SpectrumNode {
     // important problem to work on!
     pub fn provision(
         &mut self,
-        context: &VkContext,
+        context: &DeviceContext,
         size: vk::Extent2D,
     ) -> Result<(), utate::MutateError> {
         let spectrum_buffer = buffer::MappedAllocation::new(size.height as usize, context)?;
@@ -190,7 +190,7 @@ impl SpectrumNode {
         &mut self,
         target: &crate::video::present::DrawTarget,
         input: &[crate::audio::cqt::Cqt],
-        context: &crate::VkContext,
+        context: &crate::DeviceContext,
         // NEXT This extent is basically part of the target
         extent: &vk::Extent2D,
     ) {
@@ -313,7 +313,7 @@ impl SpectrumNode {
         );
     }
 
-    pub fn destroy(&self, context: &VkContext) -> Result<(), utate::MutateError> {
+    pub fn destroy(&self, context: &DeviceContext) -> Result<(), utate::MutateError> {
         let device = context.device();
         unsafe {
             device.destroy_pipeline(self.compute_pipeline, None);

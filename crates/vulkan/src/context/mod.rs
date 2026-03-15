@@ -29,12 +29,12 @@ use mutate_assets as assets;
 pub mod queue;
 pub mod descriptors;
 
-pub struct CrapOContext {
+pub struct VkContext {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
 }
 
-impl CrapOContext {
+impl VkContext {
     pub fn new () -> Self {
         let entry = unsafe { ash::Entry::load().expect("failed to load Vulkan library") };
         assert_loader_version(&entry);
@@ -115,7 +115,7 @@ impl CrapOContext {
     }
 }
 
-pub struct VkContext {
+pub struct DeviceContext {
     // XXX Wrap it up dawg
     pub physical_device: vk::PhysicalDevice,
     /// Vulkan logical device
@@ -130,13 +130,13 @@ pub struct VkContext {
     pub assets: assets::AssetDirs,
 }
 
-impl VkContext {
+impl DeviceContext {
     /// Obtain an entry, instance, and initialized device.
     ///
     /// NEXT Device initialization should be moved into a separate method to support UIs that
     /// enumerate and may even switch devices.
-    pub fn new(crap_o_context: &CrapOContext) -> Self {
-        let CrapOContext { entry, instance} = &crap_o_context;
+    pub fn new(crap_o_context: &VkContext) -> Self {
+        let VkContext { entry, instance} = &crap_o_context;
 
         let physical_devices = unsafe {
             instance
@@ -307,35 +307,35 @@ impl VkContext {
 
 /// Runs a block with an initialized Vulkan context, handling creation and destruction automatically.
 ///
-/// Two forms are available depending on whether you need access to the underlying [`CrapOContext`]:
+/// Two forms are available depending on whether you need access to the underlying [`VkContext`]:
 ///
 /// # Usage
 ///
 /// ```rust
 /// // With context only:
 /// with_context!(|context| {
-///     // `context: VkContext` is available here
+///     // `context: DeviceContext` is available here
 /// });
 ///
 /// // With both context and vk_context:
 /// with_context!(|context, vk_context| {
-///     // `context: VkContext` is available here
-///     // `vk_context: CrapOContext` is available here
+///     // `context: DeviceContext` is available here
+///     // `vk_context: VkContext` is available here
 /// });
 /// ```
 #[macro_export]
 macro_rules! with_context {
     (|$context:ident| $($body:tt)*) => {{
-        let mut vk_context = $crate::context::CrapOContext::new();
-        let mut $context = $crate::context::VkContext::new(&vk_context);
+        let mut vk_context = $crate::context::VkContext::new();
+        let mut $context = $crate::context::DeviceContext::new(&vk_context);
         let __result = (|| { $($body)* })();
         $context.destroy();
         vk_context.destroy();
         __result
     }};
     (|$context:ident, mut $vk_context:ident| $($body:tt)*) => {{
-        let mut $vk_context = $crate::context::CrapOContext::new();
-        let mut $context = $crate::context::VkContext::new(&$vk_context);
+        let mut $vk_context = $crate::context::VkContext::new();
+        let mut $context = $crate::context::DeviceContext::new(&$vk_context);
         let __result = (|| { $($body)* })();
         $context.destroy();
         $vk_context.destroy();
@@ -420,7 +420,7 @@ mod test {
 
     #[test]
     fn test_context_lifecycle() {
-        let vk_context = VkContext::new();
+        let vk_context = DeviceContext::new();
         vk_context.destroy();
     }
 }

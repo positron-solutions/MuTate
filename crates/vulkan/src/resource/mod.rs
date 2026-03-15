@@ -3,11 +3,16 @@
 
 //! # Resource
 //!
-//! Gather up things that need asynchronous creation and might be discovered by name or reactively
-//! recreated.  UBOs, SSBOs, and Images are definitely resources.  Shader modules might be resources
-//! (such as dealing with Molten translation layer delay).
+
+// This module began to grow into a fully fledged async resource creation system.  That work has
+// been put off to allow more concrete code to drive the development.  What was learned is that we
+// really, really want late binding.  That will make every streaming, shared ownership, compaction
+// problem so much easier.  Until then, we will focus on making the highly manual bits less manual.
 
 pub mod buffer;
 pub mod image;
 pub mod shader;
 pub mod ubo;
+
+#[cfg(test)]
+mod test {}
