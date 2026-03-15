@@ -17,7 +17,7 @@
 //! - Buffer device address.
 //! - One big descriptor set with one descriptor array per type (bindless).
 //! - Flexible push constants & UBOs with scalar layout and 8/16-bit support.
-//! - Vulkan 1.3+ minimum support, 1.4 when reasonable.
+//! - Vulkan 1.3+ minimum support, (switch to 1.4 when reasonable).
 //! - Dynamic rendering
 
 use std::ffi::{c_void, CStr};

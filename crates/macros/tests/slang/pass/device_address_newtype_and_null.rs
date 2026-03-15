@@ -60,7 +60,7 @@ fn main() {
     let wrapped = MeshletBufferPtr::from(DeviceAddress::from(42u64));
     assert_eq!(wrapped.raw(), 42u64);
 
-    // The newtype alias of courese just works
+    // The newtype alias of course just works
     let device_address: vk::DeviceAddress = 0;
-    let from_alias = DeviceAddress::from(device_address);
+    let _from_alias = DeviceAddress::from(device_address);
 }

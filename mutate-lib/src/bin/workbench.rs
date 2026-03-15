@@ -583,8 +583,8 @@ fn cmd_gain(cmd_args: GainArgs) {
             // NEXT report the test point and normalize the gain on the pass side of the filter.
             // XXX for pass band, test cutoff, center, and
             let test_freq = match filter_args.mode {
-                FilterMode::LowPass => dsp::MIN_FREQ_CHEAP_DRIVERS.max(1.0 * f0),
-                FilterMode::HighPass => fs.min(1.0 * f0),
+                FilterMode::LowPass => dsp::MIN_FREQ_CHEAP_DRIVERS.max(2.0 * f0),
+                FilterMode::HighPass => fs.min(0.5 * f0),
                 FilterMode::BandPass => f0,
                 _ => todo!(),
             };
