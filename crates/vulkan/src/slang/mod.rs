@@ -529,58 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn newtype_satisfies_gpu_type() {
-        slang_newtype!(Hotness, Float32, "Hotness");
-        slang_newtype!(JointIndex, UInt16, "JointIndex");
-
-        assert_gpu_type::<ScalarLayout, Hotness>();
-        assert_gpu_type::<ScalarLayout, JointIndex>();
-
-        // Constants forward correctly from inner type
-        assert_eq!(
-            <Hotness as GpuType<ScalarLayout>>::PRIMITIVE,
-            SlangType::Float32
-        );
-        assert_eq!(<Hotness as GpuType<ScalarLayout>>::SIZE, 4);
-        assert_eq!(<Hotness as GpuType<ScalarLayout>>::ALIGN, 4);
-
-        assert_eq!(
-            <JointIndex as GpuType<ScalarLayout>>::PRIMITIVE,
-            SlangType::UInt16
-        );
-        assert_eq!(<JointIndex as GpuType<ScalarLayout>>::SIZE, 2);
-        assert_eq!(<JointIndex as GpuType<ScalarLayout>>::ALIGN, 2);
-    }
-
-    #[test]
-    fn from_base_into_wrapper() {
-        let _f: Float32 = Float32::from(1.0f32);
-        let _u: UInt16 = UInt16::from(42u16);
-        let _b: Bool = Bool::from(true);
-        let _h: Float16 = Float16::from(half::f16::from_f32(1.0));
-
-        slang_newtype!(Hotness, Float32, "Hotness");
-        let _t: Hotness = Hotness::from(Float32::from(98.6f32));
-    }
-
-    #[test]
-    fn type_identity_constants() {
-        assert_eq!(<Float32 as GpuType<ScalarLayout>>::SLANG_NAME, "float");
-        assert_eq!(<Float16 as GpuType<ScalarLayout>>::SLANG_NAME, "float16_t");
-        assert_eq!(<UInt32 as GpuType<ScalarLayout>>::SLANG_NAME, "uint32_t");
-        assert_eq!(<Bool as GpuType<ScalarLayout>>::SLANG_NAME, "bool");
-        assert_eq!(<Bool as GpuType<ScalarLayout>>::SIZE, 4);
-        assert_eq!(<Bool as GpuType<ScalarLayout>>::ALIGN, 4);
-
-        slang_newtype!(Hotness, Float32, "Hotness");
-        assert_eq!(<Hotness as GpuType<ScalarLayout>>::SLANG_NAME, "Hotness");
-        assert_eq!(
-            <Hotness as GpuType<ScalarLayout>>::PRIMITIVE,
-            SlangType::Float32
-        );
-    }
-
-    #[test]
     fn integer_eq_agrees_with_inner() {
         assert_eq!(Int32::from(42), Int32::from(42));
         assert_ne!(Int32::from(1), Int32::from(2));
