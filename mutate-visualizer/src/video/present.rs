@@ -14,9 +14,9 @@
 // before allocating per-image resources like command buffers.
 
 // XXX move into Vulkan!
+use std::slice;
 
-use ash::{khr::present_wait::Device as PwDevice, vk};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+use ash::vk;
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
 use mutate_lib::{self as utate, prelude::*};
@@ -28,7 +28,7 @@ pub struct DrawSync {
     pub in_flight: vk::Fence,
     pub render_finished: vk::Semaphore,
     pub image_available: vk::Semaphore,
-    pub image_index: usize,
+    pub image_index: u32,
 }
 
 // XXX command buffers things mixed with images.. this is not right at all.  Perhaps by the time we
@@ -44,10 +44,6 @@ pub struct SurfacePresent {
     pub image_available_semaphores: Vec<vk::Semaphore>,
     pub in_flight_fences: Vec<vk::Fence>,
     pub render_finished_semaphores: Vec<vk::Semaphore>,
-    pub pw_device: PwDevice,
-    // Even values are usable ids.  Odd successors indicate waiting on that id has not been
-    // completed yet.
-    present_id: u64,
 
     pub swapchain_loader: ash::khr::swapchain::Device,
     pub swapchain: vk::SwapchainKHR,
@@ -170,8 +166,6 @@ impl SurfacePresent {
             image_available_semaphores,
             in_flight_fences,
             render_finished_semaphores,
-            pw_device: PwDevice::new(&vk_context.instance, &context.device()),
-            present_id: 0,
         }
     }
 
@@ -218,6 +212,7 @@ impl SurfacePresent {
                 .destroy_swapchain(self.swapchain, None);
         }
 
+        // XXX Kill this
         // Recreation
         unsafe {
             let swapchain_info = vk::SwapchainCreateInfoKHR {
@@ -313,17 +308,16 @@ impl SurfacePresent {
                 .unwrap()
         };
 
-        let image_index = image_index as usize;
         let sync = DrawSync {
             image_available,
             in_flight,
             render_finished,
-            image_index: image_index,
+            image_index,
         };
 
-        let command_buffer = self.command_buffers[image_index];
-        let image = self.swapchain_images[image_index];
-        let image_view = self.swapchain_image_views[image_index];
+        let command_buffer = self.command_buffers[image_index as usize];
+        let image = self.swapchain_images[image_index as usize];
+        let image_view = self.swapchain_image_views[image_index as usize];
 
         unsafe {
             device
@@ -442,37 +436,28 @@ impl SurfacePresent {
                 .unwrap()
         };
 
+        // NEXT submission info looks pretty predictable
         let wait_info = vk::SemaphoreSubmitInfo {
             semaphore: sync.image_available,
-            value: 0,
             stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            device_index: 0,
             ..Default::default()
         };
 
         let signal_info = vk::SemaphoreSubmitInfo {
             semaphore: sync.render_finished,
-            value: 0,
             stage_mask: vk::PipelineStageFlags2::ALL_GRAPHICS,
-            device_index: 0,
             ..Default::default()
         };
 
         let cb_info = vk::CommandBufferSubmitInfo {
             command_buffer: target.command_buffer,
-            device_mask: 0,
             ..Default::default()
         };
 
-        let submit = vk::SubmitInfo2 {
-            wait_semaphore_info_count: 1,
-            p_wait_semaphore_infos: &wait_info,
-            signal_semaphore_info_count: 1,
-            p_signal_semaphore_infos: &signal_info,
-            command_buffer_info_count: 1,
-            p_command_buffer_infos: &cb_info,
-            ..Default::default()
-        };
+        let submit = vk::SubmitInfo2::default()
+            .wait_semaphore_infos(slice::from_ref(&wait_info))
+            .signal_semaphore_infos(slice::from_ref(&signal_info))
+            .command_buffer_infos(slice::from_ref(&cb_info));
 
         let queue = &context.queues.graphics_queue();
         unsafe {
@@ -482,28 +467,13 @@ impl SurfacePresent {
                 .unwrap();
         }
 
-        let present_wait = [sync.render_finished];
-        let swapchains = [self.swapchain];
-        let indices = [sync.image_index as u32];
-
-        let present_id = vk::PresentIdKHR {
-            swapchain_count: 1,
-            p_present_ids: [self.present_id].as_ptr(),
-            ..Default::default()
-        };
-        self.present_id = self.present_id + 1;
-
-        let present_info = vk::PresentInfoKHR {
-            wait_semaphore_count: 1,
-            p_wait_semaphores: present_wait.as_ptr(),
-            swapchain_count: 1,
-            p_swapchains: swapchains.as_ptr(),
-            p_image_indices: indices.as_ptr(),
-            p_next: &present_id as *const _ as *const std::ffi::c_void,
-            ..Default::default()
-        };
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(slice::from_ref(&sync.render_finished))
+            .swapchains(slice::from_ref(&self.swapchain))
+            .image_indices(slice::from_ref(&sync.image_index));
 
         // XXX REMOVE to get rid of almost all window tangling
+        // XXX break up this method into two, right here.
         // Winit says this helps align the window system latching with REDRAW_REQUESTED events.
         // However, it is supported only on Wayland at this time.
         window.pre_present_notify();
@@ -515,34 +485,6 @@ impl SurfacePresent {
                 }
                 Err(result) => eprintln!("presentation error: {:?}", result),
             };
-
-            if self.present_id % 2 == 1 {
-                // let pre_wait = std::time::Instant::now();
-                match self.pw_device.wait_for_present(
-                    self.swapchain,
-                    self.present_id - 1,
-                    32_000_000, // 32 milliseconds
-                ) {
-                    Ok(_code) => {
-                        // idk
-                    }
-                    Err(e) => match e {
-                        vk::Result::TIMEOUT => {
-                            // nothing
-                        }
-                        e => {
-                            println!("present wait return code: {:?}", e);
-                        }
-                    },
-                };
-                self.present_id = self.present_id + 1;
-
-                // let post_wait = std::time::Instant::now();
-                // println!(
-                //     "present wait: {:10.4}",
-                //     (post_wait - pre_wait).as_micros() as f64 / 1000.0
-                // );
-            }
         }
     }
 }
