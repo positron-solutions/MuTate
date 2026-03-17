@@ -27,6 +27,7 @@ pub struct VkSurface {
     /// How the surface output will be blended by any compositor.
     pub composite_alpha: vk::CompositeAlphaFlagsKHR,
     pub pre_transform: vk::SurfaceTransformFlagsKHR,
+    pub swapchain_image_count: u32,
     surface_loader: ash::khr::surface::Instance,
 }
 
@@ -117,6 +118,20 @@ impl VkSurface {
 
         // XXX Make an actual decision
         let pre_transform = surface_caps.current_transform;
+
+        let swapchain_image_count = {
+            let mode_minimum = match present_mode {
+                vk::PresentModeKHR::MAILBOX => 3,
+                _ => 2,
+            };
+            let desired = mode_minimum.max(surface_caps.min_image_count);
+            if surface_caps.max_image_count == 0 {
+                desired
+            } else {
+                desired.min(surface_caps.max_image_count)
+            }
+        };
+
         Self {
             inner: surface,
             format,
@@ -124,6 +139,7 @@ impl VkSurface {
             composite_alpha,
             pre_transform,
             surface_loader,
+            swapchain_image_count,
         }
     }
 
