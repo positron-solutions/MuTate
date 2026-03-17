@@ -19,10 +19,11 @@ use ash::{khr::present_wait::Device as PwDevice, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use mutate_lib::{self as utate, prelude::*, vulkan::context::VkContext};
+use mutate_lib::{self as utate, prelude::*};
 
 use crate::window::WindowExt;
 
+// XXX less bad.  consider if we can use timeline semaphores
 pub struct DrawSync {
     pub in_flight: vk::Fence,
     pub render_finished: vk::Semaphore,
@@ -30,9 +31,10 @@ pub struct DrawSync {
     pub image_index: usize,
 }
 
+// XXX command buffers things mixed with images.. this is not right at all.  Perhaps by the time we
+// hit render graph, dependencies and inputs / outputs are
 pub struct DrawTarget {
     pub image: vk::Image,
-    pub extent: vk::Extent2D,
     pub command_buffer: vk::CommandBuffer,
 }
 
@@ -42,79 +44,43 @@ pub struct SurfacePresent {
     pub image_available_semaphores: Vec<vk::Semaphore>,
     pub in_flight_fences: Vec<vk::Fence>,
     pub render_finished_semaphores: Vec<vk::Semaphore>,
+    pub pw_device: PwDevice,
+    // Even values are usable ids.  Odd successors indicate waiting on that id has not been
+    // completed yet.
+    present_id: u64,
 
+    pub swapchain_loader: ash::khr::swapchain::Device,
     pub swapchain: vk::SwapchainKHR,
-    pub swapchain_extent: vk::Extent2D,
     pub swapchain_image_views: Vec<vk::ImageView>,
     pub swapchain_images: Vec<vk::Image>,
-    pub swapchain_loader: ash::khr::swapchain::Device,
 
     command_buffers: Vec<vk::CommandBuffer>,
-
-    surface: vk::SurfaceKHR,
-    surface_loader: ash::khr::surface::Instance,
-
-    pub surface_format: vk::SurfaceFormatKHR,
-
-    pub pw_device: PwDevice,
-    /// Even values are usable ids.  Odd successors indicate waiting on that id has not been
-    /// completed yet.
-    pub present_id: u64,
 }
 
 impl SurfacePresent {
     pub fn new(
         context: &DeviceContext,
         vk_context: &VkContext,
-        event_loop: &ActiveEventLoop,
-        window: &Window,
-        surface: vk::SurfaceKHR,
+        surface: &VkSurface,
+        extent: vk::Extent2D,
     ) -> Self {
         let VkContext { entry, instance } = &vk_context;
-        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
-
-        let formats = unsafe {
-            surface_loader
-                .get_physical_device_surface_formats(context.physical_device, surface)
-                .unwrap()
-        };
-        let surface_format = formats[0];
-
-        let supported = unsafe {
-            surface_loader
-                .get_physical_device_surface_support(
-                    context.physical_device,
-                    context.queues.graphics_family_index,
-                    surface,
-                )
-                .unwrap()
-        };
-        assert!(supported, "Physical device must support this surface!");
-
-        let surface_caps = unsafe {
-            surface_loader
-                .get_physical_device_surface_capabilities(context.physical_device, surface)
-                .unwrap()
-        };
-        // XXX Watch for degenerate extents
-        let extent = surface_caps.current_extent;
-
-        let composite_alpha = pick_alpha(&surface_caps);
-
+        // XXX device_context method?
         let swapchain_loader =
             ash::khr::swapchain::Device::new(&vk_context.instance, &context.device());
+        // XXX the images are not actually being counted
         let swapchain_info = vk::SwapchainCreateInfoKHR {
-            surface: surface,
+            surface: surface.as_raw(),
             min_image_count: 3,
-            image_format: surface_format.format,
-            image_color_space: surface_format.color_space,
+            image_format: surface.format.format,
+            image_color_space: surface.format.color_space,
             image_extent: extent,
             image_array_layers: 1,
             image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
             image_sharing_mode: vk::SharingMode::EXCLUSIVE,
-            pre_transform: surface_caps.current_transform,
-            composite_alpha: composite_alpha,
-            present_mode: vk::PresentModeKHR::FIFO_RELAXED,
+            pre_transform: surface.pre_transform,
+            composite_alpha: surface.composite_alpha,
+            present_mode: surface.present_mode,
             clipped: vk::TRUE,
             ..Default::default()
         };
@@ -133,7 +99,7 @@ impl SurfacePresent {
                 let view_info = vk::ImageViewCreateInfo {
                     image,
                     view_type: vk::ImageViewType::TYPE_2D,
-                    format: surface_format.format,
+                    format: surface.format.format,
                     components: vk::ComponentMapping::default(),
                     subresource_range: vk::ImageSubresourceRange {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -193,22 +159,17 @@ impl SurfacePresent {
         };
 
         Self {
-            command_buffers,
-            frames: 3,
-            frame_index: 0,
-            image_available_semaphores,
-            in_flight_fences,
-            render_finished_semaphores,
-            swapchain_extent: extent,
             swapchain,
             swapchain_image_views: image_views,
             swapchain_images: images,
             swapchain_loader,
 
-            surface_loader,
-            surface,
-            surface_format,
-
+            frames: 3,
+            frame_index: 0,
+            command_buffers,
+            image_available_semaphores,
+            in_flight_fences,
+            render_finished_semaphores,
             pw_device: PwDevice::new(&vk_context.instance, &context.device()),
             present_id: 0,
         }
@@ -231,11 +192,16 @@ impl SurfacePresent {
             self.in_flight_fences.iter().for_each(|f| {
                 device.destroy_fence(*f, None);
             });
-            self.surface_loader.destroy_surface(self.surface, None);
         }
     }
 
-    pub fn recreate_images(&mut self, default_extent: vk::Extent2D, context: &DeviceContext) {
+    // Basically carbon copy bullshit of the swapchain stuff.
+    pub fn recreate_images(
+        &mut self,
+        surface: &VkSurface,
+        size: vk::Extent2D,
+        context: &DeviceContext,
+    ) {
         let device = &context.device;
         let physical_device = context.physical_device;
 
@@ -254,34 +220,21 @@ impl SurfacePresent {
 
         // Recreation
         unsafe {
-            let surface_caps = self
-                .surface_loader
-                .get_physical_device_surface_capabilities(physical_device, self.surface)
-                .unwrap();
-            let current_extent = surface_caps.current_extent;
-            let extent = if current_extent.width != u32::MAX {
-                self.swapchain_extent = current_extent;
-                self.swapchain_extent
-            } else {
-                default_extent
-            };
-            let surface = &self.surface;
-            let surface_format = &self.surface_format;
-
             let swapchain_info = vk::SwapchainCreateInfoKHR {
-                surface: *surface,
+                surface: surface.as_raw(),
                 // NOTE this minimum is minimum.  At least under MAILBOX, extra images may result.
                 min_image_count: self.frames as u32,
-                image_format: surface_format.format,
-                image_color_space: surface_format.color_space,
-                image_extent: extent,
+                image_format: surface.format.format,
+                image_color_space: surface.format.color_space,
+                image_extent: size,
                 image_array_layers: 1,
                 image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
                     | vk::ImageUsageFlags::TRANSFER_DST,
+                // NOTE the choice here needs to change if we ever support cross-queue present.
                 image_sharing_mode: vk::SharingMode::EXCLUSIVE,
-                pre_transform: surface_caps.current_transform,
-                composite_alpha: pick_alpha(&surface_caps),
-                present_mode: vk::PresentModeKHR::FIFO_RELAXED,
+                pre_transform: surface.pre_transform,
+                composite_alpha: surface.composite_alpha,
+                present_mode: surface.present_mode,
                 clipped: vk::TRUE,
                 ..Default::default()
             };
@@ -301,7 +254,7 @@ impl SurfacePresent {
                     let view_info = vk::ImageViewCreateInfo {
                         image,
                         view_type: vk::ImageViewType::TYPE_2D,
-                        format: surface_format.format,
+                        format: surface.format.format,
                         components: vk::ComponentMapping::default(),
                         subresource_range: vk::ImageSubresourceRange {
                             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -371,7 +324,6 @@ impl SurfacePresent {
         let command_buffer = self.command_buffers[image_index];
         let image = self.swapchain_images[image_index];
         let image_view = self.swapchain_image_views[image_index];
-        let extent = self.swapchain_extent;
 
         unsafe {
             device
@@ -419,7 +371,7 @@ impl SurfacePresent {
         // let render_info = vk::RenderingInfo {
         //     render_area: vk::Rect2D {
         //         offset: vk::Offset2D { x: 0, y: 0 },
-        //         extent: extent,
+        //         extent: size,
         //     },
         //     layer_count: 1,
         //     color_attachment_count: 1,
@@ -432,7 +384,6 @@ impl SurfacePresent {
         let target = DrawTarget {
             image,
             command_buffer,
-            extent,
         };
 
         (sync, target)
@@ -552,6 +503,7 @@ impl SurfacePresent {
             ..Default::default()
         };
 
+        // XXX REMOVE to get rid of almost all window tangling
         // Winit says this helps align the window system latching with REDRAW_REQUESTED events.
         // However, it is supported only on Wayland at this time.
         window.pre_present_notify();
@@ -592,26 +544,5 @@ impl SurfacePresent {
                 // );
             }
         }
-    }
-}
-
-fn pick_alpha(&surface_caps: &vk::SurfaceCapabilitiesKHR) -> vk::CompositeAlphaFlagsKHR {
-    if surface_caps
-        .supported_composite_alpha
-        .contains(vk::CompositeAlphaFlagsKHR::OPAQUE)
-    {
-        vk::CompositeAlphaFlagsKHR::OPAQUE
-    } else if surface_caps
-        .supported_composite_alpha
-        .contains(vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED)
-    {
-        vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED
-    } else if surface_caps
-        .supported_composite_alpha
-        .contains(vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED)
-    {
-        vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED
-    } else {
-        vk::CompositeAlphaFlagsKHR::INHERIT
     }
 }

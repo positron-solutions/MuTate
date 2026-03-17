@@ -8,6 +8,7 @@ mod window;
 
 use ash::vk;
 use clap::Parser;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -17,7 +18,7 @@ use winit::{
     window::Window,
 };
 
-use mutate_lib::{self as utate, prelude::*, vulkan::context::VkContext};
+use mutate_lib::{self as utate, prelude::*, vulkan::prelude::*};
 
 use graph::node;
 use window::WindowExt;
@@ -32,9 +33,11 @@ struct Args {
 struct App {
     args: Args,
     running: bool,
-
     vk_context: VkContext,
-    context: DeviceContext,
+
+    // Initialized on resume.
+    surface: Option<VkSurface>,
+    device_context: Option<DeviceContext>,
     surface_present: Option<video::present::SurfacePresent>,
     window: Option<winit::window::Window>,
 
@@ -49,11 +52,11 @@ struct App {
 
 impl App {
     fn draw_frame(&mut self) {
-        let context = &self.context;
+        let device_context = &self.device_context.as_ref().unwrap();
 
         let sp = self.surface_present.as_mut().unwrap();
         // LIES the previous frame fence is implicitly always signaled already
-        sp.draw_wait(context);
+        sp.draw_wait(device_context);
 
         // NEXT dynamically waiting down to the approximate latch timing to late bind the last
         // possible audio.
@@ -81,36 +84,81 @@ impl App {
         };
 
         // Obtain swapchain image and hot command buffer
-        let (sync, target) = sp.render_target(context, clear);
+        let (sync, target) = sp.render_target(device_context, clear);
 
+        // XXX hold size on swapchain updates?  A parameter system would 😉
+        let size = self.window.as_ref().unwrap().render_size();
         // Node draws to command buffer.  The idea we've isolated is that drawing to a target has
         // little to do with the source or fate of that target.
         self.render_node
             .as_mut()
             .unwrap()
-            .draw(&target, cqt, &self.context, &target.extent);
+            .draw(&target, cqt, device_context, size);
 
         // Presentation closes the command buffer, submits to queue, transforms image, and presents.
         // Also waits on presentation.
         let window = self.window.as_ref().unwrap();
-        sp.post_draw(context, sync, target, window);
+        sp.post_draw(device_context, sync, target, window);
     }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // MAYBE This sequence of initialization is almost a series of contracts.  It may be
+        // appropriate to bind lifetimes and encode a series of choices.  There may be more than one
+        // window, and one device may serve multiple windows.  Headless rendering needs to remain
+        // supported.
         let vk_context = &self.vk_context;
-        let context = &self.context;
         let window = Window::from_args(&self.args, event_loop);
-        let surface = window.surface(&vk_context);
-        let sp =
-            video::present::SurfacePresent::new(context, vk_context, event_loop, &window, surface);
+        let surface = {
+            let display_handle = event_loop
+                .display_handle()
+                .expect("Event loop has no display handle")
+                .as_raw();
+            let window_handle = window
+                .window_handle()
+                .expect("raw_window_handle: platform unsupported")
+                .as_raw();
+            let VkContext { entry, instance } = vk_context;
+            unsafe {
+                ash_window::create_surface(entry, instance, display_handle, window_handle, None)
+                    .expect("ash_window: could not create surface")
+            }
+        };
+        // NOTE while we can create the surface before we have a logical device,
+        // Get the surface support
+        let supported_devices: Vec<SupportedDevice<HasPresentation>> = vk_context
+            .supported_devices()
+            .into_iter()
+            .filter_map(|sd| sd.with_surface_support(surface, &vk_context))
+            .collect();
+        if supported_devices.is_empty() {
+            panic!("main: no devices supporting surface found.");
+        }
+        // If we were going to ask the user, the time is now.
+        let selected = supported_devices[0].clone();
+        // XXX During swapchain rebuild, remember to re-poll the surface since a lot of the answers
+        // might be dynamic over surface lifetime(?)
+        let surface = VkSurface::new(surface, vk_context, selected.device());
+        // Inspect devices for present queue support and other support
+        let device_context = DeviceContext::new(&vk_context, selected);
+        let fallback = window.render_size();
+        let extent = surface
+            .resolve_size(&device_context, Some(fallback))
+            .unwrap_or(vk::Extent2D {
+                width: 800,
+                height: 600,
+            });
+
+        // XXX why so much needed downstream?
+        let sp = video::present::SurfacePresent::new(&device_context, vk_context, &surface, extent);
 
         let mut render_node =
-            video::spectrum::SpectrumNode::new(context, sp.surface_format.format.clone());
+            video::spectrum::SpectrumNode::new(&device_context, surface.format.format);
+        // DEBT memory management, resources, render graph
         render_node
             .provision(
-                context,
+                &device_context,
                 // XXX made up size :-)
                 vk::Extent2D {
                     height: 800,
@@ -119,7 +167,10 @@ impl ApplicationHandler for App {
             )
             .unwrap();
         self.render_node = Some(render_node);
+
         self.window = Some(window);
+        self.surface = Some(surface);
+        self.device_context = Some(device_context);
         self.surface_present = Some(sp);
     }
 
@@ -152,18 +203,16 @@ impl ApplicationHandler for App {
                 if size.width == 0 || size.height == 0 {
                     println!("window resize reported degenerate size");
                 } else {
-                    let context = &self.context;
-                    let window = self.window.as_ref().unwrap();
-                    // FIXME a number of cases this can be wrong.
-                    let size = window.inner_size();
-                    let extent = vk::Extent2D {
-                        width: size.width,
-                        height: size.height,
-                    };
-                    self.surface_present
-                        .as_mut()
-                        .unwrap()
-                        .recreate_images(extent, context);
+                    let device_context = self.device_context.as_ref().unwrap();
+                    let fallback = self.window.as_ref().unwrap().render_size();
+                    let surface = self.surface.as_ref().unwrap();
+                    if let Some(size) = surface.resolve_size(&device_context, Some(fallback)) {
+                        self.surface_present.as_mut().unwrap().recreate_images(
+                            surface,
+                            size,
+                            device_context,
+                        );
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -174,18 +223,23 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CloseRequested => unsafe {
                 self.running = false;
-                let context = &self.context;
-                let device = &context.device();
+                let vk_context = &self.vk_context;
+                let device_context = self.device_context.as_ref().unwrap();
+                let device = &device_context.device;
 
                 device.device_wait_idle().unwrap();
                 self.render_node
                     .as_ref()
                     .unwrap()
-                    .destroy(&context)
+                    .destroy(device_context)
                     .unwrap();
-                self.surface_present.as_ref().unwrap().destroy(context);
-                self.context.destroy();
-                self.vk_context.destroy();
+                self.surface_present
+                    .as_ref()
+                    .unwrap()
+                    .destroy(device_context);
+                self.surface.as_ref().unwrap().destroy();
+                device_context.destroy();
+                vk_context.destroy();
                 event_loop.exit();
             },
             _ => (),
@@ -206,19 +260,25 @@ fn main() -> Result<(), utate::MutateError> {
         }
     }
     let event_loop = builder.build().unwrap();
-
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let vk_context = VkContext::new();
-    let context = DeviceContext::new(&vk_context);
+    let display_handle = event_loop
+        .display_handle()
+        .expect("winit: event loop has no raw display handle")
+        .as_raw();
+    let required_exts = ash_window::enumerate_required_extensions(display_handle)
+        .expect("ash_window: unknown platform");
+    let vk_context = VkContext::with_extensions(required_exts);
+
     let mut app = App {
         args,
         running: true,
-        context,
         vk_context,
 
         window: None,
-        surface_present: None,
+        surface: None,
+        device_context: None,
+        surface_present: None, // XXX separate
         render_node: None,
         raw_audio: audio::raw::RawAudioNode::new().unwrap(),
         cqt: audio::cqt::CqtNode::new(600, 48000, 60.0),

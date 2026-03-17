@@ -13,6 +13,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 ash = "0.38.0"
+ash-window = "0.13.0"
 bytemuck = "1.25.0"
 clap = "4.5.53"
 ctrlc = "3.5.1"

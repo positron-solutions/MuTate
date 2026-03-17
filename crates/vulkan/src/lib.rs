@@ -55,7 +55,7 @@
 //! ## Type Outline (The Plan)
 //!
 //! - Context
-//!   + Entry & instance
+//!   + Entry & Instance
 //!   + Devices
 //!     * Queue
 //!   + memory (just raw allocation)
@@ -115,6 +115,7 @@
 pub mod context;
 // pub mod dispatch;
 pub mod pipeline;
+pub mod present;
 pub mod resource;
 pub mod slang;
 pub mod util;
@@ -123,7 +124,11 @@ use ash::vk;
 
 pub mod prelude {
     pub use super::VulkanError;
-    pub use crate::context::DeviceContext;
+    pub use crate::context::{
+        vulkan::{HasPresentation, NoPresentation, SupportedDevice},
+        DeviceContext, VkContext,
+    };
+    pub use crate::present::surface::VkSurface;
 }
 
 // Re-export for slang's macros

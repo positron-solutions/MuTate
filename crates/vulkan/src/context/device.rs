@@ -15,15 +15,16 @@ use mutate_assets as assets;
 
 use super::descriptors;
 use super::queue;
-use super::vulkan;
+use super::vulkan::{self, HasPresentation, NoPresentation, SupportedDevice};
 
 pub struct DeviceContext {
     // XXX Wrap it up dawg
     pub physical_device: vk::PhysicalDevice,
     /// Vulkan logical device
     pub device: ash::Device,
-    /// Queues and command buffers for device in use.
+    /// Queues family info.
     pub queues: queue::Queues,
+    // NEXT work on abstracting this to memory decisions.
     pub memory_props: vk::PhysicalDeviceMemoryProperties,
     /// Descriptor table for
     pub descriptors: descriptors::Descriptors,
@@ -38,26 +39,25 @@ impl DeviceContext {
     ///
     /// NEXT Device initialization should be moved into a separate method to support UIs that
     /// enumerate and may even switch devices.
-    pub fn new(crap_o_context: &vulkan::VkContext) -> Self {
-        let vulkan::VkContext { entry, instance } = &crap_o_context;
+    pub fn new(
+        vk_context: &vulkan::VkContext,
+        supported_device: SupportedDevice<HasPresentation>,
+    ) -> Self {
+        let vulkan::VkContext { entry, instance } = &vk_context;
+        let physical_device = supported_device.device().clone();
 
-        let physical_devices = unsafe {
-            instance
-                .enumerate_physical_devices()
-                .expect("No Vulkan devices")
-        };
-        // NEXT support choices, via config, environment, and heuristics (discrete vs on-CPU)!)
-        let physical_device = physical_devices[0];
-
-        assert_physical_device_version(&instance, physical_device);
-        assert_physical_device_features(&instance, physical_device);
-
+        // DEBT currently the requirements and support checks are all hardcoded.  There is duplicate
+        // information in side of VkContext that needs to be runtime decided and then passed into
+        // this function to avoid the hardcode.
         let device_extensions = [
             vk::KHR_SWAPCHAIN_NAME.as_ptr(),
+            // MAYBE this is Windows only?  Evidently only old windows?
+            // vk::EXT_FULL_SCREEN_EXCLUSIVE_NAME.as_ptr(),
             vk::EXT_EXTENDED_DYNAMIC_STATE_NAME.as_ptr(),
             vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME.as_ptr(),
             vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME.as_ptr(),
-            vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
+            // XXX Remove / redundant
+            // vk::KHR_BUFFER_DEVICE_ADDRESS_NAME.as_ptr(),
             // NEXT better debug gating (see validation layer activation above).
             // Enables some debug functionality in shaders.
             vk::KHR_SHADER_NON_SEMANTIC_INFO_NAME.as_ptr(),
@@ -74,11 +74,13 @@ impl DeviceContext {
 
             // "gives an implementation the opportunity to reduce the number of indirections an
             // implementation takes to access uniform values, when only a few values are used"
-            vk::EXT_INLINE_UNIFORM_BLOCK_NAME.as_ptr(),
+            // XXX redundant
+            // vk::EXT_INLINE_UNIFORM_BLOCK_NAME.as_ptr(),
             // MAYBE So we can proactively change our memory behavior, downsampling etc.
             // vk::EXT_MEMORY_BUDGET_NAME.as_ptr(),
             // vk::EXT_MEMORY_PRIORITY_NAME.as_ptr(),
-            vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
+            // XXX redundant
+            // vk::KHR_TIMELINE_SEMAPHORE_NAME.as_ptr(),
             // ROLL VK_EXT_present_timing is still too new.  Support must be dynamic and... someone
             // needs a card / driver that supports it to develop the support.
             // vk::EXT_PRESENT_TIMING_NAME,
@@ -112,9 +114,11 @@ impl DeviceContext {
             vk::PhysicalDevicePresentWaitFeaturesKHR::default().present_wait(true);
 
         let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default()
+            .shader_draw_parameters(true)
             .storage_buffer16_bit_access(true)
             .storage_push_constant16(true)
-            .storage_input_output16(true)
+            // XXX remove this
+            // .storage_input_output16(true)
             .uniform_and_storage_buffer16_bit_access(true);
 
         let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default()
@@ -124,6 +128,8 @@ impl DeviceContext {
             .descriptor_binding_sampled_image_update_after_bind(true)
             .descriptor_binding_storage_buffer_update_after_bind(true)
             .descriptor_binding_storage_image_update_after_bind(true)
+            .descriptor_indexing(true)
+            .draw_indirect_count(true)
             .runtime_descriptor_array(true)
             .scalar_block_layout(true)
             .shader_float16(true)
@@ -131,11 +137,15 @@ impl DeviceContext {
             .shader_sampled_image_array_non_uniform_indexing(true)
             .shader_storage_buffer_array_non_uniform_indexing(true)
             .shader_storage_image_array_non_uniform_indexing(true)
+            .shader_uniform_buffer_array_non_uniform_indexing(true)
             .storage_buffer8_bit_access(true)
             .storage_push_constant8(true)
             .uniform_and_storage_buffer8_bit_access(true);
 
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default()
+            .compute_full_subgroups(true)
+            .dynamic_rendering(true)
+            .shader_demote_to_helper_invocation(true)
             .synchronization2(true)
             .maintenance4(true);
 
@@ -175,7 +185,7 @@ impl DeviceContext {
             queues,
             descriptors,
 
-            // XXX there is another context
+            // XXX there is another context where this will likely belong better.
             assets: assets::AssetDirs::new(),
         }
     }
@@ -184,6 +194,8 @@ impl DeviceContext {
         &self.device
     }
 
+    // XXX pass-through... uuuuuuuuugly though.  Not sure we want to do it like this at all....
+    // maybe hold on via another field.
     pub fn bind_sampled_image(
         &mut self,
         view: vk::ImageView,
@@ -202,89 +214,4 @@ impl DeviceContext {
             self.device.destroy_device(None);
         };
     }
-}
-
-fn assert_physical_device_version(instance: &ash::Instance, physical_device: vk::PhysicalDevice) {
-    let props = unsafe { instance.get_physical_device_properties(physical_device) };
-
-    let api_version = props.api_version;
-
-    let major = vk::api_version_major(api_version);
-    let minor = vk::api_version_minor(api_version);
-    let patch = vk::api_version_patch(api_version);
-
-    if major == 1 && minor < 3 {
-        panic!("Vulkan 1.3 required, found {}.{}.{}", major, minor, patch);
-    }
-}
-
-// NEXT return an error lol
-fn assert_physical_device_features(instance: &ash::Instance, physical_device: vk::PhysicalDevice) {
-    let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
-    let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
-    let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
-
-    let mut features2 = vk::PhysicalDeviceFeatures2::default()
-        .features(vk::PhysicalDeviceFeatures::default())
-        .push_next(&mut features_1_3)
-        .push_next(&mut features_1_2)
-        .push_next(&mut features_1_1);
-
-    unsafe {
-        instance.get_physical_device_features2(physical_device, &mut features2);
-    }
-
-    assert_eq!(features2.features.shader_int16, vk::TRUE);
-
-    assert_eq!(features_1_1.storage_buffer16_bit_access, vk::TRUE);
-    assert_eq!(features_1_1.storage_input_output16, vk::TRUE);
-    assert_eq!(features_1_1.storage_push_constant16, vk::TRUE);
-    assert_eq!(
-        features_1_1.uniform_and_storage_buffer16_bit_access,
-        vk::TRUE
-    );
-
-    assert_eq!(features_1_2.buffer_device_address, vk::TRUE);
-    assert_eq!(features_1_2.descriptor_binding_partially_bound, vk::TRUE);
-    assert_eq!(
-        features_1_2.descriptor_binding_sampled_image_update_after_bind,
-        vk::TRUE
-    );
-    assert_eq!(
-        features_1_2.descriptor_binding_storage_buffer_update_after_bind,
-        vk::TRUE
-    );
-    assert_eq!(
-        features_1_2.descriptor_binding_storage_image_update_after_bind,
-        vk::TRUE
-    );
-    assert_eq!(
-        features_1_2.descriptor_binding_variable_descriptor_count,
-        vk::TRUE
-    );
-    assert_eq!(features_1_2.runtime_descriptor_array, vk::TRUE);
-    assert_eq!(features_1_2.scalar_block_layout, vk::TRUE);
-    assert_eq!(features_1_2.shader_float16, vk::TRUE);
-    assert_eq!(features_1_2.shader_int8, vk::TRUE);
-    assert_eq!(
-        features_1_2.shader_sampled_image_array_non_uniform_indexing,
-        vk::TRUE
-    );
-    assert_eq!(
-        features_1_2.shader_storage_buffer_array_non_uniform_indexing,
-        vk::TRUE
-    );
-    assert_eq!(
-        features_1_2.shader_storage_image_array_non_uniform_indexing,
-        vk::TRUE
-    );
-    assert_eq!(features_1_2.storage_buffer8_bit_access, vk::TRUE);
-    assert_eq!(features_1_2.storage_push_constant8, vk::TRUE);
-    assert_eq!(
-        features_1_2.uniform_and_storage_buffer8_bit_access,
-        vk::TRUE
-    );
-
-    assert_eq!(features_1_3.maintenance4, vk::TRUE);
-    assert_eq!(features_1_3.synchronization2, vk::TRUE);
 }

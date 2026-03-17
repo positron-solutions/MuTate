@@ -192,7 +192,7 @@ impl SpectrumNode {
         input: &[crate::audio::cqt::Cqt],
         context: &crate::DeviceContext,
         // NEXT This extent is basically part of the target
-        extent: &vk::Extent2D,
+        extent: vk::Extent2D,
     ) {
         let cb = target.command_buffer;
         let device = context.device();
@@ -290,7 +290,7 @@ impl SpectrumNode {
             .barrier_compute_post(&cb, context);
 
         // Copy the buffer to the image.
-        let region = buffer::buffer_image_copy_full(*extent);
+        let region = buffer::buffer_image_copy_full(extent);
         unsafe {
             device.cmd_copy_buffer_to_image(
                 cb,

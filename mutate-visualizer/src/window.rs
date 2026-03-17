@@ -9,7 +9,6 @@
 //! windows, consider lifting this code into a shared module.
 
 use ash::{khr::xlib_surface, vk};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
 use mutate_lib::vulkan::context::VkContext;
@@ -19,7 +18,7 @@ use crate::Args;
 pub trait WindowExt {
     fn from_args(args: &Args, event_loop: &ActiveEventLoop) -> Window;
     fn toggle_fullscreen(&self);
-    fn surface(&self, vk_context: &VkContext) -> vk::SurfaceKHR;
+    fn render_size(&self) -> vk::Extent2D;
 }
 
 impl WindowExt for Window {
@@ -55,48 +54,11 @@ impl WindowExt for Window {
         }
     }
 
-    /// Use the Vulkan surface loader for this window's platform to return a surface ready for
-    /// rendering.
-    // DEBT platform specific, incomplete
-    fn surface(&self, vk_context: &VkContext) -> vk::SurfaceKHR {
-        let win_handle = self.window_handle().unwrap().as_raw();
-        let display_handle = self.display_handle().unwrap().as_raw();
-
-        match (win_handle, display_handle) {
-            (RawWindowHandle::Xlib(win_handle), RawDisplayHandle::Xlib(display_handle)) => {
-                let win_thing = win_handle.window;
-                let xlib_create_info = vk::XlibSurfaceCreateInfoKHR {
-                    window: win_thing.into(),
-                    dpy: display_handle.display.unwrap().as_ptr(),
-                    ..Default::default()
-                };
-                let xlib_surface_loader =
-                    xlib_surface::Instance::new(&vk_context.entry, &vk_context.instance);
-
-                unsafe { xlib_surface_loader.create_xlib_surface(&xlib_create_info, None) }
-                    .expect("Failed to create surface")
-            }
-            (RawWindowHandle::Wayland(win_handle), RawDisplayHandle::Wayland(display_handle)) => {
-                let wayland_create_info = vk::WaylandSurfaceCreateInfoKHR {
-                    display: display_handle.display.as_ptr(),
-                    surface: win_handle.surface.as_ptr(),
-                    ..Default::default()
-                };
-
-                let wayland_surface_loader = ash::khr::wayland_surface::Instance::new(
-                    &vk_context.entry,
-                    &vk_context.instance,
-                );
-
-                unsafe {
-                    wayland_surface_loader
-                        .create_wayland_surface(&wayland_create_info, None)
-                        .expect("Failed to create Wayland surface")
-                }
-            }
-            (_, _) => {
-                panic!("Unsupported surface type!");
-            }
+    fn render_size(&self) -> vk::Extent2D {
+        let size = self.inner_size();
+        vk::Extent2D {
+            width: size.width,
+            height: size.height,
         }
     }
 }
