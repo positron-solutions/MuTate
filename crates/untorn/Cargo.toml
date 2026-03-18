@@ -1,0 +1,13 @@
+[package]
+name = "mutate-untorn"
+description = "Make atomic structs that are protected from torn reads & writes."
+readme = "../README.md"
+
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]

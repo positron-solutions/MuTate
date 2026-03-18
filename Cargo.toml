@@ -53,6 +53,7 @@ mutate-macros = {path = "./crates/macros"}
 mutate-assets = {path = "./crates/assets"}
 mutate-vulkan = {path = "./crates/vulkan"}
 mutate-slide = {path = "./crates/slide"}
+mutate-untorn = {path = "./crates/untorn"}
 
 # Build fast dependencies
 [profile.dev.package."*"]
