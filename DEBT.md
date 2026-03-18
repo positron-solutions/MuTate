@@ -2,6 +2,27 @@
 
 This is a record of "crimes" and the plans to later un-crime them.  Debt specifically covers crimes that cost us more later the longer we keep doing them and the rationale to keep doing them for now.
 
+For more forward-looking feature
+[discussion](https://github.com/positron-solutions/MuTate/discussions), see
+Github.
+
+## Yee-Haw Index: 7 of 10 🤠
+
+This is a foreword.  Pick your favorite three-archetypes model, such as:
+
+- pioneers
+- settlers
+- town planners
+
+**This is absolutely not the time for town planners.**  If you can't ignore dirty code, move along or learn.  Code will change out from under things, and all your premature polishing will be for naught.  Brutal refactorings are welcome.  Last-write-wins.
+
+Put Clippy away.  Add `#[allow(unused)]` to your dirty tree and don't tell
+anyone.  Slop in the blanks.  Just be sure to encode some useful facts and
+preserve truth faster than you destroy it.  Write code for a 5 or 6 out of 10 so that we can get there.
+
+This phase will last until approximately the render graph API is being used and
+render crossfades are supported.
+
 # Currently Paying Down
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
