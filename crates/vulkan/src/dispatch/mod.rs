@@ -3,8 +3,7 @@
 
 //! # Dispatch
 //!
-//! Command buffers and you.
-//! This module encapsulates the valid lifecycle of a command buffer.  The
+//! Command buffers and you.  This module encapsulates the valid lifecycle of a command buffer.  The
 //! overall strategy can be described as **optionally typed** for callees.  Give any command buffer
 //! to ash bindings.  However, at internal API boundaries that are prone to abuse, typed buffers can
 //! be specified to prevent actual plausible mix-ups.
@@ -15,20 +14,22 @@
 //!   (unless you opt out by directly calling ash bindings).  The same guarantee is made for
 //!   a buffer requested as compute-only becoming used as graphics.
 //! - Command buffer recording lifecycles are enforced.
+//! - Just call `into_inner` if some contract is in the way for now.
 //!
 //! ## Lifecycle
 //!
 //! ```text
 //! Initial ──begin()──► Recording ──end()──► Executable ──submit()──► Pending
 //!                          │                                              │
-//!                     (commands)                                    (reset by pool)
+//!                     (commands)                                        (reset)
 //! ```
 //!
 //! State transitions are consuming — you cannot hold a `CommandBuffer<_, Recording>` and
 //! accidentally call `submit()` on it.  The raw handle is recoverable at any state via `Deref`.
-pub mod Compute;
-pub mod Graphics;
-pub mod Transfer;
+// pub mod compute;
+// pub mod graphics;
+pub mod sync;
+// pub mod transfer;
 
 use std::marker::PhantomData;
 
@@ -65,17 +66,20 @@ pub struct Executable;
 pub struct Pending;
 
 /// A command buffer parameterised by both capability (`Cap`) and lifecycle state (`State`).
-///
-/// Transitions are modelled as consuming methods that return the buffer in its new state,
-/// enforcing the correct call sequence at compile time.
+/// Type-state transitions are consuming.
+#[derive(Copy, Clone)]
 pub struct CommandBuffer<Cap, State> {
     raw: vk::CommandBuffer,
     _cap: PhantomData<Cap>,
     _state: PhantomData<State>,
 }
 
-impl CommandBuffer<Graphics, Initial> {
-    // XXX more stuff
+impl<Cap, State> CommandBuffer<Cap, State> {
+    /// Return a clone of the raw handle for any function calls not yet supported through contract.
+    #[inline]
+    pub fn raw(self) -> vk::CommandBuffer {
+        self.raw
+    }
 }
 
 impl<Cap> CommandBuffer<Cap, Initial> {
@@ -149,32 +153,39 @@ impl<Cap: ComputeCap, State> CommandBuffer<Cap, State> {
     }
 }
 
-/// Obtain a raw handle for usage with ash bindings.
-impl<Cap, State> std::ops::Deref for CommandBuffer<Cap, State> {
-    type Target = vk::CommandBuffer;
-    fn deref(&self) -> &vk::CommandBuffer {
-        &self.raw
-    }
+// XXX Command Context?
+/// omg,
+pub struct CommandPool {
+    pool: vk::CommandPool,
+    // buffers: [CommandBuffer<Cap, Initial>; N],
+    // _cap: PhantomData<Cap>,
 }
 
-/// Obtain a mutable raw handle for usage with ash bindings.
-impl<Cap, State> std::ops::DerefMut for CommandBuffer<Cap, State> {
-    fn deref_mut(&mut self) -> &mut vk::CommandBuffer {
-        &mut self.raw
+impl CommandPool {
+    pub fn new(context: &DeviceContext, frames: usize) -> Self {
+        // pub queue: vk::Queue,
+        // pub command_pool: vk::CommandPool,
+        todo!()
     }
+
+    pub fn destroy(&self, context: &DeviceContext) {
+        todo!()
+    }
+
+    // /// Reset and return the command buffer for the given frame index,
+    // /// ready to begin recording.
+    // pub fn reset(&mut self, context: &DeviceContext, frame: usize) -> &CommandBuffer<Cap, Initial> {
+    //     todo!()
+    // }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
 
-    fn needs_transfer(cmd: &mut impl TransferCommands) {
-        cmd.copy_buffer(0xDEAD, 0xBEEF, 1024);
-    }
-
-    fn needs_raw(cmd: &vk::CommandBuffer) {}
-
-    fn needs_raw_mut(cmd: &vk::CommandBuffer) {}
+    // fn needs_transfer(cmd: &mut impl TransferCommands) {
+    //     cmd.copy_buffer(0xDEAD, 0xBEEF, 1024);
+    // }
 
     trait Null: Sized {
         fn null() -> Self;
@@ -190,30 +201,10 @@ mod test {
         }
     }
 
-    #[test]
-    fn recording_borrow_downcast() {
-        let mut graphics_cmd: CommandBuffer<Graphics, Recording> = CommandBuffer::null();
-        let mut transfer_view = graphics_cmd.as_transfer();
-        needs_transfer(&mut transfer_view);
-    }
-
-    #[test]
-    fn recording_deref_raw() {
-        let mut graphics_cmd: CommandBuffer<Graphics, Recording> = CommandBuffer::null();
-        needs_raw(&graphics_cmd);
-        needs_raw_mut(&mut graphics_cmd);
-    }
-
-    #[test]
-    fn deref_raw_at_any_state() {
-        let initial: CommandBuffer<Graphics, Initial> = CommandBuffer::null();
-        needs_raw(&initial);
-
-        let executable: CommandBuffer<Graphics, Executable> = CommandBuffer {
-            raw: vk::CommandBuffer::null(),
-            _cap: PhantomData,
-            _state: PhantomData,
-        };
-        needs_raw(&executable);
-    }
+    // #[test]
+    // fn recording_borrow_downcast() {
+    //     let mut graphics_cmd: CommandBuffer<Graphics, Recording> = CommandBuffer::null();
+    //     let mut transfer_view = graphics_cmd.as_transfer();
+    //     needs_transfer(&mut transfer_view);
+    // }
 }

@@ -16,9 +16,11 @@
 // XXX move into Vulkan!
 use std::slice;
 
+use ash::khr::present_wait;
 use ash::vk;
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
+use mutate_lib::vulkan::dispatch::sync;
 use mutate_lib::{self as utate, prelude::*};
 
 use crate::window::WindowExt;
@@ -44,6 +46,8 @@ pub struct SurfacePresent {
     pub image_available_semaphores: Vec<vk::Semaphore>,
     pub in_flight_fences: Vec<vk::Fence>,
     pub render_finished_semaphores: Vec<vk::Semaphore>,
+    /// Present wait measurement
+    pub present: sync::PresentConsumer,
 
     pub swapchain_loader: ash::khr::swapchain::Device,
     pub swapchain: vk::SwapchainKHR,
@@ -55,7 +59,7 @@ pub struct SurfacePresent {
 
 impl SurfacePresent {
     pub fn new(
-        context: &DeviceContext,
+        device_context: &DeviceContext,
         vk_context: &VkContext,
         surface: &VkSurface,
         extent: vk::Extent2D,
@@ -63,7 +67,7 @@ impl SurfacePresent {
         let VkContext { entry, instance } = &vk_context;
         // XXX device_context method?
         let swapchain_loader =
-            ash::khr::swapchain::Device::new(&vk_context.instance, &context.device());
+            ash::khr::swapchain::Device::new(&vk_context.instance, &device_context.device());
         // XXX the images are not actually being counted
         let swapchain_info = vk::SwapchainCreateInfoKHR {
             surface: surface.as_raw(),
@@ -105,7 +109,12 @@ impl SurfacePresent {
                     },
                     ..Default::default()
                 };
-                unsafe { context.device.create_image_view(&view_info, None).unwrap() }
+                unsafe {
+                    device_context
+                        .device
+                        .create_image_view(&view_info, None)
+                        .unwrap()
+                }
             })
             .collect();
 
@@ -115,7 +124,12 @@ impl SurfacePresent {
         };
 
         let in_flight_fences: Vec<vk::Fence> = (0..3)
-            .map(|_| unsafe { context.device().create_fence(&fence_info, None).unwrap() })
+            .map(|_| unsafe {
+                device_context
+                    .device()
+                    .create_fence(&fence_info, None)
+                    .unwrap()
+            })
             .collect();
 
         let semaphore_info = vk::SemaphoreCreateInfo::default();
@@ -123,7 +137,7 @@ impl SurfacePresent {
         // FIXME propagate image counts
         let image_available_semaphores = (0..3)
             .map(|_| unsafe {
-                context
+                device_context
                     .device()
                     .create_semaphore(&semaphore_info, None)
                     .unwrap()
@@ -132,14 +146,14 @@ impl SurfacePresent {
 
         let render_finished_semaphores = (0..3)
             .map(|_| unsafe {
-                context
+                device_context
                     .device()
                     .create_semaphore(&semaphore_info, None)
                     .unwrap()
             })
             .collect();
 
-        let command_pool = context.queues.graphics_pool();
+        let command_pool = device_context.queues.graphics_pool();
 
         let alloc_info = vk::CommandBufferAllocateInfo {
             command_pool: command_pool,
@@ -148,11 +162,14 @@ impl SurfacePresent {
         };
 
         let command_buffers = unsafe {
-            context
+            device_context
                 .device
                 .allocate_command_buffers(&alloc_info)
                 .unwrap()
         };
+
+        let present = sync::PresentConsumer::new(vk_context, device_context, swapchain)
+            .expect("Could not start up the present wait gizmo");
 
         Self {
             swapchain,
@@ -166,6 +183,8 @@ impl SurfacePresent {
             image_available_semaphores,
             in_flight_fences,
             render_finished_semaphores,
+
+            present,
         }
     }
 
@@ -262,6 +281,8 @@ impl SurfacePresent {
                     device.create_image_view(&view_info, None).unwrap()
                 })
                 .collect();
+
+            self.present.notify_swapchain_recreation(swapchain);
 
             self.swapchain = swapchain;
             self.swapchain_images = images;
@@ -467,10 +488,22 @@ impl SurfacePresent {
                 .unwrap();
         }
 
+        match self.present.read_last_present() {
+            Some(last) => {
+                if last.last_window != std::time::Duration::MAX {
+                    println!("present duration: {:8.0}", last.last_window.as_micros())
+                }
+            }
+            None => {}
+        }
+        let next_id = self.present.next_present_id();
+        let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
+
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(slice::from_ref(&sync.render_finished))
             .swapchains(slice::from_ref(&self.swapchain))
-            .image_indices(slice::from_ref(&sync.image_index));
+            .image_indices(slice::from_ref(&sync.image_index))
+            .push_next(&mut present_id);
 
         // XXX REMOVE to get rid of almost all window tangling
         // XXX break up this method into two, right here.
@@ -486,5 +519,6 @@ impl SurfacePresent {
                 Err(result) => eprintln!("presentation error: {:?}", result),
             };
         }
+        self.present.notify_waiter();
     }
 }
