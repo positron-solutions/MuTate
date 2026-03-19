@@ -26,6 +26,49 @@ pub struct VkContext {
     pub instance: ash::Instance,
 }
 
+// Waiting for this to hit ash?
+pub const KHR_PRESENT_TIMING_NAME: &CStr = c"VK_EXT_present_timing";
+// DEBT currently the requirements and support checks are all hardcoded.  There is duplicate
+// information in side of VkContext that needs to be runtime decided and then passed into
+// this function to avoid the hardcode.
+pub(crate) const DEVICE_EXTENSIONS: [&CStr; 8] = [
+    vk::KHR_SWAPCHAIN_NAME,
+    // MAYBE this is Windows only?  Evidently only old windows?
+    // vk::EXT_FULL_SCREEN_EXCLUSIVE_NAME,
+    vk::EXT_EXTENDED_DYNAMIC_STATE_NAME,
+    vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME,
+    vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME,
+    // XXX Remove / redundant
+    // vk::KHR_BUFFER_DEVICE_ADDRESS_NAME,
+    // NEXT better debug gating (see validation layer activation above).
+    // Enables some debug functionality in shaders.
+    vk::KHR_SHADER_NON_SEMANTIC_INFO_NAME,
+    vk::EXT_TOOLING_INFO_NAME,
+    // MAYBE I might just need to install something, but this fails at runtime on my machine.
+    // vk::EXT_DEBUG_UTILS_NAME,
+
+    // MAYBE If we start running into lots of pipeline creation costs for slight variants,
+    // we are advised to look at this extension.
+    // vk::EXT_GRAPHICS_PIPELINE_LIBRARY_NAME,
+    // ROLL holding off on this until other hardware vendors have supporting drivers.  This
+    // is another path to reducing the cost of pipeline combinatorics.
+    // vk::EXT_SHADER_OBJECT_NAME,
+
+    // "gives an implementation the opportunity to reduce the number of indirections an
+    // implementation takes to access uniform values, when only a few values are used"
+    // XXX redundant
+    // vk::EXT_INLINE_UNIFORM_BLOCK_NAME,
+    // MAYBE So we can proactively change our memory behavior, downsampling etc.
+    // vk::EXT_MEMORY_BUDGET_NAME,
+    // vk::EXT_MEMORY_PRIORITY_NAME,
+    // XXX redundant
+    // vk::KHR_TIMELINE_SEMAPHORE_NAME,
+    // ROLL VK_EXT_present_timing is still too new.  I have no supported devices / drivers yet.
+    // KHR_PRESENT_TIMING_NAME,
+    vk::KHR_PRESENT_WAIT_NAME,
+    vk::KHR_PRESENT_ID_NAME,
+];
+
 // DEBT Errors instead of panics, but that might require a lot of test re-writing that should be
 // done with macros to ease future pain.
 impl VkContext {
@@ -107,7 +150,7 @@ impl VkContext {
                     let minor = vk::api_version_minor(props.api_version);
                     major > 1 || (major == 1 && minor >= 3)
                 };
-                (meets_version && self.device_meets_features(physical_device)).then_some((physical_device, props))
+                (meets_version && self.device_meets_features(physical_device) && self.device_meets_extensions(physical_device)).then_some((physical_device, props))
             })
             .collect();
         physical_devices.sort_by_key(|(physical_device, props)| {
@@ -133,6 +176,7 @@ impl VkContext {
     }
 
     fn device_meets_features(&self, physical_device: vk::PhysicalDevice) -> bool {
+
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
         let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
         let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
@@ -215,6 +259,49 @@ impl VkContext {
         let minor = vk::api_version_minor(api_version);
 
         major > 1 || (major == 1 && minor >= 3)
+    }
+
+    fn device_meets_extensions (&self, physical_device: vk::PhysicalDevice) -> bool {
+        let available_device_extensions = unsafe {
+            self.instance
+                .enumerate_device_extension_properties(physical_device)
+                .expect("Failed to enumerate device extensions")
+        };
+
+        let missing: Vec<&CStr> = DEVICE_EXTENSIONS
+            .iter()
+            .filter_map(|req| {
+                let found = available_device_extensions.iter().any(|ext| unsafe {
+                    let ext_cstr = CStr::from_ptr(ext.extension_name.as_ptr());
+                    let req_cstr = CStr::from_ptr(req.as_ptr());
+                    ext_cstr == req_cstr
+                });
+                if found {
+                    None
+                } else {
+                    Some(*req)
+                }
+            })
+            .collect();
+
+        if missing.is_empty() {
+            true
+        } else {
+            // DEBT logging.  We could return an error but it's not an error for a device to be
+            // missing functionality, only for all devices to be missing some functionality.
+            #[cfg(debug_assertions)]
+            {
+                let props = unsafe {
+                    self.instance.get_physical_device_properties(physical_device)
+                };
+                let name = unsafe { std::ffi::CStr::from_ptr(props.device_name.as_ptr()) };
+                println!("Physical device: {}", name.to_string_lossy());
+                for m in missing {
+                    println!("missing extension: {}", m.to_string_lossy())
+                }
+            }
+            false
+        }
     }
 
     pub fn destroy(&self) {
