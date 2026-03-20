@@ -98,7 +98,11 @@ impl App {
         // Presentation closes the command buffer, submits to queue, transforms image, and presents.
         // Also waits on presentation.
         let window = self.window.as_ref().unwrap();
-        sp.post_draw(device_context, sync, target, window);
+        sp.post_draw(device_context, &sync, &target);
+        // Winit says this helps align the window system latching with REDRAW_REQUESTED events.
+        // However, it is supported only on Wayland at this time.
+        window.pre_present_notify();
+        sp.present(device_context, &sync);
     }
 }
 

@@ -14,12 +14,9 @@ use std::slice;
 
 use ash::khr::present_wait;
 use ash::vk;
-use winit::{event_loop::ActiveEventLoop, window::Window};
 
 use mutate_lib::vulkan::dispatch::sync;
 use mutate_lib::{self as utate, prelude::*};
-
-use crate::window::WindowExt;
 
 pub struct DrawSync {
     pub render_finished: vk::Semaphore,
@@ -397,13 +394,7 @@ impl SurfacePresent {
     }
 
     /// Sync presentation image transform and present
-    pub fn post_draw(
-        &mut self,
-        context: &DeviceContext,
-        sync: DrawSync,
-        target: DrawTarget,
-        window: &Window,
-    ) {
+    pub fn post_draw(&mut self, context: &DeviceContext, sync: &DrawSync, target: &DrawTarget) {
         let device = context.device();
 
         // XXX Needed for graphics
@@ -488,7 +479,10 @@ impl SurfacePresent {
                 .queue_submit2(*queue, &[submit], vk::Fence::null())
                 .unwrap();
         }
+    }
 
+    pub fn present(&mut self, device_context: &DeviceContext, sync: &DrawSync) {
+        let queue = &device_context.queues.graphics_queue();
         match self.present.read_last_present() {
             Some(last) => {
                 // if last.last_window != std::time::Duration::MAX {
@@ -499,18 +493,11 @@ impl SurfacePresent {
         }
         let next_id = self.present.next_present_id();
         let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
-
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(slice::from_ref(&sync.render_finished))
             .swapchains(slice::from_ref(&self.swapchain))
             .image_indices(slice::from_ref(&sync.image_index))
             .push_next(&mut present_id);
-
-        // XXX REMOVE to get rid of almost all window tangling
-        // XXX break up this method into two, right here.
-        // Winit says this helps align the window system latching with REDRAW_REQUESTED events.
-        // However, it is supported only on Wayland at this time.
-        window.pre_present_notify();
 
         unsafe {
             match self.swapchain_loader.queue_present(*queue, &present_info) {
