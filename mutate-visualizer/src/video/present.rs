@@ -5,10 +5,6 @@
 // all render targets need presentation, but a swapchain does.  Aligning the fields and structs with
 // this abstraction is underway.
 
-// NEXT It is said that we can replace most of the fences with timeline semaphores.  Not sure what
-// extensions are involved, but if so, it would be preferable to synchronize on the more flexible
-// timeline semaphores.
-
 // NEXT enable options for variable and fixed frame rate rendering, likely using MAILBOX for
 // variable and FIFO for fixed rate.  This requires looking at the actual swapchain image count
 // before allocating per-image resources like command buffers.
@@ -25,9 +21,7 @@ use mutate_lib::{self as utate, prelude::*};
 
 use crate::window::WindowExt;
 
-// XXX less bad.  consider if we can use timeline semaphores
 pub struct DrawSync {
-    pub in_flight: vk::Fence,
     pub render_finished: vk::Semaphore,
     pub image_available: vk::Semaphore,
     pub image_index: u32,
@@ -44,7 +38,9 @@ pub struct SurfacePresent {
     pub frames: usize,
     pub frame_index: usize,
     pub image_available_semaphores: Vec<vk::Semaphore>,
-    pub in_flight_fences: Vec<vk::Fence>,
+    pub frame_counter: u64,
+    pub in_flight: vk::Semaphore,
+
     pub render_finished_semaphores: Vec<vk::Semaphore>,
     /// Present wait measurement
     pub present: sync::PresentConsumer,
@@ -119,22 +115,20 @@ impl SurfacePresent {
             })
             .collect();
 
-        let fence_info = vk::FenceCreateInfo {
-            flags: vk::FenceCreateFlags::SIGNALED,
+        let mut type_ci = vk::SemaphoreTypeCreateInfo {
+            semaphore_type: vk::SemaphoreType::TIMELINE,
+            initial_value: 0,
             ..Default::default()
         };
-
-        let in_flight_fences: Vec<vk::Fence> = (0..3)
-            .map(|_| unsafe {
-                device_context
-                    .device()
-                    .create_fence(&fence_info, None)
-                    .unwrap()
-            })
-            .collect();
+        let semaphore_ci = vk::SemaphoreCreateInfo::default().push_next(&mut type_ci);
+        let in_flight = unsafe {
+            device_context
+                .device()
+                .create_semaphore(&semaphore_ci, None)
+                .unwrap()
+        };
 
         let semaphore_info = vk::SemaphoreCreateInfo::default();
-
         // FIXME propagate image counts
         let image_available_semaphores = (0..3)
             .map(|_| unsafe {
@@ -182,8 +176,9 @@ impl SurfacePresent {
             frame_index: 0,
             command_buffers,
             image_available_semaphores,
-            in_flight_fences,
             render_finished_semaphores,
+            frame_counter: 0,
+            in_flight,
 
             present,
         }
@@ -203,9 +198,7 @@ impl SurfacePresent {
             self.render_finished_semaphores.iter().for_each(|s| {
                 device.destroy_semaphore(*s, None);
             });
-            self.in_flight_fences.iter().for_each(|f| {
-                device.destroy_fence(*f, None);
-            });
+            device.destroy_semaphore(self.in_flight, None);
         }
     }
 
@@ -292,18 +285,17 @@ impl SurfacePresent {
         }
     }
 
-    // XXX Needs to use self-pacing deadline timing stuff.
-    /// Wait for the last queue submission to clear.
-    pub fn draw_wait(&mut self, context: &DeviceContext) {
-        let device = &context.device;
-        let idx = self.frame_index as usize;
-        let in_flight = self.in_flight_fences[idx];
+    /// XXX self pacing still not yet integrated
+    pub fn draw_wait(&mut self, device_context: &DeviceContext) {
+        let wait_value = self.frame_counter;
+        let wait_info = vk::SemaphoreWaitInfo::default()
+            .semaphores(slice::from_ref(&self.in_flight))
+            .values(slice::from_ref(&wait_value));
         unsafe {
-            device
-                .wait_for_fences(&[in_flight], true, u64::MAX)
+            device_context
+                .device()
+                .wait_semaphores(&wait_info, u64::MAX)
                 .unwrap();
-
-            device.reset_fences(&[in_flight]).unwrap();
         }
     }
 
@@ -317,7 +309,6 @@ impl SurfacePresent {
         let idx = self.frame_index as usize;
         let image_available = self.image_available_semaphores[idx];
         let render_finished = self.render_finished_semaphores[idx];
-        let in_flight = self.in_flight_fences[idx];
         self.frame_index = (idx + 1) % self.frames;
 
         let (image_index, _) = unsafe {
@@ -333,7 +324,6 @@ impl SurfacePresent {
 
         let sync = DrawSync {
             image_available,
-            in_flight,
             render_finished,
             image_index,
         };
@@ -459,18 +449,27 @@ impl SurfacePresent {
                 .unwrap()
         };
 
-        // NEXT submission info looks pretty predictable
         let wait_info = vk::SemaphoreSubmitInfo {
             semaphore: sync.image_available,
             stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             ..Default::default()
         };
 
-        let signal_info = vk::SemaphoreSubmitInfo {
-            semaphore: sync.render_finished,
-            stage_mask: vk::PipelineStageFlags2::ALL_GRAPHICS,
-            ..Default::default()
-        };
+        let next_value = self.frame_counter + 1;
+        self.frame_counter = next_value;
+        let in_flight = vk::SemaphoreSubmitInfo::default()
+            .semaphore(self.in_flight)
+            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .value(next_value);
+
+        let signal_infos = [
+            vk::SemaphoreSubmitInfo {
+                semaphore: sync.render_finished,
+                stage_mask: vk::PipelineStageFlags2::ALL_GRAPHICS,
+                ..Default::default()
+            },
+            in_flight,
+        ];
 
         let cb_info = vk::CommandBufferSubmitInfo {
             command_buffer: target.command_buffer,
@@ -479,14 +478,14 @@ impl SurfacePresent {
 
         let submit = vk::SubmitInfo2::default()
             .wait_semaphore_infos(slice::from_ref(&wait_info))
-            .signal_semaphore_infos(slice::from_ref(&signal_info))
+            .signal_semaphore_infos(&signal_infos)
             .command_buffer_infos(slice::from_ref(&cb_info));
 
         let queue = &context.queues.graphics_queue();
         unsafe {
             context
                 .device()
-                .queue_submit2(*queue, &[submit], sync.in_flight)
+                .queue_submit2(*queue, &[submit], vk::Fence::null())
                 .unwrap();
         }
 

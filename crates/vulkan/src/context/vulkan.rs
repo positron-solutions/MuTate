@@ -73,6 +73,7 @@ pub(crate) const DEVICE_EXTENSIONS: &[&CStr] = &[
     vk::KHR_PRESENT_ID_NAME,
     // ROLL VK_EXT_present_timing is still too new.  I have no supported devices / drivers yet.
     // KHR_PRESENT_TIMING_NAME,
+    vk::EXT_SWAPCHAIN_MAINTENANCE1_NAME,
 
     // MAYBE this is Windows only?  Evidently only old windows?
     // vk::EXT_FULL_SCREEN_EXCLUSIVE_NAME,
@@ -261,6 +262,7 @@ impl VkContext {
             ("1.2 shader_uniform_buffer_array_non_uniform_indexing",    features_1_2.shader_uniform_buffer_array_non_uniform_indexing == vk::TRUE),
             ("1.2 storage_buffer8_bit_access",                          features_1_2.storage_buffer8_bit_access == vk::TRUE),
             ("1.2 storage_push_constant8",                              features_1_2.storage_push_constant8 == vk::TRUE),
+            ("1.2 timeline_sempahore",                                  features_1_2.timeline_semaphore == vk::TRUE),
             ("1.2 uniform_and_storage_buffer8_bit_access",              features_1_2.uniform_and_storage_buffer8_bit_access == vk::TRUE),
             ("1.3 compute_full_subgroups",                              features_1_3.compute_full_subgroups == vk::TRUE),
             ("1.3 dynamic_rendering",                                   features_1_3.dynamic_rendering == vk::TRUE),

@@ -75,6 +75,7 @@ impl DeviceContext {
             .shader_uniform_buffer_array_non_uniform_indexing(true)
             .storage_buffer8_bit_access(true)
             .storage_push_constant8(true)
+            .timeline_semaphore(true)
             .uniform_and_storage_buffer8_bit_access(true);
 
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default()
