@@ -127,10 +127,10 @@ impl ApplicationHandler for App {
         };
         // NOTE while we can create the surface before we have a logical device,
         // Get the surface support
-        let supported_devices: Vec<SupportedDevice<HasPresentation>> = vk_context
-            .supported_devices()
+        let supported_devices: Vec<SupportedDevice> = vk_context
+            .supported_devices(&[])
             .into_iter()
-            .filter_map(|sd| sd.with_surface_support(surface, &vk_context))
+            .filter(|sd| sd.supports_surface(surface, &vk_context))
             .collect();
         if supported_devices.is_empty() {
             panic!("main: no devices supporting surface found.");
@@ -141,7 +141,7 @@ impl ApplicationHandler for App {
         // might be dynamic over surface lifetime(?)
         let surface = VkSurface::new(surface, vk_context, selected.device());
         // Inspect devices for present queue support and other support
-        let device_context = DeviceContext::new(&vk_context, selected);
+        let device_context = selected.into_logical(&vk_context);
         let fallback = window.render_size();
         let extent = surface
             .resolve_size(&device_context, Some(fallback))

@@ -19,6 +19,7 @@ use ash::vk;
 use mutate_assets as assets;
 
 use crate::present::surface::VkSurface;
+use super::device;
 
 /// The entry and instance represent a connection to the Vulkan implementation.
 pub struct VkContext {
@@ -26,20 +27,19 @@ pub struct VkContext {
     pub instance: ash::Instance,
 }
 
-// Waiting for this to hit ash?
-pub const KHR_PRESENT_TIMING_NAME: &CStr = c"VK_EXT_present_timing";
-// DEBT currently the requirements and support checks are all hardcoded.  There is duplicate
-// information in side of VkContext that needs to be runtime decided and then passed into
-// this function to avoid the hardcode.
-pub(crate) const DEVICE_EXTENSIONS: [&CStr; 8] = [
-    vk::KHR_SWAPCHAIN_NAME,
-    // MAYBE this is Windows only?  Evidently only old windows?
-    // vk::EXT_FULL_SCREEN_EXCLUSIVE_NAME,
+const INSTANCE_EXTENSIONS: &[&CStr] = &[
+  c"VK_KHR_surface"
+];
+
+/// Required extensions for core behaviors.  You may request additional features via
+/// [`supported_devices`].
+// Waiting for this value to show up in ash
+// pub(crate) const KHR_PRESENT_TIMING_NAME: &CStr = c"VK_EXT_present_timing";
+// DEBT currently the requirements and support checks are all hardcoded.
+pub(crate) const DEVICE_EXTENSIONS: &[&CStr] = &[
     vk::EXT_EXTENDED_DYNAMIC_STATE_NAME,
     vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME,
     vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME,
-    // XXX Remove / redundant
-    // vk::KHR_BUFFER_DEVICE_ADDRESS_NAME,
     // NEXT better debug gating (see validation layer activation above).
     // Enables some debug functionality in shaders.
     vk::KHR_SHADER_NON_SEMANTIC_INFO_NAME,
@@ -58,16 +58,28 @@ pub(crate) const DEVICE_EXTENSIONS: [&CStr; 8] = [
     // implementation takes to access uniform values, when only a few values are used"
     // XXX redundant
     // vk::EXT_INLINE_UNIFORM_BLOCK_NAME,
-    // MAYBE So we can proactively change our memory behavior, downsampling etc.
-    // vk::EXT_MEMORY_BUDGET_NAME,
-    // vk::EXT_MEMORY_PRIORITY_NAME,
     // XXX redundant
     // vk::KHR_TIMELINE_SEMAPHORE_NAME,
-    // ROLL VK_EXT_present_timing is still too new.  I have no supported devices / drivers yet.
-    // KHR_PRESENT_TIMING_NAME,
+    // XXX Remove / redundant
+    // vk::KHR_BUFFER_DEVICE_ADDRESS_NAME,
+
+    vk::EXT_MEMORY_BUDGET_NAME,
+    vk::EXT_MEMORY_PRIORITY_NAME,
+
+    vk::KHR_SWAPCHAIN_NAME,
     vk::KHR_PRESENT_WAIT_NAME,
     vk::KHR_PRESENT_ID_NAME,
+    // ROLL VK_EXT_present_timing is still too new.  I have no supported devices / drivers yet.
+    // KHR_PRESENT_TIMING_NAME,
+
+    // MAYBE this is Windows only?  Evidently only old windows?
+    // vk::EXT_FULL_SCREEN_EXCLUSIVE_NAME,
 ];
+
+// Useful for CI tests later.
+// pub const EXTENSIONS_HEADLESS: &[&CStr] = &[
+//     vk::EXT_HEADLESS_SURFACE_NAME,
+// ];
 
 // DEBT Errors instead of panics, but that might require a lot of test re-writing that should be
 // done with macros to ease future pain.
@@ -86,26 +98,35 @@ impl VkContext {
     /// let required = ash_window::enumerate_required_extensions(event_loop);
     /// let vk_context = VkContext::with_extensions(required)
     /// ```
-    pub fn with_extensions (required_exts: &'static [*const c_char]) -> Self {
+    pub fn with_extensions (required_exts: &[*const i8]) -> Self {
         let entry = unsafe { ash::Entry::load().expect("failed to load Vulkan library") };
-        assert_loader_version(&entry); // Checks 1.3+
-        let available_entry_extensions = unsafe {
+
+        // XXX Was about to add some explicit errors, but need to stabilize for mass text replace of
+        // the non-Result signatures.
+        let v = unsafe { entry.try_enumerate_instance_version() }
+            .expect("Vulkan Loader does not support Vulkan 1.3")
+            .expect("Vulkan Loader does not support Vulkan 1.3");
+        (v >= vk::make_api_version(0, 1, 3, 0))
+            .then_some(())
+            .expect("Vulkan Loader does not support Vulkan 1.3");
+
+        let available_instance_extensions = unsafe {
             entry
                 .enumerate_instance_extension_properties(None)
                 .expect("Failed to enumerate instance extensions")
         };
-        let available_names: Vec<&CStr> = available_entry_extensions
-            .iter()
-            .map(|ext| unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) })
-            .collect();
-        for req in required_exts.iter() {
-            let req_cstr = unsafe { CStr::from_ptr(*req) };
-            assert!(
-                available_names.contains(&req_cstr),
-                "Required Vulkan extension {:?} not found",
-                req_cstr
-            );
-        }
+        for req in required_exts.iter().copied()
+            .map(|p| unsafe { CStr::from_ptr(p) })
+            .chain(INSTANCE_EXTENSIONS.iter().copied())
+            {
+                assert!(
+                    available_instance_extensions.iter().any(|ext| {
+                        let name = unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) };
+                        name == req
+                    }),
+                    "Required Vulkan instance extension {req:?} not found"
+                );
+            }
 
         let app_info =
             vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
@@ -115,9 +136,13 @@ impl VkContext {
             // builds and we need to default to leaving it on via the dev shells or something.
             c"VK_LAYER_KHRONOS_validation".as_ptr()
         ];
+
+        let ext_ptrs: Vec<*const i8> = required_exts.iter().copied()
+            .chain(INSTANCE_EXTENSIONS.iter().map(|s| s.as_ptr()))
+            .collect();
         let instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
-            .enabled_extension_names(&required_exts)
+            .enabled_extension_names(&ext_ptrs)
             .enabled_layer_names(&validation_layers);
         let instance = unsafe { entry.create_instance(&instance_ci, None).unwrap() };
         Self {
@@ -135,11 +160,21 @@ impl VkContext {
     ///
     /// Later filters can check queue families for presentation support, such as when rendering to a
     /// surface.  This can also be used to create prompts for the user.
-    pub fn supported_devices(&self) -> Vec<SupportedDevice<NoPresentation>> {
+    ///
+    /// `extensions` are optional extra extensions that will be appended to [`DEVICE_EXTENSIONS`].
+    pub fn supported_devices(&self, extensions: &[&'static CStr]) -> Vec<SupportedDevice> {
         let physical_devices = unsafe {
             self.instance
                 .enumerate_physical_devices()
                 .expect("No physical devices with Vulkan support found")
+        };
+        let extensions: Vec<&'static CStr> = if extensions.is_empty() {
+            DEVICE_EXTENSIONS.iter().copied().collect()
+        } else {
+            DEVICE_EXTENSIONS.iter()
+                .chain(extensions.iter())
+                .copied()
+                .collect()
         };
         let mut physical_devices: Vec<(vk::PhysicalDevice, vk::PhysicalDeviceProperties)> = physical_devices
             .into_iter()
@@ -150,7 +185,10 @@ impl VkContext {
                     let minor = vk::api_version_minor(props.api_version);
                     major > 1 || (major == 1 && minor >= 3)
                 };
-                (meets_version && self.device_meets_features(physical_device) && self.device_meets_extensions(physical_device)).then_some((physical_device, props))
+                (meets_version
+                    && self.device_meets_features(physical_device)
+                    && self.device_meets_extensions(physical_device, &extensions))
+                    .then_some((physical_device, props))
             })
             .collect();
         physical_devices.sort_by_key(|(physical_device, props)| {
@@ -171,7 +209,7 @@ impl VkContext {
         });
         physical_devices
             .into_iter()
-            .map(|(physical_device, _)| SupportedDevice::<NoPresentation>::new(physical_device, self))
+            .map(|(physical_device, _)| SupportedDevice::new(physical_device, self, &extensions))
             .collect()
     }
 
@@ -261,26 +299,25 @@ impl VkContext {
         major > 1 || (major == 1 && minor >= 3)
     }
 
-    fn device_meets_extensions (&self, physical_device: vk::PhysicalDevice) -> bool {
+    fn device_meets_extensions (&self,
+        physical_device: vk::PhysicalDevice,
+        extensions: &[&CStr]
+    ) -> bool {
         let available_device_extensions = unsafe {
             self.instance
                 .enumerate_device_extension_properties(physical_device)
                 .expect("Failed to enumerate device extensions")
         };
 
-        let missing: Vec<&CStr> = DEVICE_EXTENSIONS
+        let missing: Vec<&CStr> = extensions
             .iter()
             .filter_map(|req| {
-                let found = available_device_extensions.iter().any(|ext| unsafe {
-                    let ext_cstr = CStr::from_ptr(ext.extension_name.as_ptr());
-                    let req_cstr = CStr::from_ptr(req.as_ptr());
-                    ext_cstr == req_cstr
+                let found = available_device_extensions.iter().any(|ext| {
+                    ext.extension_name_as_c_str()
+                        .map(|name| name == *req)
+                        .unwrap_or(false)
                 });
-                if found {
-                    None
-                } else {
-                    Some(*req)
-                }
+                if found { None } else { Some(*req) }
             })
             .collect();
 
@@ -316,6 +353,8 @@ impl VkContext {
 /// # Usage
 ///
 /// ```rust
+/// use mutate_vulkan::with_context;
+///
 /// // With context only:
 /// with_context!(|context| {
 ///     // `context: DeviceContext` is available here
@@ -330,16 +369,18 @@ impl VkContext {
 #[macro_export]
 macro_rules! with_context {
     (|$context:ident| $($body:tt)*) => {{
-        let mut vk_context = $crate::context::VkContext::new();
-        let mut $context = $crate::context::DeviceContext::new(&vk_context);
+        let mut vk_context = $crate::context::VkContext::with_extensions(&[]);
+        let mut physical_device = vk_context.supported_devices(&[]).remove(0);
+        let mut $context = physical_device.into_logical(&vk_context);
         let __result = (|| { $($body)* })();
         $context.destroy();
         vk_context.destroy();
         __result
     }};
-    (|$context:ident, mut $vk_context:ident| $($body:tt)*) => {{
-        let mut $vk_context = $crate::context::VkContext::new();
-        let mut $context = $crate::context::DeviceContext::new(&$vk_context);
+    (|$context:ident, $vk_context:ident| $($body:tt)*) => {{
+        let mut $vk_context = $crate::context::VkContext::with_extensions(&[]);
+        let mut physical_device = $vk_context.supported_devices(&[]).remove(0);
+        let mut $context = physical_device.into_logical(&$vk_context);
         let __result = (|| { $($body)* })();
         $context.destroy();
         $vk_context.destroy();
@@ -347,35 +388,24 @@ macro_rules! with_context {
     }};
 }
 
-fn assert_loader_version (entry: &ash::Entry) {
-    let loader_version = unsafe {
-        entry.try_enumerate_instance_version()
-            .unwrap_or(Some(vk::make_api_version(0, 1, 0, 0)))
-            .unwrap()
-    };
-
-    if loader_version < vk::make_api_version(0, 1, 3, 0) {
-        panic!("Loader does not support Vulkan 1.3");
-    }
-}
-
-/// Marker type for `SupportedDevice`s that have been inspected for queue family support for a
-/// surface.
 #[derive(Debug, Clone)]
-pub struct HasPresentation {queue_families: Vec<u32>}
-/// Marker type for `SupportedDevice`s without any checked surface support.
-#[derive(Debug, Clone)]
-pub struct NoPresentation {}
-
-#[derive(Debug, Clone)]
-pub struct SupportedDevice<P = NoPresentation> {
+/// Query physical devices from the `VkContext` to obtain a list of `SupportedDevices`.  These can
+/// be checked for surface support with `supports_surface`.  This only checks for a queue family
+/// that can present.  At that point, you want to ask the user which device to use.  Queue family
+/// selection for command recording happens later, during Swapchain construction.
+pub struct SupportedDevice {
     physical_device: vk::PhysicalDevice,
-    name: String,
-    presentation: P
+    /// `AMD Renoir...`  `Nvidia Max-Q...` etc
+    pub name: String,
+    /// Features we checked for during inspection and ones that will be used when instantiating this
+    /// device.  Modifying without checking is a really bad idea.  Pass any extra features you
+    /// require into the [`supported_devices`] call.
+    // DEBT no dynamic feature and technique negotiation or fallback support.
+    pub extensions: Vec<&'static CStr>,
 }
 
-impl SupportedDevice<NoPresentation> {
-    fn new(physical_device: vk::PhysicalDevice, vk_context: &VkContext) -> SupportedDevice<NoPresentation>{
+impl SupportedDevice {
+    fn new(physical_device: vk::PhysicalDevice, vk_context: &VkContext, extensions: &[&'static CStr]) -> SupportedDevice{
         let name = unsafe {
             let props =
                 vk_context.instance.get_physical_device_properties(physical_device);
@@ -383,59 +413,50 @@ impl SupportedDevice<NoPresentation> {
                 .to_string_lossy()
                 .to_string()
         };
+        let extensions: Vec<&CStr> = extensions.iter().
+            cloned()
+            .collect();
         Self {
             physical_device,
             name,
-            presentation: NoPresentation {},
+            extensions,
         }
     }
 
-    /// Returns either a device with presentation support or `None`.  If `Some`, then the
-    /// presentation queue family index is our preferred index for presentation.
-    ///
-    /// Usually this is the first index.  In odd (usually old, so we might not ever care) cases, the
-    /// only queue family that can present might not have graphics capability.  A transfer is
-    /// required and the swapchain must use [`ash::vk::SharingMode::CONCURRENT`].  Support for this
-    /// has been filed as DEBT and we just assume the graphics queue supports presentation for now.
-    pub fn with_surface_support(
-        self,
+    /// Returns `true` if any queue family on this device supports presentation to the given surface.
+    pub fn supports_surface(
+        &self,
         surface: vk::SurfaceKHR,
         vk_context: &VkContext,
-    ) -> Option<SupportedDevice<HasPresentation>> {
+    ) -> bool {
         let surface_loader = vk_context.surface_loader();
         let VkContext { entry, instance } = vk_context;
-        let queue_families = unsafe {
-            instance.get_physical_device_queue_family_properties(
-                self.physical_device,
-            )
+        unsafe {
+            instance.get_physical_device_queue_family_properties(self.physical_device)
         }
             .iter()
             .enumerate()
-            .filter_map(|(index, _family)| {
-                let index = index as u32;
-                let supports_present = unsafe {
+            .any(|(index, _family)| {
+                unsafe {
                     surface_loader
                         .get_physical_device_surface_support(
                             self.physical_device,
-                            index,
+                            index as u32,
                             surface,
                         )
                         .unwrap_or(false)
-                };
-                supports_present.then_some(index)
+                }
             })
-            .collect();
-        Some(SupportedDevice {
-            physical_device: self.physical_device,
-            name: self.name,
-            presentation: HasPresentation {
-                queue_families,
-            },
-        })
     }
+
+    /// Instantiate the logical device context.
+    pub fn into_logical (self, vk_context: &VkContext) -> device::DeviceContext {
+        device::DeviceContext::new(vk_context, self)
+    }
+
 }
 
-impl<P> SupportedDevice<P> {
+impl SupportedDevice {
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -447,16 +468,33 @@ impl<P> SupportedDevice<P> {
 
 #[cfg(test)]
 mod test {
+    use crate::with_context;
+
     use super::*;
 
     #[test]
     fn supported_devices () {
-        let vk_context = VkContext::new();
-        let supported = vk_context.supported_devices();
+        let vk_context = VkContext::with_extensions(&[]);
+        let supported = vk_context.supported_devices(&[]);
         println!("Supported devices:");
         for device in supported.iter() {
             println!("  {}", device.name());
         }
+    }
+
+    #[test]
+    fn custom_features () {
+        let vk_context = VkContext::with_extensions(&[]);
+        let supported = vk_context.supported_devices(&[c"VK_KHR_commercial_success"]);
+        assert!(supported.is_empty());
+    }
+
+    #[test]
+    fn with_context (){
+        // if it builds, we didn't break the macro. 👍  This macro is only used in tests, so we
+        // prefer to break it within the module early.
+        with_context!(|vk_context| {});
+        with_context!(|vk_context, device_context| {});
     }
 
     // NEXT Headless tests.  Fake windows.  Something.  Want to check on surface support!

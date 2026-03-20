@@ -113,7 +113,7 @@
 //! here.
 
 pub mod context;
-// pub mod dispatch;
+pub mod dispatch;
 pub mod pipeline;
 pub mod present;
 pub mod resource;
@@ -124,10 +124,7 @@ use ash::vk;
 
 pub mod prelude {
     pub use super::VulkanError;
-    pub use crate::context::{
-        vulkan::{HasPresentation, NoPresentation, SupportedDevice},
-        DeviceContext, VkContext,
-    };
+    pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::present::surface::VkSurface;
 }
 
@@ -142,6 +139,9 @@ pub enum VulkanError {
     // them.
     ReplaceMe(&'static str),
 
-    #[error("Ash: {0}")]
+    #[error("ash: {0}")]
     Ash(#[from] vk::Result),
+
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
 }

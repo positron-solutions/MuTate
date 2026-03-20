@@ -15,10 +15,9 @@ use mutate_assets as assets;
 
 use super::descriptors;
 use super::queue;
-use super::vulkan::{self, HasPresentation, NoPresentation, SupportedDevice};
+use super::vulkan::{self, SupportedDevice};
 
 pub struct DeviceContext {
-    // XXX Wrap it up dawg
     pub physical_device: vk::PhysicalDevice,
     /// Vulkan logical device
     pub device: ash::Device,
@@ -29,22 +28,16 @@ pub struct DeviceContext {
     /// Descriptor table for
     pub descriptors: descriptors::Descriptors,
 
-    // XXX some other higher context?
+    // XXX move to some other higher context?
     /// Initialized assets
     pub assets: assets::AssetDirs,
 }
 
 impl DeviceContext {
-    /// Obtain an entry, instance, and initialized device.
-    ///
-    /// NEXT Device initialization should be moved into a separate method to support UIs that
-    /// enumerate and may even switch devices.
-    pub fn new(
-        vk_context: &vulkan::VkContext,
-        supported_device: SupportedDevice<HasPresentation>,
-    ) -> Self {
+    pub(crate) fn new(vk_context: &vulkan::VkContext, supported_device: SupportedDevice) -> Self {
         let vulkan::VkContext { entry, instance } = &vk_context;
-        let physical_device = supported_device.device().clone();
+        let physical_device = supported_device.device();
+        let extensions = &supported_device.extensions;
 
         let mut pwid_features = vk::PhysicalDevicePresentIdFeaturesKHR::default().present_id(true);
         let mut pw_features =
@@ -58,6 +51,7 @@ impl DeviceContext {
             // .storage_input_output16(true)
             .uniform_and_storage_buffer16_bit_access(true);
 
+        // MAYBE wonder if these attributes could be de-duped with a macro 🤔
         let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default()
             .buffer_device_address(true)
             .descriptor_binding_partially_bound(true)
@@ -97,17 +91,13 @@ impl DeviceContext {
         let queue_families = queue::QueueFamilies::new(&instance, &physical_device);
         let queue_priorities = [1.0];
         let queue_cis = queue_families.queue_cis(&queue_priorities);
-        let req_extensions: Vec<*const i8> = super::vulkan::DEVICE_EXTENSIONS
-            .iter()
-            .map(|ext| ext.as_ptr())
-            .collect();
+        let extensions: Vec<*const i8> = extensions.iter().map(|ext| ext.as_ptr()).collect();
         let mut device_info = vk::DeviceCreateInfo {
             ..Default::default()
         }
         .push_next(&mut features2)
         .queue_create_infos(&queue_cis)
-        // DEBT pass in the resolved extensions
-        .enabled_extension_names(&req_extensions);
+        .enabled_extension_names(&extensions);
 
         let device = unsafe {
             instance
