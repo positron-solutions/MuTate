@@ -14,6 +14,8 @@ version.workspace = true
 ash.workspace = true
 bytemuck = {workspace = true, features = ["derive"]}
 half = { workspace = true, features = ["bytemuck"] }
+parking.workspace = true
 thiserror.workspace = true
 
 mutate-assets = {workspace = true, features = ["runtime"]}
+mutate-untorn.workspace = true
