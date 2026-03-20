@@ -82,6 +82,7 @@ impl SurfacePresent {
             composite_alpha: surface.composite_alpha,
             present_mode: surface.present_mode,
             clipped: vk::TRUE,
+            flags: vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT,
             ..Default::default()
         };
 
@@ -250,6 +251,7 @@ impl SurfacePresent {
                 composite_alpha: surface.composite_alpha,
                 present_mode: surface.present_mode,
                 clipped: vk::TRUE,
+                flags: vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT,
                 ..Default::default()
             };
 

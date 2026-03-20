@@ -29,6 +29,8 @@ pub struct VkContext {
 
 const INSTANCE_EXTENSIONS: &[&CStr] = &[
   c"VK_KHR_surface"
+    vk::KHR_GET_SURFACE_CAPABILITIES2_NAME,
+    vk::EXT_SURFACE_MAINTENANCE1_NAME,
 ];
 
 /// Required extensions for core behaviors.  You may request additional features via
@@ -218,9 +220,12 @@ impl VkContext {
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
         let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
         let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
+        let mut swapchain_maintenance1 =
+            vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default();
 
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .features(vk::PhysicalDeviceFeatures::default())
+            .push_next(&mut swapchain_maintenance1)
             .push_next(&mut features_1_3)
             .push_next(&mut features_1_2)
             .push_next(&mut features_1_1);
@@ -231,8 +236,8 @@ impl VkContext {
 
         let checks: &[(&'static str, bool)] = &[
             ("shader_int16",                                            features2.features.shader_int16 == vk::TRUE),
-            ("1.1 storage_buffer16_bit_access",
-            features_1_1.storage_buffer16_bit_access == vk::TRUE),
+            ("swapchain_maintenance1",                                  swapchain_maintenance1.swapchain_maintenance1 == vk::TRUE),
+            ("1.1 storage_buffer16_bit_access",                         features_1_1.storage_buffer16_bit_access == vk::TRUE),
             // XXX Axe this feature
             // ("1.1 storage_input_output16",                              features_1_1.storage_input_output16 == vk::TRUE),
             ("1.1 shader_draw_parameters",                              features_1_1.shader_draw_parameters == vk::TRUE),

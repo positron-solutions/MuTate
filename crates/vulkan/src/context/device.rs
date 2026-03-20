@@ -43,6 +43,10 @@ impl DeviceContext {
         let mut pw_features =
             vk::PhysicalDevicePresentWaitFeaturesKHR::default().present_wait(true);
 
+        let mut swapchain_maintenance1 =
+            vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
+                .swapchain_maintenance1(true);
+
         let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default()
             .shader_draw_parameters(true)
             .storage_buffer16_bit_access(true)
@@ -86,7 +90,8 @@ impl DeviceContext {
             .push_next(&mut pwid_features)
             .push_next(&mut features_1_3)
             .push_next(&mut features_1_2)
-            .push_next(&mut features_1_1);
+            .push_next(&mut features_1_1)
+            .push_next(&mut swapchain_maintenance1);
 
         let queue_families = queue::QueueFamilies::new(&instance, &physical_device);
         let queue_priorities = [1.0];
