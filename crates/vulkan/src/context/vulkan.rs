@@ -287,9 +287,9 @@ impl VkContext {
                     self.instance.get_physical_device_properties(physical_device)
                 };
                 let name = unsafe { std::ffi::CStr::from_ptr(props.device_name.as_ptr()) };
-                println!("Physical device: {}", name.to_string_lossy());
+                println!("Physical device unsupported: {}", name.to_string_lossy());
                 for m in missing {
-                    println!("missing feature: {}", m)
+                    println!("  missing feature: {}", m)
                 }
             }
             false
@@ -339,9 +339,9 @@ impl VkContext {
                     self.instance.get_physical_device_properties(physical_device)
                 };
                 let name = unsafe { std::ffi::CStr::from_ptr(props.device_name.as_ptr()) };
-                println!("Physical device: {}", name.to_string_lossy());
+                println!("Physical device unsupported: {}", name.to_string_lossy());
                 for m in missing {
-                    println!("missing extension: {}", m.to_string_lossy())
+                    println!("  missing extension: {}", m.to_string_lossy())
                 }
             }
             false
