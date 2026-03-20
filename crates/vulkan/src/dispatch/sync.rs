@@ -225,6 +225,9 @@ impl PresentWaiter {
 
             // XXX Pick an actual expected timeout duration.  We need the graphics timing in order
             // to do this (doesn't exist yet)
+            // NEXT we really need KHR_present_timing.  This method has jitter of about 2ms that did
+            // not go away with a zero timeout spin-loop polling setup.  It also doesn't tell us the
+            // extremely critical present deadline.
             match unsafe { self.pw_device.wait_for_present(swapchain, id, 6_000_000) } {
                 Ok(_) => {
                     self.waiter_state.write(state.caught(id));
