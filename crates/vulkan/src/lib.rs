@@ -139,9 +139,53 @@ pub enum VulkanError {
     // them.
     ReplaceMe(&'static str),
 
-    #[error("ash: {0}")]
-    Ash(#[from] vk::Result),
 
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("vulkan: Swapchain out of date")]
+    SwapchainOutOfDate,
+    #[error("vulkan: Surface lost")]
+    SurfaceLost,
+    #[error("vulkan: Fullscreen exclusive mode lost")]
+    FullscreenExclusiveLost,
+    #[error("vuklan: Device lost")]
+    DeviceLost,
+    #[error("vulkan: Suboptimal swapchain")]
+    Suboptimal,
+    #[error("vulkan: Out of memory (host)")]
+    OutOfHostMemory,
+    #[error("vulkan: Out of memory (device)")]
+    OutOfDeviceMemory,
+    #[error("vulkan: Validation layer caught an error: this is a bug")]
+    ValidationFailed,
+    // NOTE Making this one super explicit since it's an upstream unknown.  Not even Vulkan knows
+    // what's going on.  Don't coerce anything else into this variant ever.
+    #[error("vulkan: VK_ERROR_UNKNOWN (-13)")]
+    VulkanUnknown,
+
+    #[error("ash: other {0}")]
+    Ash(vk::Result),
+}
+
+impl From<vk::Result> for VulkanError {
+    fn from(r: vk::Result) -> Self {
+        match r {
+            vk::Result::ERROR_OUT_OF_DATE_KHR => Self::SwapchainOutOfDate,
+            vk::Result::ERROR_SURFACE_LOST_KHR => Self::SurfaceLost,
+            vk::Result::ERROR_DEVICE_LOST => Self::DeviceLost,
+            vk::Result::ERROR_OUT_OF_HOST_MEMORY => Self::OutOfHostMemory,
+            vk::Result::ERROR_OUT_OF_DEVICE_MEMORY => Self::OutOfDeviceMemory,
+            // NOTE most validation error codes are safe to recognize even when we will not see
+            // them, so don't worry about gating too tightly.
+            vk::Result::ERROR_VALIDATION_FAILED_EXT => Self::ValidationFailed,
+            // Full screen exclusive not supported.  See context.
+            // vk::Result::ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT => Self::FullscreenExclusiveLost,
+
+            // Other extensions may land us here with new error types to encode.
+            other => Self::Ash(other),
+            // But Unknown is an explicit indication that must never be created manually.
+            vk::Result::ERROR_UNKNOWN => Self::VulkanUnknown,
+        }
+    }
 }
