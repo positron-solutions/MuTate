@@ -39,8 +39,6 @@ const INSTANCE_EXTENSIONS: &[&CStr] = &[
 // pub(crate) const KHR_PRESENT_TIMING_NAME: &CStr = c"VK_EXT_present_timing";
 // DEBT currently the requirements and support checks are all hardcoded.
 pub(crate) const DEVICE_EXTENSIONS: &[&CStr] = &[
-    vk::EXT_EXTENDED_DYNAMIC_STATE_NAME,
-    vk::EXT_EXTENDED_DYNAMIC_STATE2_NAME,
     vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME,
     // NEXT better debug gating (see validation layer activation above).
     // Enables some debug functionality in shaders.
