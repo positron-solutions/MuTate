@@ -54,10 +54,6 @@ impl App {
     fn draw_frame(&mut self) {
         let device_context = &self.device_context.as_ref().unwrap();
 
-        let sp = self.surface_present.as_mut().unwrap();
-        // LIES the previous frame fence is implicitly always signaled already
-        sp.draw_wait(device_context);
-
         // NEXT dynamically waiting down to the approximate latch timing to late bind the last
         // possible audio.
         // std::thread::sleep(std::time::Duration::from_millis(6));
@@ -82,6 +78,9 @@ impl App {
                 float32: [0.0, 0.0, 0.0, 1.0],
             },
         };
+
+        let sp = self.surface_present.as_mut().unwrap();
+        sp.draw_wait(device_context);
 
         // Obtain swapchain image and hot command buffer
         let (sync, target) = sp.render_target(device_context, clear);
