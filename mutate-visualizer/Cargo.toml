@@ -22,6 +22,7 @@ rand.workspace = true
 raw-window-handle.workspace = true
 rgb.workspace = true
 ringbuf.workspace = true
+smallvec.workspace = true
 thiserror.workspace = true
 winit.workspace = true
 

@@ -14,9 +14,121 @@ use std::slice;
 
 use ash::khr::present_wait;
 use ash::vk;
+use smallvec::SmallVec;
 
 use mutate_lib::vulkan::dispatch::sync;
 use mutate_lib::{self as utate, prelude::*};
+
+// The delightfully unsound thing about this abstraction for now is that CommandBuffers are freed
+// whenever the pool is freed, so we don't track them, and everyone just needs to be adults for a
+// little while. ☔  Maybe forever.  If you're an adult too long, they call you cowboy.  🤠
+pub struct CommandPool {
+    pool: vk::CommandPool,
+    // XXX Store the more useful queue object when its ready
+    queue: u32,
+    outstanding: SmallVec<vk::CommandBuffer, 8>,
+    recycled: SmallVec<vk::CommandBuffer, 8>,
+}
+
+impl CommandPool {
+    // MAYBE temporary lifetimes for making things... for better chaining and less context
+    // proliferation..  This is a good example.
+    // XXX new queue
+    pub fn new(device_context: &DeviceContext, queue_family_index: u32) -> Self {
+        let command_pool_ci = vk::CommandPoolCreateInfo::default()
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+            .queue_family_index(queue_family_index);
+
+        let pool = unsafe {
+            device_context
+                .device()
+                .create_command_pool(&command_pool_ci, None)
+                .unwrap()
+        };
+
+        Self {
+            pool,
+            queue: queue_family_index,
+            outstanding: SmallVec::new(),
+            recycled: SmallVec::new(),
+        }
+    }
+
+    // XXX typed command buffer
+    pub fn buffer(&mut self, device_context: &DeviceContext) -> vk::CommandBuffer {
+        let buf = if let Some(buf) = self.recycled.pop() {
+            buf
+        } else {
+            let alloc_info = vk::CommandBufferAllocateInfo {
+                command_pool: self.pool,
+                command_buffer_count: 1,
+                ..Default::default()
+            };
+            unsafe {
+                device_context
+                    .device()
+                    .allocate_command_buffers(&alloc_info)
+                    .unwrap()[0]
+            }
+        };
+
+        self.outstanding.push(buf);
+        buf
+    }
+
+    pub fn buffers(
+        &mut self,
+        device_context: &DeviceContext,
+        count: u32,
+    ) -> Vec<vk::CommandBuffer> {
+        let count = count as usize;
+        let from_recycled = self.recycled.len().min(count);
+        let need_alloc = count - from_recycled;
+
+        let mut result: Vec<vk::CommandBuffer> = self
+            .recycled
+            .drain(self.recycled.len() - from_recycled..)
+            .collect();
+
+        if need_alloc > 0 {
+            let alloc_info = vk::CommandBufferAllocateInfo {
+                command_pool: self.pool,
+                command_buffer_count: need_alloc as u32,
+                ..Default::default()
+            };
+            let fresh = unsafe {
+                device_context
+                    .device()
+                    .allocate_command_buffers(&alloc_info)
+                    .unwrap()
+            };
+            result.extend_from_slice(&fresh);
+        }
+
+        self.outstanding.extend_from_slice(&result);
+        result
+    }
+
+    // Safety (lol): The contract is that all buffers are dead when you call reset.  Nice chat.
+    pub fn reset(&mut self, device_context: &DeviceContext) {
+        unsafe {
+            device_context
+                .device()
+                .reset_command_pool(self.pool, vk::CommandPoolResetFlags::empty())
+                .unwrap();
+        }
+        self.recycled.extend(self.outstanding.drain(..));
+    }
+
+    pub fn destroy(&self, device_context: &DeviceContext) {
+        unsafe {
+            // When a pool is destroyed, all command buffers allocated from the pool are freed.
+            device_context
+                .device()
+                .destroy_command_pool(self.pool, None);
+        }
+    }
+}
 
 pub struct DrawSync {
     pub render_finished: vk::Semaphore,
@@ -32,22 +144,25 @@ pub struct DrawTarget {
 }
 
 pub struct SurfacePresent {
-    pub frames: usize,
-    pub frame_index: usize,
-    pub image_available_semaphores: Vec<vk::Semaphore>,
-    pub frame_counter: u64,
-    pub in_flight: vk::Semaphore,
-
-    pub render_finished_semaphores: Vec<vk::Semaphore>,
+    frames: usize,
+    frame_index: usize,
+    image_available_semaphores: Vec<vk::Semaphore>,
+    frame_counter: u64,
+    in_flight: vk::Semaphore,
+    // XXX check swapchain actual needs... which things actually depend on the swapchain frames in
+    // flight?
+    render_finished_semaphores: Vec<vk::Semaphore>,
     /// Present wait measurement
-    pub present: sync::PresentConsumer,
+    present: sync::PresentConsumer,
 
-    pub swapchain_loader: ash::khr::swapchain::Device,
-    pub swapchain: vk::SwapchainKHR,
-    pub swapchain_image_views: Vec<vk::ImageView>,
-    pub swapchain_images: Vec<vk::Image>,
+    swapchain_loader: ash::khr::swapchain::Device,
+    swapchain: vk::SwapchainKHR,
+    swapchain_image_views: Vec<vk::ImageView>,
+    swapchain_images: Vec<vk::Image>,
 
-    command_buffers: Vec<vk::CommandBuffer>,
+    // Just enough for front & back frame.
+    pools: [CommandPool; 2],
+    recording_index: u32,
 }
 
 impl SurfacePresent {
@@ -145,20 +260,9 @@ impl SurfacePresent {
             })
             .collect();
 
-        let command_pool = device_context.queues.graphics_pool();
-
-        let alloc_info = vk::CommandBufferAllocateInfo {
-            command_pool: command_pool,
-            command_buffer_count: 3,
-            ..Default::default()
-        };
-
-        let command_buffers = unsafe {
-            device_context
-                .device
-                .allocate_command_buffers(&alloc_info)
-                .unwrap()
-        };
+        let queue_family_index = device_context.queues.graphics_family_index;
+        let pools: [CommandPool; 2] =
+            std::array::from_fn(|_| CommandPool::new(device_context, queue_family_index));
 
         let present = sync::PresentConsumer::new(vk_context, device_context, swapchain)
             .expect("Could not start up the present wait gizmo");
@@ -171,7 +275,9 @@ impl SurfacePresent {
 
             frames: 3,
             frame_index: 0,
-            command_buffers,
+
+            recording_index: 0,
+            pools,
             image_available_semaphores,
             render_finished_semaphores,
             frame_counter: 0,
@@ -182,8 +288,11 @@ impl SurfacePresent {
     }
 
     pub fn destroy(&self, context: &DeviceContext) {
-        let device = &context.device;
+        let device = &context.device();
         unsafe {
+            for pool in &self.pools {
+                pool.destroy(context);
+            }
             for view in &self.swapchain_image_views {
                 device.destroy_image_view(*view, None);
             }
@@ -325,17 +434,18 @@ impl SurfacePresent {
             image_index,
         };
 
-        let command_buffer = self.command_buffers[image_index as usize];
         let image = self.swapchain_images[image_index as usize];
         let image_view = self.swapchain_image_views[image_index as usize];
 
-        unsafe {
-            device
-                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
-                .unwrap();
+        let pool = &mut self.pools[self.recording_index as usize];
+        pool.reset(&context);
+        let buffer = pool.buffer(&context);
+        self.recording_index ^= 1;
 
+        // XXX maybe do this on creation?
+        unsafe {
             let begin = vk::CommandBufferBeginInfo::default();
-            device.begin_command_buffer(command_buffer, &begin).unwrap();
+            device.begin_command_buffer(buffer, &begin).unwrap();
         }
 
         // let barrier = vk::ImageMemoryBarrier2 {
@@ -387,7 +497,7 @@ impl SurfacePresent {
 
         let target = DrawTarget {
             image,
-            command_buffer,
+            command_buffer: buffer,
         };
 
         (sync, target)
