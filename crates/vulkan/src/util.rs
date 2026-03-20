@@ -32,7 +32,7 @@ pub fn find_memory_type_index(
 
 /// Layouts and descriptor management in general are annoying.
 // Probably goes into a dedicated binding module.
-// DEBT memory
+// ROLL move spectrum to new descriptor style
 pub fn descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout, VulkanError> {
     let bindings = [
         vk::DescriptorSetLayoutBinding {

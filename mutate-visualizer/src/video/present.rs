@@ -391,7 +391,6 @@ impl SurfacePresent {
         }
     }
 
-    /// XXX self pacing still not yet integrated
     pub fn draw_wait(&mut self, device_context: &DeviceContext) {
         let wait_value = self.frame_counter;
         let wait_info = vk::SemaphoreWaitInfo::default()
@@ -411,7 +410,7 @@ impl SurfacePresent {
         context: &DeviceContext,
         clear: vk::ClearValue,
     ) -> (DrawSync, DrawTarget) {
-        let device = &context.device;
+        let device = &context.device();
         let idx = self.frame_index as usize;
         let image_available = self.image_available_semaphores[idx];
         let render_finished = self.render_finished_semaphores[idx];
