@@ -221,10 +221,10 @@ impl RawAudioNode {
             let expected_by_time = running / 1000.0 * 48000.0 * 8.0;
             let expected_by_frames = self.frames as f64 * 6400.0;
             let expected_frames_by_time = running / 1000.0 * 60.0;
-            println!(
-                "frames: {}, expected_frames: {:.2}, expected_by_frames: {:.0}, expected_by_time: {:.0}, actuallly read {:.0}",
-                self.frames, expected_frames_by_time, expected_by_frames, expected_by_time, read
-            )
+            // println!(
+            //     "frames: {}, expected_frames: {:.2}, expected_by_frames: {:.0}, expected_by_time: {:.0}, actuallly read {:.0}",
+            //     self.frames, expected_frames_by_time, expected_by_frames, expected_by_time, read
+            // )
         }
 
         out

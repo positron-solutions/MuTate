@@ -19,7 +19,6 @@
 use std::{
     thread,
     time::{Duration, Instant},
-    u64,
 };
 
 use ash::{khr::present_wait::Device as PwDevice, vk};

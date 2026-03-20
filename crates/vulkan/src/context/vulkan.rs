@@ -28,7 +28,7 @@ pub struct VkContext {
 }
 
 const INSTANCE_EXTENSIONS: &[&CStr] = &[
-  c"VK_KHR_surface"
+    vk::KHR_SURFACE_NAME,
     vk::KHR_GET_SURFACE_CAPABILITIES2_NAME,
     vk::EXT_SURFACE_MAINTENANCE1_NAME,
 ];

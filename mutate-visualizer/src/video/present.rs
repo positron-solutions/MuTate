@@ -491,9 +491,9 @@ impl SurfacePresent {
 
         match self.present.read_last_present() {
             Some(last) => {
-                if last.last_window != std::time::Duration::MAX {
-                    println!("present duration: {:8.0}", last.last_window.as_micros())
-                }
+                // if last.last_window != std::time::Duration::MAX {
+                //     println!("present duration: {:8.0}", last.last_window.as_micros())
+                // }
             }
             None => {}
         }
