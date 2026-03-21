@@ -15,6 +15,7 @@ ash.workspace = true
 bytemuck = {workspace = true, features = ["derive"]}
 half = { workspace = true, features = ["bytemuck"] }
 parking.workspace = true
+smallvec.workspace = true
 thiserror.workspace = true
 
 mutate-assets = {workspace = true, features = ["runtime"]}

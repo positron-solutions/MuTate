@@ -26,6 +26,8 @@
 //!
 //! State transitions are consuming — you cannot hold a `CommandBuffer<_, Recording>` and
 //! accidentally call `submit()` on it.  The raw handle is recoverable at any state via `Deref`.
+
+pub mod command;
 // pub mod compute;
 // pub mod graphics;
 pub mod sync;

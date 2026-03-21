@@ -12,9 +12,12 @@ use ash::vk;
 use mutate_assets as assets;
 use mutate_lib::{self as utate, prelude::*};
 use utate::vulkan::{
+    dispatch::command::{CommandPool, RecordingSlot},
     resource::{buffer, image},
     util,
 };
+
+use crate::video::present::AcquiredImage;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -188,8 +191,8 @@ impl SpectrumNode {
     /// composite the output and stuff.
     pub fn draw(
         &mut self,
-        recording_slot: &crate::video::present::RecordingSlot,
-        acquired_image: &crate::video::present::AcquiredImage,
+        recording_slot: &RecordingSlot,
+        acquired_image: &AcquiredImage,
         input: &[crate::audio::cqt::Cqt],
         context: &crate::DeviceContext,
         // NEXT This extent is basically part of the target

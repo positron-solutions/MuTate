@@ -11,8 +11,9 @@
 use ash::vk;
 
 use mutate_assets as assets;
+use mutate_lib::vulkan::dispatch::command::{RecordingSlot};
 
-use crate::video::present::{AcquiredImage, RecordingSlot};
+use crate::video::present::AcquiredImage;
 
 // This will be an interface after more nodes exist
 pub struct TriangleNode {
