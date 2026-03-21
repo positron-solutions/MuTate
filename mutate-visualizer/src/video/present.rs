@@ -143,29 +143,20 @@ pub struct DrawTarget {
     pub command_buffer: vk::CommandBuffer,
 }
 
-pub struct SurfacePresent {
+/// A package deal!
+pub struct SwapchainContext {
+    swapchain: vk::SwapchainKHR,
+    swapchain_loader: ash::khr::swapchain::Device,
+    swapchain_image_views: SmallVec<vk::ImageView, 4>,
+    swapchain_images: SmallVec<vk::Image, 4>,
     frames: usize,
     frame_index: usize,
-    image_available_semaphores: Vec<vk::Semaphore>,
-    frame_counter: u64,
-    in_flight: vk::Semaphore,
-    // XXX check swapchain actual needs... which things actually depend on the swapchain frames in
-    // flight?
-    render_finished_semaphores: Vec<vk::Semaphore>,
-    /// Present wait measurement
-    present: sync::PresentConsumer,
 
-    swapchain_loader: ash::khr::swapchain::Device,
-    swapchain: vk::SwapchainKHR,
-    swapchain_image_views: Vec<vk::ImageView>,
-    swapchain_images: Vec<vk::Image>,
-
-    // Just enough for front & back frame.
-    pools: [CommandPool; 2],
-    recording_index: u32,
+    render_finished_semaphores: [vk::Semaphore; 4],
+    image_available_semaphores: [vk::Semaphore; 4],
 }
 
-impl SurfacePresent {
+impl SwapchainContext {
     pub fn new(
         device_context: &DeviceContext,
         vk_context: &VkContext,
@@ -176,6 +167,7 @@ impl SurfacePresent {
         // XXX device_context method?
         let swapchain_loader =
             ash::khr::swapchain::Device::new(&vk_context.instance, &device_context.device());
+
         // XXX the images are not actually being counted
         let swapchain_info = vk::SwapchainCreateInfoKHR {
             surface: surface.as_raw(),
@@ -200,9 +192,9 @@ impl SurfacePresent {
                 .unwrap()
         };
         let images = unsafe { swapchain_loader.get_swapchain_images(swapchain).unwrap() };
+        let frames = images.len();
 
-        // Create image views
-        let image_views: Vec<_> = images
+        let image_views: SmallVec<_, 4> = images
             .iter()
             .map(|&image| {
                 let view_info = vk::ImageViewCreateInfo {
@@ -227,6 +219,206 @@ impl SurfacePresent {
             })
             .collect();
 
+        // Aim for max images. With 3, we don't have to reallocate.
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        let make_semaphore = |_| unsafe {
+            device_context
+                .device()
+                .create_semaphore(&semaphore_info, None)
+                .unwrap()
+        };
+        let image_available_semaphores = std::array::from_fn(make_semaphore);
+        let render_finished_semaphores = std::array::from_fn(make_semaphore);
+
+        Self {
+            image_available_semaphores,
+            render_finished_semaphores,
+            swapchain_loader,
+            swapchain_images: images.into(),
+            swapchain_image_views: image_views,
+            swapchain,
+            frames,
+            frame_index: 0,
+        }
+    }
+
+    pub fn recreate(
+        &mut self,
+        device_context: &DeviceContext,
+        surface: &VkSurface,
+        extent: vk::Extent2D,
+    ) {
+        let device = device_context.device();
+
+        // Destroy old image views — images themselves are owned by the swapchain
+        unsafe {
+            for view in self.swapchain_image_views.drain(..) {
+                device.destroy_image_view(view, None);
+            }
+        }
+
+        let swapchain_info = vk::SwapchainCreateInfoKHR {
+            surface: surface.as_raw(),
+            min_image_count: self.frames as u32,
+            image_format: surface.format.format,
+            image_color_space: surface.format.color_space,
+            image_extent: extent,
+            image_array_layers: 1,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
+            image_sharing_mode: vk::SharingMode::EXCLUSIVE,
+            pre_transform: surface.pre_transform,
+            composite_alpha: surface.composite_alpha,
+            present_mode: surface.present_mode,
+            clipped: vk::TRUE,
+            flags: vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT,
+            old_swapchain: self.swapchain,
+            ..Default::default()
+        };
+
+        let new_swapchain = unsafe {
+            self.swapchain_loader
+                .create_swapchain(&swapchain_info, None)
+                .unwrap()
+        };
+
+        // Old swapchain is retired — safe to destroy now that new one is created
+        unsafe {
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
+        }
+
+        self.swapchain = new_swapchain;
+
+        self.swapchain_images = unsafe {
+            self.swapchain_loader
+                .get_swapchain_images(self.swapchain)
+                .unwrap()
+                .into()
+        };
+
+        self.swapchain_image_views = self
+            .swapchain_images
+            .iter()
+            .map(|&image| {
+                let view_info = vk::ImageViewCreateInfo {
+                    image,
+                    view_type: vk::ImageViewType::TYPE_2D,
+                    format: surface.format.format,
+                    components: vk::ComponentMapping::default(),
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        level_count: 1,
+                        layer_count: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                unsafe { device.create_image_view(&view_info, None).unwrap() }
+            })
+            .collect();
+
+        // XXX review this
+        // Reconcile semaphore count if the driver gave us a different image count
+        let new_frames = self.swapchain_images.len();
+        if new_frames != self.frames {
+            // let semaphore_info = vk::SemaphoreCreateInfo::default();
+            // let make = |_| unsafe { device.create_semaphore(&semaphore_info, None).unwrap() };
+
+            // self.image_available_semaphores
+            //     .resize_with(new_frames, make);
+            // self.render_finished_semaphores
+            //     .resize_with(new_frames, make);
+            self.frames = new_frames;
+            self.frame_index = self.frame_index.min(new_frames - 1);
+        }
+    }
+
+    // XXX a horrible function?
+    pub fn present(&self, queue: vk::Queue, present_info: &vk::PresentInfoKHR) {
+        unsafe {
+            match self.swapchain_loader.queue_present(queue, present_info) {
+                Ok(_) => {
+                    // MAYBE How to interpret false?
+                }
+                Err(result) => eprintln!("presentation error: {:?}", result),
+            };
+        }
+    }
+
+    pub fn destroy(&self, context: &DeviceContext) {
+        let device = &context.device();
+        unsafe {
+            for view in &self.swapchain_image_views {
+                device.destroy_image_view(*view, None);
+            }
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
+            self.image_available_semaphores.iter().for_each(|s| {
+                device.destroy_semaphore(*s, None);
+            });
+            self.render_finished_semaphores.iter().for_each(|s| {
+                device.destroy_semaphore(*s, None);
+            });
+        }
+    }
+
+    /// XXX mark chain dirty if this fails
+    pub fn acquire(&mut self) -> (vk::Image, DrawSync) {
+        let idx = self.frame_index as usize;
+        let image_available = self.image_available_semaphores[idx];
+        let render_finished = self.render_finished_semaphores[idx];
+        self.frame_index = (idx + 1) % self.frames;
+
+        let (image_index, _) = unsafe {
+            self.swapchain_loader
+                .acquire_next_image(
+                    self.swapchain,
+                    1_000_000_000, // 1000ms
+                    image_available,
+                    vk::Fence::null(),
+                )
+                .unwrap()
+        };
+
+        let image = self.swapchain_images[image_index as usize];
+        let image_view = self.swapchain_image_views[image_index as usize];
+
+        let sync = DrawSync {
+            image_available,
+            render_finished,
+            image_index,
+        };
+
+        (image, sync)
+    }
+}
+
+pub struct SurfacePresent {
+    swapchain: SwapchainContext,
+
+    frame_counter: u64,
+    in_flight: vk::Semaphore,
+
+    /// Present wait measurement
+    present: sync::PresentConsumer,
+
+    // Just enough for front & back frame.
+    pools: [CommandPool; 2],
+    recording_index: u32,
+}
+
+impl SurfacePresent {
+    // TODO give swapchain during construction?
+    pub fn new(
+        device_context: &DeviceContext,
+        vk_context: &VkContext,
+        surface: &VkSurface,
+        extent: vk::Extent2D,
+    ) -> Self {
+        let VkContext { entry, instance } = &vk_context;
+
+        let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent);
+
         let mut type_ci = vk::SemaphoreTypeCreateInfo {
             semaphore_type: vk::SemaphoreType::TIMELINE,
             initial_value: 0,
@@ -240,75 +432,36 @@ impl SurfacePresent {
                 .unwrap()
         };
 
-        let semaphore_info = vk::SemaphoreCreateInfo::default();
-        // FIXME propagate image counts
-        let image_available_semaphores = (0..3)
-            .map(|_| unsafe {
-                device_context
-                    .device()
-                    .create_semaphore(&semaphore_info, None)
-                    .unwrap()
-            })
-            .collect();
-
-        let render_finished_semaphores = (0..3)
-            .map(|_| unsafe {
-                device_context
-                    .device()
-                    .create_semaphore(&semaphore_info, None)
-                    .unwrap()
-            })
-            .collect();
-
         let queue_family_index = device_context.queues.graphics_family_index;
         let pools: [CommandPool; 2] =
             std::array::from_fn(|_| CommandPool::new(device_context, queue_family_index));
 
-        let present = sync::PresentConsumer::new(vk_context, device_context, swapchain)
+        let present = sync::PresentConsumer::new(vk_context, device_context, swapchain.swapchain)
             .expect("Could not start up the present wait gizmo");
 
         Self {
-            swapchain,
-            swapchain_image_views: image_views,
-            swapchain_images: images,
-            swapchain_loader,
-
-            frames: 3,
-            frame_index: 0,
+            frame_counter: 0,
+            in_flight,
+            present,
 
             recording_index: 0,
             pools,
-            image_available_semaphores,
-            render_finished_semaphores,
-            frame_counter: 0,
-            in_flight,
 
-            present,
+            swapchain,
         }
     }
 
     pub fn destroy(&self, context: &DeviceContext) {
         let device = &context.device();
         unsafe {
+            self.swapchain.destroy(context);
             for pool in &self.pools {
                 pool.destroy(context);
             }
-            for view in &self.swapchain_image_views {
-                device.destroy_image_view(*view, None);
-            }
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
-            self.image_available_semaphores.iter().for_each(|s| {
-                device.destroy_semaphore(*s, None);
-            });
-            self.render_finished_semaphores.iter().for_each(|s| {
-                device.destroy_semaphore(*s, None);
-            });
             device.destroy_semaphore(self.in_flight, None);
         }
     }
 
-    // Basically carbon copy bullshit of the swapchain stuff.
     pub fn recreate_images(
         &mut self,
         surface: &VkSurface,
@@ -317,78 +470,14 @@ impl SurfacePresent {
     ) {
         let device = &context.device;
         let physical_device = context.physical_device;
-
+        // XXX replace with semapahore wait on last frame in flight
         unsafe {
             device.device_wait_idle().unwrap();
         }
 
-        // partial destruction
-        unsafe {
-            for view in &self.swapchain_image_views {
-                device.destroy_image_view(*view, None);
-            }
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
-        }
-
-        // XXX Kill this
-        // Recreation
-        unsafe {
-            let swapchain_info = vk::SwapchainCreateInfoKHR {
-                surface: surface.as_raw(),
-                // NOTE this minimum is minimum.  At least under MAILBOX, extra images may result.
-                min_image_count: self.frames as u32,
-                image_format: surface.format.format,
-                image_color_space: surface.format.color_space,
-                image_extent: size,
-                image_array_layers: 1,
-                image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-                // NOTE the choice here needs to change if we ever support cross-queue present.
-                image_sharing_mode: vk::SharingMode::EXCLUSIVE,
-                pre_transform: surface.pre_transform,
-                composite_alpha: surface.composite_alpha,
-                present_mode: surface.present_mode,
-                clipped: vk::TRUE,
-                flags: vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT,
-                ..Default::default()
-            };
-
-            let swapchain = self
-                .swapchain_loader
-                .create_swapchain(&swapchain_info, None)
-                .unwrap();
-            let images = self
-                .swapchain_loader
-                .get_swapchain_images(swapchain)
-                .unwrap();
-
-            let image_views: Vec<_> = images
-                .iter()
-                .map(|&image| {
-                    let view_info = vk::ImageViewCreateInfo {
-                        image,
-                        view_type: vk::ImageViewType::TYPE_2D,
-                        format: surface.format.format,
-                        components: vk::ComponentMapping::default(),
-                        subresource_range: vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            level_count: 1,
-                            layer_count: 1,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    };
-                    device.create_image_view(&view_info, None).unwrap()
-                })
-                .collect();
-
-            self.present.notify_swapchain_recreation(swapchain);
-
-            self.swapchain = swapchain;
-            self.swapchain_images = images;
-            self.swapchain_image_views = image_views;
-        }
+        self.swapchain.recreate(context, surface, size);
+        self.present
+            .notify_swapchain_recreation(self.swapchain.swapchain);
     }
 
     pub fn draw_wait(&mut self, device_context: &DeviceContext) {
@@ -411,30 +500,8 @@ impl SurfacePresent {
         clear: vk::ClearValue,
     ) -> (DrawSync, DrawTarget) {
         let device = &context.device();
-        let idx = self.frame_index as usize;
-        let image_available = self.image_available_semaphores[idx];
-        let render_finished = self.render_finished_semaphores[idx];
-        self.frame_index = (idx + 1) % self.frames;
 
-        let (image_index, _) = unsafe {
-            self.swapchain_loader
-                .acquire_next_image(
-                    self.swapchain,
-                    std::u64::MAX,
-                    image_available,
-                    vk::Fence::null(),
-                )
-                .unwrap()
-        };
-
-        let sync = DrawSync {
-            image_available,
-            render_finished,
-            image_index,
-        };
-
-        let image = self.swapchain_images[image_index as usize];
-        let image_view = self.swapchain_image_views[image_index as usize];
+        let (image, sync) = self.swapchain.acquire();
 
         let pool = &mut self.pools[self.recording_index as usize];
         pool.reset(&context);
@@ -506,7 +573,7 @@ impl SurfacePresent {
     pub fn post_draw(&mut self, context: &DeviceContext, sync: &DrawSync, target: &DrawTarget) {
         let device = context.device();
 
-        // XXX Needed for graphics
+        // XXX Unique for graphics
         // unsafe { device.cmd_end_rendering(target.command_buffer) };
 
         // let barrier2 = vk::ImageMemoryBarrier2 {
@@ -590,6 +657,8 @@ impl SurfacePresent {
         }
     }
 
+    // XXX this function demonstrates that command buffer presentation kind of re-couples at
+    // presentation for swapchain stuff.
     pub fn present(&mut self, device_context: &DeviceContext, sync: &DrawSync) {
         let queue = &device_context.queues.graphics_queue();
         match self.present.read_last_present() {
@@ -604,18 +673,11 @@ impl SurfacePresent {
         let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(slice::from_ref(&sync.render_finished))
-            .swapchains(slice::from_ref(&self.swapchain))
+            .swapchains(slice::from_ref(&self.swapchain.swapchain))
             .image_indices(slice::from_ref(&sync.image_index))
             .push_next(&mut present_id);
 
-        unsafe {
-            match self.swapchain_loader.queue_present(*queue, &present_info) {
-                Ok(_) => {
-                    // MAYBE How to interpret false?
-                }
-                Err(result) => eprintln!("presentation error: {:?}", result),
-            };
-        }
+        self.swapchain.present(*queue, &present_info);
         self.present.notify_waiter();
     }
 }
