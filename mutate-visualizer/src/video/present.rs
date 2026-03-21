@@ -136,8 +136,6 @@ pub struct DrawSync {
     pub image_index: u32,
 }
 
-// XXX command buffers things mixed with images.. this is not right at all.  Perhaps by the time we
-// hit render graph, dependencies and inputs / outputs are
 pub struct DrawTarget {
     pub image: vk::Image,
     pub command_buffer: vk::CommandBuffer,
@@ -168,7 +166,6 @@ impl SwapchainContext {
         let loader =
             ash::khr::swapchain::Device::new(&vk_context.instance, &device_context.device());
 
-        // XXX the images are not actually being counted
         let swapchain_ci = vk::SwapchainCreateInfoKHR {
             surface: surface.as_raw(),
             min_image_count: 3,
@@ -363,15 +360,14 @@ impl SwapchainContext {
             self.loader
                 .acquire_next_image(
                     self.swapchain,
-                    1_000_000_000, // 1000ms
+                    100_000_000, // 100ms
                     image_available,
                     vk::Fence::null(),
                 )
-                .unwrap()
+                .unwrap() // XXX will error in ways we should catch
         };
 
         let image = self.images[image_index as usize];
-        let image_view = self.image_views[image_index as usize];
 
         let sync = DrawSync {
             image_available,
