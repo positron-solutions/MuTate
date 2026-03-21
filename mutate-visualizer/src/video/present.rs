@@ -130,18 +130,30 @@ impl CommandPool {
     }
 }
 
-pub struct DrawSync {
-    pub render_finished: vk::Semaphore,
-    pub image_available: vk::Semaphore,
-    pub image_index: u32,
-}
-
-pub struct DrawTarget {
-    pub image: vk::Image,
+// Recording uses only front-back indexes
+pub struct RecordingSlot {
     pub command_buffer: vk::CommandBuffer,
 }
 
+// Acquired images come from the swapchain, which might have to do something obtuse and hand us back
+// a bizarre index, such as 2, due to the compositor being late at giving us the image back.
+pub struct AcquiredImage {
+    /// Used during acquisition.
+    pub image_available: vk::Semaphore,
+    /// The index provided by the swapchain (which may cycle swapchain images out of order) during
+    /// acquisition.
+    pub swapchain_image_index: u32,
+    pub image: vk::Image,
+    pub present_ready: vk::Semaphore,
+}
+
 /// A package deal!
+///
+/// ### Rule of Four
+///
+/// Let's just say no sane swapchain is coming back with four images.  With four slots, we always
+/// have enough space for any size of swapchain.  We only take up a few 64bit pointers that won't
+/// pack or load much better for three elements anyway.  In return, we save a lot of complication.
 pub struct SwapchainContext {
     swapchain: vk::SwapchainKHR,
     loader: ash::khr::swapchain::Device,
@@ -149,9 +161,8 @@ pub struct SwapchainContext {
     images: SmallVec<vk::Image, 4>,
     frames: usize,
     frame_index: usize,
-
-    render_finished_semaphores: [vk::Semaphore; 4],
     image_available_semaphores: [vk::Semaphore; 4],
+    present_ready_semaphores: [vk::Semaphore; 4],
 }
 
 impl SwapchainContext {
@@ -212,20 +223,11 @@ impl SwapchainContext {
             })
             .collect();
 
-        // Aim for max images. With 3, we don't have to reallocate.
-        let semaphore_ci = vk::SemaphoreCreateInfo::default();
-        let make_semaphore = |_| unsafe {
-            device_context
-                .device()
-                .create_semaphore(&semaphore_ci, None)
-                .unwrap()
-        };
-        let image_available_semaphores = std::array::from_fn(make_semaphore);
-        let render_finished_semaphores = std::array::from_fn(make_semaphore);
-
+        let image_available_semaphores = std::array::from_fn(|_| device_context.make_semaphore());
+        let present_ready_semaphores = std::array::from_fn(|_| device_context.make_semaphore());
         Self {
+            present_ready_semaphores,
             image_available_semaphores,
-            render_finished_semaphores,
             loader,
             images: images.into(),
             image_views: image_views,
@@ -305,18 +307,12 @@ impl SwapchainContext {
             })
             .collect();
 
-        // XXX review this
-        // Reconcile semaphore count if the driver gave us a different image count
         let new_frames = self.images.len();
         if new_frames != self.frames {
-            // let semaphore_ci = vk::SemaphoreCreateInfo::default();
-            // let make = |_| unsafe { device.create_semaphore(&semaphore_ci, None).unwrap() };
-
-            // self.image_available_semaphores
-            //     .resize_with(new_frames, make);
-            // self.render_finished_semaphores
-            //     .resize_with(new_frames, make);
             self.frames = new_frames;
+            // LIES while this avoids a degenerate index that would crash, it might attempt to use
+            // an image in flight unless acquire is properly called.  The semaphore wait before
+            // swapchain recreation is what *actually* protects us.
             self.frame_index = self.frame_index.min(new_frames - 1);
         }
     }
@@ -343,20 +339,20 @@ impl SwapchainContext {
             self.image_available_semaphores.iter().for_each(|s| {
                 device.destroy_semaphore(*s, None);
             });
-            self.render_finished_semaphores.iter().for_each(|s| {
+            self.present_ready_semaphores.iter().for_each(|s| {
                 device.destroy_semaphore(*s, None);
             });
         }
     }
 
     /// XXX mark chain dirty if this fails
-    pub fn acquire(&mut self) -> (vk::Image, DrawSync) {
+    pub fn acquire(&mut self) -> AcquiredImage {
         let idx = self.frame_index as usize;
         let image_available = self.image_available_semaphores[idx];
-        let render_finished = self.render_finished_semaphores[idx];
+        let present_ready = self.present_ready_semaphores[idx];
         self.frame_index = (idx + 1) % self.frames;
 
-        let (image_index, _) = unsafe {
+        let (swapchain_image_index, _) = unsafe {
             self.loader
                 .acquire_next_image(
                     self.swapchain,
@@ -367,15 +363,14 @@ impl SwapchainContext {
                 .unwrap() // XXX will error in ways we should catch
         };
 
-        let image = self.images[image_index as usize];
+        let image = self.images[swapchain_image_index as usize];
 
-        let sync = DrawSync {
+        AcquiredImage {
             image_available,
-            render_finished,
-            image_index,
-        };
-
-        (image, sync)
+            swapchain_image_index,
+            image,
+            present_ready,
+        }
     }
 }
 
@@ -388,8 +383,12 @@ pub struct SurfacePresent {
     /// Present wait measurement
     present: sync::PresentConsumer,
 
+    // NEXT Pool rings can likely be abstracted.  It's a very solid piece of infrastructure.
     // Just enough for front & back frame.
     pools: [CommandPool; 2],
+    /// A ring index, always advances by 1.  Longer pool rings could be used if there's a reason for
+    /// longer serial work to pipeline in parallel, likely using only a few warps (because otherwise
+    /// it's asking the scheduler to make it parallel).
     recording_index: u32,
 }
 
@@ -405,6 +404,7 @@ impl SurfacePresent {
 
         let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent);
 
+        // NEXT bon builder for semaphores.  This is nonsense.
         let mut type_ci = vk::SemaphoreTypeCreateInfo {
             semaphore_type: vk::SemaphoreType::TIMELINE,
             initial_value: 0,
@@ -456,7 +456,7 @@ impl SurfacePresent {
     ) {
         let device = &context.device;
         let physical_device = context.physical_device;
-        // XXX replace with semapahore wait on last frame in flight
+        // XXX replace with semaphore wait on last frame in flight
         unsafe {
             device.device_wait_idle().unwrap();
         }
@@ -466,6 +466,7 @@ impl SurfacePresent {
             .notify_swapchain_recreation(self.swapchain.swapchain);
     }
 
+    /// Wait for the previous submission to complete
     pub fn draw_wait(&mut self, device_context: &DeviceContext) {
         let wait_value = self.frame_counter;
         let wait_info = vk::SemaphoreWaitInfo::default()
@@ -474,7 +475,7 @@ impl SurfacePresent {
         unsafe {
             device_context
                 .device()
-                .wait_semaphores(&wait_info, u64::MAX)
+                .wait_semaphores(&wait_info, 100_000_000) // 100ms
                 .unwrap();
         }
     }
@@ -483,22 +484,26 @@ impl SurfacePresent {
     pub fn render_target(
         &mut self,
         context: &DeviceContext,
-        clear: vk::ClearValue,
-    ) -> (DrawSync, DrawTarget) {
+        clear: vk::ClearValue, // XXX extract this because it's basically pretty annoying.
+    ) -> (RecordingSlot, AcquiredImage) {
         let device = &context.device();
+        let acquired_image = self.swapchain.acquire();
 
-        let (image, sync) = self.swapchain.acquire();
-
-        let pool = &mut self.pools[self.recording_index as usize];
+        // NEXT recording slots does indeed seem to be some kind of useful abstraction.  Its pools
+        // and submission semaphores will
+        let idx = self.recording_index as usize;
+        let pool = &mut self.pools[idx];
         pool.reset(&context);
-        let buffer = pool.buffer(&context);
-        self.recording_index ^= 1;
-
+        let command_buffer = pool.buffer(&context);
         // XXX maybe do this on creation?
+        // this is the compute variant.  the graphics variant below has only a little more ceremony
+        // for roughly the same abstraction.
         unsafe {
             let begin = vk::CommandBufferBeginInfo::default();
-            device.begin_command_buffer(buffer, &begin).unwrap();
+            device.begin_command_buffer(command_buffer, &begin).unwrap();
         }
+        self.recording_index ^= 1;
+        let slot = RecordingSlot { command_buffer };
 
         // let barrier = vk::ImageMemoryBarrier2 {
         //     src_stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
@@ -547,17 +552,24 @@ impl SurfacePresent {
 
         // unsafe { device.cmd_begin_rendering(command_buffer, &render_info) };
 
-        let target = DrawTarget {
-            image,
-            command_buffer: buffer,
-        };
-
-        (sync, target)
+        (slot, acquired_image)
     }
 
-    /// Sync presentation image transform and present
-    pub fn post_draw(&mut self, context: &DeviceContext, sync: &DrawSync, target: &DrawTarget) {
+    /// Sync presentation image transform and present.
+    /// NEXT close out the command buffer and do submission separately.
+    pub fn post_draw(
+        &mut self,
+        context: &DeviceContext,
+        slot: &RecordingSlot,
+        acquired_image: &AcquiredImage,
+    ) {
         let device = context.device();
+        unsafe {
+            context
+                .device
+                .end_command_buffer(slot.command_buffer)
+                .unwrap()
+        };
 
         // XXX Unique for graphics
         // unsafe { device.cmd_end_rendering(target.command_buffer) };
@@ -595,21 +607,16 @@ impl SurfacePresent {
         //         .cmd_pipeline_barrier2(target.command_buffer, &dep2)
         // };
 
-        unsafe {
-            context
-                .device
-                .end_command_buffer(target.command_buffer)
-                .unwrap()
-        };
-
         let wait_info = vk::SemaphoreSubmitInfo {
-            semaphore: sync.image_available,
+            semaphore: acquired_image.image_available,
             stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             ..Default::default()
         };
 
         let next_value = self.frame_counter + 1;
         self.frame_counter = next_value;
+        // XXX Pacing on in_flight, but this kind of duplicates present_ready?  present_ready is
+        // a also useful for swapchain reconstruction.
         let in_flight = vk::SemaphoreSubmitInfo::default()
             .semaphore(self.in_flight)
             .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -617,15 +624,14 @@ impl SurfacePresent {
 
         let signal_infos = [
             vk::SemaphoreSubmitInfo {
-                semaphore: sync.render_finished,
+                semaphore: acquired_image.present_ready,
                 stage_mask: vk::PipelineStageFlags2::ALL_GRAPHICS,
                 ..Default::default()
             },
             in_flight,
         ];
-
         let cb_info = vk::CommandBufferSubmitInfo {
-            command_buffer: target.command_buffer,
+            command_buffer: slot.command_buffer,
             ..Default::default()
         };
 
@@ -644,8 +650,9 @@ impl SurfacePresent {
     }
 
     // XXX this function demonstrates that command buffer presentation kind of re-couples at
-    // presentation for swapchain stuff.
-    pub fn present(&mut self, device_context: &DeviceContext, sync: &DrawSync) {
+    // presentation for swapchain stuff.  The present wait tangling demonstrates that we will need
+    // some builders and intermediate structures to fan in any kind of composed behaviors.
+    pub fn present(&mut self, device_context: &DeviceContext, acquired_image: AcquiredImage) {
         let queue = &device_context.queues.graphics_queue();
         match self.present.read_last_present() {
             Some(last) => {
@@ -658,9 +665,9 @@ impl SurfacePresent {
         let next_id = self.present.next_present_id();
         let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
         let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(slice::from_ref(&sync.render_finished))
+            .wait_semaphores(slice::from_ref(&acquired_image.present_ready))
             .swapchains(slice::from_ref(&self.swapchain.swapchain))
-            .image_indices(slice::from_ref(&sync.image_index))
+            .image_indices(slice::from_ref(&acquired_image.swapchain_image_index))
             .push_next(&mut present_id);
 
         self.swapchain.present(*queue, &present_info);

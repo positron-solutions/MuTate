@@ -152,4 +152,11 @@ impl DeviceContext {
             self.device.destroy_device(None);
         };
     }
+
+    /// Returns a vanilla binary semaphore.
+    // NEXT bon this for making timeline and other semaphores?
+    pub fn make_semaphore(&self) -> vk::Semaphore {
+        let semaphore_ci = vk::SemaphoreCreateInfo::default();
+        unsafe { self.device().create_semaphore(&semaphore_ci, None).unwrap() }
+    }
 }

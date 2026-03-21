@@ -188,13 +188,14 @@ impl SpectrumNode {
     /// composite the output and stuff.
     pub fn draw(
         &mut self,
-        target: &crate::video::present::DrawTarget,
+        recording_slot: &crate::video::present::RecordingSlot,
+        acquired_image: &crate::video::present::AcquiredImage,
         input: &[crate::audio::cqt::Cqt],
         context: &crate::DeviceContext,
         // NEXT This extent is basically part of the target
         extent: vk::Extent2D,
     ) {
-        let cb = target.command_buffer;
+        let cb = recording_slot.command_buffer;
         let device = context.device();
 
         unsafe {
@@ -202,7 +203,7 @@ impl SpectrumNode {
         }
 
         // Transition the output layout for writing.
-        let out_image = target.image;
+        let out_image = acquired_image.image;
         let range = image::range();
         image::transition_layout(
             out_image,

@@ -36,10 +36,12 @@ struct App {
     vk_context: VkContext,
 
     // Initialized on resume.
+    // NEXT surface, window, and the enclosing context, SurfacePresent all have a pretty closely
+    // tied lifecycle and likey can be abstracted.
     surface: Option<VkSurface>,
+    window: Option<winit::window::Window>,
     device_context: Option<DeviceContext>,
     surface_present: Option<video::present::SurfacePresent>,
-    window: Option<winit::window::Window>,
 
     // These fields will turn into a graph when graphs are ready
     render_node: Option<video::spectrum::SpectrumNode>,
@@ -83,25 +85,28 @@ impl App {
         sp.draw_wait(device_context);
 
         // Obtain swapchain image and hot command buffer
-        let (sync, target) = sp.render_target(device_context, clear);
+        let (recording_slot, acquired_image) = sp.render_target(device_context, clear);
 
         // XXX hold size on swapchain updates?  A parameter system would 😉
         let size = self.window.as_ref().unwrap().render_size();
         // Node draws to command buffer.  The idea we've isolated is that drawing to a target has
         // little to do with the source or fate of that target.
-        self.render_node
-            .as_mut()
-            .unwrap()
-            .draw(&target, cqt, device_context, size);
+        self.render_node.as_mut().unwrap().draw(
+            &recording_slot,
+            &acquired_image,
+            cqt,
+            device_context,
+            size,
+        );
 
         // Presentation closes the command buffer, submits to queue, transforms image, and presents.
         // Also waits on presentation.
         let window = self.window.as_ref().unwrap();
-        sp.post_draw(device_context, &sync, &target);
+        sp.post_draw(device_context, &recording_slot, &acquired_image);
         // Winit says this helps align the window system latching with REDRAW_REQUESTED events.
         // However, it is supported only on Wayland at this time.
         window.pre_present_notify();
-        sp.present(device_context, &sync);
+        sp.present(device_context, acquired_image);
     }
 }
 
