@@ -14,7 +14,7 @@ This is a foreword.  Pick your favorite three-archetypes model, such as:
 - settlers
 - town planners
 
-**This is absolutely not the time for town planners.**  If you can't ignore dirty code, move along or learn.  Code will change out from under things, and all your premature polishing will be for naught.  Brutal refactorings are welcome.  Last-write-wins.
+**This is absolutely not the time for town planners.**  If you can't ignore dirty code, move along or learn!  Code will change out from under things, and all your premature polishing will be for naught.  Brutal refactorings are welcome.  Last-write-wins.
 
 Put Clippy away.  Add `#[allow(unused)]` to your dirty tree and don't tell
 anyone.  Slop in the blanks.  Just be sure to encode some useful facts and
@@ -26,14 +26,6 @@ render crossfades are supported.
 # Currently Paying Down
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
-
-## Command Pool Reset
-
-Command Buffer reset is cheaper, so we will use it.  It does require restructuring the ownership boundaries for our render targets.
-
-## Expose Shader Libs to Dependent Crates
-
-The descriptors.slang should be imported using links & `DEP_MUTATE_LIB_SLANG_INCLUDE` variable (build script to builds script dependency).  This is our way to include slang files automatically for dependents.
 
 ## Logs & Tracing
 
@@ -60,24 +52,6 @@ Shaders must declare their inputs.  Push constant ranges and types must align.  
 
 It's really only once we have a collection of pipelines for a coherent technique that we can see all dependencies for a single Visual.
 
-## Devices vs VkContext
-
-The way we find and initialize devices is still pretty noobish.  The VkContext needs to abstract over **multiple** devices, both for multi-GPU setups and perhaps to offload learning & inference.
-
-## Task Graphs
-
-We have multiple loops (audio, render, allocation, destruction, transfer, training, inference, compute) all driven independently and externally.  When these synchronize, they form *kind of a graph?*  It's a bit more like several event loops with systems that run on those loops.
-
-In any case, there will be schedulers for these loops and things that want to run stuff will be able to inject function calls.  Dynamic dispatch so that we don't lock ourselves into an OOP style fill-in-the-blank set of choices about when to run things.
-
-Buffers etc things will be allocated and then the scheduled tasks will be allowed to run on the next tick.  Do everything in reverse for teardown.
-
-The somewhat well-trodden idea of the render graph will likely be obliterated by our needs for **crossfading different render styles**.  This is really different than a simple render graphs inserting barriers (an automation so cheap we can lazily decide it at runtime while recording buffers).
-
-What we really care about are ergonomics and enabling style crossfades.  That requires deeper awareness of the semantic meaning of buffer contents, not just their types.  We have to be able to interleave different pipelines.  Just throw the idea of statically decided render graphs out the window.  They will not be flexible enough.
-
-This is about to be under heavy development and will completely replace how all current visuals and task orderings are currently hand coded.
-
 ## Reactive Updates
 
 Dependents should be notified reactively when their dependencies change configuration.  The first instance problem coming up is to resize a screen-dimension-sensitive visual when the screen size changes.  We have to re-allocate the buffers and re-size the internal data structures.  The resize information comes from the presentation target, and the reactive system must transmit this change to the dependent nodes.
@@ -88,7 +62,7 @@ The way this seems likely to be implemented is similar to other reactive systems
 
 ## Moving Spectrum Analyzer to GPU
 
-The first-pass at the CQT has a number of problems that have excellent solutions available.
+The first-pass at the CQT has a number of problems:
 
 - Rather than constant Q (quality factor), some high frequency bins end up with 800 samples making them too precise making us miss energy between bins
 - Low frequency iso226 correction is to extreme or the bins we are applying it to are missing energy due to accuracy issues and then the correction drops them out entirely
@@ -108,22 +82,38 @@ Each element includes two parts:
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
 
-## Audio Formats
-## Bytemuck & Slang
+## Bytemuck Traits in Slang Module
 
-The type of the input buffers is **not** bytes.  We should either coerce all input streams to one format or handle multiple formats if we cannot coerce all target platforms to a common denominator (and convert ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make this easy by doing it all the time with a good set of tools.
-Current code is a rough draft.  Need Pod and Zeroable but the derive macro really struggles *inside* the crate.  Proper fix might be to split the crate and do integration tests downstream.
-
+Current code is a rough draft.  We need `Pod` and `Zeroable` but getting the derive macro paths right is very fiddly  *inside* the crate.  Proper fix might be to split the crate and do integration tests downstream.
 
 ### For Now
 
-Hardcode and mark with `// DEBT`
+The `Pod` and `Zeroable` markers were just thrown in by hand so we don't even need derive.  This might not catch situations where the traits don't actually work 😬
+
+## Timeline & Render Graph
+
+The big behaviors we're after:
+
+- Aliasing memory both for re-use and crossfade rendering
+- Independent timelines with exclusive phase support to do some machine learning between frames and handle audio graph self-pacing vs VRR frame latch deadlines
+- Automatic hazard detection (runtime) and barrier insertion (render graph)
+- Intent language style primitives that can evaluate to a graph efficiently and tell us most of these things relatively quickly
+
+### For Now
+
+We just have to do these things manually until some pain builds up.  General scheduling is hard, mainly because it's under-constrained for our use case, and should be avoided.  The same with general memory allocation.  **Focus on concrete needs** rather than perfect designs that make us over-commit to a particular pattern.
+
+The one thing that seems super clear is that without a single layer indirection for pointers, many cool things are not possible later.  Think in terms of late binding hot-swapping pointers on the GPU.  The pointer is only guaranteed not to be deleted while in flight.  Easy for the user.  Aliasing, reallocation, garbage collection etc all just boil down to swapping the pointers that readers are holding / looking up.
 
 ## Memory Management
 
 Expectations are that memory usage will be relatively low but less predictable due to generation, transitions, and scripting.
 
-Where we're going, Visuals will provide their resource requirements as specs (which Images, SSBOs, Uniforms need to exist) and these will be instantiated by some allocator when they don't exist (discovered by Id etc).  These specs should give us some good, predictable high water marks for more intentional allocation strategies.
+- https://lib.rs/crates/gpu-allocator for obtaining GPU memory
+- https://lib.rs/crates/offset-allocator for slicing it up and handing it out
+- https://lib.rs/crates/slotmap for tracking what we handed out
+
+Where we're going, workloads will provide their resource requirements as specs (which Images, SSBOs, Uniforms need to exist) and these will be instantiated by some allocator when they don't exist (discovered by Id etc).  These specs should give us some good, predictable high water marks for more intentional allocation strategies.
 
 ### For Now
 
@@ -143,22 +133,60 @@ The performance of `vk::ImageLayout::GENERAL` is just not bad.  It is sometimes 
 
 ## Error Handling
 
-The lib side is using `thiserror` and will present a single error `MutateError` type to consumers.  Currently the hierarchy has little semantic or diagnostic value.  Providing views into the underlying causes depends on what error handlers want to get out of the downstream error source.  Without that forcing pressure, we don't really know what types to separate or what information to expose yet.
+The lib side is using `thiserror` and will present a single error `MutateError` type to consumers.  Upstream crates are forwarded through `MutateError` variants.  Currently the hierarchy may still have little semantic or diagnostic value.  Providing views into the underlying causes depends on what error handlers want to get out of the upstream error source.  Without the forcing pressure from error consumers, we don't really know what types to separate or what information to expose yet.
 
 Error handling has traditionally been an area of ergonomic innovation in Rust.  It's likely not beyond the innovation phase.
 
 ### For Now
 
+- Unwrap and panic liberally 🤠
+- Return `Result` types from fallible operations to ensure proper combinator usages are happening.
 - Use any MuTate error that seams appropriate or make a new one, and be honest about its use when documenting.
-- Return Result types from fallible operations to ensure proper combinator usages.
-- Unwrap and panic liberally
+- If you are a saint, go implement proper tracing, tracing formatting, options for consumers that want to ignore tracing, spans and the like.
+- If you are less of a saint, find panics where continuing has some meaningful use case and conver them to `Result` and do something useful after returning it.
 
 ## Vulkan Versions, Device & Platform Compatibility
 
-Anticipate monolithic platform builds.
+We don't have any infrastructure for falling back when devices don't support requested features.
 
 ### For Now
 
+The go-to pattern is use whatever is most ergonomic for development and then back-port features if there is still some target worth supporting.  It's most ergonomic to assume everyone is Vulkan 1.4 and supports everything. 😬
+
 - Use 1.3+ and any extensions from 1.4 that enhance productivity significantly
 - Use `cfg` gates only for platforms, not for Vulkan versions.  To switch on Vulkan support, use runtime conditions.
-- Plan on using Molten on Apple.  The slang compiler can target (Metal Shader Language) but likley first pass, just rely on Molten to translate.  You need an Apple tool for MSL ⇒ metallibs.   If we switch to MSL though, the type agreement must use Apple-specific introspection data and modified macro logic!
+- Plan on using Molten on Apple.  The slang compiler can target (Metal Shader Language) but likely first pass, just rely on Molten to translate SPIR-V.  You need an Apple tool for MSL ⇒ metallibs.   If we switch to MSL though, the type agreement must use Apple-specific introspection data and modified macro logic!
+
+## Dynamic Command Buffer State Shadow
+
+We don't really want to unset dynamic states that were set somewhere else.  The dependency might be real?  It will be.  There are cases.
+
+In the end, we want push/pop style states for different rendering techniques so that the techniques are not conscious of what they interleave with.
+
+### For Now
+
+Manual mode!  Grep for states and set / unset the relevant ones.
+
+## Audio Formats
+
+The actual type of the input buffers is **not** bytes.  We should either coerce
+all input streams to one format or handle multiple formats if we cannot coerce
+all target platform audio survers to give us a common denominator (and convert
+ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make
+this easy by doing it all the time with a good set of tools.
+
+### For Now
+
+Hardcode and mark with `// DEBT`
+
+## Presentation Capable Queue Families
+
+Detecting the need to do a queue transfer before present is unavoidably tedious.  These cases are said to be rare.  To properly support, we have to check if the command buffer and its queue family can do presentation and, if not, find a transfer capable queue and do presentation over there, meaning another command buffer pool too!
+
+```
+//! (◕‿◕)︵‿︵‿︵‿︵┻━┻
+```
+
+### For Now
+
+You know what?  We assume the first queue to present (usually graphics, usually the zeroth index) is the right one.  Any support that looks complete is an accident.  If you need weird things, try commercial support or go do some coding `(◕‿◕)ノ彡☆`
