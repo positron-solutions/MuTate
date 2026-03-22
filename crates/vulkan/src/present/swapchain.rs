@@ -40,12 +40,13 @@ use crate::context::{DeviceContext, VkContext};
 // Acquired images come from the swapchain, which might have to do something obtuse and hand us back
 // a bizarre index, such as 2, due to the compositor being late at giving us the image back.
 pub struct AcquiredImage {
-    /// Used during acquisition.
+    /// Swapchain signals this semaphore when rendering / use of the image may begin.
     pub image_available: vk::Semaphore,
     /// The index provided by the swapchain (which may cycle swapchain images out of order) during
     /// acquisition.
-    pub swapchain_image_index: u32,
+    pub swapchain_image_index: u32, // present will use this field
     pub image: vk::Image,
+    /// Signals when presentation may begin (after rendering).
     pub present_ready: vk::Semaphore,
 }
 
@@ -76,13 +77,13 @@ impl SwapchainContext {
         extent: vk::Extent2D,
     ) -> Self {
         let VkContext { entry, instance } = &vk_context;
-        // XXX device_context method?
         let loader =
             ash::khr::swapchain::Device::new(&vk_context.instance, &device_context.device());
 
+        // somewhat duplicate with recreation.
         let swapchain_ci = vk::SwapchainCreateInfoKHR {
             surface: surface.as_raw(),
-            min_image_count: 3,
+            min_image_count: surface.swapchain_image_count,
             image_format: surface.format.format,
             image_color_space: surface.format.color_space,
             image_extent: extent,
@@ -100,31 +101,8 @@ impl SwapchainContext {
         let swapchain = unsafe { loader.create_swapchain(&swapchain_ci, None).unwrap() };
         let images = unsafe { loader.get_swapchain_images(swapchain).unwrap() };
         let frames = images.len();
-
-        let image_views: SmallVec<_, 4> = images
-            .iter()
-            .map(|&image| {
-                let view_ci = vk::ImageViewCreateInfo {
-                    image,
-                    view_type: vk::ImageViewType::TYPE_2D,
-                    format: surface.format.format,
-                    components: vk::ComponentMapping::default(),
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        level_count: 1,
-                        layer_count: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                unsafe {
-                    device_context
-                        .device
-                        .create_image_view(&view_ci, None)
-                        .unwrap()
-                }
-            })
-            .collect();
+        let image_views =
+            create_image_views(&device_context.device(), &images, surface.format.format);
 
         let image_available_semaphores = std::array::from_fn(|_| device_context.make_semaphore());
         let present_ready_semaphores = std::array::from_fn(|_| device_context.make_semaphore());
@@ -147,6 +125,16 @@ impl SwapchainContext {
         extent: vk::Extent2D,
     ) {
         let device = device_context.device();
+        unsafe {
+            device_context.device();
+        }
+
+        // XXX The current window-swap-surface thing (still in visualizer?) doesn't know how to tell
+        // use when we can safely recreate images.  The present-wait must be poll-looped to
+        // determine if we have no images in flight.  The plumbing through the external present-wait
+        // structure means that only the window thing (which also gets resize events) can tell us
+        // when it's clear to recreate.  Until then....... device_wait_idle 🥉
+        unsafe { device.device_wait_idle() };
 
         // Destroy old image views — images themselves are owned by the swapchain
         unsafe {
@@ -155,9 +143,11 @@ impl SwapchainContext {
             }
         }
 
+        // XXX recreation data is out of date and should be refreshed up in the Window-Swap-Surface
+        // stuff.
         let swapchain_ci = vk::SwapchainCreateInfoKHR {
             surface: surface.as_raw(),
-            min_image_count: self.frames as u32,
+            min_image_count: surface.swapchain_image_count,
             image_format: surface.format.format,
             image_color_space: surface.format.color_space,
             image_extent: extent,
@@ -188,27 +178,11 @@ impl SwapchainContext {
                 .unwrap()
                 .into()
         };
-
-        self.image_views = self
-            .images
-            .iter()
-            .map(|&image| {
-                let view_ci = vk::ImageViewCreateInfo {
-                    image,
-                    view_type: vk::ImageViewType::TYPE_2D,
-                    format: surface.format.format,
-                    components: vk::ComponentMapping::default(),
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        level_count: 1,
-                        layer_count: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                unsafe { device.create_image_view(&view_ci, None).unwrap() }
-            })
-            .collect();
+        self.image_views = create_image_views(
+            &device_context.device(),
+            &self.images,
+            surface.format.format,
+        );
 
         let new_frames = self.images.len();
         if new_frames != self.frames {
@@ -220,7 +194,8 @@ impl SwapchainContext {
         }
     }
 
-    // XXX a horrible function?
+    // The caller is attaching extra present info and we don't have a good way to let everyone add
+    // their data to the chain, so it's being remixed externally before passed in as `present_info`.
     pub fn present(&self, queue: vk::Queue, present_info: &vk::PresentInfoKHR) {
         unsafe {
             match self.loader.queue_present(queue, present_info) {
@@ -275,4 +250,31 @@ impl SwapchainContext {
             present_ready,
         }
     }
+}
+
+// Creation and re-creation both make image views.
+fn create_image_views(
+    device: &ash::Device,
+    images: &[vk::Image],
+    format: vk::Format,
+) -> SmallVec<vk::ImageView, 4> {
+    images
+        .iter()
+        .map(|&image| {
+            let view_ci = vk::ImageViewCreateInfo {
+                image,
+                view_type: vk::ImageViewType::TYPE_2D,
+                format,
+                components: vk::ComponentMapping::default(),
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    level_count: 1,
+                    layer_count: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            unsafe { device.create_image_view(&view_ci, None).unwrap() }
+        })
+        .collect()
 }
