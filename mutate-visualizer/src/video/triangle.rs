@@ -5,9 +5,6 @@
 //!
 //! This is a very simple node that scales and colors a triangle.
 
-// There is already beginning to be a lot of coupling between the graph behaviors and the render
-// target.
-
 use ash::vk;
 
 use mutate_assets as assets;
@@ -61,9 +58,8 @@ impl TriangleNode {
             frag_stage_ci,
         ];
 
-        // I messed around with two ranges but the validation of the shader code made me believe
-        // that using two separate push constants was at best hacky.  Therefore, I merged the ranges
-        // and just used the relevant data in each shader.
+        // I probably had no idea about the offsets and layouts of push constants when deciding to
+        // pack them all as one.  I had not switched to scalar block layout.
         let push_constant_range = vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
             offset: 0,

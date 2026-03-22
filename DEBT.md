@@ -6,9 +6,19 @@ For more forward-looking feature
 [discussion](https://github.com/positron-solutions/MuTate/discussions), see
 Github.
 
-## Yee-Haw Index: 7 of 10 🤠
+## High Level Challenges
 
-This is a foreword.  Pick your favorite three-archetypes model, such as:
+The big pieces that are missing and expected areas of coupled design-development.
+
+- Render crossfades demand granular runtime interleaving of pipelines.  This requires runtime resolution of which buffers to create or share.
+- Shared ownership of resources needs to build on top of manual GPU memory management and asynchronous creation & destruction.
+- Timeline scheduling between our several self-pacing loops, such as audio, video, and later online learning.  We need timelines to express dynamic operation interleaving.
+- Runtime render graph behaviors will depend on build time witness data that is also used at compile time.  The macros for expressing new pipelines will build on top of the types they must emit (which we are writing now).
+- Asynchronous (threaded) resource hydration & destruction will couple with notifying dependents of changes in upstream dependencies.
+
+## Foreword on Rigor
+
+Yee-Haw Index: 7 of 10 🤠.  Pick your favorite three-archetypes model, such as:
 
 - pioneers
 - settlers
@@ -27,38 +37,30 @@ render crossfades are supported.
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
+## Ash & Raw Pointers
+
+As we go, replace C pointer casting and `as_ptr()` calls with `push_next` and structure methods.  These accept more Rusty types and are safer (pointer castings is pretty unsafe).  See this commit in blame.
+
 ## Logs & Tracing
 
-Along with error handling in type signatures, we're starting to need some real infra for errors.  Having a library crate in addition to binaries opens lots of questions that just need decisions.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
+Along with error handling in type signatures, we're starting to need some real infra for errors.
 
-Tracing selected.  We can do log fallback later for people who don't want tracing.  Silent release build option.
+Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
 
 ## Buffer Item Layouts
 
 We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).  Manually align while we implement the contracts around the ergonomics.
-
-## Ash & Raw Pointers
-
-As we go, replace C pointer casting and `as_ptr()` calls with `push_next` and structure methods.  These accept more Rusty types and are safer (pointer castings is pretty unsafe).  See this commit in blame.
 
 ## Shader Boilerplate
 
 Shaders must declare their inputs.  Push constant ranges and types must align.  Indexes must be typed for the right kinds of descriptors etc.  It's 1:1 and should be automated.
 
 - Emit slang introspection data during build
-  + Compile to spirv or MSL etc
+  + Compile to SPIR-V or MSL etc
 - Read introspection data in macros to check agreement or generate agreeing structs
 - Declaration macros and types they will express are in heavy development.
 
 It's really only once we have a collection of pipelines for a coherent technique that we can see all dependencies for a single Visual.
-
-## Reactive Updates
-
-Dependents should be notified reactively when their dependencies change configuration.  The first instance problem coming up is to resize a screen-dimension-sensitive visual when the screen size changes.  We have to re-allocate the buffers and re-size the internal data structures.  The resize information comes from the presentation target, and the reactive system must transmit this change to the dependent nodes.
-
-Downstream reactions will usually affect the lifetime of fields and allocations such as buffers, not the lifetimes of structs such as nodes themselves.
-
-The way this seems likely to be implemented is similar to other reactive systems but not nearly as granular.  Register inputs.  Re-instantiate on changes.  Swap resource pointers when ready.  Re-scale old resources when not yet ready.  This is coupled with the spec/hydration system being developed.
 
 ## Moving Spectrum Analyzer to GPU
 
@@ -75,6 +77,8 @@ The problem that is almost in the way of development is that even with `--releas
 
 Rather than making the CQT faster on the CPU, which will mainly involve doing things that worsen quality or fight very hard to avoid making it terrible, we should focus on moving to the GPU where we can suddenly do "expensive" things like adding a lot more filter bins and then make it cheaper because ... it's the right thing to do even though we have 512 cores or so 😉.
 
+The migration to Slang was going to itself require better engineering around pipeline-shader development.
+
 # Charging Interest
 
 Each element includes two parts:
@@ -82,13 +86,30 @@ Each element includes two parts:
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
 
-## Bytemuck Traits in Slang Module
+## Lifetime Agreement & Destructors
 
-Current code is a rough draft.  We need `Pod` and `Zeroable` but getting the derive macro paths right is very fiddly  *inside* the crate.  Proper fix might be to split the crate and do integration tests downstream.
+Resources *must* be shared to be useful for some techniques, so single-owner RAII is too naive.  RAII can also have a lot of issues where destruction calls happen at inopportune times, bubbling the wrong threads.    Deletion queues are widely recommended.  We should at most put *tombstones* into RAII and then materialize and delete them later.
+
+Another practical concern is that GPU programming is **inherently unsafe**.  We are offloading to a machine that the Rust compiler cannot reason about, one that operates in significantly different ways.  A rush to encode contracts into Rust will make many sound GPU patterns into an irritating fight with the Rust compiler.  While someday we may find the proper types and structures to make such fights go away, **they do not yet exist and will only impede us.**
 
 ### For Now
 
-The `Pod` and `Zeroable` markers were just thrown in by hand so we don't even need derive.  This might not catch situations where the traits don't actually work 😬
+- Focus on lifetime alignment!  If the wrong fields are woven together, no lifetimes or shared ownership will ever be smooth!
+- Use manual destructors
+- Align lifetimes, but avoid borrows for things like `ash` handles that are cheaply cloned.
+- If you add lifetimes for borrows, focus on ephemeral things like builders first.
+
+## Reactive Updates
+
+Dependents should be notified reactively (or enabling them to poll) when their dependencies change configuration.  They may then choose to kick off asynchronous resource updates.
+
+The first instance problem coming up is to resize a screen-dimension-sensitive visual when the screen size changes.  We may have to re-allocate the buffers and re-size the internal data structures.  The resize information comes from the presentation target, and these changes must reach dependents.
+
+Long term, reacting is coupled with the spec/hydration system being developed.
+
+### For Now
+
+We just need things like new extents to reach dependents.  We can likely afford to just recreate resources on the fly.  Try to prepare for pointer swaps.  In general, code that can tolerate pointer swaps makes it easier to just swap in updated resources from a new ring while draining an old ring.
 
 ## Timeline & Render Graph
 
@@ -103,7 +124,7 @@ The big behaviors we're after:
 
 We just have to do these things manually until some pain builds up.  General scheduling is hard, mainly because it's under-constrained for our use case, and should be avoided.  The same with general memory allocation.  **Focus on concrete needs** rather than perfect designs that make us over-commit to a particular pattern.
 
-The one thing that seems super clear is that without a single layer indirection for pointers, many cool things are not possible later.  Think in terms of late binding hot-swapping pointers on the GPU.  The pointer is only guaranteed not to be deleted while in flight.  Easy for the user.  Aliasing, reallocation, garbage collection etc all just boil down to swapping the pointers that readers are holding / looking up.
+The one thing that seems super clear is that without a single layer indirection for pointers, many cool things are not possible later.  Think in terms of late binding hot-swapping pointers on the GPU.  The pointer is only guaranteed not to be deleted while in flight.  Easy for the user.  Aliasing, reallocation, garbage collection etc all just boil down to swapping the pointers that readers are holding / looking up.  Pointers are atomic.  It makes life a lot simpler.
 
 ## Memory Management
 
@@ -133,7 +154,12 @@ The performance of `vk::ImageLayout::GENERAL` is just not bad.  It is sometimes 
 
 ## Error Handling
 
-The lib side is using `thiserror` and will present a single error `MutateError` type to consumers.  Upstream crates are forwarded through `MutateError` variants.  Currently the hierarchy may still have little semantic or diagnostic value.  Providing views into the underlying causes depends on what error handlers want to get out of the upstream error source.  Without the forcing pressure from error consumers, we don't really know what types to separate or what information to expose yet.
+The lib side is using `thiserror` and will present a single error `MutateError` type to consumers.  Farther upstream crates like `vulkan` have their own type (`VulkanError`) that is forwarded through `MutateError` variants.
+
+The hierarchies may still have little semantic or diagnostic value at first. We need to know what error handlers want to get out of the upstream error source
+before providing views into the underlying causes depends on.  Without the
+forcing pressure from error consumers, we don't really know what types to
+separate or what information to expose yet.
 
 Error handling has traditionally been an area of ergonomic innovation in Rust.  It's likely not beyond the innovation phase.
 
@@ -190,3 +216,11 @@ Detecting the need to do a queue transfer before present is unavoidably tedious.
 ### For Now
 
 You know what?  We assume the first queue to present (usually graphics, usually the zeroth index) is the right one.  Any support that looks complete is an accident.  If you need weird things, try commercial support or go do some coding `(◕‿◕)ノ彡☆`
+
+## Bytemuck Traits in Slang Module
+
+Current code is a rough draft.  We need `Pod` and `Zeroable` but getting the derive macro paths right is very fiddly  *inside* the crate.  Proper fix might be to split the crate and do integration tests downstream.
+
+### For Now
+
+The `Pod` and `Zeroable` markers were just thrown in by hand so we don't even need derive.  This might not catch situations where the traits don't actually work 😬
