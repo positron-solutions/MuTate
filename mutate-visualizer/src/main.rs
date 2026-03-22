@@ -145,6 +145,7 @@ impl ApplicationHandler for App {
         }
         // If we were going to ask the user, the time is now.
         let selected = supported_devices[0].clone();
+        println!("device selected: {}", selected.name);
         // XXX During swapchain rebuild, remember to re-poll the surface since a lot of the answers
         // might be dynamic over surface lifetime(?)
         let surface = VkSurface::new(surface, vk_context, selected.device());
