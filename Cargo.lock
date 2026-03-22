@@ -1004,14 +1004,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mutate-layout"
-version = "0.1.0"
-dependencies = [
- "half",
- "mutate-macros",
-]
-
-[[package]]
 name = "mutate-lib"
 version = "0.1.0"
 dependencies = [
@@ -1034,6 +1026,7 @@ dependencies = [
 name = "mutate-macros"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "mutate-assets",
  "mutate-vulkan",
  "proc-macro2",
