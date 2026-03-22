@@ -45,10 +45,7 @@ pub struct SpectrumNode {
 const ENTRY_POINT: &[u8] = b"main\0";
 
 impl SpectrumNode {
-    // NEXT what is format doing here?  why must it be passed with new?  Seems like presentation
-    // details leaking into new, but it's reasonable drawing nodes need to learn about their
-    // presentation targets.  This could also be considered provision time?
-    pub fn new(context: &DeviceContext, format: vk::Format) -> Self {
+    pub fn new(context: &DeviceContext) -> Self {
         let device = context.device();
         let assets = assets::AssetDirs::new();
 
@@ -239,17 +236,6 @@ impl SpectrumNode {
             .barrier_compute_pre(&cb, context);
 
         // Use compute shader to write
-        // MAYBE Push constants are a place where we really need automation
-        //
-        // - If I push data in the draw call, that should propagate into declaring the push constant
-        //   range.
-        // - When I push in the draw call, that should declare inputs in the slang, perhaps as a
-        //   prepend to a Leptos style inline macro template, `slang!` or something.
-        // - The data that I push should determine the type of the push constants everywhere.
-        //
-        // That might be some complex macro code but completely worth it because push constants are
-        // a useful way to update control data that can be used downstream everywhere.  Storage
-        // buffers might be a way to avoid some constants.
         let combined_push: [f32; 2] = [extent.width as f32, extent.height as f32];
         unsafe {
             device.cmd_push_constants(

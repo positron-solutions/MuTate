@@ -37,7 +37,7 @@ struct App {
 
     // Initialized on resume.
     // NEXT surface, window, and the enclosing context, SurfacePresent all have a pretty closely
-    // tied lifecycle and likey can be abstracted.
+    // tied lifecycle and likely can be abstracted.
     surface: Option<VkSurface>,
     window: Option<winit::window::Window>,
     device_context: Option<DeviceContext>,
@@ -151,6 +151,7 @@ impl ApplicationHandler for App {
         let surface = VkSurface::new(surface, vk_context, selected.device());
         // Inspect devices for present queue support and other support
         let device_context = selected.into_logical(&vk_context);
+        // XXX extent
         let fallback = window.render_size();
         let extent = surface
             .resolve_size(&device_context, Some(fallback))
@@ -159,11 +160,11 @@ impl ApplicationHandler for App {
                 height: 600,
             });
 
-        // XXX why so much needed downstream?
+        // XXX the surface.. .should know its extent.  Even if we update it because of window
+        // changes, our VkSurface is a context that should encapsulate this state.
         let sp = video::present::SurfacePresent::new(&device_context, vk_context, &surface, extent);
 
-        let mut render_node =
-            video::spectrum::SpectrumNode::new(&device_context, surface.format.format);
+        let mut render_node = video::spectrum::SpectrumNode::new(&device_context);
         // DEBT memory management, resources, render graph
         render_node
             .provision(
