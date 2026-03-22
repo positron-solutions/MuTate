@@ -3,8 +3,9 @@
 
 //! # Present
 //!
-//! Presentation tends to live slightly outside of rendering and has fairly rigid synchronization.
-//! This module encapsulates the pre and post-render integration with surrounding optional bits such
-//! as windows.
+//! Presentation tends to live slightly outside of command recording and has a bit specific
+//! synchronization requirements.  This module encapsulates the pre and post-render integration with
+//! surrounding optional bits such as windows.
 
 pub mod surface;
+pub mod swapchain;

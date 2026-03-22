@@ -13,11 +13,10 @@ use mutate_assets as assets;
 use mutate_lib::{self as utate, prelude::*};
 use utate::vulkan::{
     dispatch::command::{CommandPool, RecordingSlot},
+    present::swapchain::AcquiredImage,
     resource::{buffer, image},
     util,
 };
-
-use crate::video::present::AcquiredImage;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

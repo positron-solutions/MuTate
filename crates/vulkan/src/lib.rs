@@ -72,16 +72,14 @@
 //!   + Stage
 //!   + Pipeline
 //! - Dispatch
-//!   + Command Buffer
+//!   + Recording Ring
+//!   + Recording Slot
 //!     * Compute
 //!     * Transfer
 //!     * Graphics
-//!   + Target
-//!     * Swapchain
-//!     * Off-screen (any old compatible image output)
-//!   + Sync
-//!     * Barriers
-//!     * Semaphores
+//! - Presentation
+//!   + Swapchain
+//!   + Alternative Frontends
 //!
 //! ## Context
 //!
@@ -105,12 +103,14 @@
 //! Agreement between Stages, their shaders, and Resources is handled here.  We use Slang
 //! introspection data to ensure that the Rust code will emit types that match the Slang layout.
 //!
-//!
 //! ## Dispatch
 //!
-//! Covers recording and command specific to command buffers in requisite states.  Presentation and
-//! submission, the bookends of dispatches, and their associated synchronization, are also covered
-//! here.
+//! Recording, lifecycle, and submission of command buffers.
+//!
+//! ## Presentation
+//!
+//! Swapchain abstraction, the wrapping around recording for graphics commands that will be
+//! presented, interfaces for alternative frontends.
 
 pub mod context;
 pub mod dispatch;
