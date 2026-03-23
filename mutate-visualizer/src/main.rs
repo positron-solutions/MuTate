@@ -150,7 +150,7 @@ impl ApplicationHandler for App {
         // might be dynamic over surface lifetime(?)
         let surface = VkSurface::new(surface, vk_context, selected.device());
         // Inspect devices for present queue support and other support
-        let device_context = selected.into_logical(&vk_context);
+        let mut device_context = selected.into_logical(&vk_context);
         // XXX extent
         let fallback = window.render_size();
         let extent = surface
@@ -168,7 +168,7 @@ impl ApplicationHandler for App {
         // DEBT memory management, resources, render graph
         render_node
             .provision(
-                &device_context,
+                &mut device_context,
                 // XXX made up size :-)
                 vk::Extent2D {
                     height: 800,
@@ -234,7 +234,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => unsafe {
                 self.running = false;
                 let vk_context = &self.vk_context;
-                let device_context = self.device_context.as_ref().unwrap();
+                let device_context = self.device_context.as_mut().unwrap();
                 let device = &device_context.device;
 
                 device.device_wait_idle().unwrap();

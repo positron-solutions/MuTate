@@ -59,13 +59,13 @@ public struct StorageImageIdx
     public RWTexture2D get() { return g_storageImages[index]; }
 };
 
-public struct UniformBufferIdx
+public struct UboIdx
 {
     public uint index;
     public ConstantBuffer<uint> get() { return g_uniformBuffers[index]; }
 };
 
-public struct StorageBufferIdx
+public struct SsboIdx
 {
     public uint index;
     public RWStructuredBuffer<uint> get() { return g_storageBuffers[index]; }

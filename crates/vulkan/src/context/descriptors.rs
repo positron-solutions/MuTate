@@ -30,21 +30,21 @@
 //! It has a static fixed size because any kind of dynamic growth messes up the descriptor slots and
 //! forces us to think about descriptors.  Okay, glad we are experts at Vulkan now!
 
+// NOTE Vulkan does *not* required us to unbind descriptors.  We don't have to null slots.  Debug
+// assert cheap invariants, but memory leaks will dominate the signal for any leaks of descriptor
+// bound resources that occur.
+
 use std::{collections::VecDeque, slice};
 
 use ash::vk;
 
+use crate::descriptor_newtype;
 use crate::prelude::*;
 use crate::resource::image::ImageView;
-use crate::slang::{prelude::*, Int32};
-use crate::slang_newtype;
 
-// NEXT these SlangType strings will need some correlation with newtype wrappers in Slang.
-slang_newtype!(SampledImageIndex, u32, "SampledImageIndex");
-slang_newtype!(SamplerIndex, u32, "SamplerIndex");
-slang_newtype!(StorageImageIndex, u32, "StorageImageIndex");
-slang_newtype!(UboIndex, u32, "UboIndex");
-slang_newtype!(SsboIndex, u32, "SsboIndex");
+pub use crate::slang::{
+    DescriptorIndex, SampledImageIdx, SamplerIdx, SsboIdx, StorageImageIdx, UInt32, UboIdx,
+};
 
 // Plural to make it kind of obvious that these are array slot indexes.
 pub const SLOT_SAMPLED_IMAGES: u32 = 0;
@@ -63,18 +63,18 @@ pub struct Descriptors {
 
     // Track the next never-used index.  This is implicitly a high-water mark for properly sizing
     // arrays.
-    next_sampled_image: u32,
-    next_sampler: u32,
-    next_storage_image: u32,
-    next_ubo: u32,
-    next_ssbo: u32,
+    next_sampled_image: SampledImageIdx,
+    next_sampler: SamplerIdx,
+    next_storage_image: StorageImageIdx,
+    next_ubo: UboIdx,
+    next_ssbo: SsboIdx,
 
     // Keep any re-usable indexes.
-    freelist_sampled_images: VecDeque<u32>,
-    freelist_samplers: VecDeque<u32>,
-    freelist_storage_images: VecDeque<u32>,
-    freelist_ubos: VecDeque<u32>,
-    freelist_ssbos: VecDeque<u32>,
+    freelist_sampled_images: VecDeque<SampledImageIdx>,
+    freelist_samplers: VecDeque<SamplerIdx>,
+    freelist_storage_images: VecDeque<StorageImageIdx>,
+    freelist_ubos: VecDeque<UboIdx>,
+    freelist_ssbos: VecDeque<SsboIdx>,
 
     default_samplers: [vk::Sampler; samplers::N_DEFAULTS],
 }
@@ -112,7 +112,8 @@ impl Descriptors {
 
         let pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
 
-        // NEXT obviously users might want to specify different limits.
+        // NEXT obviously users might want to specify different limits.  Bon them into the logical
+        // device creation as 🪄
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(SLOT_SAMPLED_IMAGES)
@@ -177,18 +178,18 @@ impl Descriptors {
                 .image_info(std::slice::from_ref(image_info));
         }
         unsafe { device.update_descriptor_sets(&writes, &[]) };
-
         Ok(Self {
             pool,
             set,
             layout,
 
-            next_sampled_image: 0,
-            next_sampler: samplers::N_DEFAULTS as u32,
-            next_storage_image: 0,
-            next_ubo: 0,
-            next_ssbo: 0,
+            next_sampled_image: SampledImageIdx::new(0),
+            next_sampler: SamplerIdx::new(samplers::N_DEFAULTS as u32),
+            next_storage_image: StorageImageIdx::new(0),
+            next_ubo: UboIdx::new(0),
+            next_ssbo: SsboIdx::new(0),
 
+            // FIXME duplicates pool sizes
             freelist_sampled_images: VecDeque::with_capacity(256),
             freelist_samplers: VecDeque::with_capacity(256),
             freelist_storage_images: VecDeque::with_capacity(256),
@@ -197,6 +198,17 @@ impl Descriptors {
 
             default_samplers,
         })
+    }
+
+    /// Access the descriptor set, basically for binding pipelines.
+    // This might become a lot more implicit
+    pub fn set(&self) -> vk::DescriptorSet {
+        self.set.clone()
+    }
+
+    /// Return the default layout.  Useful for creating pipelines etc.
+    pub fn layout(&self) -> &[vk::DescriptorSetLayout] {
+        std::slice::from_ref(&self.layout)
     }
 
     pub fn destroy(&self, device: &ash::Device) {
@@ -217,14 +229,14 @@ impl Descriptors {
         device: &ash::Device,
         view: vk::ImageView,
         layout: vk::ImageLayout,
-    ) -> SampledImageIndex {
+    ) -> SampledImageIdx {
         let descriptor_info = vk::DescriptorImageInfo::default()
             .image_layout(layout)
             .image_view(view);
 
         let index = self.freelist_sampled_images.pop_back().unwrap_or_else(|| {
             let next = self.next_sampled_image;
-            self.next_sampled_image += 1;
+            self.next_sampled_image = SampledImageIdx::new(next.raw() + 1);
             next
         });
 
@@ -232,14 +244,13 @@ impl Descriptors {
             .dst_set(self.set)
             .dst_binding(SLOT_SAMPLED_IMAGES)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-            .dst_array_element(index)
+            .dst_array_element(index.raw())
             .image_info(slice::from_ref(&descriptor_info));
 
         unsafe {
             device.update_descriptor_sets(slice::from_ref(&write), &[]);
         }
-
-        SampledImageIndex(index)
+        index
     }
 
     pub fn bind_ssbo(
@@ -248,7 +259,7 @@ impl Descriptors {
         buffer: vk::Buffer,
         offset: vk::DeviceSize,
         size: vk::DeviceSize,
-    ) -> SsboIndex {
+    ) -> SsboIdx {
         let descriptor_info = vk::DescriptorBufferInfo::default()
             .buffer(buffer)
             .offset(offset)
@@ -256,7 +267,7 @@ impl Descriptors {
 
         let index = self.freelist_ssbos.pop_back().unwrap_or_else(|| {
             let next = self.next_ssbo;
-            self.next_ssbo += 1;
+            self.next_ssbo = SsboIdx::new(next.raw() + 1);
             next
         });
 
@@ -264,34 +275,50 @@ impl Descriptors {
             .dst_set(self.set)
             .dst_binding(SLOT_STORAGE_BUFFERS)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .dst_array_element(index)
+            .dst_array_element(index.raw())
             .buffer_info(slice::from_ref(&descriptor_info));
 
         unsafe {
             device.update_descriptor_sets(slice::from_ref(&write), &[]);
         }
-
-        SsboIndex(index)
+        index
     }
 
-    /// Return the default layout.  Useful for creating pipelines etc.
-    pub fn layout(&self) -> &[vk::DescriptorSetLayout] {
-        std::slice::from_ref(&self.layout)
+    /// Return the index for the descriptor slot to the free list.  You should not use this index
+    /// again because it may belong to a new resource.
+    pub fn unbind_image(&mut self, index: SampledImageIdx) {
+        debug_assert!(
+            index.raw() < self.next_sampled_image.raw(),
+            "unbind_ssbo: index {:?} was never bound",
+            index
+        );
+        self.freelist_sampled_images.push_back(index);
+    }
+
+    /// Return the index for the descriptor slot to the free list.  You should not use this index
+    /// again because it may belong to a new resource.
+    pub fn unbind_ssbo(&mut self, index: SsboIdx) {
+        debug_assert!(
+            index.raw() < self.next_ssbo.raw(),
+            "unbind_ssbo: index {:?} was never bound",
+            index
+        );
+        self.freelist_ssbos.push_back(index);
     }
 }
 
 pub(crate) mod samplers {
     use super::*;
 
-    pub const NEAREST_CLAMP: SamplerIndex = SamplerIndex(0);
-    /// Bilinear, clamp-to-edge.  Smooth, no tiling.
-    pub const LINEAR_CLAMP: SamplerIndex = SamplerIndex(1);
-    /// Bilinear, repeat.  Standard tiling textures.
-    pub const LINEAR_REPEAT: SamplerIndex = SamplerIndex(2);
-    /// Bilinear + trilinear mip interpolation, clamp.  World geometry etc.
-    pub const LINEAR_MIP: SamplerIndex = SamplerIndex(3);
+    pub const NEAREST_CLAMP: SamplerIdx = SamplerIdx(UInt32(0));
+    /// Bi-linear, clamp-to-edge.  Smooth, no tiling.
+    pub const LINEAR_CLAMP: SamplerIdx = SamplerIdx(UInt32(1));
+    /// Bi-linear, repeat.  Standard tiling textures.
+    pub const LINEAR_REPEAT: SamplerIdx = SamplerIdx(UInt32(2));
+    /// Bi-linear + tri-linear mip interpolation, clamp.  World geometry etc.
+    pub const LINEAR_MIP: SamplerIdx = SamplerIdx(UInt32(3));
     /// Linear, clamp, border=1.  For `sampler2DShadow` PCF.
-    pub const SHADOW: SamplerIndex = SamplerIndex(4);
+    pub const SHADOW: SamplerIdx = SamplerIdx(UInt32(4));
 
     pub const N_DEFAULTS: usize = 5;
 

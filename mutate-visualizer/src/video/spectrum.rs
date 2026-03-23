@@ -12,6 +12,7 @@ use ash::vk;
 use mutate_assets as assets;
 use mutate_lib::{self as utate, prelude::*};
 use utate::vulkan::{
+    context::descriptors::SsboIdx,
     dispatch::command::{CommandPool, RecordingSlot},
     present::swapchain::AcquiredImage,
     resource::{buffer, image},
@@ -28,6 +29,13 @@ struct SpectrumSample {
     right_mag: f32,
 }
 
+#[repr(C)]
+pub struct PushConstants {
+    pub window_size: [f32; 2],
+    pub spectrum_idx: SsboIdx,
+    pub output_idx: SsboIdx,
+}
+
 // This will be an interface after more nodes exist
 pub struct SpectrumNode {
     pipeline_layout: vk::PipelineLayout,
@@ -36,10 +44,8 @@ pub struct SpectrumNode {
     spectrum_buffer: Option<buffer::MappedAllocation<SpectrumSample>>,
     output_buffer: Option<buffer::MappedAllocation<rgb::Rgba<u8>>>,
 
-    // XXX the bindless style will need to take over.
-    descriptor_set: vk::DescriptorSet,
-    descriptor_pool: vk::DescriptorPool,
-    layout: vk::DescriptorSetLayout,
+    spectrum_idx: SsboIdx,
+    output_idx: SsboIdx,
 }
 
 const ENTRY_POINT: &[u8] = b"main\0";
@@ -67,29 +73,20 @@ impl SpectrumNode {
             // NEXT the usage of push constants must be reflected upstream in the `stage_flags`.
             stage_flags: vk::ShaderStageFlags::COMPUTE,
             offset: 0,
-            size: std::mem::size_of::<[f32; 2]>() as u32,
+            // Doing the math this way to make the tedious nature of manually accounting this stuff
+            // obvious.
+            size: std::mem::size_of::<PushConstants>() as u32,
         };
 
-        let pool_sizes = [vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: 2,
-        }];
-        let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(1)
-            .pool_sizes(&pool_sizes);
-        let pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
-        let layout = util::descriptor_set_layout(device).unwrap();
-        let layouts = [layout];
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(pool)
-            .set_layouts(&layouts);
-        let descriptor_set = unsafe { device.allocate_descriptor_sets(&alloc_info).unwrap()[0] };
-
+        // NOTE Since PipelineLayoutCI has descriptor counts, either we take away the ability to do
+        // extra sets or the API has to absorb the tax.  Probably another case for bon to give us
+        // y-not-both advantages.
+        let layout = context.descriptors.layout();
         let pipeline_layout_ci = vk::PipelineLayoutCreateInfo {
             push_constant_range_count: 1,
             p_push_constant_ranges: &push_constant_range,
             set_layout_count: 1,
-            p_set_layouts: layouts.as_ptr(),
+            p_set_layouts: layout.as_ptr(),
             ..Default::default()
         };
         let pipeline_layout = unsafe {
@@ -97,13 +94,11 @@ impl SpectrumNode {
                 .create_pipeline_layout(&pipeline_layout_ci, None)
                 .unwrap()
         };
-
         let compute_pipeline_ci = vk::ComputePipelineCreateInfo {
             stage: shader_stage,
             layout: pipeline_layout,
             ..Default::default()
         };
-
         let compute_pipeline = unsafe {
             device
                 .create_compute_pipelines(vk::PipelineCache::null(), &[compute_pipeline_ci], None)
@@ -117,13 +112,13 @@ impl SpectrumNode {
         Self {
             compute_pipeline,
             pipeline_layout,
-            descriptor_set,
 
             spectrum_buffer: None,
             output_buffer: None,
 
-            descriptor_pool: pool,
-            layout: layout,
+            // XXX in resources API, these will be provided in a totally different way.
+            spectrum_idx: SsboIdx::INVALID,
+            output_idx: SsboIdx::INVALID,
         }
     }
 
@@ -131,49 +126,19 @@ impl SpectrumNode {
     // important problem to work on!
     pub fn provision(
         &mut self,
-        context: &DeviceContext,
+        context: &mut DeviceContext,
         size: vk::Extent2D,
     ) -> Result<(), utate::MutateError> {
         let spectrum_buffer = buffer::MappedAllocation::new(size.height as usize, context)?;
         let output_buffer =
             buffer::MappedAllocation::new((size.width * size.height) as usize, context)?;
 
-        let spectrum_buffer_info = vk::DescriptorBufferInfo {
-            buffer: spectrum_buffer.buffer,
-            offset: 0,
-            range: spectrum_buffer.size_bytes,
-        };
-
-        let read = vk::WriteDescriptorSet {
-            dst_set: self.descriptor_set,
-            dst_binding: 0,
-            descriptor_count: 1,
-            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-            p_buffer_info: &spectrum_buffer_info,
-            ..Default::default()
-        };
-
-        let output_buffer_info = vk::DescriptorBufferInfo {
-            buffer: output_buffer.buffer,
-            offset: 0,
-            range: output_buffer.size_bytes,
-        };
-
-        let write = vk::WriteDescriptorSet {
-            dst_set: self.descriptor_set,
-            dst_binding: 1,
-            descriptor_count: 1,
-            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-            p_buffer_info: &output_buffer_info,
-            ..Default::default()
-        };
-
-        unsafe {
-            context.device().update_descriptor_sets(&[read, write], &[]);
-        }
+        self.spectrum_idx = spectrum_buffer.bound(context);
+        self.output_idx = output_buffer.bound(context);
 
         self.spectrum_buffer = Some(spectrum_buffer);
         self.output_buffer = Some(output_buffer);
+
         Ok(())
     }
 
@@ -235,8 +200,13 @@ impl SpectrumNode {
             .unwrap()
             .barrier_compute_pre(&cb, context);
 
-        // Use compute shader to write
-        let combined_push: [f32; 2] = [extent.width as f32, extent.height as f32];
+        // Tell shader the location and geometry of the input
+        // XXX doing alchemy here to illustrate the silliness of doing this
+        let push_constants = PushConstants {
+            window_size: [extent.width as f32, extent.height as f32],
+            spectrum_idx: self.spectrum_idx,
+            output_idx: self.output_idx,
+        };
         unsafe {
             device.cmd_push_constants(
                 cb,
@@ -244,8 +214,8 @@ impl SpectrumNode {
                 vk::ShaderStageFlags::COMPUTE,
                 0,
                 std::slice::from_raw_parts(
-                    combined_push.as_ptr() as *const u8,
-                    std::mem::size_of::<[f32; 2]>(),
+                    &push_constants as *const PushConstants as *const u8,
+                    std::mem::size_of::<PushConstants>(),
                 ),
             );
         }
@@ -259,14 +229,16 @@ impl SpectrumNode {
         let dispatch_y = (extent.height + workgroup_size_y - 1) / workgroup_size_y;
 
         // Draw into the output buffer :-)
-        // XXX descriptor set binding needs a shadow
         unsafe {
+            // XXX descriptor set binds necessary for all graphics pipelines 🤮.  Any time push
+            // constants (or sets, which we avoid ever changing) change, we need to rebind
+            // descriptors before the pipeline.
             device.cmd_bind_descriptor_sets(
                 cb,
                 vk::PipelineBindPoint::COMPUTE,
                 self.pipeline_layout,
                 0,
-                &[self.descriptor_set],
+                &[context.descriptors.set()],
                 &[],
             );
             device.cmd_dispatch(cb, dispatch_x, dispatch_y, 1);
@@ -302,20 +274,19 @@ impl SpectrumNode {
         );
     }
 
-    pub fn destroy(&self, context: &DeviceContext) -> Result<(), utate::MutateError> {
+    pub fn destroy(&self, context: &mut DeviceContext) -> Result<(), utate::MutateError> {
         let device = context.device();
         unsafe {
             device.destroy_pipeline(self.compute_pipeline, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
-            device.destroy_descriptor_set_layout(self.layout, None);
-            device.destroy_descriptor_pool(self.descriptor_pool, None);
 
             if let Some(allocated) = &self.spectrum_buffer {
                 allocated.destroy(&context)?;
+                context.descriptors.unbind_ssbo(self.spectrum_idx);
             }
-
             if let Some(allocated) = &self.output_buffer {
                 allocated.destroy(&context)?;
+                context.descriptors.unbind_ssbo(self.output_idx);
             }
         }
         Ok(())

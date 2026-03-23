@@ -111,7 +111,7 @@ impl<T> MappedAllocation<T> {
     }
 
     // XXX argument order
-    pub fn bound(&self, context: &mut DeviceContext) -> descriptors::SsboIndex {
+    pub fn bound(&self, context: &mut DeviceContext) -> descriptors::SsboIdx {
         let device = &context.device;
         let descriptors = &mut context.descriptors;
         // XXX do this more cleaner 🤡

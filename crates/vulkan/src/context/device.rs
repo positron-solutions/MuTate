@@ -138,7 +138,7 @@ impl DeviceContext {
         &mut self,
         view: vk::ImageView,
         layout: vk::ImageLayout,
-    ) -> descriptors::SampledImageIndex {
+    ) -> descriptors::SampledImageIdx {
         let device = &self.device;
         let descriptors = &mut self.descriptors;
         descriptors.bind_sampled_image(device, view, layout)

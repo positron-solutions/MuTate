@@ -234,7 +234,7 @@ impl ImageView {
         &self,
         context: &mut DeviceContext,
         layout: vk::ImageLayout,
-    ) -> descriptors::SampledImageIndex {
+    ) -> descriptors::SampledImageIdx {
         // MAYBE not so sure about the layout choice
         let device = &context.device;
         let descriptors = &mut context.descriptors;

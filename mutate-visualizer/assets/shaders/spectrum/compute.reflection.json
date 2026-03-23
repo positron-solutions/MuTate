@@ -19,6 +19,22 @@
                                 }
                             },
                             "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 4}
+                        },
+                        {
+                            "name": "spectrum_idx",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "output_idx",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
                         }
                     ]
                 },
@@ -40,66 +56,90 @@
                                     }
                                 },
                                 "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 4}
+                            },
+                            {
+                                "name": "spectrum_idx",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "output_idx",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 0}
                 }
             }
         },
         {
-            "name": "spectrum",
-            "binding": {"kind": "descriptorTableSlot", "index": 0},
+            "name": "spectrum_table",
+            "binding": {"kind": "descriptorTableSlot", "index": 4},
             "type": {
-                "kind": "resource",
-                "baseShape": "structuredBuffer",
-                "resultType": {
-                    "kind": "struct",
-                    "name": "SpectrumSample",
-                    "fields": [
-                        {
-                            "name": "left_decibels",
-                            "type": {
-                                "kind": "scalar",
-                                "scalarType": "float32"
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "resource",
+                    "baseShape": "structuredBuffer",
+                    "resultType": {
+                        "kind": "struct",
+                        "name": "SpectrumSample",
+                        "fields": [
+                            {
+                                "name": "left_decibels",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                             },
-                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
-                        },
-                        {
-                            "name": "left_mag",
-                            "type": {
-                                "kind": "scalar",
-                                "scalarType": "float32"
+                            {
+                                "name": "left_mag",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
                             },
-                            "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
-                        },
-                        {
-                            "name": "right_decibels",
-                            "type": {
-                                "kind": "scalar",
-                                "scalarType": "float32"
+                            {
+                                "name": "right_decibels",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
                             },
-                            "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
-                        },
-                        {
-                            "name": "right_mag",
-                            "type": {
-                                "kind": "scalar",
-                                "scalarType": "float32"
-                            },
-                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
-                        }
-                    ]
+                            {
+                                "name": "right_mag",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                            }
+                        ]
+                    }
                 }
             }
         },
         {
-            "name": "outputBuffer",
-            "binding": {"kind": "descriptorTableSlot", "index": 1},
+            "name": "output_table",
+            "binding": {"kind": "descriptorTableSlot", "index": 4},
             "type": {
-                "kind": "resource",
-                "baseShape": "byteAddressBuffer",
-                "access": "readWrite"
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "resource",
+                    "baseShape": "byteAddressBuffer",
+                    "access": "readWrite"
+                }
             }
         }
     ],
@@ -128,12 +168,12 @@
                     "binding": {"kind": "pushConstantBuffer", "index": 0}
                 },
                 {
-                    "name": "spectrum",
-                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                    "name": "spectrum_table",
+                    "binding": {"kind": "descriptorTableSlot", "index": 4}
                 },
                 {
-                    "name": "outputBuffer",
-                    "binding": {"kind": "descriptorTableSlot", "index": 1}
+                    "name": "output_table",
+                    "binding": {"kind": "descriptorTableSlot", "index": 4}
                 }
             ]
         }

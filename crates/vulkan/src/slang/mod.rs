@@ -95,9 +95,7 @@ pub mod prelude {
     pub use super::{DeviceAddress, IsDeviceAddress};
 
     // Descriptor index base types and their trait
-    pub use super::{
-        DescriptorIndex, SampledImageIdx, StorageBufferIdx, StorageImageIdx, UniformBufferIdx,
-    };
+    pub use super::{DescriptorIndex, SampledImageIdx, SsboIdx, StorageImageIdx, UboIdx};
 
     pub use crate::descriptor_newtype;
     pub use crate::device_address_newtype;
@@ -106,7 +104,7 @@ pub mod prelude {
     // Re-exports for convenience
     pub use bytemuck;
     pub use bytemuck::{Pod, Zeroable};
-    // XXX may need the whole f16 prelude
+    // MAYBE may need the whole f16 prelude
     pub use half;
 }
 
@@ -446,8 +444,9 @@ macro_rules! descriptor_base {
 
 descriptor_base!(SampledImageIdx, "SampledImageIdx");
 descriptor_base!(StorageImageIdx, "StorageImageIdx");
-descriptor_base!(UniformBufferIdx, "UniformBufferIdx");
-descriptor_base!(StorageBufferIdx, "StorageBufferIdx");
+descriptor_base!(SamplerIdx, "SamplerIdx");
+descriptor_base!(UboIdx, "UboIdx");
+descriptor_base!(SsboIdx, "SsboIdx");
 
 /// Wraps one of the four concrete descriptor index types with a project-
 /// specific name. The inner type must be one of the four base descriptor

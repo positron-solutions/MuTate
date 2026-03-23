@@ -9,14 +9,16 @@ struct SpectrumSample
 [[vk::push_constant]]
 cbuffer PushConstants
 {
-    float2 window_size; // (width, height)
+    float2 window_size;  // (width, height)
+    uint   spectrum_idx; // descriptor table index for SLOT_STORAGE_BUFFERS
+    uint   output_idx;   // descriptor table index for SLOT_STORAGE_BUFFERS
 };
 
-[[vk::binding(0, 0)]]
-StructuredBuffer<SpectrumSample> spectrum;
+[[vk::binding(4, 0)]]
+StructuredBuffer<SpectrumSample> spectrum_table[];
 
-[[vk::binding(1, 0)]]
-RWByteAddressBuffer outputBuffer;
+[[vk::binding(4, 0)]]
+RWByteAddressBuffer output_table[];
 
 [numthreads(8,16,1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -24,6 +26,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint2 pixel = dispatchThreadID.xy;
     if (pixel.x >= (uint)window_size.x || pixel.y >= (uint)window_size.y)
         return;
+
+    StructuredBuffer<SpectrumSample> spectrum = spectrum_table[spectrum_idx];
+    RWByteAddressBuffer outputBuffer = output_table[output_idx];
 
     SpectrumSample s = spectrum[window_size.y - (pixel.y + 1)];
 
