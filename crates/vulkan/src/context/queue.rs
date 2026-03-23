@@ -5,7 +5,8 @@
 //!
 //! Vulkan device queues and command buffer pools are tightly coupled.  All Vulkan devices must
 //! expose at least a graphics capable queue and may expose dedicated transfer and compute queues.
-//!
+//! Surface users need a queue that can present.  ML workloads want low-priority compute queues
+//! mainly.
 
 use ash::vk;
 
@@ -41,24 +42,6 @@ impl Queues {
             .unwrap_or_else(|| self.compute_queue())
     }
 
-    pub fn graphics_pool(&self) -> vk::CommandPool {
-        self.graphics.command_pool.clone()
-    }
-
-    pub fn compute_pool(&self) -> vk::CommandPool {
-        self.compute
-            .as_ref()
-            .map(|p| p.command_pool.clone())
-            .unwrap_or_else(|| self.graphics_pool())
-    }
-
-    pub fn transfer_pool(&self) -> vk::CommandPool {
-        self.transfer
-            .as_ref()
-            .map(|p| p.command_pool.clone())
-            .unwrap_or_else(|| self.compute_pool())
-    }
-
     pub fn new(device: &ash::Device, queue_families: QueueFamilies) -> Self {
         Queues {
             graphics_family_index: queue_families.graphics.clone(),
@@ -78,32 +61,15 @@ impl Queues {
 
 struct Queue {
     pub queue: vk::Queue,
-    pub command_pool: vk::CommandPool,
 }
 
 impl Queue {
     fn new(device: &ash::Device, queue_family_index: u32) -> Self {
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
-
-        let command_pool_ci = vk::CommandPoolCreateInfo {
-            flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-            queue_family_index,
-            ..Default::default()
-        };
-
-        let command_pool = unsafe {
-            device.create_command_pool(&command_pool_ci, None).unwrap() // DEBT error handling
-        };
-        Self {
-            queue,
-            command_pool,
-        }
+        Self { queue }
     }
 
     fn destroy(&self, device: &ash::Device) {
-        unsafe {
-            device.destroy_command_pool(self.command_pool, None);
-        }
         // NOTE device owns queues.  Just drop handles.
     }
 }
