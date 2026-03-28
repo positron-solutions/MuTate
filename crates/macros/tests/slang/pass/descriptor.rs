@@ -3,21 +3,18 @@
 
 use mutate_vulkan::slang::prelude::*;
 
-fn require_gpu_pod<L: LayoutRule, T: GpuPod<L>>() {}
+fn require_gpu_pod<D: DataLayout, T: GpuPod<D>>() {}
 
 fn main() {
-    require_gpu_pod::<ScalarLayout, SampledImageIdx>();
+    require_gpu_pod::<Scalar, SampledImageIdx>();
 
+    assert_eq!(<SampledImageIdx as GpuScalar>::PRIMITIVE, SlangType::UInt);
     assert_eq!(
-        <SampledImageIdx as GpuType<ScalarLayout>>::PRIMITIVE,
-        SlangType::UInt32
-    );
-    assert_eq!(
-        <SampledImageIdx as GpuType<ScalarLayout>>::SLANG_NAME,
+        <SampledImageIdx as GpuScalar>::SLANG_NAME,
         "SampledImageIdx"
     );
-    assert_eq!(<SampledImageIdx as GpuType<ScalarLayout>>::SIZE, 4);
-    assert_eq!(<SampledImageIdx as GpuType<ScalarLayout>>::ALIGN, 4);
+    assert_eq!(<SampledImageIdx as GpuScalar>::SIZE, 4);
+    assert_eq!(<SampledImageIdx as GpuPrimitive<Scalar>>::ALIGN, 4);
 
     let idx = SampledImageIdx::new(42);
     assert_eq!(idx.raw(), 42u32);

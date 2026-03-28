@@ -12,40 +12,37 @@ use mutate_vulkan::slang::prelude::*;
 device_address_newtype!(MeshletBufferPtr, "MeshletBufferPtr");
 device_address_newtype!(TransformBufferPtr, "TransformBufferPtr");
 
-fn require_gpu_pod<L: LayoutRule, T: GpuPod<L>>() {}
+fn require_gpu_pod<D: DataLayout, T: GpuPod<D>>() {}
 fn require_device_address<T: IsDeviceAddress>() {}
 
 fn main() {
-    require_gpu_pod::<ScalarLayout, DeviceAddress>();
-    require_gpu_pod::<ScalarLayout, MeshletBufferPtr>();
-    require_gpu_pod::<ScalarLayout, TransformBufferPtr>();
+    require_gpu_pod::<Scalar, DeviceAddress>();
+    require_gpu_pod::<Scalar, MeshletBufferPtr>();
+    require_gpu_pod::<Scalar, TransformBufferPtr>();
 
     require_device_address::<DeviceAddress>();
     require_device_address::<MeshletBufferPtr>();
     require_device_address::<TransformBufferPtr>();
 
     // 8 bytes, 8-byte aligned — matches VkDeviceAddress
-    assert_eq!(<DeviceAddress as GpuType<ScalarLayout>>::SIZE, 8);
-    assert_eq!(<DeviceAddress as GpuType<ScalarLayout>>::ALIGN, 8);
-    assert_eq!(<MeshletBufferPtr as GpuType<ScalarLayout>>::SIZE, 8);
+    assert_eq!(<DeviceAddress as GpuScalar>::SIZE, 8);
+    assert_eq!(<DeviceAddress as GpuPrimitive<Scalar>>::ALIGN, 8);
+    assert_eq!(<MeshletBufferPtr as GpuScalar>::SIZE, 8);
 
     // PRIMITIVE is UInt64 — the raw wire type
+    assert_eq!(<DeviceAddress as GpuScalar>::PRIMITIVE, SlangType::UInt64);
     assert_eq!(
-        <DeviceAddress as GpuType<ScalarLayout>>::PRIMITIVE,
-        SlangType::UInt64
-    );
-    assert_eq!(
-        <MeshletBufferPtr as GpuType<ScalarLayout>>::PRIMITIVE,
+        <MeshletBufferPtr as GpuScalar>::PRIMITIVE,
         SlangType::UInt64
     );
 
     // SLANG_NAME is the newtype's name, not "uint64_t"
     assert_eq!(
-        <MeshletBufferPtr as GpuType<ScalarLayout>>::SLANG_NAME,
+        <MeshletBufferPtr as GpuScalar>::SLANG_NAME,
         "MeshletBufferPtr"
     );
     assert_eq!(
-        <TransformBufferPtr as GpuType<ScalarLayout>>::SLANG_NAME,
+        <TransformBufferPtr as GpuScalar>::SLANG_NAME,
         "TransformBufferPtr"
     );
 

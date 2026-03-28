@@ -1,15 +1,15 @@
-error[E0277]: the trait bound `f32: From<mutate_vulkan::slang::Float32>` is not satisfied
+error[E0277]: the trait bound `f32: From<mutate_vulkan::slang::Float>` is not satisfied
   --> tests/slang/fail/no_from_slang.rs:11:21
    |
 11 |     let _raw: f32 = f32::from(wrapped);
-   |                     ^^^ the trait `From<mutate_vulkan::slang::Float32>` is not implemented for `f32`
+   |                     ^^^ the trait `From<mutate_vulkan::slang::Float>` is not implemented for `f32`
    |
    = help: the following other types implement trait `From<T>`:
              `f32` implements `From<bool>`
              `f32` implements `From<i16>`
              `f32` implements `From<i8>`
-             `f32` implements `From<mutate_vulkan::slang::prelude::half::bf16>`
-             `f32` implements `From<mutate_vulkan::slang::prelude::half::f16>`
+             `f32` implements `From<mutate_vulkan::prelude::half::bf16>`
+             `f32` implements `From<mutate_vulkan::prelude::half::f16>`
              `f32` implements `From<u16>`
              `f32` implements `From<u8>`
              `f32` implements `From<zerocopy::byteorder::F32<O>>`

@@ -7,7 +7,7 @@
 
 use mutate_vulkan::slang::prelude::*;
 
-descriptor_newtype!(MyStorageIdx, StorageBufferIdx, "MyStorageIdx");
+descriptor_newtype!(MyStorageIdx, SsboIdx, "MyStorageIdx");
 
 fn main() {
     let sampled = SampledImageIdx::new(0);

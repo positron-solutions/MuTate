@@ -5,11 +5,11 @@ error[E0277]: the trait bound `MyStorageIdx: From<mutate_vulkan::slang::SampledI
    |                                        ^^^^ unsatisfied trait bound
    |
 help: the trait `From<mutate_vulkan::slang::SampledImageIdx>` is not implemented for `MyStorageIdx`
-      but trait `From<mutate_vulkan::slang::StorageBufferIdx>` is implemented for it
+      but trait `From<mutate_vulkan::slang::SsboIdx>` is implemented for it
   --> tests/slang/fail/descriptor_newtype_kind_mixing.rs:10:1
    |
-10 | descriptor_newtype!(MyStorageIdx, StorageBufferIdx, "MyStorageIdx");
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   = help: for that trait implementation, expected `mutate_vulkan::slang::StorageBufferIdx`, found `mutate_vulkan::slang::SampledImageIdx`
+10 | descriptor_newtype!(MyStorageIdx, SsboIdx, "MyStorageIdx");
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `mutate_vulkan::slang::SsboIdx`, found `mutate_vulkan::slang::SampledImageIdx`
    = note: required for `mutate_vulkan::slang::SampledImageIdx` to implement `Into<MyStorageIdx>`
    = note: this error originates in the macro `descriptor_newtype` (in Nightly builds, run with -Z macro-backtrace for more info)

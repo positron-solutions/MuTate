@@ -5,23 +5,18 @@ use mutate_vulkan::slang::prelude::*;
 
 descriptor_newtype!(ShadowMapIdx, SampledImageIdx, "ShadowMapIdx");
 
-fn require_gpu_pod<L: LayoutRule, T: GpuPod<L>>() {}
+fn require_gpu_pod<D: DataLayout, T: GpuPod<D>>() {}
 
 fn main() {
-    require_gpu_pod::<ScalarLayout, ShadowMapIdx>();
+    require_gpu_pod::<Scalar, ShadowMapIdx>();
 
-    // PRIMITIVE and size/align forward from inner (SampledImageIdx → UInt32)
-    assert_eq!(
-        <ShadowMapIdx as GpuType<ScalarLayout>>::PRIMITIVE,
-        SlangType::UInt32
-    );
-    assert_eq!(<ShadowMapIdx as GpuType<ScalarLayout>>::SIZE, 4);
-    assert_eq!(<ShadowMapIdx as GpuType<ScalarLayout>>::ALIGN, 4);
+    // PRIMITIVE and size/align forward to UInt
+    assert_eq!(<ShadowMapIdx as GpuScalar>::PRIMITIVE, SlangType::UInt);
+    assert_eq!(<ShadowMapIdx as GpuScalar>::SIZE, 4);
+    assert_eq!(<ShadowMapIdx as GpuPrimitive<Scalar>>::ALIGN, 4);
+    assert_eq!(<ShadowMapIdx as Pack<Scalar>>::PACKED_SIZE, 4);
     // SLANG_NAME is the newtype's own name — not "SampledImageIdx"
-    assert_eq!(
-        <ShadowMapIdx as GpuType<ScalarLayout>>::SLANG_NAME,
-        "ShadowMapIdx"
-    );
+    assert_eq!(<ShadowMapIdx as GpuScalar>::SLANG_NAME, "ShadowMapIdx");
 
     let idx = ShadowMapIdx::new(7);
     assert_eq!(idx.raw(), 7u32);

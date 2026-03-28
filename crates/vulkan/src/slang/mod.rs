@@ -168,7 +168,7 @@ pub mod prelude {
     pub use super::{DataLayout, Scalar};
 
     // Core traits — needed for generic bounds and introspection
-    pub use super::{GpuPod, GpuPrimitive, GpuScalar, GpuType};
+    pub use super::{GpuPod, GpuPrimitive, GpuScalar, GpuType, Pack};
 
     // Type discrimination — users match/compare PRIMITIVE constants
     pub use super::SlangType;
