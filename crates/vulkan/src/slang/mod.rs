@@ -275,7 +275,7 @@ pub trait GpuScalar {
 ///
 /// SAFETY: implementor must ensure SIZE/ALIGN match the actual
 /// in-memory representation under D.
-pub unsafe trait GpuPod<D: DataLayout>: GpuScalar + Pod {}
+pub unsafe trait GpuPod<D: DataLayout = Scalar>: GpuScalar + Pod {}
 
 /// Registers a Rust type as a Slang scalar primitive.
 /// Emits a repr(transparent) newtype that:
@@ -653,7 +653,7 @@ macro_rules! descriptor_newtype {
 
 /// Types that are built into Slang and have unique alignment requirements but are composed of
 /// scalars and considered "leaf" types for packing / marshaling purposes.
-pub trait GpuPrimitive<D: DataLayout> {
+pub trait GpuPrimitive<D: DataLayout = Scalar> {
     /// The irreducible Slang primitives this type reduces to.
     const PRIMITIVE: SlangType;
     /// The Slang-side name for introspection matching.
@@ -683,7 +683,7 @@ impl<T: GpuScalar, D: DataLayout> GpuPrimitive<D> for T {
 /// Composite types (structs, enums — via proc macro) implement this by returning
 /// a FieldNode::Tree whose children are their fields' FieldNodes.
 ///
-pub trait GpuType<D: DataLayout> {
+pub trait GpuType<D: DataLayout = Scalar> {
     /// Traversable view of the data layout of all contained fields, down to scalars and primitives.
     const FIELD_NODE: FieldNode;
 
@@ -885,7 +885,7 @@ const fn align_up(offset: usize, align: usize) -> usize {
     (offset + align - 1) & !(align - 1)
 }
 
-pub trait Pack<D: DataLayout> {
+pub trait Pack<D: DataLayout = Scalar> {
     /// The packed size of this type under D, in bytes.
     const PACKED_SIZE: usize;
     const PLAN: PackPlan;
