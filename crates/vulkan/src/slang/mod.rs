@@ -150,6 +150,8 @@
 //! assert_eq!(ShadowMapIdx::INVALID.raw(), u32::MAX);
 //! ```
 
+// XXX Might be possible to pull more information up onto the GpuType and leave GpuScalar and
+//     GpuPrimitive split in order support float3 etc as simply as possible.
 // XXX Buffer Device Address destination payload types not implemented
 // XXX Writing a descriptor index via push constants etc not yet implemented
 // XXX Descriptor indexes and types of the contents at the handle are not yet implemented
@@ -656,7 +658,7 @@ pub trait GpuPrimitive<D: DataLayout> {
     const PRIMITIVE: SlangType;
     /// The Slang-side name for introspection matching.
     const SLANG_NAME: &'static str;
-    /// The size is usually equal to the comprising scalars.
+    /// The size is usually equal to the comprising scalars, but padded under certain layout rules.
     const SIZE: usize;
     /// Vector types have layout-dependent alignment.  See float3 on std140 etc.
     const ALIGN: usize;
@@ -682,9 +684,25 @@ impl<T: GpuScalar, D: DataLayout> GpuPrimitive<D> for T {
 /// a FieldNode::Tree whose children are their fields' FieldNodes.
 ///
 pub trait GpuType<D: DataLayout> {
+    /// Traversable view of the data layout of all contained fields, down to scalars and primitives.
     const FIELD_NODE: FieldNode;
+
+    /// The Slang-side name for introspection matching.
+    /// - **primitives**:   matches the Slang builtin name ("float16_t" etc.)
+    /// - **newtypes**:     the Slang struct name ("Temperature" etc.)
+    /// - **structs**:      the Slang struct name
+    const SLANG_NAME: &'static str = match &Self::FIELD_NODE {
+        FieldNode::Leaf(d) => d.slang_name,
+        FieldNode::Tree { slang_name, .. } => slang_name,
+    };
+    /// The size is usually equal to the comprising scalars, but if some fields require padding
+    /// under a layout, the size will be bigger.
+    const SIZE: usize = packed_size(&Self::FIELD_NODE, D::DATA_LAYOUT);
+    /// Data layout-dependent alignment.  See float3 on std140 etc.
+    const ALIGN: usize = node_align(&Self::FIELD_NODE, D::DATA_LAYOUT);
 }
 
+// impl covers primitives and scalars through scalar's impl for primitives.
 impl<T: GpuPrimitive<D>, D: DataLayout> GpuType<D> for T {
     const FIELD_NODE: FieldNode = FieldNode::Leaf(FieldDesc {
         primitive: T::PRIMITIVE,
@@ -701,9 +719,6 @@ pub struct FieldDesc {
     pub size: usize,
     pub align: usize,
     /// The name of the Slang primitive type.
-    /// - **primitives**:   matches the Slang builtin name ("float16_t" etc.)
-    /// - **newtypes**:     the Slang struct name ("Temperature" etc.)
-    /// - **structs**:      the Slang struct name
     pub slang_name: &'static str,
 }
 
