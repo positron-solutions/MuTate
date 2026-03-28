@@ -126,6 +126,24 @@ pub mod prelude {
     pub use super::VulkanError;
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::present::surface::VkSurface;
+
+    pub use crate::descriptor_newtype;
+    pub use crate::device_address_newtype;
+    pub use crate::slang::prelude::*;
+    pub use crate::slang_newtype;
+}
+
+// Use as a private prelude.  Convenience without public immodesty 😦.
+pub(crate) mod internal {
+    pub use std::ffi::CStr;
+
+    pub use ash::vk;
+    pub use smallvec::SmallVec;
+
+    pub use super::VulkanError;
+    pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
+    pub use crate::present::surface::VkSurface;
+    pub use crate::slang::prelude::*;
 }
 
 // Re-export for slang's macros
@@ -138,7 +156,6 @@ pub enum VulkanError {
     // DEBT Use this only to begin returning results.  Use something else to actually start handling
     // them.
     ReplaceMe(&'static str),
-
 
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
