@@ -20,9 +20,9 @@ fn main() {
 
     // SIZE / ALIGN match the inner scalar
     assert_eq!(<Hotness as GpuScalar>::SIZE, 4);
-    assert_eq!(<Hotness as GpuPrimitive<Scalar>>::ALIGN, 4);
+    assert_eq!(<Hotness as GpuType>::ALIGN, 4);
     assert_eq!(<JointIndex as GpuScalar>::SIZE, 2);
-    assert_eq!(<JointIndex as GpuPrimitive<Scalar>>::ALIGN, 2);
+    assert_eq!(<JointIndex as GpuType>::ALIGN, 2);
 
     // SLANG_NAME is the *wrapper* name, not the inner one
     assert_eq!(<Hotness as GpuScalar>::SLANG_NAME, "Hotness");

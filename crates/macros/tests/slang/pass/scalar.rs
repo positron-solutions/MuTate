@@ -4,14 +4,19 @@
 use mutate_vulkan::slang::prelude::*;
 
 fn require_gpu_pod<D: DataLayout, T: GpuPod<D>>() {}
+fn require_gpu_pod_scalar<T: GpuPod>() {
+    require_gpu_pod::<Scalar, T>()
+}
 
 fn main() {
     require_gpu_pod::<Scalar, Float>();
+    require_gpu_pod_scalar::<Float>();
 
     assert_eq!(<Float as GpuScalar>::PRIMITIVE, SlangType::Float);
     assert_eq!(<Float as GpuScalar>::SLANG_NAME, "float");
+    assert_eq!(<Float as GpuType>::SLANG_NAME, "float");
     assert_eq!(<Float as GpuScalar>::SIZE, 4);
-    assert_eq!(<Float as GpuPrimitive<Scalar>>::ALIGN, 4);
+    assert_eq!(<Float as GpuPrimitive>::ALIGN, 4);
 
     let a = Float::from(1.0f32);
     assert_eq!(a.into_inner(), 1.0f32);

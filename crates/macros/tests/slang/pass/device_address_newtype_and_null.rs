@@ -28,6 +28,7 @@ fn main() {
     assert_eq!(<DeviceAddress as GpuScalar>::SIZE, 8);
     assert_eq!(<DeviceAddress as GpuPrimitive<Scalar>>::ALIGN, 8);
     assert_eq!(<MeshletBufferPtr as GpuScalar>::SIZE, 8);
+    assert_eq!(<MeshletBufferPtr as GpuType>::SIZE, 8);
 
     // PRIMITIVE is UInt64 — the raw wire type
     assert_eq!(<DeviceAddress as GpuScalar>::PRIMITIVE, SlangType::UInt64);
