@@ -69,6 +69,7 @@ impl SurfacePresent {
                 .unwrap()
         };
 
+        // XXX Make into Recording Context for the right Queue
         let queue_family_index = device_context.queues.graphics_family_index;
         let pools: [CommandPool; 2] =
             std::array::from_fn(|_| CommandPool::new(device_context, queue_family_index));

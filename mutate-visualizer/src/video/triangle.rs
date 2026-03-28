@@ -58,14 +58,6 @@ impl TriangleNode {
             frag_stage_ci,
         ];
 
-        // I probably had no idea about the offsets and layouts of push constants when deciding to
-        // pack them all as one.  I had not switched to scalar block layout.
-        let push_constant_range = vk::PushConstantRange {
-            stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
-            offset: 0,
-            size: std::mem::size_of::<[f32; 5]>() as u32,
-        };
-
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
 
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo {
@@ -116,6 +108,14 @@ impl TriangleNode {
             dynamic_state_count: dynamic_states.len() as u32,
             p_dynamic_states: dynamic_states.as_ptr(),
             ..Default::default()
+        };
+
+        // I probably had no idea about the offsets and layouts of push constants when deciding to
+        // pack them all as one.  I had not switched to scalar block layout.
+        let push_constant_range = vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
+            offset: 0,
+            size: std::mem::size_of::<[f32; 5]>() as u32,
         };
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo {

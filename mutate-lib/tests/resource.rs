@@ -17,7 +17,7 @@ fn image_lifecycle() {
         let format = vk::Format::R8G8B8A8_SRGB;
         let flags = vk::ImageUsageFlags::INPUT_ATTACHMENT;
         let image = image::Image::new(&context, extent, format, flags).unwrap();
-        image.destroy(&context);
+        image.destroy(&context).unwrap();
     })
 }
 
@@ -26,7 +26,7 @@ fn buffer_lifecycle() {
     use vulkan::resource::buffer;
     vulkan::with_context!(|context| {
         let buffer = buffer::MappedAllocation::<u8>::new(1, &context).unwrap();
-        buffer.destroy(&context);
+        buffer.destroy(&context).unwrap();
     })
 }
 
@@ -36,7 +36,8 @@ fn buffer_bind() {
     vulkan::with_context!(|context| {
         let buffer = buffer::MappedAllocation::<u8>::new(1, &context).unwrap();
         let index = buffer.bound(&mut context);
-        buffer.destroy(&context);
+        println!("buffer bound to descriptor slot: {:?}", index);
+        buffer.destroy(&context).unwrap();
     })
 }
 
@@ -44,9 +45,9 @@ fn buffer_bind() {
 fn buffer_device_address() {
     use vulkan::resource::buffer;
     vulkan::with_context!(|context| {
-        let mut buffer = buffer::MappedAllocation::<u8>::new(1, &context).unwrap();
+        let buffer = buffer::MappedAllocation::<u8>::new(1, &context).unwrap();
         let device_address = buffer.device_address(&context);
-        buffer.destroy(&context);
+        buffer.destroy(&context).unwrap();
     })
 }
 
@@ -57,18 +58,18 @@ fn buffer_readback() {
     vulkan::with_context!(|context| {
         let mut buffer = buffer::MappedAllocation::<u8>::new(1, &context).unwrap();
         buffer.as_mut_slice()[0] = 255;
-        buffer.flush(&context);
+        buffer.flush(&context).unwrap();
 
         // Dispatch something
 
-        unsafe { context.device().device_wait_idle() };
-        buffer.destroy(&context);
+        unsafe { context.device().device_wait_idle().unwrap() };
+        buffer.destroy(&context).unwrap();
     })
 }
 
 #[test]
 fn shader_load() {
     vulkan::with_context!(|context| {
-        let shader = vulkan::resource::shader::ShaderModule::load("test/compute", &context);
+        let shader = vulkan::resource::shader::ShaderModule::load(&context, "test/compute");
     })
 }

@@ -239,6 +239,9 @@ impl SwapchainContext {
                     vk::Fence::null(),
                 )
                 .unwrap() // XXX will error in ways we should catch
+                          // XXX where all will these occur?
+                          // VK_ERROR_OUT_OF_DATE_KHR
+                          // VK_SUBOPTIMAL_KHR
         };
 
         let image = self.images[swapchain_image_index as usize];

@@ -22,13 +22,14 @@ pub struct ShaderModule<'ctx> {
 }
 
 impl<'ctx> ShaderModule<'ctx> {
-    pub fn load(path: &'static str, context: &'ctx DeviceContext) -> Result<Self, VulkanError> {
-        // NEXT We could further type shader names to verify that hardcoded names exist.  Dynamic names for
-        // source files doesn't really make sense unless the GPU has gone AGI and is emitting fresh slang
-        // code to hot swap with itself.  Static shader file names would do some justice.
+    pub fn load(context: &'ctx DeviceContext, path: &'static str) -> Result<Self, VulkanError> {
+        // NEXT We could further type shader names to verify that hardcoded names exist.  Dynamic
+        // names for source files doesn't really make sense unless the GPU has gone Skynet and is
+        // emitting fresh slang code to hot swap with itself.  Static shader file names would do
+        // some justice.
         let spv = context.assets.find_shader(path).unwrap();
         let module_ci = vk::ShaderModuleCreateInfo::default().code(spv.as_slice());
-        let module = unsafe { context.device.create_shader_module(&module_ci, None)? };
+        let module = unsafe { context.device().create_shader_module(&module_ci, None)? };
 
         Ok(Self {
             device: &context.device,

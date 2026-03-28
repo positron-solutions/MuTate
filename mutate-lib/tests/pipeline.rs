@@ -8,6 +8,6 @@ use mutate_vulkan as vulkan;
 #[test]
 fn stage_create() {
     vulkan::with_context!(|context| {
-        let shader = vulkan::resource::shader::ShaderModule::load("test/compute", &context);
+        let shader = vulkan::resource::shader::ShaderModule::load(&context, "test/compute");
     })
 }
