@@ -184,7 +184,9 @@ pub mod prelude {
     pub use super::{DeviceAddress, IsDeviceAddress};
 
     // Descriptor index base types and their trait
-    pub use super::{DescriptorIndex, SampledImageIdx, SsboIdx, StorageImageIdx, UboIdx};
+    pub use super::{
+        DescriptorIndex, SampledImageIdx, SamplerIdx, SsboIdx, StorageImageIdx, UboIdx,
+    };
 
     pub use crate::descriptor_newtype;
     pub use crate::device_address_newtype;
@@ -203,7 +205,7 @@ mod sealed {
 
 /// Only used by `DataLayout` to overcome some const trait features that are not stable yet.
 #[derive(Clone, Copy)]
-pub enum DataLayoutToken {
+enum DataLayoutToken {
     Scalar,
     Std430,
 }
@@ -276,6 +278,305 @@ pub trait GpuScalar {
 /// SAFETY: implementor must ensure SIZE/ALIGN match the actual
 /// in-memory representation under D.
 pub unsafe trait GpuPod<D: DataLayout = Scalar>: GpuScalar + Pod {}
+
+/// Types that are built into Slang and have unique alignment requirements but are composed of
+/// scalars and considered "leaf" types for packing / marshaling purposes.
+pub trait GpuPrimitive<D: DataLayout = Scalar> {
+    /// The irreducible Slang primitives this type reduces to.
+    const PRIMITIVE: SlangType;
+    /// The Slang-side name for introspection matching.
+    const SLANG_NAME: &'static str;
+    /// The size is usually equal to the comprising scalars, but padded under certain layout rules.
+    const SIZE: usize;
+    /// Vector types have layout-dependent alignment.  See float3 on std140 etc.
+    const ALIGN: usize;
+}
+
+// All scalars are primitives
+impl<T: GpuScalar, D: DataLayout> GpuPrimitive<D> for T {
+    const PRIMITIVE: SlangType = T::PRIMITIVE;
+    const SLANG_NAME: &'static str = T::SLANG_NAME;
+    const SIZE: usize = T::SIZE;
+    const ALIGN: usize = T::SIZE; // scalars: align == size
+}
+
+// XXX We might want to go ahead and implement at least float2-float4 in order to exercise the
+// GpuPrimitive code.
+
+/// Concrete, type-erased `GpuType` data.  Checks using `FieldDesc` are generic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldDesc {
+    pub primitive: SlangType,
+    pub size: usize,
+    pub align: usize,
+    /// The name of the Slang primitive type.
+    pub slang_name: &'static str,
+}
+
+pub enum FieldNode {
+    /// Terminal — a primitive or transparent newtype over one.
+    Leaf(FieldDesc),
+    /// Composite — recurse into its own field list.
+    Tree {
+        slang_name: &'static str,
+        fields: &'static [FieldNode],
+    },
+}
+
+/// A type that can describe its own GPU layout as a FieldNode.
+///
+/// Leaf types (scalars, newtypes, device addresses, descriptor indices) implement this by
+/// projecting their `GpuScalar` and `GpuPrimitive` consts into a `FieldNode::Leaf`.
+///
+/// Composite types (structs, enums — via proc macro) implement this by returning
+/// a FieldNode::Tree whose children are their fields' FieldNodes.
+///
+pub trait GpuType<D: DataLayout = Scalar> {
+    /// Traversable view of the data layout of all contained fields, down to scalars and primitives.
+    const FIELD_NODE: FieldNode;
+
+    /// The Slang-side name for introspection matching.
+    /// - **primitives**:   matches the Slang builtin name ("float16_t" etc.)
+    /// - **newtypes**:     the Slang struct name ("Temperature" etc.)
+    /// - **structs**:      the Slang struct name
+    const SLANG_NAME: &'static str = match &Self::FIELD_NODE {
+        FieldNode::Leaf(d) => d.slang_name,
+        FieldNode::Tree { slang_name, .. } => slang_name,
+    };
+    /// The size is usually equal to the comprising scalars, but if some fields require padding
+    /// under a layout, the size will be bigger.
+    const SIZE: usize = packed_size(&Self::FIELD_NODE, D::DATA_LAYOUT);
+    /// Data layout-dependent alignment.  See float3 on std140 etc.
+    const ALIGN: usize = node_align(&Self::FIELD_NODE, D::DATA_LAYOUT);
+}
+
+// impl covers primitives and scalars through scalar's impl for primitives.
+impl<T: GpuPrimitive<D>, D: DataLayout> GpuType<D> for T {
+    const FIELD_NODE: FieldNode = FieldNode::Leaf(FieldDesc {
+        primitive: T::PRIMITIVE,
+        size: T::SIZE,
+        align: T::ALIGN,
+        slang_name: T::SLANG_NAME,
+    });
+}
+
+const fn align_up(offset: usize, align: usize) -> usize {
+    (offset + align - 1) & !(align - 1)
+}
+
+struct FlattenCtx {
+    src: usize,
+    dst: usize,
+    idx: usize,
+}
+
+// XXX region_count must descend into the tree and return a distinct region whenever there
+// are padding bytes.  If there's no padding, we can just keep growing the region in
+// depth-first traversal, resulting in fewer regions for the compiler to reason about.
+const fn flatten_node(
+    node: &FieldNode,
+    rule: DataLayoutToken,
+    mut ctx: FlattenCtx,
+    out: &mut [PackRegion],
+) -> FlattenCtx {
+    match node {
+        FieldNode::Leaf(d) => {
+            out[ctx.idx] = PackRegion {
+                src_offset: ctx.src,
+                dst_offset: ctx.dst,
+                size: d.size,
+            };
+            ctx.src += d.size;
+            ctx.dst += d.size;
+            ctx.idx += 1;
+            ctx
+        }
+        FieldNode::Tree { fields, .. } => {
+            let mut i = 0;
+            while i < fields.len() {
+                let align = node_align(&fields[i], rule);
+                ctx.dst = align_up(ctx.dst, align);
+
+                // The recursion
+                ctx = flatten_node(&fields[i], rule, ctx, out);
+
+                i += 1;
+            }
+            ctx
+        }
+    }
+}
+
+/// Count the number of contiguous copy regions needed to pack `node` under `rule`.
+/// Regions split at every padding boundary introduced by the layout rule.
+const fn region_count(node: &FieldNode) -> usize {
+    match node {
+        FieldNode::Leaf(_) => 1,
+        FieldNode::Tree { fields, .. } => {
+            let mut count = 0;
+            let mut i = 0;
+            while i < fields.len() {
+                count += region_count(&fields[i]);
+                i += 1;
+            }
+            count
+        }
+    }
+}
+
+/// Packed size of `node` under `rule`.
+const fn packed_size(node: &FieldNode, rule: DataLayoutToken) -> usize {
+    match node {
+        FieldNode::Leaf(d) => d.size,
+        FieldNode::Tree { fields, .. } => match rule {
+            DataLayoutToken::Scalar => {
+                // Scalar layout: no inter-field padding.
+                let mut size = 0;
+                let mut i = 0;
+                while i < fields.len() {
+                    size += packed_size(&fields[i], rule);
+                    i += 1;
+                }
+                size
+            }
+            DataLayoutToken::Std430 => {
+                // Std430: each field aligned to its own alignment requirement.
+                let mut offset = 0;
+                let mut i = 0;
+                while i < fields.len() {
+                    let align = node_align(&fields[i], rule);
+                    offset = align_up(offset, align);
+                    offset += packed_size(&fields[i], rule);
+                    i += 1;
+                }
+                // Struct size rounds up to struct alignment.
+                let align = tree_align(fields, rule);
+                align_up(offset, align)
+            }
+        },
+    }
+}
+
+/// Alignment of `node` under `rule`.
+const fn node_align(node: &FieldNode, rule: DataLayoutToken) -> usize {
+    match node {
+        FieldNode::Leaf(d) => d.align,
+        FieldNode::Tree { fields, .. } => tree_align(fields, rule),
+    }
+}
+
+/// Alignment of a struct (max of field alignments) under `rule`.
+const fn tree_align(fields: &[FieldNode], rule: DataLayoutToken) -> usize {
+    let mut max_align = 1;
+    let mut i = 0;
+    while i < fields.len() {
+        let a = node_align(&fields[i], rule);
+        if a > max_align {
+            max_align = a;
+        }
+        i += 1;
+    }
+    max_align
+}
+
+/// Flatten the `FieldNode` tree into a fixed-length `[PackRegion; N]` array that can be
+/// evaluated entirely at compile time and iterated at runtime for the actual byte copies.
+///
+/// `N` must equal `region_count(node)` — the caller is responsible for this invariant
+/// (enforced by the `Pack<D>` blanket impl via associated const).
+const fn flatten_pack_regions<const N: usize>(
+    node: &FieldNode,
+    rule: DataLayoutToken,
+) -> [PackRegion; N] {
+    // Start at zero and then flatten recursively
+    let mut out = [PackRegion {
+        src_offset: 0,
+        dst_offset: 0,
+        size: 0,
+    }; N];
+    let mut ctx = FlattenCtx {
+        src: 0,
+        dst: 0,
+        idx: 0,
+    };
+    ctx = flatten_node(node, rule, ctx, &mut out);
+    let _ = ctx;
+    out
+}
+
+/// ROLL again, a little better const generic support can remove some extra hoops we shouldn't need
+/// to jump through:
+/// https://github.com/rust-lang/rust/issues/132980
+/// https://github.com/rust-lang/rust/issues/143874
+// Can't even fit eight buffer device addresses into a 128-byte push constant with padding, so 16
+// contiguous regions covers quite a bit of types.  Doing SoA means we just shouldn't have ragged
+// structures with 16 regions of padding.  This small value is realistically kind of gigantic.  The
+// workaround is clear, use indirection, SoA, and types that pack better.
+pub const MAX_PACK_REGIONS: usize = 16;
+
+/// A contiguous byte range that can be copied verbatim from host memory to GPU memory.
+/// Where layout padding would appear, the region is split so no padding bytes are copied.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PackRegion {
+    pub src_offset: usize,
+    pub dst_offset: usize,
+    pub size: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PackPlan {
+    pub regions: [PackRegion; MAX_PACK_REGIONS],
+    pub count: usize,
+}
+
+/// Build a PackPlan entirely at compile time.
+const fn make_pack_plan(node: &FieldNode, rule: DataLayoutToken) -> PackPlan {
+    let count = region_count(node);
+    // Validate eagerly — the const evaluator surfaces this as a compile error.
+    assert!(count <= MAX_PACK_REGIONS, "struct exceeds MAX_PACK_REGIONS");
+    let regions = flatten_pack_regions::<MAX_PACK_REGIONS>(node, rule);
+    PackPlan { regions, count }
+}
+
+pub trait Pack<D: DataLayout = Scalar> {
+    /// The packed size of this type under D, in bytes.
+    const PACKED_SIZE: usize;
+    const PLAN: PackPlan;
+
+    /// Packs `self` into the destination byte slice according to the data layout `D`.
+    ///
+    /// `T` is copied region-by-region from its native (host) memory layout into the layout required
+    /// by `D` (e.g. std140, std430, or a custom GPU layout).  The region map is computed entirely
+    /// at compile time via `const` evaluation and iterated at runtime for the actual byte copies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dst` is shorter than [`Pack::packed_size()`]. Use `packed_size` (a const )
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut buf = [0u8; <MyType as Pack<Scalar>>::PACKED_SIZE];
+    /// my_value.pack_into(&mut buf);
+    /// ```
+    fn pack_into(&self, dst: &mut [u8]);
+}
+
+impl<D: DataLayout, T: GpuType<D> + Pod> Pack<D> for T {
+    const PACKED_SIZE: usize = packed_size(&T::FIELD_NODE, D::DATA_LAYOUT);
+    const PLAN: PackPlan = make_pack_plan(&T::FIELD_NODE, D::DATA_LAYOUT);
+
+    fn pack_into(&self, dst: &mut [u8]) {
+        assert!(dst.len() >= Self::PACKED_SIZE);
+        let src = bytemuck::bytes_of(self);
+        let mut i = 0;
+        while i < Self::PLAN.count {
+            let r = &Self::PLAN.regions[i];
+            dst[r.dst_offset..][..r.size].copy_from_slice(&src[r.src_offset..][..r.size]);
+            i += 1;
+        }
+    }
+}
 
 /// Registers a Rust type as a Slang scalar primitive.
 /// Emits a repr(transparent) newtype that:
@@ -649,305 +950,6 @@ macro_rules! descriptor_newtype {
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name where $inner: GpuScalar {}
     };
-}
-
-/// Types that are built into Slang and have unique alignment requirements but are composed of
-/// scalars and considered "leaf" types for packing / marshaling purposes.
-pub trait GpuPrimitive<D: DataLayout = Scalar> {
-    /// The irreducible Slang primitives this type reduces to.
-    const PRIMITIVE: SlangType;
-    /// The Slang-side name for introspection matching.
-    const SLANG_NAME: &'static str;
-    /// The size is usually equal to the comprising scalars, but padded under certain layout rules.
-    const SIZE: usize;
-    /// Vector types have layout-dependent alignment.  See float3 on std140 etc.
-    const ALIGN: usize;
-}
-
-// All scalars are primitives
-impl<T: GpuScalar, D: DataLayout> GpuPrimitive<D> for T {
-    const PRIMITIVE: SlangType = T::PRIMITIVE;
-    const SLANG_NAME: &'static str = T::SLANG_NAME;
-    const SIZE: usize = T::SIZE;
-    const ALIGN: usize = T::SIZE; // scalars: align == size
-}
-
-// XXX We might want to go ahead and implement at least float2-float4 in order to exercise the
-// GpuPrimitive code.
-
-/// A type that can describe its own GPU layout as a FieldNode.
-///
-/// Leaf types (scalars, newtypes, device addresses, descriptor indices) implement this by
-/// projecting their `GpuScalar` and `GpuPrimitive` consts into a `FieldNode::Leaf`.
-///
-/// Composite types (structs, enums — via proc macro) implement this by returning
-/// a FieldNode::Tree whose children are their fields' FieldNodes.
-///
-pub trait GpuType<D: DataLayout = Scalar> {
-    /// Traversable view of the data layout of all contained fields, down to scalars and primitives.
-    const FIELD_NODE: FieldNode;
-
-    /// The Slang-side name for introspection matching.
-    /// - **primitives**:   matches the Slang builtin name ("float16_t" etc.)
-    /// - **newtypes**:     the Slang struct name ("Temperature" etc.)
-    /// - **structs**:      the Slang struct name
-    const SLANG_NAME: &'static str = match &Self::FIELD_NODE {
-        FieldNode::Leaf(d) => d.slang_name,
-        FieldNode::Tree { slang_name, .. } => slang_name,
-    };
-    /// The size is usually equal to the comprising scalars, but if some fields require padding
-    /// under a layout, the size will be bigger.
-    const SIZE: usize = packed_size(&Self::FIELD_NODE, D::DATA_LAYOUT);
-    /// Data layout-dependent alignment.  See float3 on std140 etc.
-    const ALIGN: usize = node_align(&Self::FIELD_NODE, D::DATA_LAYOUT);
-}
-
-// impl covers primitives and scalars through scalar's impl for primitives.
-impl<T: GpuPrimitive<D>, D: DataLayout> GpuType<D> for T {
-    const FIELD_NODE: FieldNode = FieldNode::Leaf(FieldDesc {
-        primitive: T::PRIMITIVE,
-        size: T::SIZE,
-        align: T::ALIGN,
-        slang_name: T::SLANG_NAME,
-    });
-}
-
-/// Concrete, type-erased `GpuType` data.  Checks using `FieldDesc` are generic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FieldDesc {
-    pub primitive: SlangType,
-    pub size: usize,
-    pub align: usize,
-    /// The name of the Slang primitive type.
-    pub slang_name: &'static str,
-}
-
-pub enum FieldNode {
-    /// Terminal — a primitive or transparent newtype over one.
-    Leaf(FieldDesc),
-    /// Composite — recurse into its own field list.
-    Tree {
-        slang_name: &'static str,
-        fields: &'static [FieldNode],
-    },
-}
-
-// XXX region_count must descend into the tree and return a distinct region whenever there
-// are padding bytes.  If there's no padding, we can just keep growing the region in
-// depth-first traversal, resulting in fewer regions for the compiler to reason about.
-const fn flatten_node(
-    node: &FieldNode,
-    rule: DataLayoutToken,
-    mut ctx: FlattenCtx,
-    out: &mut [PackRegion],
-) -> FlattenCtx {
-    match node {
-        FieldNode::Leaf(d) => {
-            out[ctx.idx] = PackRegion {
-                src_offset: ctx.src,
-                dst_offset: ctx.dst,
-                size: d.size,
-            };
-            ctx.src += d.size;
-            ctx.dst += d.size;
-            ctx.idx += 1;
-            ctx
-        }
-        FieldNode::Tree { fields, .. } => {
-            let mut i = 0;
-            while i < fields.len() {
-                let align = node_align(&fields[i], rule);
-                ctx.dst = align_up(ctx.dst, align);
-
-                // The recursion
-                ctx = flatten_node(&fields[i], rule, ctx, out);
-
-                i += 1;
-            }
-            ctx
-        }
-    }
-}
-
-/// A contiguous byte range that can be copied verbatim from host memory to GPU memory.
-/// Where layout padding would appear, the region is split so no padding bytes are copied.
-#[derive(Debug, Clone, Copy)]
-pub struct PackRegion {
-    pub src_offset: usize,
-    pub dst_offset: usize,
-    pub size: usize,
-}
-
-/// Count the number of contiguous copy regions needed to pack `node` under `rule`.
-/// Regions split at every padding boundary introduced by the layout rule.
-pub const fn region_count(node: &FieldNode) -> usize {
-    match node {
-        FieldNode::Leaf(_) => 1,
-        FieldNode::Tree { fields, .. } => {
-            let mut count = 0;
-            let mut i = 0;
-            while i < fields.len() {
-                count += region_count(&fields[i]);
-                i += 1;
-            }
-            count
-        }
-    }
-}
-
-/// Packed size of `node` under `rule`.
-pub const fn packed_size(node: &FieldNode, rule: DataLayoutToken) -> usize {
-    match node {
-        FieldNode::Leaf(d) => d.size,
-        FieldNode::Tree { fields, .. } => match rule {
-            DataLayoutToken::Scalar => {
-                // Scalar layout: no inter-field padding.
-                let mut size = 0;
-                let mut i = 0;
-                while i < fields.len() {
-                    size += packed_size(&fields[i], rule);
-                    i += 1;
-                }
-                size
-            }
-            DataLayoutToken::Std430 => {
-                // Std430: each field aligned to its own alignment requirement.
-                let mut offset = 0;
-                let mut i = 0;
-                while i < fields.len() {
-                    let align = node_align(&fields[i], rule);
-                    offset = align_up(offset, align);
-                    offset += packed_size(&fields[i], rule);
-                    i += 1;
-                }
-                // Struct size rounds up to struct alignment.
-                let align = tree_align(fields, rule);
-                align_up(offset, align)
-            }
-        },
-    }
-}
-
-/// Alignment of `node` under `rule`.
-pub const fn node_align(node: &FieldNode, rule: DataLayoutToken) -> usize {
-    match node {
-        FieldNode::Leaf(d) => d.align,
-        FieldNode::Tree { fields, .. } => tree_align(fields, rule),
-    }
-}
-
-/// Alignment of a struct (max of field alignments) under `rule`.
-pub const fn tree_align(fields: &[FieldNode], rule: DataLayoutToken) -> usize {
-    let mut max_align = 1;
-    let mut i = 0;
-    while i < fields.len() {
-        let a = node_align(&fields[i], rule);
-        if a > max_align {
-            max_align = a;
-        }
-        i += 1;
-    }
-    max_align
-}
-
-struct FlattenCtx {
-    src: usize,
-    dst: usize,
-    idx: usize,
-}
-
-/// Flatten the `FieldNode` tree into a fixed-length `[PackRegion; N]` array that can be
-/// evaluated entirely at compile time and iterated at runtime for the actual byte copies.
-///
-/// `N` must equal `region_count(node)` — the caller is responsible for this invariant
-/// (enforced by the `Pack<D>` blanket impl via associated const).
-pub const fn flatten_pack_regions<const N: usize>(
-    node: &FieldNode,
-    rule: DataLayoutToken,
-) -> [PackRegion; N] {
-    // Start at zero and then flatten recursively
-    let mut out = [PackRegion {
-        src_offset: 0,
-        dst_offset: 0,
-        size: 0,
-    }; N];
-    let mut ctx = FlattenCtx {
-        src: 0,
-        dst: 0,
-        idx: 0,
-    };
-    ctx = flatten_node(node, rule, ctx, &mut out);
-    let _ = ctx;
-    out
-}
-
-const fn align_up(offset: usize, align: usize) -> usize {
-    (offset + align - 1) & !(align - 1)
-}
-
-pub trait Pack<D: DataLayout = Scalar> {
-    /// The packed size of this type under D, in bytes.
-    const PACKED_SIZE: usize;
-    const PLAN: PackPlan;
-
-    /// Packs `self` into the destination byte slice according to the data layout `D`.
-    ///
-    /// `T` is copied region-by-region from its native (host) memory layout into the layout required
-    /// by `D` (e.g. std140, std430, or a custom GPU layout).  The region map is computed entirely
-    /// at compile time via `const` evaluation and iterated at runtime for the actual byte copies.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `dst` is shorter than [`Pack::packed_size()`]. Use `packed_size` (a const )
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let mut buf = [0u8; <MyType as Pack<Scalar>>::PACKED_SIZE];
-    /// my_value.pack_into(&mut buf);
-    /// ```
-    fn pack_into(&self, dst: &mut [u8]);
-}
-
-/// ROLL again, a little better const generic support can remove some extra hoops we shouldn't need
-/// to jump through:
-/// https://github.com/rust-lang/rust/issues/132980
-/// https://github.com/rust-lang/rust/issues/143874
-// Can't even fit eight buffer device addresses into a 128-byte push constant with padding, so 16
-// contiguous regions covers quite a bit of types.  Doing SoA means we just shouldn't have ragged
-// structures with 16 regions of padding.  This small value is realistically kind of gigantic.  The
-// workaround is clear, use indirection, SoA, and types that pack better.
-pub const MAX_PACK_REGIONS: usize = 16;
-
-#[derive(Clone, Copy)]
-pub struct PackPlan {
-    pub regions: [PackRegion; MAX_PACK_REGIONS],
-    pub count: usize,
-}
-
-/// Build a PackPlan entirely at compile time.
-pub const fn make_pack_plan(node: &FieldNode, rule: DataLayoutToken) -> PackPlan {
-    let count = region_count(node);
-    // Validate eagerly — the const evaluator surfaces this as a compile error.
-    assert!(count <= MAX_PACK_REGIONS, "struct exceeds MAX_PACK_REGIONS");
-    let regions = flatten_pack_regions::<MAX_PACK_REGIONS>(node, rule);
-    PackPlan { regions, count }
-}
-
-impl<D: DataLayout, T: GpuType<D> + Pod> Pack<D> for T {
-    const PACKED_SIZE: usize = packed_size(&T::FIELD_NODE, D::DATA_LAYOUT);
-    const PLAN: PackPlan = make_pack_plan(&T::FIELD_NODE, D::DATA_LAYOUT);
-
-    fn pack_into(&self, dst: &mut [u8]) {
-        assert!(dst.len() >= Self::PACKED_SIZE);
-        let src = bytemuck::bytes_of(self);
-        let mut i = 0;
-        while i < Self::PLAN.count {
-            let r = &Self::PLAN.regions[i];
-            dst[r.dst_offset..][..r.size].copy_from_slice(&src[r.src_offset..][..r.size]);
-            i += 1;
-        }
-    }
 }
 
 #[cfg(test)]
