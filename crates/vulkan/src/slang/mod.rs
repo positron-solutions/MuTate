@@ -122,12 +122,6 @@ impl sealed::Sealed for Std430 {}
 impl LayoutRule for ScalarLayout {}
 impl LayoutRule for Std430 {}
 
-/// A type that requires a separate packed representation under layout rule L.
-/// The associated Block type IS its GpuPod.
-/// Implemented only where the layout does NOT collapse.
-pub trait HasBlock<L: LayoutRule>: GpuType<L> {
-    type Block: GpuPod<L>;
-    fn into_block(self) -> Self::Block;
 }
 
 /// Closed enumeration of Slang primitive types.  Every GPU type bottoms out at one of these.  User
