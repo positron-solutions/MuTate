@@ -43,7 +43,7 @@ use crate::prelude::*;
 use crate::resource::image::ImageView;
 
 pub use crate::slang::{
-    DescriptorIndex, SampledImageIdx, SamplerIdx, SsboIdx, StorageImageIdx, UInt32, UboIdx,
+    DescriptorIndex, SampledImageIdx, SamplerIdx, SsboIdx, StorageImageIdx, UInt, UboIdx,
 };
 
 // Plural to make it kind of obvious that these are array slot indexes.
@@ -143,7 +143,6 @@ impl Descriptors {
         ];
 
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-
         let layout = unsafe { device.create_descriptor_set_layout(&layout_info, None)? };
         let layouts = [layout];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
@@ -310,15 +309,16 @@ impl Descriptors {
 pub(crate) mod samplers {
     use super::*;
 
-    pub const NEAREST_CLAMP: SamplerIdx = SamplerIdx(UInt32(0));
+    // NOTE didn't want to explicitly double wrap, but without into, this is the way?
+    pub const NEAREST_CLAMP: SamplerIdx = SamplerIdx(UInt(0));
     /// Bi-linear, clamp-to-edge.  Smooth, no tiling.
-    pub const LINEAR_CLAMP: SamplerIdx = SamplerIdx(UInt32(1));
+    pub const LINEAR_CLAMP: SamplerIdx = SamplerIdx(UInt(1));
     /// Bi-linear, repeat.  Standard tiling textures.
-    pub const LINEAR_REPEAT: SamplerIdx = SamplerIdx(UInt32(2));
+    pub const LINEAR_REPEAT: SamplerIdx = SamplerIdx(UInt(2));
     /// Bi-linear + tri-linear mip interpolation, clamp.  World geometry etc.
-    pub const LINEAR_MIP: SamplerIdx = SamplerIdx(UInt32(3));
+    pub const LINEAR_MIP: SamplerIdx = SamplerIdx(UInt(3));
     /// Linear, clamp, border=1.  For `sampler2DShadow` PCF.
-    pub const SHADOW: SamplerIdx = SamplerIdx(UInt32(4));
+    pub const SHADOW: SamplerIdx = SamplerIdx(UInt(4));
 
     pub const N_DEFAULTS: usize = 5;
 

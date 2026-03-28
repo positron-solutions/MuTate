@@ -88,7 +88,7 @@ pub mod prelude {
 
     // Scalars — the everyday currency of GPU data
     pub use super::{
-        Bool, Float16, Float32, Float64, Int16, Int32, Int64, Int8, UInt16, UInt32, UInt64, UInt8,
+        Bool, Double, Float, Half, Int, Int16, Int64, Int8, UInt, UInt16, UInt64, UInt8,
     };
 
     // Pointer type and its trait
@@ -131,16 +131,18 @@ pub enum SlangType {
     Bool,
     Int8,
     Int16,
-    Int32,
+    Int,
     Int64,
     UInt8,
     UInt16,
-    UInt32,
+    UInt,
     UInt64,
-    Float16,
-    Float32,
-    Float64,
-    Struct, // composites — SLANG_NAME carries the identity
+    Half,
+    Float,
+    Double,
+    // XXX Is this actually in use / necessary or vestigal?
+    /// Composites — `SLANG_NAME` carries the identity.
+    Struct,
 }
 
 pub trait GpuType<L: LayoutRule> {
