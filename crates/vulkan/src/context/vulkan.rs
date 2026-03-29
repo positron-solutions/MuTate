@@ -58,11 +58,6 @@ pub(crate) const DEVICE_EXTENSIONS: &[&CStr] = &[
     // implementation takes to access uniform values, when only a few values are used"
     // XXX redundant
     // vk::EXT_INLINE_UNIFORM_BLOCK_NAME,
-    // XXX redundant
-    // vk::KHR_TIMELINE_SEMAPHORE_NAME,
-    // XXX Remove / redundant
-    // vk::KHR_BUFFER_DEVICE_ADDRESS_NAME,
-
     vk::EXT_MEMORY_BUDGET_NAME,
     vk::EXT_MEMORY_PRIORITY_NAME,
 
