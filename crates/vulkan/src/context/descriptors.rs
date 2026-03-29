@@ -52,10 +52,14 @@ pub const SLOT_SAMPLERS: u32 = 1;
 pub const SLOT_STORAGE_IMAGES: u32 = 2;
 pub const SLOT_UNIFORM_BUFFERS: u32 = 3;
 pub const SLOT_STORAGE_BUFFERS: u32 = 4;
+pub const SLOT_UNIFORM_TEXEL_BUFFERS: u32 = 5;
+pub const SLOT_STORAGE_TEXEL_BUFFERS: u32 = 6;
+pub const SLOT_ACCEL_STRUCTURES: u32 = 7;
 
 // NEXT Methods to hand out and recycle indexes, likely guarded through the context interface.
 // Planning on coordinating Image and Buffer creation because not having descriptors would make them
 // kind of useless.
+// NEXT optional support for acceleration structures and add to requirements for visuals.
 pub struct Descriptors {
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
@@ -68,6 +72,9 @@ pub struct Descriptors {
     next_storage_image: StorageImageIdx,
     next_ubo: UboIdx,
     next_ssbo: SsboIdx,
+    next_utxb: UniformTexelBufferIdx,
+    next_stxb: StorageTexelBufferIdx,
+    // next_accel: AccelStructIdx,
 
     // Keep any re-usable indexes.
     freelist_sampled_images: VecDeque<SampledImageIdx>,
@@ -75,7 +82,9 @@ pub struct Descriptors {
     freelist_storage_images: VecDeque<StorageImageIdx>,
     freelist_ubos: VecDeque<UboIdx>,
     freelist_ssbos: VecDeque<SsboIdx>,
-
+    freelist_utxbs: VecDeque<UniformTexelBufferIdx>,
+    freelist_stxbs: VecDeque<StorageTexelBufferIdx>,
+    // freelist_accels: VecDeque<AccelStructIdx>,
     default_samplers: [vk::Sampler; samplers::N_DEFAULTS],
 }
 
@@ -103,6 +112,18 @@ impl Descriptors {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
                 descriptor_count: 256,
             },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_TEXEL_BUFFER,
+                descriptor_count: 256,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_TEXEL_BUFFER,
+                descriptor_count: 256,
+            },
+            // vk::DescriptorPoolSize {
+            //     ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+            //     descriptor_count: 256,
+            // },
         ];
 
         let pool_info = vk::DescriptorPoolCreateInfo::default()
@@ -140,6 +161,21 @@ impl Descriptors {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(SLOT_UNIFORM_TEXEL_BUFFERS)
+                .descriptor_type(vk::DescriptorType::UNIFORM_TEXEL_BUFFER)
+                .descriptor_count(256)
+                .stage_flags(vk::ShaderStageFlags::ALL),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(SLOT_STORAGE_TEXEL_BUFFERS)
+                .descriptor_type(vk::DescriptorType::STORAGE_TEXEL_BUFFER)
+                .descriptor_count(256)
+                .stage_flags(vk::ShaderStageFlags::ALL),
+            // vk::DescriptorSetLayoutBinding::default()
+            //     .binding(SLOT_ACCEL_STRUCTURES)
+            //     .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            //     .descriptor_count(256)
+            //     .stage_flags(vk::ShaderStageFlags::ALL),
         ];
 
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
@@ -187,14 +223,20 @@ impl Descriptors {
             next_storage_image: StorageImageIdx::new(0),
             next_ubo: UboIdx::new(0),
             next_ssbo: SsboIdx::new(0),
+            next_utxb: UniformTexelBufferIdx::new(0),
+            next_stxb: StorageTexelBufferIdx::new(0),
+            // next_accel: AccelStructIdx::new(0),
 
-            // FIXME duplicates pool sizes
+            // FIXME duplicates pool sizes.
+            // XXX find a way to handle compaction and to avoid mass-freeing.
             freelist_sampled_images: VecDeque::with_capacity(256),
             freelist_samplers: VecDeque::with_capacity(256),
             freelist_storage_images: VecDeque::with_capacity(256),
             freelist_ubos: VecDeque::with_capacity(256),
             freelist_ssbos: VecDeque::with_capacity(256),
-
+            freelist_utxbs: VecDeque::with_capacity(256),
+            freelist_stxbs: VecDeque::with_capacity(256),
+            // freelist_accels: VecDeque::with_capacity(256),
             default_samplers,
         })
     }

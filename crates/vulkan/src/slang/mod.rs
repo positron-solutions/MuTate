@@ -185,7 +185,8 @@ pub mod prelude {
 
     // Descriptor index base types and their trait
     pub use super::{
-        DescriptorIndex, SampledImageIdx, SamplerIdx, SsboIdx, StorageImageIdx, UboIdx,
+        AccelStructIdx, DescriptorIndex, SampledImageIdx, SamplerIdx, SsboIdx, StorageImageIdx,
+        StorageTexelBufferIdx, UboIdx, UniformTexelBufferIdx,
     };
 
     pub use crate::descriptor_newtype;
@@ -884,11 +885,27 @@ macro_rules! descriptor_base {
     };
 }
 
+// binding SLOT_SAMPLED_IMAGES — Texture*<T> family
 descriptor_base!(SampledImageIdx, "SampledImageIdx");
-descriptor_base!(StorageImageIdx, "StorageImageIdx");
+
+// binding SLOT_SAMPLERS — SamplerState / SamplerComparisonState
 descriptor_base!(SamplerIdx, "SamplerIdx");
+
+// binding SLOT_STORAGE_IMAGES — RWTexture*<T> family
+descriptor_base!(StorageImageIdx, "StorageImageIdx");
+
+// binding SLOT_UNIFORM_BUFFERS — ConstantBuffer<T>
 descriptor_base!(UboIdx, "UboIdx");
+
+// binding SLOT_STORAGE_BUFFERS — StructuredBuffer, RWStructuredBuffer,
+//                                ByteAddressBuffer, RWByteAddressBuffer,
+//                                AppendStructuredBuffer, ConsumeStructuredBuffer
 descriptor_base!(SsboIdx, "SsboIdx");
+
+descriptor_base!(UniformTexelBufferIdx, "UniformTexelBufferIdx");
+descriptor_base!(StorageTexelBufferIdx, "StorageTexelBufferIdx");
+// XXX only if not using BDA
+descriptor_base!(AccelStructIdx, "AccelStructIdx");
 
 /// Wraps one of the four concrete descriptor index types with a project-
 /// specific name. The inner type must be one of the four base descriptor

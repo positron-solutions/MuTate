@@ -75,6 +75,9 @@ pub(crate) const DEVICE_EXTENSIONS: &[&CStr] = &[
 
     // MAYBE this is Windows only?  Evidently only old windows?
     // vk::EXT_FULL_SCREEN_EXCLUSIVE_NAME,
+
+    // vk::KHR_ACCELERATION_STRUCTURE_NAME,
+    // vk::KHR_DEFERRED_HOST_OPERATIONS_NAME,
 ];
 
 // Useful for CI tests later.
