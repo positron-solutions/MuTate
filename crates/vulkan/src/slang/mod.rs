@@ -885,6 +885,50 @@ macro_rules! descriptor_base {
     };
 }
 
+// While digging around, I generated this table.  Confirming it will require writing some shaders
+// and comparing the actual reflection data, but in the meantime, while there may be some bullshit,
+// just knowing the approximate mappings is probably informative.  Many of these I recognize.  🤖
+//
+// Descriptor table slot assignments and their type mappings:
+//
+// Ground truth sources:
+//   - Vulkan spec §14 "Resource Descriptors":
+//       https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#descriptors-types
+//   - DXC HLSL to SPIR-V mapping (register classes, resource types):
+//       https://github.com/microsoft/DirectXShaderCompiler/blob/main/docs/SPIR-V.rst
+//
+// | VkDescriptorType               | Slang types                     |
+// |--------------------------------|---------------------------------|
+// | SAMPLED_IMAGE                  | Texture1/2/3D<T>                |
+// |                                | TextureCube<T>                  |
+// |                                | Texture*Array<T>                |
+// |                                | Texture2DMS<T>                  |
+// |                                |                                 |
+// | SAMPLER                        | SamplerState                    |
+// |                                | SamplerComparisonState          |
+// |                                |                                 |
+// | STORAGE_IMAGE                  | RWTexture1/2/3D<T>              |
+// |                                | RWTexture*Array<T>              |
+// |                                |                                 |
+// | UNIFORM_BUFFER                 | ConstantBuffer<T>               |
+// |                                |                                 |
+// | STORAGE_BUFFER                 | StructuredBuffer<T>             |
+// |                                | RWStructuredBuffer<T>           |
+// |                                | ByteAddressBuffer               |
+// |                                | RWByteAddressBuffer             |
+// |                                | AppendStructuredBuffer<T>       |
+// |                                | ConsumeStructuredBuffer<T>      |
+// |                                |                                 |
+// | UNIFORM_TEXEL_BUFFER           | Buffer<T>                       |
+// | STORAGE_TEXEL_BUFFER           | RWBuffer<T>                     |
+// | ACCELERATION_STRUCTURE_KHR     | RaytracingAccelerationStructure |
+//
+// Notes:
+//   - All storage buffer variants share SLOT_STORAGE_BUFFERS; read-only vs read-write
+//     is a SPIR-V decoration, not a distinct VkDescriptorType.
+//   - COMBINED_IMAGE_SAMPLER is intentionally absent; Slang decomposes Sampler2D etc.
+//     into separate SAMPLED_IMAGE + SAMPLER descriptors for Vulkan.
+
 // binding SLOT_SAMPLED_IMAGES — Texture*<T> family
 descriptor_base!(SampledImageIdx, "SampledImageIdx");
 
