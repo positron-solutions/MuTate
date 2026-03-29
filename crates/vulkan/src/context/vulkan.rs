@@ -54,10 +54,6 @@ pub(crate) const DEVICE_EXTENSIONS: &[&CStr] = &[
     // is another path to reducing the cost of pipeline combinatorics.
     // vk::EXT_SHADER_OBJECT_NAME,
 
-    // "gives an implementation the opportunity to reduce the number of indirections an
-    // implementation takes to access uniform values, when only a few values are used"
-    // XXX redundant
-    // vk::EXT_INLINE_UNIFORM_BLOCK_NAME,
     vk::EXT_MEMORY_BUDGET_NAME,
     vk::EXT_MEMORY_PRIORITY_NAME,
 
@@ -262,6 +258,7 @@ impl VkContext {
             ("1.2 uniform_and_storage_buffer8_bit_access",              features_1_2.uniform_and_storage_buffer8_bit_access == vk::TRUE),
             ("1.3 compute_full_subgroups",                              features_1_3.compute_full_subgroups == vk::TRUE),
             ("1.3 dynamic_rendering",                                   features_1_3.dynamic_rendering == vk::TRUE),
+            ("1.3 inline_uniform_block",                                features_1_3.inline_uniform_block == vk::TRUE),
             ("1.3 maintenance4",                                        features_1_3.maintenance4 == vk::TRUE),
             ("1.3 shader_demote_to_helper_invocation",                  features_1_3.shader_demote_to_helper_invocation == vk::TRUE),
             ("1.3 synchronization2",                                    features_1_3.synchronization2 == vk::TRUE),

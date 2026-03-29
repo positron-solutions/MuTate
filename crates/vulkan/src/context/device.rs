@@ -81,6 +81,7 @@ impl DeviceContext {
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default()
             .compute_full_subgroups(true)
             .dynamic_rendering(true)
+            .inline_uniform_block(true)
             .shader_demote_to_helper_invocation(true)
             .synchronization2(true)
             .maintenance4(true);
