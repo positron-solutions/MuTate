@@ -14,10 +14,10 @@ cbuffer PushConstants
     uint   output_idx;   // descriptor table index for SLOT_STORAGE_BUFFERS
 };
 
-[[vk::binding(4, 0)]]
+[[vk::binding(5, 0)]]
 StructuredBuffer<SpectrumSample> spectrum_table[];
 
-[[vk::binding(4, 0)]]
+[[vk::binding(5, 0)]]
 RWByteAddressBuffer output_table[];
 
 [numthreads(8,16,1)]

@@ -81,7 +81,7 @@
         },
         {
             "name": "spectrum_table",
-            "binding": {"kind": "descriptorTableSlot", "index": 4},
+            "binding": {"kind": "descriptorTableSlot", "index": 5},
             "type": {
                 "kind": "array",
                 "elementCount": 0,
@@ -131,7 +131,7 @@
         },
         {
             "name": "output_table",
-            "binding": {"kind": "descriptorTableSlot", "index": 4},
+            "binding": {"kind": "descriptorTableSlot", "index": 5},
             "type": {
                 "kind": "array",
                 "elementCount": 0,
@@ -169,11 +169,11 @@
                 },
                 {
                     "name": "spectrum_table",
-                    "binding": {"kind": "descriptorTableSlot", "index": 4}
+                    "binding": {"kind": "descriptorTableSlot", "index": 5}
                 },
                 {
                     "name": "output_table",
-                    "binding": {"kind": "descriptorTableSlot", "index": 4}
+                    "binding": {"kind": "descriptorTableSlot", "index": 5}
                 }
             ]
         }

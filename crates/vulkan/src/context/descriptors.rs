@@ -30,9 +30,20 @@
 //! It has a static fixed size because any kind of dynamic growth messes up the descriptor slots and
 //! forces us to think about descriptors.  Okay, glad we are experts at Vulkan now!
 
+// NEXT UPDATE_AFTER_BIND is said to have performance implications.  The workarounds are to split
+// descriptors into static and mutable sets and to migrate mutable usages into BDA and push constants
+// etc.  The weaker PARTIALLY_BOUND is sufficient if we can switch to an epoch style.  It just
+// requires keeping our own source of truth.
 // NOTE Vulkan does *not* required us to unbind descriptors.  We don't have to null slots.  Debug
 // assert cheap invariants, but memory leaks will dominate the signal for any leaks of descriptor
 // bound resources that occur.
+// FIXME duplicates pool sizes and free-lists.
+// XXX find a way to handle compaction and to avoid mass-freeing.
+// ROLL until technique-dependent device feature support exists, we can't support ray tracing
+// blindly.
+// NEXT Methods to hand out and recycle indexes.
+// NEXT hand out Image descriptors on Image creation because not having descriptors would make them
+// kind of useless.
 
 use std::{collections::VecDeque, slice};
 
@@ -46,20 +57,26 @@ pub use crate::slang::{
     DescriptorIndex, SampledImageIdx, SamplerIdx, SsboIdx, StorageImageIdx, UInt, UboIdx,
 };
 
+// To save at least some headaches, these choices are aligned with Slang's default bindless
+// descriptor array bindings.  Slang reference:
+//   - https://docs.shader-slang.org/en/latest/external/core-module-reference/types/defaultvkbindlessbindings-079h/index.html
+//
 // Plural to make it kind of obvious that these are array slot indexes.
-pub const SLOT_SAMPLED_IMAGES: u32 = 0;
-pub const SLOT_SAMPLERS: u32 = 1;
-pub const SLOT_STORAGE_IMAGES: u32 = 2;
-pub const SLOT_UNIFORM_BUFFERS: u32 = 3;
-pub const SLOT_STORAGE_BUFFERS: u32 = 4;
-pub const SLOT_UNIFORM_TEXEL_BUFFERS: u32 = 5;
-pub const SLOT_STORAGE_TEXEL_BUFFERS: u32 = 6;
-pub const SLOT_ACCEL_STRUCTURES: u32 = 7;
+pub const SLOT_SAMPLERS: u32 = 0;
+// We use separate samplers and images, so this slot is occupied only for padding.
+// pub const SLOT_COMBINED_SAMPLERS: u64     = 1;
+pub const SLOT_SAMPLED_IMAGES: u32 = 2;
+pub const SLOT_STORAGE_IMAGES: u32 = 3;
+pub const SLOT_UNIFORM_BUFFERS: u32 = 4;
+pub const SLOT_STORAGE_BUFFERS: u32 = 5;
+pub const SLOT_UNIFORM_TEXEL_BUFFERS: u32 = 6;
+pub const SLOT_STORAGE_TEXEL_BUFFERS: u32 = 7;
+// This enum value doesn't map to anything we would know how to type check and is likewise
+// unsupported.
+pub const UNKNOWN: u32 = 8;
+// The general trend is to use BDA and not use descriptors for acceleration structures.
+// pub const SLOT_ACCEL_STRUCTURES: u32      = 9;
 
-// NEXT Methods to hand out and recycle indexes, likely guarded through the context interface.
-// Planning on coordinating Image and Buffer creation because not having descriptors would make them
-// kind of useless.
-// NEXT optional support for acceleration structures and add to requirements for visuals.
 pub struct Descriptors {
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
@@ -67,8 +84,8 @@ pub struct Descriptors {
 
     // Track the next never-used index.  This is implicitly a high-water mark for properly sizing
     // arrays.
-    next_sampled_image: SampledImageIdx,
     next_sampler: SamplerIdx,
+    next_sampled_image: SampledImageIdx,
     next_storage_image: StorageImageIdx,
     next_ubo: UboIdx,
     next_ssbo: SsboIdx,
@@ -77,8 +94,8 @@ pub struct Descriptors {
     // next_accel: AccelStructIdx,
 
     // Keep any re-usable indexes.
-    freelist_sampled_images: VecDeque<SampledImageIdx>,
     freelist_samplers: VecDeque<SamplerIdx>,
+    freelist_sampled_images: VecDeque<SampledImageIdx>,
     freelist_storage_images: VecDeque<StorageImageIdx>,
     freelist_ubos: VecDeque<UboIdx>,
     freelist_ssbos: VecDeque<SsboIdx>,
@@ -93,11 +110,11 @@ impl Descriptors {
         // DEBT Max descriptor size calculation / management.
         let pool_sizes = [
             vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::SAMPLED_IMAGE,
+                ty: vk::DescriptorType::SAMPLER,
                 descriptor_count: 256,
             },
             vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::SAMPLER,
+                ty: vk::DescriptorType::SAMPLED_IMAGE,
                 descriptor_count: 256,
             },
             vk::DescriptorPoolSize {
@@ -137,13 +154,13 @@ impl Descriptors {
         // device creation as 🪄
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
-                .binding(SLOT_SAMPLED_IMAGES)
-                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .binding(SLOT_SAMPLERS)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(SLOT_SAMPLERS)
-                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .binding(SLOT_SAMPLED_IMAGES)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .descriptor_count(256)
                 .stage_flags(vk::ShaderStageFlags::ALL),
             vk::DescriptorSetLayoutBinding::default()
@@ -218,19 +235,16 @@ impl Descriptors {
             set,
             layout,
 
-            next_sampled_image: SampledImageIdx::new(0),
             next_sampler: SamplerIdx::new(samplers::N_DEFAULTS as u32),
+            next_sampled_image: SampledImageIdx::new(0),
             next_storage_image: StorageImageIdx::new(0),
             next_ubo: UboIdx::new(0),
             next_ssbo: SsboIdx::new(0),
             next_utxb: UniformTexelBufferIdx::new(0),
             next_stxb: StorageTexelBufferIdx::new(0),
             // next_accel: AccelStructIdx::new(0),
-
-            // FIXME duplicates pool sizes.
-            // XXX find a way to handle compaction and to avoid mass-freeing.
-            freelist_sampled_images: VecDeque::with_capacity(256),
             freelist_samplers: VecDeque::with_capacity(256),
+            freelist_sampled_images: VecDeque::with_capacity(256),
             freelist_storage_images: VecDeque::with_capacity(256),
             freelist_ubos: VecDeque::with_capacity(256),
             freelist_ssbos: VecDeque::with_capacity(256),
