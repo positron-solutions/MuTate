@@ -7,6 +7,11 @@
 //! agreement checking.  Macros are provided for creating new-type wrappers around existing Slang
 //! types, adding further semantic type safety.
 //!
+//! See the [full list][slang-types] of Slang's standard library types.  Each type listing has
+//! information about its generic parameters and the type of descriptor it uses for indexing by
+//! descriptor arrays.
+//! [slang-types]: https://docs.shader-slang.org/en/latest/external/core-module-reference/types/index.html
+//!
 //! ## Scalar & Vector Types
 //!
 //! Built-in Slang types are provided already:
@@ -155,8 +160,8 @@
 // XXX Buffer Device Address destination payload types not implemented
 // XXX Writing a descriptor index via push constants etc not yet implemented
 // XXX Descriptor indexes and types of the contents at the handle are not yet implemented
-// XXX There may be some aliases in Slang
-// XXX Remove need for double (or more into) calls
+// XXX There seem to be type aliases in Slang we should possibly account for
+// XXX Remove need for double (or more) calls of into or inner for user-defined newtypes.
 // XXX Newtype for newtypes tests (and define how to interpret this)
 // XXX Finish up some Deref implementations and tests
 // NEXT we are definitely implementing vectors (ie float3) as leaf types (`GpuPrimitive`) to avoid
@@ -239,6 +244,12 @@ impl DataLayout for Std430 {
 
 /// Closed enumeration of Slang primitive types.  Every GPU type bottoms out at one of these.  User
 /// newtypes and structs carry their own SLANG_NAME but delegate PRIMITIVE downward to the leaf.
+///
+/// Types listed in [scalar types][scalar-types] section of the Slang reference.
+///
+/// [scalar-types]: https://docs.shader-slang.org/en/latest/external/core-module-reference/types/scalar_types.html
+// XXX upon looking at that list, after looking at reflection data, it is evident that reflection is
+// preferring names like "float32".  Each of the concrete field types must verified in tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlangType {
     Bool,
@@ -885,71 +896,15 @@ macro_rules! descriptor_base {
     };
 }
 
-// While digging around, I generated this table.  Confirming it will require writing some shaders
-// and comparing the actual reflection data, but in the meantime, while there may be some bullshit,
-// just knowing the approximate mappings is probably informative.  Many of these I recognize.  🤖
-//
-// Descriptor table slot assignments and their type mappings:
-//
-// Ground truth sources:
-//   - Vulkan spec §14 "Resource Descriptors":
-//       https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#descriptors-types
-//   - DXC HLSL to SPIR-V mapping (register classes, resource types):
-//       https://github.com/microsoft/DirectXShaderCompiler/blob/main/docs/SPIR-V.rst
-//
-// | VkDescriptorType               | Slang types                     |
-// |--------------------------------|---------------------------------|
-// | SAMPLED_IMAGE                  | Texture1/2/3D<T>                |
-// |                                | TextureCube<T>                  |
-// |                                | Texture*Array<T>                |
-// |                                | Texture2DMS<T>                  |
-// |                                |                                 |
-// | SAMPLER                        | SamplerState                    |
-// |                                | SamplerComparisonState          |
-// |                                |                                 |
-// | STORAGE_IMAGE                  | RWTexture1/2/3D<T>              |
-// |                                | RWTexture*Array<T>              |
-// |                                |                                 |
-// | UNIFORM_BUFFER                 | ConstantBuffer<T>               |
-// |                                |                                 |
-// | STORAGE_BUFFER                 | StructuredBuffer<T>             |
-// |                                | RWStructuredBuffer<T>           |
-// |                                | ByteAddressBuffer               |
-// |                                | RWByteAddressBuffer             |
-// |                                | AppendStructuredBuffer<T>       |
-// |                                | ConsumeStructuredBuffer<T>      |
-// |                                |                                 |
-// | UNIFORM_TEXEL_BUFFER           | Buffer<T>                       |
-// | STORAGE_TEXEL_BUFFER           | RWBuffer<T>                     |
-// | ACCELERATION_STRUCTURE_KHR     | RaytracingAccelerationStructure |
-//
-// Notes:
-//   - All storage buffer variants share SLOT_STORAGE_BUFFERS; read-only vs read-write
-//     is a SPIR-V decoration, not a distinct VkDescriptorType.
-//   - COMBINED_IMAGE_SAMPLER is intentionally absent; Slang decomposes Sampler2D etc.
-//     into separate SAMPLED_IMAGE + SAMPLER descriptors for Vulkan.
-
-// binding SLOT_SAMPLED_IMAGES — Texture*<T> family
 descriptor_base!(SampledImageIdx, "SampledImageIdx");
-
-// binding SLOT_SAMPLERS — SamplerState / SamplerComparisonState
 descriptor_base!(SamplerIdx, "SamplerIdx");
-
-// binding SLOT_STORAGE_IMAGES — RWTexture*<T> family
 descriptor_base!(StorageImageIdx, "StorageImageIdx");
-
-// binding SLOT_UNIFORM_BUFFERS — ConstantBuffer<T>
 descriptor_base!(UboIdx, "UboIdx");
-
-// binding SLOT_STORAGE_BUFFERS — StructuredBuffer, RWStructuredBuffer,
-//                                ByteAddressBuffer, RWByteAddressBuffer,
-//                                AppendStructuredBuffer, ConsumeStructuredBuffer
 descriptor_base!(SsboIdx, "SsboIdx");
-
 descriptor_base!(UniformTexelBufferIdx, "UniformTexelBufferIdx");
 descriptor_base!(StorageTexelBufferIdx, "StorageTexelBufferIdx");
-// XXX only if not using BDA
-descriptor_base!(AccelStructIdx, "AccelStructIdx");
+// Not supported until dynamic logical device dependency is in place.
+// descriptor_base!(AccelStructIdx, "AccelStructIdx");
 
 /// Wraps one of the four concrete descriptor index types with a project-
 /// specific name. The inner type must be one of the four base descriptor

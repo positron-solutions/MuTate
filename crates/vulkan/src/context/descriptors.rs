@@ -64,7 +64,7 @@ pub use crate::slang::{
 // Plural to make it kind of obvious that these are array slot indexes.
 pub const SLOT_SAMPLERS: u32 = 0;
 // We use separate samplers and images, so this slot is occupied only for padding.
-// pub const SLOT_COMBINED_SAMPLERS: u64     = 1;
+// pub const SLOT_COMBINED_SAMPLERS: u64 = 1;
 pub const SLOT_SAMPLED_IMAGES: u32 = 2;
 pub const SLOT_STORAGE_IMAGES: u32 = 3;
 pub const SLOT_UNIFORM_BUFFERS: u32 = 4;
@@ -74,7 +74,7 @@ pub const SLOT_STORAGE_TEXEL_BUFFERS: u32 = 7;
 // This enum value doesn't map to anything we would know how to type check and is likewise
 // unsupported.
 pub const UNKNOWN: u32 = 8;
-// The general trend is to use BDA and not use descriptors for acceleration structures.
+// ROLL waiting on context support for runtime extension dependency resolution.
 // pub const SLOT_ACCEL_STRUCTURES: u32      = 9;
 
 pub struct Descriptors {
