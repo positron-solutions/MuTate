@@ -212,7 +212,7 @@ pub mod prelude {
     pub use half;
 }
 
-mod sealed {
+pub mod sealed {
     pub trait Sealed {}
 }
 
@@ -277,7 +277,7 @@ pub enum SlangType {
 }
 
 /// Truly atomic types do not depend on the layout rules and may be encoded more simply.
-pub trait GpuScalar {
+pub trait GpuScalar: sealed::Sealed {
     /// The irreducible Slang primitive this type reduces to.
     /// Drives wire layout and type-safety checks (u16 vs f16, etc.)
     const PRIMITIVE: SlangType;
@@ -300,7 +300,7 @@ pub unsafe trait GpuPod<D: DataLayout = Scalar>: GpuScalar + Pod {}
 
 /// Types that are built into Slang and have unique alignment requirements but are composed of
 /// scalars and considered "leaf" types for packing / marshaling purposes.
-pub trait GpuPrimitive<D: DataLayout = Scalar> {
+pub trait GpuPrimitive<D: DataLayout = Scalar>: sealed::Sealed {
     /// The irreducible Slang primitives this type reduces to.
     const PRIMITIVE: SlangType;
     /// The Slang-side name for introspection matching.
@@ -636,6 +636,8 @@ macro_rules! slang_scalar {
             const SIZE: usize = std::mem::size_of::<$base>();
         }
 
+        impl sealed::Sealed for $name {}
+
         // DEBT bytemuck
         unsafe impl $crate::__bytemuck::Zeroable for $name {}
         unsafe impl $crate::__bytemuck::Pod for $name {}
@@ -687,6 +689,8 @@ macro_rules! slang_newtype {
             const SIZE: usize = <$inner as GpuScalar>::SIZE;
         }
 
+        impl $crate::slang::sealed::Sealed for $name {}
+
         // DEBT bytemuck
         unsafe impl $crate::__bytemuck::Zeroable for $name {}
         unsafe impl $crate::__bytemuck::Pod for $name {}
@@ -736,6 +740,8 @@ impl GpuScalar for Bool {
     const SLANG_NAME: &'static str = "bool";
     const SIZE: usize = 4; // Slang bool is 4 bytes on GPU
 }
+
+impl sealed::Sealed for Bool {}
 
 unsafe impl<D: DataLayout> GpuPod<D> for Bool {}
 
@@ -803,6 +809,8 @@ impl GpuScalar for DeviceAddress {
     const SIZE: usize = 8;
 }
 
+impl sealed::Sealed for DeviceAddress {}
+
 unsafe impl<D: DataLayout> GpuPod<D> for DeviceAddress {}
 
 #[macro_export]
@@ -837,6 +845,8 @@ macro_rules! device_address_newtype {
             const SLANG_NAME: &'static str = $slang_name;
             const SIZE: usize = 8;
         }
+
+        impl $crate::slang::sealed::Sealed for $name {}
 
         // DEBT bytemuck
         unsafe impl $crate::__bytemuck::Zeroable for $name {}
@@ -892,6 +902,8 @@ macro_rules! descriptor_base {
             const SLANG_NAME: &'static str = $slang_name;
             const SIZE: usize = 4;
         }
+
+        impl sealed::Sealed for $name {}
 
         // DEBT bytemuck
         unsafe impl $crate::__bytemuck::Zeroable for $name {}
@@ -964,6 +976,8 @@ macro_rules! descriptor_newtype {
             const SLANG_NAME: &'static str = $slang_name;
             const SIZE: usize = 4;
         }
+
+        impl $crate::slang::sealed::Sealed for $name {}
 
         // DEBT bytemuck
         unsafe impl $crate::__bytemuck::Zeroable for $name {}
