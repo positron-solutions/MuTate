@@ -1,6 +1,8 @@
-// test_all_handles.slang
-// Compile-test: exercises every handle type from descriptors.slang
-// to prevent DCE from eliminating the bindings.
+// Copyright 2026 The MuTate Contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+// Compile-test: exercises every handle type from descriptors.slang to generate
+// reflection data, used to corroborate our Rust-Slang type agreements.
 
 import descriptors;
 
@@ -25,6 +27,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     if (tid.x != 0) return;
 
     AllHandles h = g_handles;
+    // to prevent DCE from eliminating the bindings.
 
     // Slot 0 — SAMPLER
     // SamplerState and SamplerComparisonState have no standalone load;

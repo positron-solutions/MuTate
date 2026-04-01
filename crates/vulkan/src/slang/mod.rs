@@ -190,8 +190,15 @@ pub mod prelude {
 
     // Descriptor index base types and their trait
     pub use super::{
-        AccelStructIdx, DescriptorIndex, SampledImageIdx, SamplerIdx, SsboIdx, StorageImageIdx,
-        StorageTexelBufferIdx, UboIdx, UniformTexelBufferIdx,
+        DescriptorIndex,
+        SampledImageIdx,
+        SamplerIdx,
+        SsboIdx,
+        StorageImageIdx,
+        StorageTexelBufferIdx,
+        UboIdx,
+        UniformTexelBufferIdx,
+        // AccelStructIdx,
     };
 
     pub use crate::descriptor_newtype;
@@ -592,7 +599,7 @@ impl<D: DataLayout, T: GpuType<D> + Pod> Pack<D> for T {
 
 /// Registers a Rust type as a Slang scalar primitive.
 /// Emits a repr(transparent) newtype that:
-///   - implements GpuType<D> for all D (primitives are layout-agnostic at scalar level)
+///   - implements GpuScalar for all D (primitives are layout-agnostic at scalar level)
 ///   - implements GpuPod<D> for all D
 ///   - allows From<$base> but NOT From<NewType> for base (one direction only)
 macro_rules! slang_scalar {
@@ -638,9 +645,7 @@ macro_rules! slang_scalar {
 }
 
 /// Wraps an existing slang_scalar type with a semantic name.
-// XXX comment still fresh?
-/// The inner type must already implement GpuType<D> — that bound
-/// IS the witness. If it doesn't, the impl fails at the definition site.
+/// The inner type must implement GpuScalar.
 ///
 /// SLANG_NAME is the Slang struct name for introspection.
 /// PRIMITIVE and layout constants are forwarded from the inner type.
@@ -973,6 +978,7 @@ mod tests {
     use super::*;
 
     // Field test vectors from actual compiler output.
+    // XXX pending.
 
     #[test]
     fn bool_is_four_bytes() {

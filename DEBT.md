@@ -224,3 +224,12 @@ Current code is a rough draft.  We need `Pod` and `Zeroable` but getting the der
 ### For Now
 
 The `Pod` and `Zeroable` markers were just thrown in by hand so we don't even need derive.  This might not catch situations where the traits don't actually work 😬
+
+## Untorn
+
+- Needs to implement a triple buffer variant (seqlock can be interrupted) or some other truly wait-free implementation.  Seqlock is a bit better for distributed systems where the blocked writer is *below* the thread switch granularity and all runtimes are async anyway.
+- Integrate local stack copies if possible
+
+### For Now
+
+Focus on the semantics.  We want synchronous, local stack, then finally trick out the implementation.
