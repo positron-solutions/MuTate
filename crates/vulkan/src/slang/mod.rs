@@ -557,6 +557,33 @@ const fn make_pack_plan(node: &FieldNode, rule: DataLayoutToken) -> PackPlan {
     PackPlan { regions, count }
 }
 
+/// Byte offset of field at `idx` within `node` under `rule`.  **Does not recurse into child
+/// nodes.** Equivalent to is `packed_size` of the prefix — fields `0..idx`.
+const fn field_offset(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
+    match node {
+        FieldNode::Leaf(_) => 0, // scalars have no sub-fields
+        FieldNode::Tree { fields, .. } => {
+            assert!(idx <= fields.len(), "field index out of bounds");
+            let mut offset = 0;
+            let mut i = 0;
+            while i < idx {
+                match rule {
+                    DataLayoutToken::Scalar => {
+                        offset += packed_size(&fields[i], rule);
+                    }
+                    DataLayoutToken::Std430 => {
+                        let align = node_align(&fields[i], rule);
+                        offset = align_up(offset, align);
+                        offset += packed_size(&fields[i], rule);
+                    }
+                }
+                i += 1;
+            }
+            offset
+        }
+    }
+}
+
 pub trait Pack<D: DataLayout = Scalar> {
     /// The packed size of this type under D, in bytes.
     const PACKED_SIZE: usize;
@@ -1033,5 +1060,89 @@ mod tests {
         let mut buf = [0u8; 8];
         <Int64 as Pack<Scalar>>::pack_into(&v, &mut buf);
         assert_eq!(buf, (-1_i64).to_ne_bytes());
+    }
+
+    // Unit testing structure composition without a macro requires manually writing out some
+    // boilerplate.  Tests like this catch macro expansion problems upstream of the expansion logic.
+    // Just re-expand macros to develop and debug such forms.
+    #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
+    struct TestBar {
+        count: UInt,      // 4 bytes
+        weight: Float,    // 4 bytes
+        timestamp: Int64, // 8 bytes
+    }
+
+    unsafe impl bytemuck::Zeroable for TestBar {}
+    unsafe impl bytemuck::Pod for TestBar {}
+
+    impl<D: DataLayout> GpuType<D> for TestBar {
+        const FIELD_NODE: FieldNode = FieldNode::Tree {
+            slang_name: "TestBar",
+            fields: &[
+                <UInt as GpuType<D>>::FIELD_NODE,
+                <Float as GpuType<D>>::FIELD_NODE,
+                <Int64 as GpuType<D>>::FIELD_NODE,
+            ],
+        };
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
+    struct TestFoo {
+        flag: Bool,   //  4 bytes
+        bar: TestBar, // 16 bytes
+        tag: UInt8,   //  1 byte
+    }
+
+    unsafe impl bytemuck::Zeroable for TestFoo {}
+    unsafe impl bytemuck::Pod for TestFoo {}
+
+    impl<D: DataLayout> GpuType<D> for TestFoo {
+        const FIELD_NODE: FieldNode = FieldNode::Tree {
+            slang_name: "TestFoo",
+            fields: &[
+                <Bool as GpuType<D>>::FIELD_NODE,
+                <TestBar as GpuType<D>>::FIELD_NODE,
+                <UInt8 as GpuType<D>>::FIELD_NODE,
+            ],
+        };
+    }
+
+    #[test]
+    fn composed_structure_field_sanity() {
+        type D = Scalar;
+        let foo_node = &<TestFoo as GpuType<D>>::FIELD_NODE;
+        let bar_node = &<TestBar as GpuType<D>>::FIELD_NODE;
+
+        // field 0: Bool → offset 0
+        assert_eq!(field_offset(foo_node, 0, D::DATA_LAYOUT), 0);
+        // field 1: TestBar → offset 4 (Bool is 4 bytes)
+        assert_eq!(field_offset(foo_node, 1, D::DATA_LAYOUT), 4);
+        // field 2: UInt8 → offset 20 (4 + 16)
+        assert_eq!(field_offset(foo_node, 2, D::DATA_LAYOUT), 20);
+
+        // field 0: UInt   → 0
+        assert_eq!(field_offset(bar_node, 0, D::DATA_LAYOUT), 0);
+        // field 1: Float  → 4
+        assert_eq!(field_offset(bar_node, 1, D::DATA_LAYOUT), 4);
+        // field 2: Int64  → 8
+        assert_eq!(field_offset(bar_node, 2, D::DATA_LAYOUT), 8);
+
+        // TestBar total = 4 + 4 + 8 = 16
+        assert_eq!(<TestBar as GpuType<D>>::SIZE, 16);
+        // TestFoo total = 4 + 16 + 1 = 21
+        assert_eq!(<TestFoo as GpuType<D>>::SIZE, 21);
+
+        // field_offset(foo, 1) == SIZE of prefix (just Bool)
+        assert_eq!(
+            field_offset(foo_node, 1, D::DATA_LAYOUT),
+            <Bool as GpuType<D>>::SIZE,
+        );
+        // field_offset(foo, 2) == SIZE of Bool + SIZE of TestBar
+        assert_eq!(
+            field_offset(foo_node, 2, D::DATA_LAYOUT),
+            <Bool as GpuType<D>>::SIZE + <TestBar as GpuType<D>>::SIZE,
+        );
     }
 }
