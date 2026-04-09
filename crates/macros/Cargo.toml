@@ -19,7 +19,10 @@ quote.workspace = true
 syn.workspace = true
 
 mutate-vulkan.workspace = true
-mutate-assets = {workspace = true, features = ["macro-time"]}
+mutate-assets = {workspace = true, features = ["macro-time" ]}
+
+[build-dependencies]
+mutate-assets = {workspace = true, features = ["build", "macro-time"]}
 
 [dev-dependencies]
 trybuild.workspace = true
