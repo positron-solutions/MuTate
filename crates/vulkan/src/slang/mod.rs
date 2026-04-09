@@ -558,8 +558,8 @@ const fn make_pack_plan(node: &FieldNode, rule: DataLayoutToken) -> PackPlan {
 }
 
 /// Byte offset of field at `idx` within `node` under `rule`.  **Does not recurse into child
-/// nodes.** Equivalent to is `packed_size` of the prefix — fields `0..idx`.
-const fn field_offset(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
+/// nodes.** Equivalent to is `packed_size` of the prefix, fields `0..idx`.
+const fn field_start(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
     match node {
         FieldNode::Leaf(_) => 0, // scalars have no sub-fields
         FieldNode::Tree { fields, .. } => {
@@ -580,6 +580,21 @@ const fn field_offset(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> us
                 i += 1;
             }
             offset
+        }
+    }
+}
+
+/// Last byte of field `idx`'s actual data without trailing padding.
+// XXX IIRC this was intended for push constant range endings.  It was decided to disallow values
+// that would align to less than four bytes, and it's questionable what use this function may have,
+// but the subject is definitely something about a field's size not quite being informative enough
+// for use in push constant range checks.
+const fn field_end(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
+    match node {
+        FieldNode::Leaf(_) => 0,
+        FieldNode::Tree { fields, .. } => {
+            assert!(idx < fields.len(), "field index out of bounds");
+            field_start(node, idx, rule) + packed_size(&fields[idx], rule)
         }
     }
 }
@@ -1116,32 +1131,32 @@ mod tests {
         let bar_node = &<TestBar as GpuType<D>>::FIELD_NODE;
 
         // field 0: Bool → offset 0
-        assert_eq!(field_offset(foo_node, 0, D::DATA_LAYOUT), 0);
+        assert_eq!(field_start(foo_node, 0, D::DATA_LAYOUT), 0);
         // field 1: TestBar → offset 4 (Bool is 4 bytes)
-        assert_eq!(field_offset(foo_node, 1, D::DATA_LAYOUT), 4);
+        assert_eq!(field_start(foo_node, 1, D::DATA_LAYOUT), 4);
         // field 2: UInt8 → offset 20 (4 + 16)
-        assert_eq!(field_offset(foo_node, 2, D::DATA_LAYOUT), 20);
+        assert_eq!(field_start(foo_node, 2, D::DATA_LAYOUT), 20);
 
         // field 0: UInt   → 0
-        assert_eq!(field_offset(bar_node, 0, D::DATA_LAYOUT), 0);
+        assert_eq!(field_start(bar_node, 0, D::DATA_LAYOUT), 0);
         // field 1: Float  → 4
-        assert_eq!(field_offset(bar_node, 1, D::DATA_LAYOUT), 4);
+        assert_eq!(field_start(bar_node, 1, D::DATA_LAYOUT), 4);
         // field 2: Int64  → 8
-        assert_eq!(field_offset(bar_node, 2, D::DATA_LAYOUT), 8);
+        assert_eq!(field_start(bar_node, 2, D::DATA_LAYOUT), 8);
 
         // TestBar total = 4 + 4 + 8 = 16
         assert_eq!(<TestBar as GpuType<D>>::SIZE, 16);
         // TestFoo total = 4 + 16 + 1 = 21
         assert_eq!(<TestFoo as GpuType<D>>::SIZE, 21);
 
-        // field_offset(foo, 1) == SIZE of prefix (just Bool)
+        // field_start(foo, 1) == SIZE of prefix (just Bool)
         assert_eq!(
-            field_offset(foo_node, 1, D::DATA_LAYOUT),
+            field_start(foo_node, 1, D::DATA_LAYOUT),
             <Bool as GpuType<D>>::SIZE,
         );
-        // field_offset(foo, 2) == SIZE of Bool + SIZE of TestBar
+        // field_start(foo, 2) == SIZE of Bool + SIZE of TestBar
         assert_eq!(
-            field_offset(foo_node, 2, D::DATA_LAYOUT),
+            field_start(foo_node, 2, D::DATA_LAYOUT),
             <Bool as GpuType<D>>::SIZE + <TestBar as GpuType<D>>::SIZE,
         );
     }
