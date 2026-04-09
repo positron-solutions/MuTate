@@ -32,6 +32,12 @@ pub struct GraphicsPipeline<S: GraphicsPipelineSpec> {
     // XXX Extra fields for graphics things
 }
 
+/// Describes how to build and type-check a graphics pipeline.
+pub trait GraphicsPipelineSpec {
+    type Push: push::PushConstants;
+    const STAGES: &'static [stage::StageSpec];
+}
+
 impl<S> GraphicsPipeline<S>
 where
     S: GraphicsPipelineSpec,
