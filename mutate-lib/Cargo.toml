@@ -30,6 +30,7 @@ pm-remez = {workspace = true, optional = true}
 mutate-assets = {workspace = true, features = ["runtime"]}
 mutate-vulkan = {workspace = true, optional = true}
 mutate-slide = {workspace = true, optional = true}
+mutate-macros = {workspace = true, optional = true}
 
 [build-dependencies]
 mutate-assets = {workspace = true, features = ["build"]}
@@ -45,7 +46,7 @@ path = "src/pipewire.rs"
 default = ["dsp"]
 # DEBT move tree into dsp
 dsp = ["dep:num-complex", "dep:num-traits", "dep:mutate-slide", "dep:aligned"]
-vulkan = ["dep:mutate-vulkan"]
+vulkan = ["dep:mutate-vulkan", "dep:mutate-macros"]
 workbench = ["dep:clap", "dsp"]
 pmr = ["dep:pm-remez", "dep:clap", "dsp"]
 
