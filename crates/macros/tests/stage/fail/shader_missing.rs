@@ -3,7 +3,7 @@
 
 use mutate_macros::shader;
 
-#[shader("some-shader")]
+#[shader("test/does_not_exist", COMPUTE, c"main")]
 struct BadStage {}
 
 fn main() {}

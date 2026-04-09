@@ -1,0 +1,30 @@
+{
+    "parameters": [
+
+    ],
+    "entryPoints": [
+        {
+            "name": "main",
+            "stage": "compute",
+            "parameters": [
+                {
+                    "name": "tid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                }
+            ],
+            "threadGroupSize": [64, 1, 1],
+            "bindings": [
+
+            ]
+        }
+    ],
+    "bindlessSpaceIndex": 0
+}
