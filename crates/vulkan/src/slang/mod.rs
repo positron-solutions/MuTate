@@ -389,7 +389,7 @@ struct FlattenCtx {
     idx: usize,
 }
 
-// XXX region_count must descend into the tree and return a distinct region whenever there
+// XXX region_count should descend into the tree and return a distinct region whenever there
 // are padding bytes.  If there's no padding, we can just keep growing the region in
 // depth-first traversal, resulting in fewer regions for the compiler to reason about.
 const fn flatten_node(
@@ -527,10 +527,10 @@ const fn flatten_pack_regions<const N: usize>(
 /// to jump through:
 /// https://github.com/rust-lang/rust/issues/132980
 /// https://github.com/rust-lang/rust/issues/143874
-// Can't even fit eight buffer device addresses into a 128-byte push constant with padding, so 16
-// contiguous regions covers quite a bit of types.  Doing SoA means we just shouldn't have ragged
-// structures with 16 regions of padding.  This small value is realistically kind of gigantic.  The
-// workaround is clear, use indirection, SoA, and types that pack better.
+// Can't even fit eight aligned buffer device addresses into a 128-byte push constant with padding,
+// so 16 contiguous regions covers quite a bit of types.  Doing SoA means we just shouldn't have
+// ragged structures with 16 regions of padding.  This small value is realistically kind of
+// gigantic.  The workaround is clear, use indirection, SoA, and types that pack better.
 pub const MAX_PACK_REGIONS: usize = 16;
 
 /// A contiguous byte range that can be copied verbatim from host memory to GPU memory.
