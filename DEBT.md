@@ -16,9 +16,16 @@ The big pieces that are missing and expected areas of coupled design-development
 - Runtime render graph behaviors will depend on build time witness data that is also used at compile time.  The macros for expressing new pipelines will build on top of the types they must emit (which we are writing now).
 - Asynchronous (threaded) resource hydration & destruction will couple with notifying dependents of changes in upstream dependencies.
 
+### Dependency Order
+
+- Memory allocations can be centralized without async resource hydration or timeline.
+- Timeline architecture is already motivated by the independently driven audio and display loops.
+- Resource management absolutely depends on the prior two areas receiving some treatment.
+- Runtime render graph tasks can't really settle in until resource specs begin to stabilize.
+
 ## Foreword on Rigor
 
-Yee-Haw Index: 7 of 10 🤠.  Pick your favorite three-archetypes model, such as:
+Yee-Haw Index: 7 of 10 🤠.  Pick your favorite three-archetypes of engineers model, such as:
 
 - pioneers
 - settlers
@@ -96,6 +103,7 @@ Another practical concern is that GPU programming is **inherently unsafe**.  We 
 
 - Focus on lifetime alignment!  If the wrong fields are woven together, no lifetimes or shared ownership will ever be smooth!
 - Use manual destructors
+- Centralize a little bit at a time and hand out cheap vk handle clones as long as there is one clear owner that can destroy and outlives the "borrowers" (and maybe bake this contract into types once more stable).
 - Align lifetimes, but avoid borrows for things like `ash` handles that are cheaply cloned.
 - If you add lifetimes for borrows, focus on ephemeral things like builders first.
 
