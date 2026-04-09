@@ -28,7 +28,7 @@ mod prelude {
     pub use super::AssetKind;
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AssetKind {
     Shader,
     Hash,
@@ -57,8 +57,11 @@ impl AssetKind {
 pub enum AssetError {
     #[error("read failed: {:?}", .0)]
     ReadError(#[from] std::io::Error),
-    #[error("file not found: {:?}", .0)]
-    NotFound(String),
+    #[error("file not found: {:?}", .name)]
+    NotFound {
+        name: String,
+        tried: Vec<std::path::PathBuf>,
+    },
     #[error("load spirv failed: {:?}", .0)]
     InvalidShader(String),
 }

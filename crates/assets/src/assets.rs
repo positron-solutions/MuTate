@@ -25,6 +25,8 @@
 //! When set, `MUTATE_ASSETS_DIR` and `MUTATE_BUILD_ASSETS_DIR` should point directly to an assets
 //! root i.e. a folder containing a shaders directory.
 
+// Decouple MUTATE_ASSETS_DIR for the visualizer from other programs.
+
 use std::ffi::OsStr;
 use std::{
     fs,
@@ -62,7 +64,7 @@ impl AssetDirs {
             as_assets_root(p)
         };
 
-        // Always highest priority: explicit override.
+        // Explicit environment variable set at build / runtime always highest priority.
         if let Ok(raw) = std::env::var("MUTATE_ASSETS_DIR") {
             match as_assets_root(PathBuf::from(&raw)) {
                 Some(path) => search_paths.push(path),
@@ -107,54 +109,35 @@ impl AssetDirs {
         AssetDirs { search_paths }
     }
 
-    #[cfg(debug_assertions)]
     /// Checks asset paths for `name`.  Debug builds only look for build tree assets.  Use
     /// environment variables to override.
-    pub fn find(&self, name: &str, kind: AssetKind) -> Option<PathBuf> {
+    pub fn find(&self, name: &str, kind: AssetKind) -> Result<PathBuf, AssetError> {
         let mut file = PathBuf::from(kind.subdir()).join(name);
         file.set_extension(kind.ext());
 
-        let checked: Vec<PathBuf> = self
+        let tried: Vec<PathBuf> = self
             .search_paths
             .iter()
             .map(|root| root.join(&file))
             .collect();
 
-        if let Some(found) = checked.iter().find(|candidate| candidate.exists()) {
-            return Some(found.clone());
-        } else {
-            // DEBT tracing
-            eprintln!("warning: {kind:?} {name:} not found.");
-            checked.iter().for_each(|pb| {
-                eprintln!("  checked: {pb:?}");
-            });
-            None
-        }
-    }
-
-    #[cfg(not(debug_assertions))]
-    /// Checks asset paths for `name`.  Debug builds only look for build tree assets.  Use
-    /// environment variables to override.
-    pub fn find(&self, name: &str, kind: AssetKind) -> Option<PathBuf> {
-        let mut file = PathBuf::from(kind.subdir()).join(name);
-        file.set_extension(kind.ext());
-
-        self.search_paths
+        tried
             .iter()
-            .map(|root| root.join(&file))
             .find(|candidate| candidate.exists())
+            .cloned()
+            .ok_or_else(|| AssetError::NotFound {
+                name: name.to_owned(),
+                tried: tried,
+            })
     }
 
     pub fn find_bytes(&self, name: &str, kind: AssetKind) -> Result<Vec<u8>, AssetError> {
-        self.find(name, kind)
-            .ok_or(AssetError::NotFound(name.to_owned()))
-            .and_then(|found| std::fs::read(found).map_err(|e| e.into()))
+        let found = self.find(name, kind)?;
+        std::fs::read(found).map_err(AssetError::ReadError)
     }
 
     pub fn find_shader(&self, name: &str) -> Result<Vec<u32>, AssetError> {
-        let path = self
-            .find(name, AssetKind::Shader)
-            .ok_or_else(|| AssetError::NotFound(name.to_owned()))?;
+        let path = self.find(name, AssetKind::Shader)?;
 
         let mut file = std::fs::File::open(&path)?;
 
@@ -180,20 +163,24 @@ impl AssetDirs {
         Ok(words)
     }
 
-    pub fn find_hash(&self, name: &str, kind: AssetKind) -> Option<PathBuf> {
-        let mut path = self.find(name, kind)?;
+    /// Return the hash of asset with `name`.  Use the `kind` of the asset you want the hash for!
+    pub fn find_hash(&self, name: &str, kind: AssetKind) -> Result<PathBuf, AssetError> {
+        // See LIES on the AssetKind.  Maybe hash should not even have a kind.
+        #[cfg(debug_assertions)]
+        if kind == AssetKind::Hash {
+            eprintln!("Using AssetKind::Hash when looking for a hash is probably wrong {name}");
+        }
 
+        let mut path = self.find(name, kind)?;
         path.set_extension(AssetKind::Hash.ext());
 
         if path.exists() {
-            Some(path)
+            Ok(path)
         } else {
-            // DEBT tracing
-            if cfg!(debug_assertions) {
-                eprintln!("warning: {:?} {name} not found.", AssetKind::Hash);
-                eprintln!("  checked: {path:?}");
-            }
-            None
+            Err(AssetError::NotFound {
+                name: name.to_owned(),
+                tried: vec![path],
+            })
         }
     }
 }
