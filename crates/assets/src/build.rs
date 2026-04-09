@@ -106,14 +106,20 @@ pub fn build_shaders() {
 pub fn set_asset_default_dir() {
     let manifest_dir = &std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let crate_root = Path::new(manifest_dir);
-
     let manifest = crate_root.join("Cargo.toml");
-    dbg!(&manifest);
-    let cargo = fs::read_to_string(&manifest).unwrap();
-    let parsed: toml::Value = toml::from_str(&cargo).unwrap();
+    let mutate_build_assets_dir = fs::read_to_string(&manifest)
+        .ok()
+        .and_then(|cargo| toml::from_str::<toml::Value>(&cargo).ok())
+        .and_then(|parsed| {
+            parsed
+                .get("package")
+                .and_then(|p| p.get("metadata"))
+                .and_then(|m| m.get("mutate"))
+                .and_then(|m| m.get("asset_dir"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "assets".to_owned());
 
-    let mutate_build_assets_dir = parsed["package"]["metadata"]["mutate"]["asset_dir"]
-        .as_str()
-        .unwrap_or("assets");
     println!("cargo:rustc-env=MUTATE_BUILD_ASSETS_DIR={mutate_build_assets_dir}");
 }
