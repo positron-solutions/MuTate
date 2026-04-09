@@ -24,10 +24,6 @@ pub mod layout;
 pub mod push;
 pub mod stage;
 
-pub trait GraphicsPipelineSpec {
-    const STAGE: &'static [stage::StageSpec];
-}
-
 /// Hydrated graphics pipeline ready to dispatch.
 pub struct GraphicsPipeline<S: GraphicsPipelineSpec> {
     pipeline: vk::Pipeline,
