@@ -9,32 +9,35 @@
 //! we also know how to hydrate a layout from just a logical device and we also know how to write
 //! layout-compatible push constants.
 
+use std::marker::PhantomData;
+
 use crate::internal::*;
 
 use super::push;
 
-pub struct Layout<P: push::PushConstants> {
-    raw: vk::PipelineLayout,
-    _push: std::marker::PhantomData<P>,
+pub trait LayoutSpec {
+    type PushLayout: DataLayout;
+    type Push: push::PushConstants<Self::PushLayout>;
+    const RANGES: &'static [vk::PushConstantRange];
 }
 
-impl<P: push::PushConstants> Layout<P> {
+pub struct Layout<S: LayoutSpec> {
+    raw: vk::PipelineLayout,
+    _spec: PhantomData<S>,
+}
+
+impl<S: LayoutSpec> Layout<S> {
     pub fn new(device_context: &DeviceContext) -> Result<Self, VulkanError> {
-        let range = vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::ALL)
-            .offset(0)
-            .size(P::SIZE as u32);
         let layout_ci = vk::PipelineLayoutCreateInfo::default()
-            .push_constant_ranges(std::slice::from_ref(&range))
+            .push_constant_ranges(S::RANGES)
             .set_layouts(device_context.descriptors.layout());
-        let raw = unsafe {
-            device_context
-                .device()
-                .create_pipeline_layout(&layout_ci, None)?
-        };
         Ok(Self {
-            raw,
-            _push: std::marker::PhantomData,
+            raw: unsafe {
+                device_context
+                    .device()
+                    .create_pipeline_layout(&layout_ci, None)?
+            },
+            _spec: PhantomData,
         })
     }
 
@@ -49,5 +52,17 @@ impl<P: push::PushConstants> Layout<P> {
                 .device()
                 .destroy_pipeline_layout(self.raw, None)
         }
+    }
+
+    /// Push all bytes of the PushConstants
+    pub fn push(&self, device: &ash::Device, cb: vk::CommandBuffer, data: &S::Push) {
+        // ROLL once again, I am asking for your consts https://github.com/rust-lang/rust/issues/132980
+        // PUSH_CONSTANT_MAX_BYTES is the Vulkan-spec hard ceiling (128 nom sayan?)
+        let mut buf = [0u8; push::PUSH_CONSTANT_MAX_BYTES];
+        let packed = <S::Push as Pack<S::PushLayout>>::PACKED_SIZE;
+        <S::Push as Pack<S::PushLayout>>::pack_into(data, &mut buf);
+        unsafe {
+            device.cmd_push_constants(cb, self.raw, vk::ShaderStageFlags::ALL, 0, &buf[..packed])
+        };
     }
 }

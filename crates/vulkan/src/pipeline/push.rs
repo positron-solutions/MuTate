@@ -214,7 +214,7 @@ pub mod prelude {
 }
 
 /// Implemented on types that describe a fixed sub-128 byte set of push constants.
-pub trait PushConstants<D: DataLayout = Scalar>: GpuType<D> {}
+pub trait PushConstants<D: DataLayout = Scalar>: GpuType<D> + Pod {}
 
 #[cfg(test)]
 mod tests {

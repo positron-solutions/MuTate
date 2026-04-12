@@ -5,6 +5,11 @@
 //!
 //! Declare a shader stage.  Compiled shader file and its reflection data will be read to emit
 //! attributes necessary for downstream type-agreement checks.
+//!
+//! ```ignore
+//! #[shader("test/hello_compute", COMPUTE, c"main")]
+//! struct GoodStage {}
+//! ```
 
 use proc_macro::TokenStream;
 use syn::Token;
