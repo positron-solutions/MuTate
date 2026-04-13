@@ -25,18 +25,24 @@ macro_rules! trybuild_fail {
     };
 }
 
-// Behavioral inventory, all the things the macros should give us.
+// Behavioral inventory, all the things the declarative macros should give us.
 trybuild_pass!(scalar);
-trybuild_pass!(newtype);
+trybuild_pass!(scalar_newtype);
 trybuild_pass!(descriptor);
 trybuild_pass!(descriptor_newtype);
 
+// NEXT Buffer device address newtype tests
+
 // Granular
-trybuild_pass!(newtype_satisfies_gpu_type);
+trybuild_pass!(scalar_newtype_satisfies_gpu_type);
 trybuild_pass!(from_base_into_wrapper);
 trybuild_pass!(device_address_newtype_and_null);
 
-// Forbidden
 trybuild_fail!(no_from_slang);
 trybuild_fail!(no_from_newtype);
 trybuild_fail!(descriptor_newtype_kind_mixing);
+
+// GpuType proc macro
+trybuild_pass!(derive_gpu_type_empty);
+trybuild_pass!(derive_gpu_type_flat);
+trybuild_pass!(derive_gpu_type_nested);

@@ -18,6 +18,7 @@
 // bracelet is better than theirs and being mad when you must explain what you feel is important yet
 // exhibits no apparent concrete evidence of its truth.  🤖
 
+mod slang;
 mod stage;
 
 use proc_macro::TokenStream;
@@ -25,4 +26,9 @@ use proc_macro::TokenStream;
 #[proc_macro_attribute]
 pub fn shader(attr: TokenStream, item: TokenStream) -> TokenStream {
     stage::shader(attr, item)
+}
+
+#[proc_macro_derive(GpuType, attributes(gpu_type))]
+pub fn gpu_type(input: TokenStream) -> TokenStream {
+    slang::derive_gpu_type(input)
 }

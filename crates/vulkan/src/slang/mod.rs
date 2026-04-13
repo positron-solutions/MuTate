@@ -217,6 +217,8 @@ pub mod sealed {
 }
 
 /// Only used by `DataLayout` to overcome some const trait features that are not stable yet.
+// FIXME some downstream functionality wants this to be public.  We need to hide or maybe just
+// indirect use of this type in a manageable way (one we can deprecate).
 #[derive(Clone, Copy)]
 enum DataLayoutToken {
     Scalar,
@@ -415,10 +417,8 @@ const fn flatten_node(
             while i < fields.len() {
                 let align = node_align(&fields[i], rule);
                 ctx.dst = align_up(ctx.dst, align);
-
-                // The recursion
+                ctx.src = align_up(ctx.src, align);
                 ctx = flatten_node(&fields[i], rule, ctx, out);
-
                 i += 1;
             }
             ctx
@@ -449,14 +449,18 @@ const fn packed_size(node: &FieldNode, rule: DataLayoutToken) -> usize {
         FieldNode::Leaf(d) => d.size,
         FieldNode::Tree { fields, .. } => match rule {
             DataLayoutToken::Scalar => {
-                // Scalar layout: no inter-field padding.
-                let mut size = 0;
+                let mut offset = 0;
                 let mut i = 0;
                 while i < fields.len() {
-                    size += packed_size(&fields[i], rule);
+                    let align = node_align(&fields[i], rule);
+                    offset = align_up(offset, align);
+                    offset += packed_size(&fields[i], rule);
                     i += 1;
                 }
-                size
+                // Struct size also rounds up to its own alignment, so the *next*
+                // embedded struct starts correctly after this one.
+                let align = tree_align(fields, rule);
+                align_up(offset, align)
             }
             DataLayoutToken::Std430 => {
                 // Std430: each field aligned to its own alignment requirement.
@@ -569,6 +573,8 @@ const fn field_start(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usi
             while i < idx {
                 match rule {
                     DataLayoutToken::Scalar => {
+                        let align = node_align(&fields[i], rule);
+                        offset = align_up(offset, align);
                         offset += packed_size(&fields[i], rule);
                     }
                     DataLayoutToken::Std430 => {
