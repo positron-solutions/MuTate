@@ -10,7 +10,6 @@
 //! just do what is required, aka forcing the decision.
 
 use proc_macro2::Span;
-use syn::{Attribute, Error, Result};
 
 /// If the correct repr has not been added, indicate an error.
 pub(crate) fn assert_repr(attrs: &[syn::Attribute], span: Span) -> syn::Result<()> {
@@ -29,6 +28,7 @@ pub(crate) fn assert_repr(attrs: &[syn::Attribute], span: Span) -> syn::Result<(
     }
 }
 
+#[allow(unused)]
 /// Add or detect `repr(C)` but error if there is some conflict with another choice of `repr`.
 pub(crate) fn ensure_repr(attrs: &mut Vec<syn::Attribute>, span: Span) -> syn::Result<()> {
     match scan_repr(attrs, span) {

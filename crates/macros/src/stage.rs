@@ -15,7 +15,7 @@ use proc_macro2::TokenStream;
 use syn::Token;
 use syn::{
     parse::{Parse, ParseStream},
-    parse_macro_input, LitCStr, LitStr,
+    LitCStr, LitStr,
 };
 
 use mutate_assets as assets;

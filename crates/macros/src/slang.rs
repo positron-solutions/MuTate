@@ -66,7 +66,7 @@ pub fn derive_gpu_type(input: &syn::DeriveInput, span: Span) -> syn::Result<Toke
     derive_gpu_type_inner(input, span)
 }
 
-fn derive_gpu_type_inner(input: &DeriveInput, span: Span) -> syn::Result<TokenStream> {
+fn derive_gpu_type_inner(input: &DeriveInput, _span: Span) -> syn::Result<TokenStream> {
     // XXX well, we might need to support parameterized types for indirect types like Ssbo and BDA handles!
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
