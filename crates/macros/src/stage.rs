@@ -11,11 +11,11 @@
 //! struct GoodStage {}
 //! ```
 
-use proc_macro::TokenStream;
+use proc_macro2::TokenStream;
 use syn::Token;
 use syn::{
     parse::{Parse, ParseStream},
-    parse_macro_input, Data, DeriveInput, Fields, LitCStr, LitStr, Type,
+    parse_macro_input, LitCStr, LitStr,
 };
 
 use mutate_assets as assets;
@@ -43,15 +43,15 @@ impl Parse for ShaderAttr {
 
 /// Express a shader stage as a concrete type.  Implements witness traits that enable downstream
 /// type checking.  Accepts shader file name (without extension), stage flags, and entry point.
-pub(crate) fn shader(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as syn::DeriveInput);
+pub(crate) fn shader(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
+    let input = syn::parse2::<syn::DeriveInput>(item)?;
     let type_name = &input.ident;
 
     let ShaderAttr {
         file: file_literal,
         stage,
         entry,
-    } = parse_macro_input!(attr as ShaderAttr);
+    } = syn::parse2::<ShaderAttr>(attr)?;
 
     let file_string = file_literal.value();
     let dirs = assets::AssetDirs::new();
@@ -69,9 +69,7 @@ pub(crate) fn shader(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
             _ => format!("Failed to load shader {file_string:?}: {e}"),
         };
-        return syn::Error::new_spanned(input, msg)
-            .to_compile_error()
-            .into();
+        return Err(syn::Error::new_spanned(&input, msg));
     }
     if let Err(e) = &hash {
         let msg = match e {
@@ -84,9 +82,7 @@ pub(crate) fn shader(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
             _ => format!("Failed to load shader hash {file_string:?}: {e}"),
         };
-        return syn::Error::new_spanned(input, msg)
-            .to_compile_error()
-            .into();
+        return Err(syn::Error::new_spanned(&input, msg));
     }
 
     let entry: LitCStr = entry
@@ -102,7 +98,7 @@ pub(crate) fn shader(attr: TokenStream, item: TokenStream) -> TokenStream {
     // NEXT: drive CONSTANT_BLOCK_SIZE from actual reflection data read off `shader`.
     let constant_block_size: usize = 0;
 
-    quote::quote! {
+    Ok(quote::quote! {
         #input
 
         // XXX export path stability!
@@ -124,5 +120,5 @@ pub(crate) fn shader(attr: TokenStream, item: TokenStream) -> TokenStream {
         // verification and then we don't need this statement to force re-eval.
         const _: &[u8] = ::std::include_bytes!(#hash_path_string);
     }
-    .into()
+        .into())
 }

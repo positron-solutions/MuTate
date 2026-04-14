@@ -3,48 +3,12 @@
 
 //! # Slang
 //!
-//! Derive GpuType for new structs.  If all fields implement GpuType, this can be pretty trivial.
-//!
-//! ## Usage
-//!
-//! ```
-//! use mutate_vulkan::prelude::*;
-//!
-//! #[derive(GpuType)]
-//! #[repr(C)]
-//! struct MySlangType {
-//!   foo: UInt,
-//!   bar: Float,
-//!   // XXX add some handles to the example
-//! }
-//!
-//! #[derive(GpuType, Clone, Copy, Debug)]
-//! #[gpu_type(slang_name = "SpectralBand")]
-//! #[repr(C)]
-//! pub struct SpectralBand {
-//!     pub center_hz:  Float,
-//!     pub magnitude:  Float,
-//!     pub phase_rad:  Float,
-//!     pub sample_buf: SsboIdx,
-//! }
+//! GpuType derivation implementation.
 
-//! #[derive(GpuType, Clone, Copy, Debug)]
-//! #[repr(C)]
-//! pub struct AudioPushConstants {
-//!     pub band:         SpectralBand, // nested 🕶️
-//!     pub waveform_buf: SsboIdx,
-//!     pub frame_index:  UInt,
-//!     pub delta_t:      Float,
-//!     pub flags:        UInt,
-//! }
-//! ```
-
-use proc_macro::TokenStream;
-use proc_macro2::Span;
+use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
     parse::{Parse, ParseStream},
-    parse_macro_input,
     punctuated::Punctuated,
     Data, DeriveInput, Fields, LitStr, Token,
 };
@@ -98,12 +62,11 @@ impl Parse for GpuTypeAttr {
 }
 
 // Entry point / first call from exported stub
-pub fn derive_gpu_type(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    derive_gpu_type_inner(input).unwrap_or_else(|e| e.to_compile_error().into())
+pub fn derive_gpu_type(input: &syn::DeriveInput, span: Span) -> syn::Result<TokenStream> {
+    derive_gpu_type_inner(input, span)
 }
 
-fn derive_gpu_type_inner(input: DeriveInput) -> syn::Result<TokenStream> {
+fn derive_gpu_type_inner(input: &DeriveInput, span: Span) -> syn::Result<TokenStream> {
     // XXX well, we might need to support parameterized types for indirect types like Ssbo and BDA handles!
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
@@ -111,6 +74,8 @@ fn derive_gpu_type_inner(input: DeriveInput) -> syn::Result<TokenStream> {
             "#[derive(GpuType)] does not support generic structs",
         ));
     }
+
+    crate::force::assert_repr(&input.attrs, input.ident.span())?;
 
     let fields = match &input.data {
         Data::Struct(s) => &s.fields,

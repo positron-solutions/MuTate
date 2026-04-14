@@ -4,7 +4,6 @@
 use mutate_macros::GpuType;
 
 #[derive(GpuType)]
-#[repr(C)]
-struct Empty {}
+struct WhoopsNoRepr {}
 
 fn main() {}

@@ -1,0 +1,5 @@
+error: #[derive(GpuType)] requires `#[repr(C)]` or `#[repr(transparent)]` to guarantee a stable, C-compatible layout
+ --> tests/slang/fail/derive_gpu_type_missing_repr_c.rs:7:8
+  |
+7 | struct WhoopsNoRepr {}
+  |        ^^^^^^^^^^^^

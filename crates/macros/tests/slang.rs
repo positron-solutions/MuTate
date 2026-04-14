@@ -46,3 +46,5 @@ trybuild_fail!(descriptor_newtype_kind_mixing);
 trybuild_pass!(derive_gpu_type_empty);
 trybuild_pass!(derive_gpu_type_flat);
 trybuild_pass!(derive_gpu_type_nested);
+
+trybuild_fail!(derive_gpu_type_missing_repr_c);
