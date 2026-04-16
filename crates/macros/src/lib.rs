@@ -38,7 +38,7 @@ pub fn shader(
         .into()
 }
 
-/// GpuType
+/// # `#[derive(GpuType)]`
 ///
 /// Derive GpuType for new structs.  If all fields implement GpuType, this can be pretty trivial.
 ///
@@ -50,6 +50,7 @@ pub fn shader(
 ///
 /// ```
 /// use mutate_vulkan::prelude::*;
+/// use mutate_macros::*;
 ///
 /// #[derive(GpuType)]
 /// #[repr(C)]
@@ -59,7 +60,8 @@ pub fn shader(
 ///   // XXX add some handles to the example
 /// }
 ///
-/// #[derive(GpuType, Clone, Copy, Debug)]
+/// #[derive(GpuType, Debug)]
+/// // XXX attribute ignored still
 /// #[gpu_type(slang_name = "SpectralBand")]
 /// #[repr(C)]
 /// pub struct SpectralBand {
@@ -69,7 +71,7 @@ pub fn shader(
 ///     pub sample_buf: SsboIdx,
 /// }
 ///
-/// #[derive(GpuType, Clone, Copy, Debug)]
+/// #[derive(GpuType, Debug)]
 /// #[repr(C)]
 /// pub struct AudioPushConstants {
 ///     pub band:         SpectralBand, // nested 🕶️
@@ -81,9 +83,12 @@ pub fn shader(
 /// ```
 ///
 #[proc_macro_derive(GpuType, attributes(gpu_type))]
-pub fn gpu_type(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn derive_gpu_type(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
-    let span = input.ident.span();
+    slang::derive_gpu_type(&input)
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
 
 /// # `#[derive(Push)]`
 ///

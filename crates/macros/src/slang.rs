@@ -61,12 +61,7 @@ impl Parse for GpuTypeAttr {
     }
 }
 
-// Entry point / first call from exported stub
-pub fn derive_gpu_type(input: &syn::DeriveInput, span: Span) -> syn::Result<TokenStream> {
-    derive_gpu_type_inner(input, span)
-}
-
-fn derive_gpu_type_inner(input: &DeriveInput, _span: Span) -> syn::Result<TokenStream> {
+pub(crate) fn derive_gpu_type(input: &DeriveInput) -> syn::Result<TokenStream> {
     // XXX well, we might need to support parameterized types for indirect types like Ssbo and BDA handles!
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
@@ -75,7 +70,7 @@ fn derive_gpu_type_inner(input: &DeriveInput, _span: Span) -> syn::Result<TokenS
         ));
     }
 
-    crate::force::assert_repr(&input.attrs, input.ident.span())?;
+    crate::force::assert_repr_c(&input.attrs, input.ident.span())?;
 
     let fields = match &input.data {
         Data::Struct(s) => &s.fields,

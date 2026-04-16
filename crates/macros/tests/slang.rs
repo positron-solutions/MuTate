@@ -1,6 +1,6 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! # Slang Pro Macro Tests
+//! # Slang Proc Macro Tests
 //!
 //! Using trybuild.
 
@@ -34,7 +34,7 @@ trybuild_pass!(descriptor_newtype);
 // NEXT Buffer device address newtype tests
 
 // Granular
-trybuild_pass!(scalar_newtype_satisfies_gpu_type);
+trybuild_pass!(newtype_satisfies_gpu_type);
 trybuild_pass!(from_base_into_wrapper);
 trybuild_pass!(device_address_newtype_and_null);
 

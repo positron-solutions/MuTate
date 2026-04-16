@@ -12,7 +12,7 @@
 use proc_macro2::Span;
 
 /// If the correct repr has not been added, indicate an error.
-pub(crate) fn assert_repr(attrs: &[syn::Attribute], span: Span) -> syn::Result<()> {
+pub(crate) fn assert_repr_c(attrs: &[syn::Attribute], span: Span) -> syn::Result<()> {
     match scan_repr(attrs, span) {
         ReprStatus::HasC | ReprStatus::HasTransparent => Ok(()),
         ReprStatus::HasConflict(s) => Err(syn::Error::new(
@@ -30,7 +30,7 @@ pub(crate) fn assert_repr(attrs: &[syn::Attribute], span: Span) -> syn::Result<(
 
 #[allow(unused)]
 /// Add or detect `repr(C)` but error if there is some conflict with another choice of `repr`.
-pub(crate) fn ensure_repr(attrs: &mut Vec<syn::Attribute>, span: Span) -> syn::Result<()> {
+pub(crate) fn ensure_repr_c(attrs: &mut Vec<syn::Attribute>, span: Span) -> syn::Result<()> {
     match scan_repr(attrs, span) {
         ReprStatus::HasC | ReprStatus::HasTransparent => Ok(()),
         ReprStatus::HasConflict(s) => Err(syn::Error::new(
