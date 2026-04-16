@@ -3,20 +3,23 @@
 
 //! # Mutate Macros
 //!
-//! Static checking host-GPU agreement would be quite a pain.  We use macros to emit the witnesses
-//! on leaf types and the root witnesses that gather up leaf witness data to check agreement across
-//! all leaves.
+//! *Let them call structs* - Marie Antoinette
 //!
-//! - pipeline `Stages`
-//! - `GpuTypes` and `PushConstants`
-//! - `Pipelines`
-//! - Ensembles of Pipelines and the inputs shapes they need to share between each other.
-
-// We use proc macros. Proc macros have to go in their own crates.  Feels like a scam.  Enough
-// complaining.  Time to let another program write our proc macros because generating your code
-// generation is like making ultramarine from lapis lazuli by hand and telling everyone your blue
-// bracelet is better than theirs and being mad when you must explain what you feel is important yet
-// exhibits no apparent concrete evidence of its truth.  🤖
+//! Maintaining host-GPU agreement can be a pain.  Comparing Rust code with Slang reflection data
+//! requires a fair amount of unavoidable machinery to get layout and type information into one
+//! place.  These macros emit that machinery from simple struct declarations with a minimum of extra
+//! annotation.
+//!
+//! - [`Stage`](crate::stage::Stage) - declare pipeline stages, individual shader programs for
+//!   assembly into pipelines.
+//!
+//! - [`GpuType`](crate::slang::GpuType) - enable uploading or reading a structure from GPU memory
+//!   for a given `DataLayout`.
+//!
+//! - [`Push`](crate::push::Push) - declare pipeline push constant layouts by annotating a struct.
+//!
+//! - [`Pipeline`] - combine declarations for several stages, a layout, and pipeline states into a
+//!   single tese expression.
 
 mod force; // utilities for common assertions / ensures
 mod slang;
