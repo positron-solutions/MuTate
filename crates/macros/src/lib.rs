@@ -22,6 +22,7 @@
 //!   single tese expression.
 
 mod force; // utilities for common assertions / ensures
+mod push;
 mod slang;
 mod stage;
 
@@ -84,7 +85,96 @@ pub fn gpu_type(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     let span = input.ident.span();
 
-    slang::derive_gpu_type(&input, span)
+/// # `#[derive(Push)]`
+///
+/// Derives [`PushConstants`], a companion [`LayoutSpec`], and [`HasDefaultLayout`] for a struct
+/// that already implements [`GpuType<Scalar>`].
+/// ## Usage
+///
+/// ```ignore
+/// #[derive(GpuType, Push)]
+/// #[repr(C)]
+/// struct MyPush {
+///     ctrl_idx: UInt,
+///     scale:    Float,
+/// }
+/// ```
+///
+/// ## What Is Emitted
+///
+/// ```ignore
+/// impl PushConstants<Scalar> for MyPush {}
+///
+/// pub struct MyPushLayout;
+///
+/// impl LayoutSpec for MyPushLayout {
+///     type D    = Scalar;
+///     type Push = MyPush;
+///     const RANGES: &'static [vk::PushConstantRange] = &[
+///         vk::PushConstantRange {
+///             stage_flags: vk::ShaderStageFlags::COMPUTE,
+///             offset: 0,
+///             size:   <MyPush as Pack<Scalar>>::PACKED_SIZE as u32,
+///         },
+///     ];
+/// }
+///
+/// impl DefaultLayout for MyPush {
+///     type D             = Scalar;
+///     type DefaultLayout = MyPushLayout;
+/// }
+/// ```
+///
+/// # Including Fields in ranges
+///
+/// Fields can be exclusive to explicit ranges or implicitly included in all ranges.
+///
+/// ```ignore
+/// #[derive(Push)]
+/// #[repr(C)]
+/// struct MyPush {
+///     #[visible(ALL)]
+///     shared: UInt32,
+///     #[visible(RAYGEN)]
+///     ray_only: UInt32,
+///     #[visible(CLOSEST)]
+///     hit_only: UInt32,
+///     #[visible(CLOSEST | INTERSECTION)]
+///     hit_and_intersect: UInt32,
+/// }
+///```
+///
+/// Gaps within a stage's range require explicit `[vk::offset(N)]` annotations on
+/// subsequent fields so the Slang compiler assigns the correct push constant offset.
+/// The macro generates one block per stage:
+///
+/// ```slang
+/// [[vk::push_constant]] struct RayGen {
+///     [[vk::offset(0)]] uint shared;
+///     [[vk::offset(4)]] uint ray_only;
+/// };
+///
+/// [[vk::push_constant]] struct Closest {
+///     [[vk::offset(0)]] uint shared;
+///     // gap [4,8)
+///     [[vk::offset(8)]] uint hit_only;
+///     uint hit_and_intersect;
+/// };
+///
+/// [[vk::push_constant]] struct Intersection {
+///     [[vk::offset(0)]]  uint shared;
+///     // gap [4,12)
+///     [[vk::offset(12)]] uint hit_and_intersect;
+/// };
+/// ```
+///
+/// Ranges delegate to `Pack<Scalar>::PACKED_SIZE`, rooted in the `GpuType` `FieldNode` tree.
+/// Emitted calculations depend on the correctness of the backing `GpuType` implementaiton.
+
+#[proc_macro_derive(Push, attributes(visible))]
+pub fn derive_push(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    push::derive_push(&input)
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }

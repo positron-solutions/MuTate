@@ -16,8 +16,8 @@ use crate::internal::*;
 use super::push;
 
 pub trait LayoutSpec {
-    type PushLayout: DataLayout;
-    type Push: push::PushConstants<Self::PushLayout>;
+    type D: DataLayout;
+    type Push: push::PushConstants<Self::D>;
     const RANGES: &'static [vk::PushConstantRange];
 }
 
@@ -59,8 +59,8 @@ impl<S: LayoutSpec> Layout<S> {
         // ROLL once again, I am asking for your consts https://github.com/rust-lang/rust/issues/132980
         // PUSH_CONSTANT_MAX_BYTES is the Vulkan-spec hard ceiling (128 nom sayan?)
         let mut buf = [0u8; push::PUSH_CONSTANT_MAX_BYTES];
-        let packed = <S::Push as Pack<S::PushLayout>>::PACKED_SIZE;
-        <S::Push as Pack<S::PushLayout>>::pack_into(data, &mut buf);
+        let packed = <S::Push as Pack<S::D>>::PACKED_SIZE;
+        <S::Push as Pack<S::D>>::pack_into(data, &mut buf);
         unsafe {
             device.cmd_push_constants(cb, self.raw, vk::ShaderStageFlags::ALL, 0, &buf[..packed])
         };

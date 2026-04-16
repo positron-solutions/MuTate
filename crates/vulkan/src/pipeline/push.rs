@@ -11,38 +11,35 @@
 //!
 //! The goal of this implementation is to enable ergonomic macros that can emit generated and
 //! reusable push constant structures within broader declarations.  Type checking the host-GPU
-//! agreement is part of ergonomics.  In addition to extremely straightforward default behaviors,
-//! composing pipelines conveniently during development will benefit from flexible data sharing
-//! between stages.  This is an example of the kind of declaration we want to enable:
+//! agreement is part of ergonomics.  The default behaviors, one range covering all bytes, shared by
+//! all stages, is the simplest default and will be type-checked only for field type agreement.
+//! Flexible options to expose data to specific stages makes it easier to remix pipelines during
+//! development.  This is an example of the kind of declaration we want to enable:
 //!
-//! ```ignore
-//! // XXX When more concrete code is available, update this example.
+//!```ignore
 //! #[derive(Push)]
+//! #[repr(C)]
 //! struct MyPush {
-//!     #[stages(RAYGEN | INTERSECTION)]
-//!     ray_ctrl_idx: UInt32,
-//!     #[stages(RAYGEN | INTERSECTION)]
-//!     intersection_ctrl_idx: UInt32,
-//!     #[stages(CLOSEST)] // Creates a gap for INTERSECTION
-//!     collision_ctrl_masks: [u8; 4],
-//!     // undecorated fields are visible to all stages.  #[stages(ALL)] is also valid.
-//!     reflection_ctrl_idx: UInt32,
-//!     #[stages(CLOSEST | INTERSECTION)]
-//!     collision_ctrl_idx: UInt32,
+//!     #[visible(ALL)]
+//!     shared: UInt32,
+//!     #[visible(RAYGEN)]
+//!     ray_only: UInt32,
+//!     #[visible(CLOSEST)]
+//!     hit_only: UInt32,
+//!     #[visible(CLOSEST | INTERSECTION)]
+//!     hit_and_intersect: UInt32,
 //! }
-//! ```
+//!```
 //!
 //! ## Implementation
 //!
 //! Ground facts that drive everything:
 //!
 //! - Push constants have a min-spec of 128 bytes.  With indirection, this is more than enough.
-//! - Pipeline stages declare a single, contiguous constant block, the bytes they will *see*.
-//! - Push constant ranges map a subset of the 128 bytes into the stage blocks using masking flags.
-//! - Several ranges, with gaps, may together form a sparse, order-preserving subset of the 128 bytes into
-//!   the contiguous constant block of a shader stage.
-//! - Stage constant blocks my overlap in these mappings, so ranges and stages may not be
-//!   one-to-one.
+//! - Pipeline stages declare a single constant block, which may contain alignment padding.  These
+//!   are the bytes the stage will *see*.
+//! - Push constant ranges map a subset of the 128 bytes into one or more stage blocks.
+//! - Ranges may overlap, but no two ranges may share a stage flag.
 //! - Vulkan specifies that push constant range offsets must begin on a 4-byte boundary and sizes
 //!   must be a multiple of four bytes.
 //!
@@ -52,9 +49,9 @@
 //! derive) is the natural choice to declare the pipeline's [`PushConstant`]s.
 //!
 //! Stages likewise only ever see a contiguous constant block.  Again, a **struct** is a natural way
-//! for a stage to declare the host side of its constant block.  We can re-use the same witnesses on
-//! both pipelines and stages because both are effectively a zero-offset view of their entire
-//! domain.
+//! for a stage to declare the host side of its constant block.  We can re-use the same witness
+//! types on for ranges and stages because both are effectively a subset of the 128byte absolute
+//! range.
 //!
 //! The mapping from pipeline to stages is where the tricky bits exist.  Each stage may *see* bytes
 //! from two separate ranges e.g. `vk::StageFlags::Graphics` set on bytes 0-16 in one range and
@@ -63,10 +60,10 @@
 //! subset.
 //!
 //! Finally, **writing** ergonomics for some use cases (we re-used some stages from other
-//! pipelines?) may favor sparse ranges and combined stage flags.  Vulkan allows this kind of mixed,
-//! interspersed write, but **you cannot pass flags for stages that have no declared range covering
-//! those bytes.** If you need to write bytes that are viewed by some stages but not all that you
-//! want to set flags for, you must instead use multiple writes.
+//! pipelines?) may favor sparse ranges visible only to some stages.  Vulkan allows this kind of
+//! partial write, but all bytes written must be exposed to all stages that can see the range,
+//! disallowing a write that would be visible only to some stages that can see the range being
+//! written.
 //!
 //! From all this, we can begin to deduce the necessary types and relations:
 //!
@@ -91,9 +88,8 @@
 //!
 //! Taken together, this decides the `PushConstantRange` relation to the other types:
 //!
-//! - Push constants have no offset
-//! - Push constant views have no offset, but do have a stage flag
-//! - Push constant ranges have an offset and flags
+//! - Push constants have no offset, only a size
+//! - Push constant views and ranges have both an offset and flags
 //!
 //! The dataflow for overall checks can make use of the fact that the pipeline must know all ranges
 //! that will be declared to Vulkan and that this decides the overall stage flags and type layouts
@@ -171,8 +167,9 @@
 //!  }
 //! ```
 //!
-//! Push constant ranges can be sparse per stage.  While adding complexity, this can make impromptu
-//! stage combinations less rigid.
+//! Constant blocks can be sparsely read by using offsets in Slang.  While adding complexity, this
+//! can make impromptu stage combinations less rigid.  The push constant range declared to slang
+//! will be contiguous and the shader is responsible for only reading what it uses.
 //!
 //! ```slang
 //!   struct PushData {
@@ -202,6 +199,7 @@
 // NEXT struct-write ranges, providing a structure that can be used to write to a range.  The
 // struct must agree with the block it will write to.
 
+use super::layout::LayoutSpec;
 use crate::internal::*;
 
 /// Vulkan min-spec guarantee is 128 bytes.  Perhaps in a newer Vulkan, the min-spec will expand,
@@ -215,6 +213,13 @@ pub mod prelude {
 
 /// Implemented on types that describe a fixed sub-128 byte set of push constants.
 pub trait PushConstants<D: DataLayout = Scalar>: GpuType<D> + Pod {}
+
+/// Push constant ranges, required by a layout, are typically declared on the `PushConstants` type
+/// declaration directly.  This trait enables obtaining that layout without naming it.
+pub trait DefaultLayout: PushConstants<Self::D> {
+    type D: DataLayout;
+    type DefaultLayout: LayoutSpec<Push = Self, D = Self::D>;
+}
 
 #[cfg(test)]
 mod tests {

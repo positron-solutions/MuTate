@@ -220,7 +220,7 @@ pub mod sealed {
 // FIXME some downstream functionality wants this to be public.  We need to hide or maybe just
 // indirect use of this type in a manageable way (one we can deprecate).
 #[derive(Clone, Copy)]
-enum DataLayoutToken {
+pub enum DataLayoutToken {
     Scalar,
     Std430,
 }
@@ -244,6 +244,15 @@ pub struct Std430; // reserved, not yet implemented
 
 impl sealed::Sealed for Scalar {}
 impl sealed::Sealed for Std430 {}
+
+// ROLL const trait machinery to get rid of DataLayoutToken and therefore this visibility shim.
+impl Scalar {
+    pub const DATA_LAYOUT: DataLayoutToken = DataLayoutToken::Scalar;
+}
+impl Std430 {
+    pub const DATA_LAYOUT: DataLayoutToken = DataLayoutToken::Std430;
+}
+
 impl DataLayout for Scalar {
     const DATA_LAYOUT: DataLayoutToken = DataLayoutToken::Scalar;
 }
@@ -563,7 +572,7 @@ const fn make_pack_plan(node: &FieldNode, rule: DataLayoutToken) -> PackPlan {
 
 /// Byte offset of field at `idx` within `node` under `rule`.  **Does not recurse into child
 /// nodes.** Equivalent to is `packed_size` of the prefix, fields `0..idx`.
-const fn field_start(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
+pub const fn field_start(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
     match node {
         FieldNode::Leaf(_) => 0, // scalars have no sub-fields
         FieldNode::Tree { fields, .. } => {
@@ -595,7 +604,7 @@ const fn field_start(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usi
 // that would align to less than four bytes, and it's questionable what use this function may have,
 // but the subject is definitely something about a field's size not quite being informative enough
 // for use in push constant range checks.
-const fn field_end(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
+pub const fn field_end(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
     match node {
         FieldNode::Leaf(_) => 0,
         FieldNode::Tree { fields, .. } => {
