@@ -86,7 +86,7 @@ pub(crate) fn shader(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     }
 
     let entry: LitCStr = entry
-        .unwrap_or_else(|| syn::parse_str::<LitCStr>("c\"main\"").expect("default entry literal"));
+        .unwrap_or_else(|| LitCStr::new(c"main", Span::call_site()));
 
     // DEBT error handling
     let hash_path_string = hash.unwrap().into_os_string().into_string().unwrap();
