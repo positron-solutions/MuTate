@@ -3,15 +3,10 @@
 
 //! # Stage
 //!
-//! Declare a shader stage.  Compiled shader file and its reflection data will be read to emit
-//! attributes necessary for downstream type-agreement checks.
-//!
-//! ```ignore
-//! #[shader("test/hello_compute", COMPUTE, c"main")]
-//! struct GoodStage {}
-//! ```
+//! Emits `Stage<Slot>` and `StageReflection<Slot>` impls onto any type, usually a pipeline or other
+//! ZST used for naming.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{TokenStream, Span};
 use syn::Token;
 use syn::{
     parse::{Parse, ParseStream},
@@ -22,6 +17,7 @@ use mutate_assets as assets;
 
 struct ShaderAttr {
     file: LitStr,
+    /// Stage marker type, one that implements `[StageSlot](mutate_vulkan::pipeline::stage::StageSlot)`.
     stage: syn::Ident,
     entry: Option<LitCStr>,
 }
@@ -43,7 +39,7 @@ impl Parse for ShaderAttr {
 
 /// Express a shader stage as a concrete type.  Implements witness traits that enable downstream
 /// type checking.  Accepts shader file name (without extension), stage flags, and entry point.
-pub(crate) fn shader(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
+pub(crate) fn stage(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let input = syn::parse2::<syn::DeriveInput>(item)?;
     let type_name = &input.ident;
 
@@ -101,19 +97,22 @@ pub(crate) fn shader(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     Ok(quote::quote! {
         #input
 
-        // XXX export path stability!
-        impl ::mutate_vulkan::pipeline::stage::StageReflection for #type_name {
-            const CONSTANT_BLOCK_SIZE: usize = #constant_block_size;
+        impl ::mutate_vulkan::pipeline::stage::Stage<
+            ::mutate_vulkan::pipeline::stage::#stage
+        > for #type_name {
+            const SPEC: ::mutate_vulkan::pipeline::stage::StageSpec =
+                ::mutate_vulkan::pipeline::stage::StageSpec {
+                    name:  #file_literal,
+                    stage: <::mutate_vulkan::pipeline::stage::#stage
+                               as ::mutate_vulkan::pipeline::stage::StageSlot>::FLAGS,
+                    entry: #entry,
+                };
         }
 
-        // XXX implementing STAGE_SPEC as a constant for the leaf type gives us no way to fan in
-        // properly.  Something is messed up.
-        impl #type_name {
-            pub const STAGE_SPEC: ::mutate_vulkan::pipeline::stage::StageSpec = ::mutate_vulkan::pipeline::stage::StageSpec {
-                name:  #file_literal,
-                stage: ::ash::vk::ShaderStageFlags::#stage,
-                entry: #entry,
-            };
+        impl ::mutate_vulkan::pipeline::stage::StageReflection<
+            ::mutate_vulkan::pipeline::stage::#stage
+        > for #type_name {
+            const CONSTANT_BLOCK_SIZE: usize = #constant_block_size;
         }
 
         // NEXT if shader modules can hydrate from specs, we can forward this into the spec for runtime

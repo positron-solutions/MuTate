@@ -140,7 +140,7 @@
 //! ## Integrating With Slang
 //!
 //! In the most vanilla case, Slang simply declares a structure type and then to use that structure
-//! as the push contant via `[[vk::push_constant]]`.
+//! as the push constant via `[[vk::push_constant]]`.
 //!
 //! ```slang
 //!  struct PushData
@@ -160,7 +160,7 @@
 //! several entry points into one slang file.
 //!
 //! ```slang
-//!  [shader("compute")]
+//!  [stage("compute")]
 //!  [numthreads(64, 1, 1)]
 //!  void cs_push([[vk::push_constant]] PushData push, uint3 tid : SV_DispatchThreadID) {
 //!      // The shader body

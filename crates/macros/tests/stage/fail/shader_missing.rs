@@ -1,9 +1,9 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use mutate_macros::shader;
+use mutate_macros::stage;
 
-#[shader("test/does_not_exist", COMPUTE, c"main")]
+#[stage("test/does_not_exist", COMPUTE, c"main")]
 struct BadStage {}
 
 fn main() {}

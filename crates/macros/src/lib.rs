@@ -19,21 +19,30 @@
 //! - [`Push`](crate::push::Push) - declare pipeline push constant layouts by annotating a struct.
 //!
 //! - [`Pipeline`] - combine declarations for several stages, a layout, and pipeline states into a
-//!   single tese expression.
+//!   single test expression.
 
 mod force; // utilities for common assertions / ensures
 mod push;
 mod slang;
 mod stage;
 
+/// # `#[stage]`
+///
+/// Declare a shader stage.  Compiled shader file and its reflection data will be read to emit
+/// attributes necessary for downstream type-agreement checks.
+///
+/// ```ignore
+/// #[stage("test/hello_compute", COMPUTE, c"main")]
+/// struct GoodStage {}
+/// ```
 #[proc_macro_attribute]
-pub fn shader(
+pub fn stage(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
     let item = proc_macro2::TokenStream::from(item);
-    stage::shader(attr, item)
+    stage::stage(attr, item)
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }
@@ -130,7 +139,7 @@ pub fn derive_gpu_type(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
 /// }
 /// ```
 ///
-/// # Including Fields in ranges
+/// ## Including Fields in ranges
 ///
 /// Fields can be exclusive to explicit ranges or implicitly included in all ranges.
 ///
@@ -182,4 +191,28 @@ pub fn derive_push(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     push::derive_push(&input)
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
+}
+
+/// # `#[derive(Pipeline)]`
+///
+/// The pipeline macro can declare or include by name the component types, including stages, push
+/// constants, and other pipeline states.
+///
+/// ```ignore
+/// #[pipeline(Graphics)]
+/// struct ScenePipeline {
+///     vert: stage!(Vertex, "lighting/vertex"),
+///     frag: stage!(Fragment, "lighting/fragment"),
+///     push: push! {
+///         #[visible(Vertex | Fragment)]
+///         matrix_idx: UInt32,
+///         #[visible(Fragment)]
+///         light_idx: UInt32,
+///         frame_time: F32,
+///     },
+/// }
+/// ```
+#[proc_macro_derive(Pipeline)]
+pub fn derive_pipeline(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    todo!()
 }

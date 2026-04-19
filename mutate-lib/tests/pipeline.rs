@@ -16,7 +16,7 @@ fn stage_create() {
 #[test]
 fn declare_stage() {
     // Just a tripwire the stage macro.  Comprehensive testing upstream in the macros crate.
-    #[shader("test/hello_compute", COMPUTE, c"main")]
+    #[stage("test/hello_compute", COMPUTE, c"main")]
     struct GoodStage {}
 }
 

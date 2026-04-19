@@ -5,9 +5,23 @@
 //!
 //! *This stage has taken a while to reach.  Keep coding a lot.*
 //!
-//! Stage declarations are both about getting stages from disk into pipelines and supporting
-//! compile-time contracts.  For fanning stage information into pipelines at proc-macro expansion
-//! time, the reflection data needs to be attached to stage declaration via proc macro.
+//! At runtime, stages only need to be hydrated for building pipelines.  Actual loaded shader
+//! modules can be dropped as soon as the pipeline handle is ready, so the spec data used to load
+//! stages is a trait that can be attached to any ZST.  Pipelines still need to be able to specify
+//! the paths to these ZSTs (or themselves) so that the list of modules can be produced for hydrating
+//! a pipeline.
+//!
+//! Stage reflection data needed for later host-GPU agreement checks is attached via a second type
+//! that can be compiled away after checks evaluate.  Expansion time obtains the data and then emits
+//! them with predictable paths for combining with other const data from other types.
+//!
+//! Because we can attach stage specs to any ZST, they are a trait impl.  A pipeline needs only a
+//! path to the impl in order to use the stage.  This also means we can either declare stages as
+//! impls on some independent type or directly on the pipeline, and the pipeline just needs to able
+//! to say where to look.
+//!
+//! Because [`StageSpec`] is type-erased, we can use the constants on several implementations in a
+//! single list, enabling pipelines to list their stages without extra indirection.
 
 use std::ffi::CStr;
 
@@ -16,9 +30,46 @@ use ash::vk::{self, ShaderStageFlags as S};
 use crate::internal::*;
 use crate::resource::shader::ShaderModule;
 
-// Same as with PushConstants, a lot of thought was put into loading and what kinds of check logic
-// needs to exist only to discover that a lot could boil away into the macro code and the runtime
-// logic that hydrates the specs.
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A proxy for [`ash::vk::ShaderStageFlags`].  We would use those directly if they were a valid
+/// type parameter, but they are not a primitive type.
+// ROLL const machinery may later enable getting rid of this indirect mapping.
+pub trait StageSlot: sealed::Sealed {
+    const FLAGS: vk::ShaderStageFlags;
+}
+
+/// Map shader stage flags to marker types and seal.
+macro_rules! slot {
+    ($name:ident, $flag:expr) => {
+        pub struct $name;
+        impl sealed::Sealed for $name {}
+        impl StageSlot for $name {
+            const FLAGS: vk::ShaderStageFlags = $flag;
+        }
+    };
+}
+
+slot!(Vertex, S::VERTEX);
+slot!(TessellationControl, S::TESSELLATION_CONTROL);
+slot!(TessellationEvaluation, S::TESSELLATION_EVALUATION);
+slot!(Geometry, S::GEOMETRY);
+slot!(Fragment, S::FRAGMENT);
+slot!(Compute, S::COMPUTE);
+slot!(RayGen, S::RAYGEN_KHR);
+slot!(Miss, S::MISS_KHR);
+slot!(ClosestHit, S::CLOSEST_HIT_KHR);
+slot!(AnyHit, S::ANY_HIT_KHR);
+slot!(Intersection, S::INTERSECTION_KHR);
+slot!(Callable, S::CALLABLE_KHR);
+
+/// Attach a stage spec to any type, usually a pipeline or ZST used for naming.  `Slot` implements
+/// `StageSlot`.
+pub trait Stage<slot: StageSlot> {
+    const SPEC: StageSpec;
+}
 
 /// Declared data, what the user specified.  Sufficient to load a shader.
 pub struct StageSpec {
@@ -33,7 +84,7 @@ pub struct StageSpec {
 
 /// Introspected data.  Obtained by reflecting against the shader module.  Intended to be emitted by
 /// macro.
-pub trait StageReflection {
+pub trait StageReflection<Slot: StageSlot>: Stage<Slot> {
     /// Size in bytes of the push constants viewed by this shader.
     const CONSTANT_BLOCK_SIZE: usize;
     // NEXT keep pulling in the introspection data:

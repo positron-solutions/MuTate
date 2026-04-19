@@ -6,8 +6,10 @@
 //! ⚠️ This documentation is prospective and describes a design under active implementation.  These
 //! docs will migrate into the public API as things shake out.
 //!
-//! Pipelines tie together stages and a layout, forming something we can dispatch.  There are
-//! graphics and compute pipelines.  Compute is vastly simpler, so the types diverge a bit.
+//! Pipelines tie together stages and a layout, forming something we can dispatch.  They also bring
+//! reflection data for stages and type data for layouts into one place where we can emit const
+//! checks. There are graphics and compute pipelines.  Compute is vastly simpler, so the types
+//! diverge a bit.
 //!
 //! ## Specs
 //!
@@ -20,8 +22,9 @@
 //!
 //! ## Declaration
 //!
-//! Pipelines can be declared conveniently either by assembling the pieces declared elsewhere or by
-//! declaring them inline.
+//! Pipelines declaration is mainly done via macro.  The macros can either implement additional spec
+//! information onto the pipeline's type (inline declaration) or access them via some other type
+//! (independent declaration).
 //!
 //! ### Independent Declaration Style
 //!
@@ -72,13 +75,10 @@
 //! }
 //! ```
 //!
-//! Inline declarations will be placed into a private module so that their unique types do not
-//! pollute scope.
-//!
 //! ## Layouts
 //!
 //! We only support a single static descriptor table, defined in
-//! [`descriptors`](crate::context::descriptors).  For the rest, we can focus on push constants.
+//! [`descriptors`](crate::context::descriptors).  Other than that, we can focus on push constants.
 //! To enforce type consistency, there is one definitive type for the overall push constants layout.
 //! We can emit several views for this type, each a concrete push constant range that provides
 //! visibility for pipeline stages.
@@ -96,18 +96,21 @@ pub mod layout;
 pub mod push;
 pub mod stage;
 
+/// Describes how to build and type-check a graphics pipeline.
+pub trait GraphicsPipelineSpec {
+    type Push: push::PushConstants;
+    type LayoutSpec: layout::LayoutSpec<Push = Self::Push>;
+    // Stage associated types will be added when graphics pipeline implementation begins. Probably a
+    // list of type-erased specs will be sufficient for defining hydration.
+    const STAGES: &'static [stage::StageSpec];
+}
+
 /// Hydrated graphics pipeline ready to dispatch.
 pub struct GraphicsPipeline<S: GraphicsPipelineSpec> {
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
     _marker: PhantomData<S>,
     // XXX Extra fields for graphics things
-}
-
-/// Describes how to build and type-check a graphics pipeline.
-pub trait GraphicsPipelineSpec {
-    type Push: push::PushConstants;
-    const STAGES: &'static [stage::StageSpec];
 }
 
 impl<S> GraphicsPipeline<S>
@@ -126,11 +129,10 @@ where
 
 /// Describes how to build and type-check a compute pipeline.
 pub trait ComputePipelineSpec {
-    // No way in hell all of these fields stay put.  Just can't figure out the tension at this
-    // point.  Keep coding and let the problems drive 😈.
     type Push: push::PushConstants;
     type LayoutSpec: layout::LayoutSpec<Push = Self::Push>;
-    const STAGE: &'static stage::StageSpec;
+    /// The compute stage.  Slot is statically fixed to [`stage::Compute`].
+    type Stage: stage::Stage<stage::Compute>;
 }
 
 /// Hydrated compute pipeline ready to dispatch.  Retains a type-level connection with the spec to
@@ -144,16 +146,19 @@ struct ComputePipeline<S: ComputePipelineSpec> {
 impl<S: ComputePipelineSpec> ComputePipeline<S> {
     pub fn new(context: &DeviceContext) -> Result<Self, VulkanError> {
         let device = context.device();
+
         // Compute ranges only have one stage and only need one range.
         let layout = layout::Layout::<S::LayoutSpec>::new(context)?;
 
         // NOTE the shader module is still just half-baked fumbling in the dark at the shape of the
         // async loading code.  Not going to live long.
-        let shader = shader::ShaderModule::load(context, S::STAGE.name)?;
+        let stage_spec = <S::Stage as stage::Stage<stage::Compute>>::SPEC;
+        let shader = shader::ShaderModule::load(context, stage_spec.name)?;
+
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(*shader)
-            .name(S::STAGE.entry);
+            .name(stage_spec.entry);
 
         let pipeline_ci = vk::ComputePipelineCreateInfo::default()
             .stage(stage)
