@@ -211,14 +211,11 @@ pub mod prelude {
     pub use super::PushConstants;
 }
 
-/// Implemented on types that describe a fixed sub-128 byte set of push constants.
-pub trait PushConstants<D: DataLayout = Scalar>: GpuType<D> + Pod {}
-
-/// Push constant ranges, required by a layout, are typically declared on the `PushConstants` type
-/// declaration directly.  This trait enables obtaining that layout without naming it.
-pub trait DefaultLayout: PushConstants<Self::D> {
-    type D: DataLayout;
-    type DefaultLayout: LayoutSpec<Push = Self, D = Self::D>;
+/// Implemented on types that describe a fixed sub-128 byte set of push constants.  Bounds imply all
+/// PushConstants types can also provide a layout.
+pub trait PushConstants<D: DataLayout = Scalar>:
+    GpuType<D> + Pod + LayoutSpec<D = D, Push = Self>
+{
 }
 
 #[cfg(test)]

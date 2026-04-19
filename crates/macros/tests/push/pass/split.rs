@@ -21,7 +21,7 @@ fn main() {
     use ash::vk::ShaderStageFlags;
     use mutate_vulkan::pipeline::layout::LayoutSpec;
 
-    let ranges = <SplitPushLayout as LayoutSpec>::RANGES;
+    let ranges = <SplitPush as LayoutSpec>::RANGES;
 
     // Two distinct ranges, one per stage.
     assert_eq!(ranges.len(), 2);

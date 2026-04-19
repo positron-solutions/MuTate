@@ -15,5 +15,5 @@ struct SharedPush {
 
 fn main() {
     use mutate_vulkan::pipeline::layout::LayoutSpec;
-    assert_eq!(<SharedPushLayout as LayoutSpec>::RANGES.len(), 1);
+    assert_eq!(<SharedPush as LayoutSpec>::RANGES.len(), 1);
 }

@@ -227,22 +227,17 @@ pub(crate) fn derive_push(input: &syn::DeriveInput) -> syn::Result<TokenStream> 
     let merged = merge_ranges(coverage);
     let ranges: Vec<TokenStream> = merged.iter().map(|range| emit_range(name, range)).collect();
 
+    // XXX the default DataLayout, Scalar, might have drifted around when it should not.  No idea
+    // how we would specify a different layout here, but attempting to would probably shove the
+    // problem into the bright sunlight.
     Ok(quote! {
-        impl ::mutate_vulkan::pipeline::push::PushConstants<::mutate_vulkan::slang::Scalar>
-            for #name {}
+        impl ::mutate_vulkan::pipeline::push::PushConstants for #name {}
 
-        #vis struct #layout_name;
-
-        impl ::mutate_vulkan::pipeline::layout::LayoutSpec for #layout_name {
+        impl ::mutate_vulkan::pipeline::layout::LayoutSpec for #name
+        {
             type D    = ::mutate_vulkan::slang::Scalar;
-            type Push = #name;
-
+            type Push = Self;
             const RANGES: &'static [::ash::vk::PushConstantRange] = &[ #(#ranges),* ];
-        }
-
-        impl ::mutate_vulkan::pipeline::push::DefaultLayout for #name {
-            type D             = ::mutate_vulkan::slang::Scalar;
-            type DefaultLayout = #layout_name;
         }
     })
 }
