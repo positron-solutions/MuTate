@@ -47,12 +47,12 @@
 //!     frame_time: F32,
 //! }
 //!
-//! #[pipeline(Graphics)]
-//! struct ScenePipeline {
-//!     vert: LightingVert,
-//!     frag: LightingFrag,
-//!     push: ScenePush,
-//! }
+//! #[graphics_pipeline(
+//!     vert = LightingVert,
+//!     frag = LightingFrag,
+//!     push = ScenePush,
+//! )]
+//! struct ScenePipeline {}
 //! ```
 //!
 //! When sharing push constants or stages over several pipelines, using stages by name
@@ -62,7 +62,7 @@
 //! Use the bang macros `stage!` and `push!` to declare those types inline.
 //!
 //! ```ignore
-//! #[pipeline(Graphics,
+//! #[graphics_pipeline
 //!     vert = stage!("lighting/vertex"),
 //!     frag = stage!("lighting/fragment"),
 //!     push = push! {

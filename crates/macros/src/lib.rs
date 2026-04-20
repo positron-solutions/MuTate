@@ -18,11 +18,24 @@
 //!
 //! - [`Push`](crate::push::Push) - derive pipeline push constant layouts by annotating a struct.
 //!
+//! ## Pipeline Macros
 //!
-//! - [`Pipeline`] - combine declarations for several stages, a layout, and pipeline states into a
-//!   single test expression.
+//! Combine declarations for several stages, a layout, and pipeline states into a single
+//! self-contained expression.  Include components by name if they were attached to other types.
+//! Declare them inline, with optional names, if they should be used directly.
+//!
+//! - [`compute_pipeline`] - Compute pipelines are simple, consisting of a single stage and a layout
+//!   that usually only needs one push constant range.
+//!
+//! - [`graphics_pipeline`] - Graphics pipelines consist of several stages, a layout compatible with
+//!   them all, and required dynamic state.
+//!
+//! More pipeline macros may appear, especially to keep disjoint functionality (stage combination
+//! checks and relevant dynamic states) separate.  Ray tracing and alternative mesh shaders are some
+//! likely possibilities for further separation.
 
 mod force; // utilities for common assertions / ensures
+mod pipeline;
 mod push;
 mod slang;
 mod stage;
@@ -190,15 +203,51 @@ pub fn derive_push(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .into()
 }
 
-/// # `#[derive(Pipeline)]`
+/// # `#[compute_pipeline]`
 ///
-/// The pipeline macro can declare or include by name the component types, including stages, push
-/// constants, and other pipeline states.
+/// Compute pipelines are simple:
+///
+/// - one stage
+/// - a layout with push constants usually
+///
+/// The macro attaches the pipeline functionality to a type for reuse by name.
 ///
 /// ```ignore
-/// #[pipeline(Graphics,
+/// #[compute_pipeline
+///     // Single stage
+///     compute = stage!("indirect/compute"),
+///     // Simple layout with one range covering all bytes.
+///     push = push! {
+///         matrix_idx: UInt,
+///     }
+/// )]
+/// pub struct Compute;
+/// ```
+#[proc_macro_attribute]
+pub fn compute_pipeline(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let attr = proc_macro2::TokenStream::from(attr);
+    let item = proc_macro2::TokenStream::from(item);
+    pipeline::compute_pipeline(attr, item)
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+/// # `#[graphics_pipeline]`
+///
+/// Graphics pipelines are a bit more involved, usually combining several stages and requiring some
+/// dynamic states be configured.
+///
+/// ```ignore
+/// #[graphics_pipeline(
+///     // The attribute names decide the stage flags and default entry points for the shader programs.
 ///     vert = stage!("lighting/vertex"),
 ///     frag = stage!("lighting/fragment"),
+///
+///     // `PushConstant` types all have a layout.  Since our descriptor table is held static, the
+///     // push constants decide the layout.
 ///     push = push! {
 ///         #[visible(Vertex | Fragment)]
 ///         matrix_idx: UInt,
@@ -210,13 +259,13 @@ pub fn derive_push(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// pub struct ScenePipeline;
 /// ```
 #[proc_macro_attribute]
-pub fn pipeline(
+pub fn graphics_pipeline(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     let _attr = proc_macro2::TokenStream::from(attr);
     let _item = proc_macro2::TokenStream::from(item);
-    // pipeline::pipeline(attr, item)
+    // pipeline::graphics_pipeline(attr, item)
     //     .unwrap_or_else(|e| e.to_compile_error())
     //     .into()
     todo!()
