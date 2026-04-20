@@ -102,8 +102,9 @@ pub fn derive_gpu_type(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
 
 /// # `#[derive(Push)]`
 ///
-/// Derives [`PushConstants`], a companion [`LayoutSpec`], and [`HasDefaultLayout`] for a struct
-/// that already implements [`GpuType<Scalar>`].
+/// Derives [`PushConstants`] and a companion [`LayoutSpec`] for a struct that already implements
+/// [`GpuType<Scalar>`].
+///
 /// ## Usage
 ///
 /// ```ignore
@@ -118,25 +119,20 @@ pub fn derive_gpu_type(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
 /// ## What Is Emitted
 ///
 /// ```ignore
-/// impl PushConstants<Scalar> for MyPush {}
+/// impl PushConstants for MyPush {}
 ///
-/// pub struct MyPushLayout;
-///
-/// impl LayoutSpec for MyPushLayout {
+/// impl LayoutSpec for MyPush {
 ///     type D    = Scalar;
 ///     type Push = MyPush;
 ///     const RANGES: &'static [vk::PushConstantRange] = &[
 ///         vk::PushConstantRange {
-///             stage_flags: vk::ShaderStageFlags::COMPUTE,
-///             offset: 0,
-///             size:   <MyPush as Pack<Scalar>>::PACKED_SIZE as u32,
+///             stage_flags: <RayGen as StageSlot>::FLAGS | <Closest as StageSlot>::FLAGS
+///                        | <Intersection as StageSlot>::FLAGS,
+///             offset: field_start(&<MyPush as GpuType<Scalar>>::FIELD_NODE, 0, Scalar::DATA_LAYOUT) as u32,
+///             size:   (field_end(…, N, …) - field_start(…, 0, …)) as u32,
 ///         },
+///         // …one entry per distinct (first, last) span after merging…
 ///     ];
-/// }
-///
-/// impl DefaultLayout for MyPush {
-///     type D             = Scalar;
-///     type DefaultLayout = MyPushLayout;
 /// }
 /// ```
 ///
