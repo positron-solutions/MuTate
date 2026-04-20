@@ -9,7 +9,7 @@ use mutate_vulkan::slang::UInt;
 #[derive(GpuType, Push)]
 #[repr(C)]
 struct SharedPush {
-    #[visible(VERTEX | FRAGMENT)]
+    #[visible(Vertex | Fragment)]
     matrix_idx: UInt,
 }
 

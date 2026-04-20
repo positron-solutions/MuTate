@@ -39,9 +39,9 @@
 //!
 //! #[push]
 //! struct ScenePush {
-//!     #[visible(VERTEX | FRAGMENT)]
+//!     #[visible(Vertex | Fragment)]
 //!     matrix_idx: UInt32,
-//!     #[visible(FRAGMENT)]
+//!     #[visible(Fragment)]
 //!     light_idx:  UInt32,
 //!     frame_time: F32,
 //! }
@@ -61,18 +61,18 @@
 //! Use the bang macros `stage!` and `push!` to declare those types inline.
 //!
 //! ```ignore
-//! #[pipeline(Graphics)]
-//! struct ScenePipeline {
-//!     vert: stage!(Vertex, "lighting/vertex"),
-//!     frag: stage!(Fragment, "lighting/fragment"),
-//!     push: push! {
-//!         #[visible(VERTEX | FRAGMENT)]
-//!         matrix_idx: UInt32,
-//!         #[visible(FRAGMENT)]
-//!         light_idx:  UInt32,
-//!         frame_time: F32,
-//!     },
-//! }
+//! #[pipeline(Graphics,
+//!     vert = stage!("lighting/vertex"),
+//!     frag = stage!("lighting/fragment"),
+//!     push = push! {
+//!         #[visible(Vertex | Fragment)]
+//!         matrix_idx: UInt,
+//!         #[visible(Fragment)]
+//!         light_idx:  UInt,
+//!         frame_time: Float,
+//!     }
+//! )]
+//! pub struct ScenePipeline;
 //! ```
 //!
 //! ## Layouts

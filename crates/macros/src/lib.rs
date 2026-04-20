@@ -199,20 +199,28 @@ pub fn derive_push(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// constants, and other pipeline states.
 ///
 /// ```ignore
-/// #[pipeline(Graphics)]
-/// struct ScenePipeline {
-///     vert: stage!(Vertex, "lighting/vertex"),
-///     frag: stage!(Fragment, "lighting/fragment"),
-///     push: push! {
+/// #[pipeline(Graphics,
+///     vert = stage!("lighting/vertex"),
+///     frag = stage!("lighting/fragment"),
+///     push = push! {
 ///         #[visible(Vertex | Fragment)]
-///         matrix_idx: UInt32,
+///         matrix_idx: UInt,
 ///         #[visible(Fragment)]
-///         light_idx: UInt32,
-///         frame_time: F32,
-///     },
-/// }
+///         light_idx:  UInt,
+///         frame_time: Float,
+///     }
+/// )]
+/// pub struct ScenePipeline;
 /// ```
-#[proc_macro_derive(Pipeline)]
-pub fn derive_pipeline(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+#[proc_macro_attribute]
+pub fn pipeline(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let _attr = proc_macro2::TokenStream::from(attr);
+    let _item = proc_macro2::TokenStream::from(item);
+    // pipeline::pipeline(attr, item)
+    //     .unwrap_or_else(|e| e.to_compile_error())
+    //     .into()
     todo!()
 }

@@ -11,9 +11,9 @@ use mutate_vulkan::slang::{Float, UInt};
 #[derive(GpuType, Push)]
 #[repr(C)]
 struct SplitPush {
-    #[visible(VERTEX)]
+    #[visible(Vertex)]
     vertex_only: UInt,
-    #[visible(FRAGMENT)]
+    #[visible(Fragment)]
     fragment_only: Float,
 }
 
@@ -32,12 +32,12 @@ fn main() {
         ShaderStageFlags::empty(),
     );
 
-    // VERTEX range: UInt at scalar offset 0, size 4.
+    // Vertex range: UInt at scalar offset 0, size 4.
     assert_eq!(ranges[0].stage_flags, ShaderStageFlags::VERTEX);
     assert_eq!(ranges[0].offset, 0);
     assert_eq!(ranges[0].size, 4);
 
-    // FRAGMENT range: Float at scalar offset 4, size 4.
+    // Fragment range: Float at scalar offset 4, size 4.
     // This is the non-zero offset case the old hardcoded-zero emit could not produce.
     assert_eq!(ranges[1].stage_flags, ShaderStageFlags::FRAGMENT);
     assert_eq!(ranges[1].offset, 4);

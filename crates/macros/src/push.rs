@@ -138,12 +138,14 @@ fn merge_ranges(coverage: Vec<StageCoverage>) -> Vec<MergedRange> {
 
 fn emit_range(struct_name: &syn::Ident, range: &MergedRange) -> TokenStream {
     let bits_expr = range.stages.iter().fold(
-        quote! { 0u32 },
-        |acc, s| quote! { #acc | ::ash::vk::ShaderStageFlags::#s.as_raw() },
+        quote! { ::ash::vk::ShaderStageFlags::empty() },
+        |acc, s| quote! {
+            ::ash::vk::ShaderStageFlags::from_raw(
+                #acc.as_raw() | <::mutate_vulkan::pipeline::stage::#s as ::mutate_vulkan::pipeline::stage::StageSlot>::FLAGS.as_raw()
+            )
+        },
     );
-    let stage_flags = quote! {
-        ::ash::vk::ShaderStageFlags::from_raw(#bits_expr)
-    };
+    let stage_flags = bits_expr;
 
     let first = range.first;
     let last = range.last;

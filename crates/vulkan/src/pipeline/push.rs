@@ -20,7 +20,7 @@
 //! #[derive(Push)]
 //! #[repr(C)]
 //! struct MyPush {
-//!     #[visible(ALL)]
+//!     // unmarked fields are implicitly vk::ShaderStageFlags::ALL
 //!     shared: UInt32,
 //!     #[visible(RAYGEN)]
 //!     ray_only: UInt32,
