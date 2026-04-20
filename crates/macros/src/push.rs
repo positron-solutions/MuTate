@@ -66,7 +66,7 @@ struct FieldInfo<'f> {
 
 /// Tracks the first and last field index (in declaration order) visible to one stage.
 struct StageCoverage {
-    /// The stage identifier as written, e.g. `RAYGEN`, `CLOSEST`.
+    /// The stage identifier as written, `RayGen`, `Closest`.
     stage: syn::Ident,
     first: usize,
     last: usize,

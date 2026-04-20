@@ -22,11 +22,11 @@
 //! struct MyPush {
 //!     // unmarked fields are implicitly vk::ShaderStageFlags::ALL
 //!     shared: UInt32,
-//!     #[visible(RAYGEN)]
+//!     #[visible(RayGen)]
 //!     ray_only: UInt32,
-//!     #[visible(CLOSEST)]
+//!     #[visible(Closest)]
 //!     hit_only: UInt32,
-//!     #[visible(CLOSEST | INTERSECTION)]
+//!     #[visible(Closest | Intersection)]
 //!     hit_and_intersect: UInt32,
 //! }
 //!```

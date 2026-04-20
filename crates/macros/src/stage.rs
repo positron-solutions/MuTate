@@ -37,8 +37,10 @@ impl Parse for ShaderAttr {
     }
 }
 
-/// Express a shader stage as a concrete type.  Implements witness traits that enable downstream
-/// type checking.  Accepts shader file name (without extension), stage flags, and entry point.
+// XXX Move docs into lib?
+/// Attach knowledge of a shader stage to a concrete type.  Implements witness traits that enable
+/// downstream type checking.  Accepts shader file name (without extension), stage flags, and entry
+/// point.
 pub(crate) fn stage(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let input = syn::parse2::<syn::DeriveInput>(item)?;
     let type_name = &input.ident;

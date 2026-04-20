@@ -37,7 +37,8 @@
 //! #[stage(Fragment, "lighting/fragment")]
 //! struct LightingFrag;
 //!
-//! #[push]
+//! #[derive(Push, GpuType)]
+//! #[repr(C)]
 //! struct ScenePush {
 //!     #[visible(Vertex | Fragment)]
 //!     matrix_idx: UInt32,

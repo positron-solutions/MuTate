@@ -10,13 +10,14 @@
 //! place.  These macros emit that machinery from simple struct declarations with a minimum of extra
 //! annotation.
 //!
-//! - [`Stage`](crate::stage::Stage) - declare pipeline stages, individual shader programs for
+//! - [`stage`](crate::stage::stage) - declare pipeline stages, individual shader programs for
 //!   assembly into pipelines.
 //!
-//! - [`GpuType`](crate::slang::GpuType) - enable uploading or reading a structure from GPU memory
-//!   for a given `DataLayout`.
+//! - [`GpuType`](crate::slang::GpuType) - derive the capability to upload or read a structure from
+//!   GPU memory for a given `DataLayout`.
 //!
-//! - [`Push`](crate::push::Push) - declare pipeline push constant layouts by annotating a struct.
+//! - [`Push`](crate::push::Push) - derive pipeline push constant layouts by annotating a struct.
+//!
 //!
 //! - [`Pipeline`] - combine declarations for several stages, a layout, and pipeline states into a
 //!   single test expression.
@@ -147,13 +148,13 @@ pub fn derive_gpu_type(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
 /// #[derive(Push)]
 /// #[repr(C)]
 /// struct MyPush {
-///     #[visible(ALL)]
+///     // implicit ALL flags
 ///     shared: UInt32,
-///     #[visible(RAYGEN)]
+///     #[visible(RayGen)]
 ///     ray_only: UInt32,
-///     #[visible(CLOSEST)]
+///     #[visible(Closest)]
 ///     hit_only: UInt32,
-///     #[visible(CLOSEST | INTERSECTION)]
+///     #[visible(Closest | Intersection)]
 ///     hit_and_intersect: UInt32,
 /// }
 ///```
