@@ -1,6 +1,6 @@
 error: Missing required shader "test/does_not_exist", tried:
          $DIR/assets/shaders/test/does_not_exist.spv
- --> tests/stage/fail/shader_missing.rs:7:1
+ --> tests/stage/fail/shader_missing.rs:6:9
   |
-7 | struct BadStage {}
-  | ^^^^^^^^^^^^^^^^^^
+6 | #[stage("test/does_not_exist", COMPUTE, c"main")]
+  |         ^^^^^^^^^^^^^^^^^^^^^
