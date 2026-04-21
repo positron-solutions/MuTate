@@ -99,6 +99,8 @@ pub mod stage;
 
 pub mod prelude {
     pub use super::layout::LayoutSpec;
+    pub use super::ComputePipeline;
+    pub use super::ComputePipelineSpec;
 }
 
 /// Describes how to build and type-check a graphics pipeline.
@@ -142,7 +144,7 @@ pub trait ComputePipelineSpec {
 
 /// Hydrated compute pipeline ready to dispatch.  Retains a type-level connection with the spec to
 /// carry forward layout and stage information.
-struct ComputePipeline<S: ComputePipelineSpec> {
+pub struct ComputePipeline<S: ComputePipelineSpec> {
     pipeline: vk::Pipeline,
     layout: layout::Layout<S::LayoutSpec>,
     _marker: PhantomData<S>,
@@ -198,5 +200,13 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
             device.cmd_dispatch(cb, x, y, z);
         }
+    }
+
+    pub fn destroy(self, device_context: &DeviceContext) {
+        let device = device_context.device();
+        unsafe {
+            device.destroy_pipeline(self.pipeline, None);
+        }
+        self.layout.destroy(device_context);
     }
 }
