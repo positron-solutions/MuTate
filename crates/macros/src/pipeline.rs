@@ -16,6 +16,43 @@ use syn::{
     Ident, Token,
 };
 
+use crate::stage::{emit_stage_impls, StageAttr};
+
+// NEXT likely this gets more general for other inline impls.
+enum ComputeValue {
+    External(Ident),
+    Inline(StageAttr),
+}
+
+impl Parse for ComputeValue {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.peek(Ident) && input.peek2(Token![!]) {
+            let macro_name: Ident = input.parse()?;
+            if macro_name != "stage" {
+                return Err(syn::Error::new(
+                    macro_name.span(),
+                    format!("expected `stage`, found `{macro_name}`"),
+                ));
+            }
+            input.parse::<Token![!]>()?;
+            let inner;
+            let lookahead = input.lookahead1();
+            if lookahead.peek(syn::token::Paren) {
+                syn::parenthesized!(inner in input);
+            } else if lookahead.peek(syn::token::Bracket) {
+                syn::bracketed!(inner in input);
+            } else if lookahead.peek(syn::token::Brace) {
+                syn::braced!(inner in input);
+            } else {
+                return Err(lookahead.error());
+            }
+            Ok(ComputeValue::Inline(inner.parse()?))
+        } else {
+            Ok(ComputeValue::External(input.parse()?))
+        }
+    }
+}
+
 /// Parsed fields from the attribute list:
 ///
 /// ```text
@@ -24,54 +61,43 @@ use syn::{
 ///
 /// Both fields are required; order is flexible.
 struct ComputePipelineAttr {
-    compute: Ident,
+    compute: ComputeValue,
     push: Ident,
-}
-
-struct KvIdent {
-    key: Ident,
-    value: Ident,
-}
-
-impl Parse for KvIdent {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let key: Ident = input.parse()?;
-        input.parse::<Token![=]>()?;
-        let value: Ident = input.parse()?;
-        Ok(KvIdent { key, value })
-    }
 }
 
 impl Parse for ComputePipelineAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut compute: Option<Ident> = None;
+        let mut compute: Option<ComputeValue> = None;
         let mut push: Option<Ident> = None;
 
-        // Accept the two kv pairs in any order, separated by commas.
         loop {
             if input.is_empty() {
                 break;
             }
-            let kv: KvIdent = input.parse()?;
-            match kv.key.to_string().as_str() {
+            let key: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+
+            match key.to_string().as_str() {
                 "compute" => {
-                    if compute.replace(kv.value).is_some() {
-                        return Err(syn::Error::new(kv.key.span(), "duplicate `compute` field"));
+                    let value: ComputeValue = input.parse()?;
+                    if compute.replace(value).is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate `compute` field"));
                     }
                 }
                 "push" => {
-                    if push.replace(kv.value).is_some() {
-                        return Err(syn::Error::new(kv.key.span(), "duplicate `push` field"));
+                    let value: Ident = input.parse()?;
+                    if push.replace(value).is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate `push` field"));
                     }
                 }
                 other => {
                     return Err(syn::Error::new(
-                        kv.key.span(),
+                        key.span(),
                         format!("unknown field `{other}`, expected `compute` or `push`"),
                     ));
                 }
             }
-            // Consume optional trailing / separating comma.
+
             if input.peek(Token![,]) {
                 input.parse::<Token![,]>()?;
             }
@@ -93,12 +119,24 @@ pub(crate) fn compute_pipeline(attr: TokenStream, item: TokenStream) -> syn::Res
     let type_name = &input.ident;
 
     let ComputePipelineAttr {
-        compute: stage_type,
+        compute,
         push: push_type,
     } = syn::parse2::<ComputePipelineAttr>(attr)?;
 
+    let (stage_type, inline_stage_items) = match compute {
+        ComputeValue::External(ident) => (ident, quote::quote! {}),
+        ComputeValue::Inline(stage_attr) => {
+            // Emit Stage<Slot> and StageReflection<Slot> directly onto the
+            // pipeline type.  No synthetic type needed.
+            let stage_impls = emit_stage_impls(type_name, stage_attr)?;
+            (type_name.clone(), stage_impls)
+        }
+    };
+
     Ok(quote::quote! {
         #input
+
+        #inline_stage_items
 
         impl ::mutate_vulkan::pipeline::ComputePipelineSpec for #type_name {
             type Push       = #push_type;
