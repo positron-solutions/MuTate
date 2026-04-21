@@ -5,7 +5,7 @@
 // A single field, no #[visible], produces one all-stages range.
 
 use mutate_macros::*;
-use mutate_vulkan::slang::UInt;
+use mutate_vulkan::prelude::*;
 
 #[derive(GpuType, Push)]
 #[repr(C)]
@@ -13,4 +13,6 @@ struct MinimalPush {
     dispatch_id: UInt,
 }
 
-fn main() {}
+fn main() {
+    assert_eq!(<MinimalPush as LayoutSpec>::RANGES.len(), 1);
+}

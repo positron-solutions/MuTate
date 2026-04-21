@@ -97,6 +97,10 @@ pub mod layout;
 pub mod push;
 pub mod stage;
 
+pub mod prelude {
+    pub use super::layout::LayoutSpec;
+}
+
 /// Describes how to build and type-check a graphics pipeline.
 pub trait GraphicsPipelineSpec {
     type Push: push::PushConstants;

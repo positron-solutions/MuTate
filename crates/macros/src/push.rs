@@ -225,9 +225,70 @@ pub(crate) fn derive_push(input: &syn::DeriveInput) -> syn::Result<TokenStream> 
         .collect();
     let field_infos = field_infos?;
 
-    let coverage = collect_stage_coverage(&field_infos);
-    let merged = merge_ranges(coverage);
-    let ranges: Vec<TokenStream> = merged.iter().map(|range| emit_range(name, range)).collect();
+    // Classify configuration — the two valid forms are structurally distinct.
+    let all_unannotated = field_infos.iter().all(|f| f.visible.is_none());
+    let all_annotated = field_infos.iter().all(|f| f.visible.is_some());
+
+    if !all_unannotated && !all_annotated {
+        // Find the first offending field for a good span.
+        let first_bare = field_infos
+            .iter()
+            .find(|f| f.visible.is_none())
+            .map(|f| f.field.span())
+            .unwrap();
+        return Err(syn::Error::new(
+            first_bare,
+            "mixed #[visible] annotations: either annotate every field \
+             (disjoint per-stage ranges) or annotate none (one ALL range). \
+             Unannotated fields in a mixed struct would require ALL, which \
+             cannot coexist with any other range per VUID-00292.",
+        ));
+    }
+
+    let ranges: Vec<TokenStream> = if field_infos.is_empty() {
+        vec![] // zero-range layout — perfectly legal, nothing to compute
+    } else if all_unannotated {
+        // Single ALL range covering the entire struct.
+        let gpu_ty = quote! {
+            <#name as ::mutate_vulkan::slang::GpuType<::mutate_vulkan::slang::Scalar>>
+        };
+        let n = field_infos.len();
+        vec![quote! {
+            ::ash::vk::PushConstantRange {
+                stage_flags: ::ash::vk::ShaderStageFlags::ALL,
+                offset: 0,
+                size: ::mutate_vulkan::slang::field_end(
+                    &#gpu_ty::FIELD_NODE,
+                    #n - 1,
+                    ::mutate_vulkan::slang::Scalar::DATA_LAYOUT,
+                ) as u32,
+            }
+        }]
+    } else {
+        // Fully annotated path — existing pipeline.
+        let coverage = collect_stage_coverage(&field_infos);
+        let merged = merge_ranges(coverage);
+
+        // VUID-00292: each stage bit must appear in exactly one range.
+        let mut seen: Vec<String> = Vec::new();
+        for m in &merged {
+            for stage in &m.stages {
+                let key = stage.to_string();
+                if seen.contains(&key) {
+                    return Err(syn::Error::new(
+                        stage.span(),
+                        format!(
+                            "stage `{key}` appears in more than one push constant range \
+                             (VUID-00292): each stage flag bit may be set in at most one range"
+                        ),
+                    ));
+                }
+                seen.push(key);
+            }
+        }
+
+        merged.iter().map(|r| emit_range(name, r)).collect()
+    };
 
     // XXX the default DataLayout, Scalar, might have drifted around when it should not.  No idea
     // how we would specify a different layout here, but attempting to would probably shove the

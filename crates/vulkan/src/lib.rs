@@ -129,6 +129,7 @@ pub mod prelude {
 
     pub use crate::descriptor_newtype;
     pub use crate::device_address_newtype;
+    pub use crate::pipeline::prelude::*;
     pub use crate::slang::prelude::*;
     pub use crate::slang_newtype;
 }

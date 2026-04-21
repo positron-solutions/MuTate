@@ -14,6 +14,7 @@ pub struct ComputeStage {}
 #[derive(GpuType, Push)]
 #[repr(C)]
 pub struct ComputeConstants {
+    #[visible(Compute)]
     foo: UInt,
 }
 
@@ -26,4 +27,31 @@ pub struct ComputePipeline;
 fn main() {
     use ash::vk::ShaderStageFlags;
     use mutate_vulkan::pipeline::layout::LayoutSpec;
+    use mutate_vulkan::pipeline::ComputePipelineSpec;
+
+    fn assert_push<S: ComputePipelineSpec<Push = ComputeConstants>>() {}
+    fn assert_stage<S: ComputePipelineSpec<Stage = ComputeStage>>() {}
+    assert_push::<ComputePipeline>();
+    assert_stage::<ComputePipeline>();
+
+    let ranges = <ComputeConstants as LayoutSpec>::RANGES;
+    assert_eq!(
+        ranges.len(),
+        1,
+        "expected exactly one push constant range for ComputeConstants",
+    );
+    assert_eq!(
+        ranges[0].stage_flags,
+        ShaderStageFlags::COMPUTE,
+        "the single range must be visible to COMPUTE only",
+    );
+    assert_eq!(
+        ranges[0].offset, 0,
+        "single-field push constant range must start at offset 0",
+    );
+    assert_eq!(
+        ranges[0].size,
+        std::mem::size_of::<u32>() as u32,
+        "UInt is 4 bytes; range size must match",
+    );
 }
