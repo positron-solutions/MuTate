@@ -9,12 +9,39 @@
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use syn::{spanned::Spanned, Data, Fields};
+use syn::{
+    parse::{Parse, ParseStream},
+    punctuated::Punctuated,
+    spanned::Spanned,
+    Data, Fields, Token,
+};
 
 // DEBT Scalar block.  Hardcoded DataLayouts.  How would the user switch to 430 easily?  Suppose we
 // could indirect defaults through an alias and then feature-gate the alias.
 // XXX Recognize stage shorthand identifiers.  Several non-ambiguous constants and abbreviations are
 // completely readable and the user can't complete names like
+
+/// The common interface for both direct push constant declaration and inline declaration inside
+/// pipeline declarations.  Either parsed content of a `push!(Name { field: Type, ... })`
+/// invocation, or equivalently the data extracted from a `#[derive(Push)]` DeriveInput.
+pub(crate) struct PushAttr {
+    pub name: syn::Ident,
+    pub fields: Vec<syn::Field>,
+}
+
+impl Parse for PushAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        let inner;
+        syn::braced!(inner in input);
+        let fields = Punctuated::<syn::Field, Token![,]>::parse_terminated_with(&inner, |p| {
+            syn::Field::parse_named(p)
+        })?
+        .into_iter()
+        .collect();
+        Ok(PushAttr { name, fields })
+    }
+}
 
 /// Track spans to pinpoint issues after checks.
 #[derive(Clone)]
@@ -137,15 +164,19 @@ fn merge_ranges(coverage: Vec<StageCoverage>) -> Vec<MergedRange> {
 }
 
 fn emit_range(struct_name: &syn::Ident, range: &MergedRange) -> TokenStream {
-    let bits_expr = range.stages.iter().fold(
-        quote! { ::ash::vk::ShaderStageFlags::empty() },
-        |acc, s| quote! {
-            ::ash::vk::ShaderStageFlags::from_raw(
-                #acc.as_raw() | <::mutate_vulkan::pipeline::stage::#s as ::mutate_vulkan::pipeline::stage::StageSlot>::FLAGS.as_raw()
-            )
-        },
-    );
-    let stage_flags = bits_expr;
+    let bits_expr =
+        range
+            .stages
+            .iter()
+            .fold(quote! { ::ash::vk::ShaderStageFlags::empty() }, |acc, s| {
+                quote! {
+                    ::ash::vk::ShaderStageFlags::from_raw(
+                        #acc.as_raw()
+                            | <::mutate_vulkan::pipeline::stage::#s
+                               as ::mutate_vulkan::pipeline::stage::StageSlot>::FLAGS.as_raw()
+                    )
+                }
+            });
 
     let first = range.first;
     let last = range.last;
@@ -154,9 +185,6 @@ fn emit_range(struct_name: &syn::Ident, range: &MergedRange) -> TokenStream {
         <#struct_name as ::mutate_vulkan::slang::GpuType<::mutate_vulkan::slang::Scalar>>
     };
 
-    // offset = byte start of the first field in the range
-    // size   = byte end of the last field minus that offset
-    // Both are evaluated entirely at compile time via const fn.
     let offset_expr = quote! {
         ::mutate_vulkan::slang::field_start(
             &#gpu_ty::FIELD_NODE,
@@ -178,45 +206,29 @@ fn emit_range(struct_name: &syn::Ident, range: &MergedRange) -> TokenStream {
 
     quote! {
         ::ash::vk::PushConstantRange {
-            stage_flags: #stage_flags,
+            stage_flags: #bits_expr,
             offset:      #offset_expr,
             size:        #size_expr,
         }
     }
 }
 
-pub(crate) fn derive_push(input: &syn::DeriveInput) -> syn::Result<TokenStream> {
-    let vis = &input.vis;
-
-    // Named-field struct only.
-    let named_fields = match &input.data {
-        Data::Struct(s) => match &s.fields {
-            Fields::Named(f) => &f.named,
-            _ => {
-                return Err(syn::Error::new_spanned(
-                    &input.ident,
-                    "#[derive(Push)] requires a struct with named fields",
-                ))
-            }
-        },
-        _ => {
-            return Err(syn::Error::new_spanned(
-                &input.ident,
-                "#[derive(Push)] can only be applied to structs",
-            ))
-        }
-    };
-
-    //
-    crate::force::assert_repr_c(&input.attrs, input.ident.span())?;
-
-    let name = &input.ident;
-    let layout_name = quote::format_ident!("{name}Layout");
-
-    // Walk fields and map field stage flags into ranges.  Legal range declaration for pipelines
-    // requires that no two ranges share the same flag at the same byte!
-    // XXX verify behavior
-    let field_infos: syn::Result<Vec<FieldInfo<'_>>> = named_fields
+/// Emit the struct definition and all trait impls for a push constants type.
+///
+/// Called from both [`derive_push`] (where the struct already exists in user
+/// code and must **not** be re-emitted) and [`emit_push_inline`] (where the
+/// struct is being synthesised from a `push!(Name { ... })` invocation inside
+/// a pipeline macro and must be emitted).
+///
+/// `emit_struct` controls whether the `struct` definition itself is part of
+/// the output — the derive path sets it to `false`; the inline path sets it
+/// to `true`.
+fn emit_push_impls(
+    name: &syn::Ident,
+    fields: &[syn::Field],
+    emit_struct: bool,
+) -> syn::Result<TokenStream> {
+    let field_infos: syn::Result<Vec<FieldInfo<'_>>> = fields
         .iter()
         .map(|f| {
             let visible = parse_visible(&f.attrs)?;
@@ -225,12 +237,10 @@ pub(crate) fn derive_push(input: &syn::DeriveInput) -> syn::Result<TokenStream> 
         .collect();
     let field_infos = field_infos?;
 
-    // Classify configuration — the two valid forms are structurally distinct.
     let all_unannotated = field_infos.iter().all(|f| f.visible.is_none());
     let all_annotated = field_infos.iter().all(|f| f.visible.is_some());
 
     if !all_unannotated && !all_annotated {
-        // Find the first offending field for a good span.
         let first_bare = field_infos
             .iter()
             .find(|f| f.visible.is_none())
@@ -245,13 +255,13 @@ pub(crate) fn derive_push(input: &syn::DeriveInput) -> syn::Result<TokenStream> 
         ));
     }
 
+    let gpu_ty = quote! {
+        <#name as ::mutate_vulkan::slang::GpuType<::mutate_vulkan::slang::Scalar>>
+    };
+
     let ranges: Vec<TokenStream> = if field_infos.is_empty() {
         vec![] // zero-range layout — perfectly legal, nothing to compute
     } else if all_unannotated {
-        // Single ALL range covering the entire struct.
-        let gpu_ty = quote! {
-            <#name as ::mutate_vulkan::slang::GpuType<::mutate_vulkan::slang::Scalar>>
-        };
         let n = field_infos.len();
         vec![quote! {
             ::ash::vk::PushConstantRange {
@@ -265,11 +275,9 @@ pub(crate) fn derive_push(input: &syn::DeriveInput) -> syn::Result<TokenStream> 
             }
         }]
     } else {
-        // Fully annotated path — existing pipeline.
         let coverage = collect_stage_coverage(&field_infos);
         let merged = merge_ranges(coverage);
 
-        // VUID-00292: each stage bit must appear in exactly one range.
         let mut seen: Vec<String> = Vec::new();
         for m in &merged {
             for stage in &m.stages {
@@ -293,14 +301,75 @@ pub(crate) fn derive_push(input: &syn::DeriveInput) -> syn::Result<TokenStream> 
     // XXX the default DataLayout, Scalar, might have drifted around when it should not.  No idea
     // how we would specify a different layout here, but attempting to would probably shove the
     // problem into the bright sunlight.
+    // Optionally emit the struct itself (inline path only).
+    let struct_def = if emit_struct {
+        let struct_fields: Vec<syn::Field> = fields
+            .iter()
+            .map(|f| {
+                let mut f = f.clone();
+                f.attrs.retain(|a| !a.path().is_ident("visible"));
+                f
+            })
+            .collect();
+
+        quote! {
+            #[derive(::mutate_macros::GpuType)]
+            #[repr(C)]
+            pub struct #name {
+                #(#struct_fields),*
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     Ok(quote! {
+        #struct_def
+
         impl ::mutate_vulkan::pipeline::push::PushConstants for #name {}
 
-        impl ::mutate_vulkan::pipeline::layout::LayoutSpec for #name
-        {
+        impl ::mutate_vulkan::pipeline::layout::LayoutSpec for #name {
             type D    = ::mutate_vulkan::slang::Scalar;
             type Push = Self;
             const RANGES: &'static [::ash::vk::PushConstantRange] = &[ #(#ranges),* ];
         }
     })
+}
+
+/// Called by `#[derive(Push)]`.  The struct already exists; emit impls only.
+pub(crate) fn derive_push(input: &syn::DeriveInput) -> syn::Result<TokenStream> {
+    crate::force::assert_repr_c(&input.attrs, input.ident.span())?;
+
+    let named_fields = match &input.data {
+        Data::Struct(s) => match &s.fields {
+            Fields::Named(f) => &f.named,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &input.ident,
+                    "#[derive(Push)] requires a struct with named fields",
+                ))
+            }
+        },
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &input.ident,
+                "#[derive(Push)] can only be applied to structs",
+            ))
+        }
+    };
+
+    let fields: Vec<syn::Field> = named_fields.iter().cloned().collect();
+    emit_push_impls(&input.ident, &fields, /* emit_struct = */ false)
+}
+
+/// Called directly from pipeline macros that have already parsed a `PushAttr`.
+/// Emits the struct definition plus all trait impls without a re-parse round-trip.
+pub(crate) fn emit_push_from_attr(attr: PushAttr) -> syn::Result<TokenStream> {
+    emit_push_impls(&attr.name, &attr.fields, /* emit_struct = */ true)
+}
+
+/// Called by `push!(Name { ... })` at the top level.
+pub(crate) fn emit_push_inline(input: TokenStream) -> syn::Result<TokenStream> {
+    let attr = syn::parse2::<PushAttr>(input)?;
+    emit_push_from_attr(attr)
 }

@@ -29,4 +29,4 @@ macro_rules! trybuild_fail {
 // basic smoke tests
 trybuild_pass!(independently_declared);
 trybuild_pass!(with_inline_stage);
-// trybuild_pass!(with_inline_constants);
+trybuild_pass!(with_inline_push);

@@ -16,7 +16,43 @@ use syn::{
     Ident, Token,
 };
 
+use crate::push::{emit_push_from_attr, PushAttr};
 use crate::stage::{emit_stage_impls, StageAttr};
+
+enum PushValue {
+    External(Ident),
+    Inline(PushAttr),
+}
+
+impl Parse for PushValue {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.peek(Ident) && input.peek2(Token![!]) {
+            let macro_name: Ident = input.parse()?;
+            if macro_name != "push" {
+                return Err(syn::Error::new(
+                    macro_name.span(),
+                    format!("expected `push`, found `{macro_name}`"),
+                ));
+            }
+            input.parse::<Token![!]>()?;
+            let inner;
+            // Accept push!(...), push![...], or push!{...}
+            let lookahead = input.lookahead1();
+            if lookahead.peek(syn::token::Paren) {
+                syn::parenthesized!(inner in input);
+            } else if lookahead.peek(syn::token::Bracket) {
+                syn::bracketed!(inner in input);
+            } else if lookahead.peek(syn::token::Brace) {
+                syn::braced!(inner in input);
+            } else {
+                return Err(lookahead.error());
+            }
+            Ok(PushValue::Inline(inner.parse()?))
+        } else {
+            Ok(PushValue::External(input.parse()?))
+        }
+    }
+}
 
 // NEXT likely this gets more general for other inline impls.
 enum ComputeValue {
@@ -62,13 +98,13 @@ impl Parse for ComputeValue {
 /// Both fields are required; order is flexible.
 struct ComputePipelineAttr {
     compute: ComputeValue,
-    push: Ident,
+    push: PushValue,
 }
 
 impl Parse for ComputePipelineAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut compute: Option<ComputeValue> = None;
-        let mut push: Option<Ident> = None;
+        let mut push: Option<PushValue> = None;
 
         loop {
             if input.is_empty() {
@@ -85,7 +121,7 @@ impl Parse for ComputePipelineAttr {
                     }
                 }
                 "push" => {
-                    let value: Ident = input.parse()?;
+                    let value: PushValue = input.parse()?; // was: Ident
                     if push.replace(value).is_some() {
                         return Err(syn::Error::new(key.span(), "duplicate `push` field"));
                     }
@@ -118,10 +154,16 @@ pub(crate) fn compute_pipeline(attr: TokenStream, item: TokenStream) -> syn::Res
     let input = syn::parse2::<syn::DeriveInput>(item)?;
     let type_name = &input.ident;
 
-    let ComputePipelineAttr {
-        compute,
-        push: push_type,
-    } = syn::parse2::<ComputePipelineAttr>(attr)?;
+    let ComputePipelineAttr { compute, push } = syn::parse2::<ComputePipelineAttr>(attr)?;
+
+    let (push_type, inline_push_items) = match push {
+        PushValue::External(ident) => (ident, quote::quote! {}),
+        PushValue::Inline(push_attr) => {
+            let name = push_attr.name.clone();
+            let items = emit_push_from_attr(push_attr)?;
+            (name, items)
+        }
+    };
 
     let (stage_type, inline_stage_items) = match compute {
         ComputeValue::External(ident) => (ident, quote::quote! {}),
@@ -136,7 +178,8 @@ pub(crate) fn compute_pipeline(attr: TokenStream, item: TokenStream) -> syn::Res
     Ok(quote::quote! {
         #input
 
-        #inline_stage_items
+        #inline_push_items    // push struct + LayoutSpec + PushConstants impls
+        #inline_stage_items   // Stage + StageReflection impls
 
         impl ::mutate_vulkan::pipeline::ComputePipelineSpec for #type_name {
             type Push       = #push_type;

@@ -1,0 +1,49 @@
+// Copyright 2026 The MuTate Contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use mutate_macros::*;
+use mutate_vulkan::prelude::*;
+
+#[stage("test/hello_compute", Compute, c"main")]
+pub struct ComputeStage {}
+
+#[compute_pipeline(
+    compute = ComputeStage,
+    push = push!(ComputeConstants {
+        #[visible(Compute)]
+        foo: UInt,
+    }),
+)]
+pub struct TestPipeline;
+
+fn main() {
+    use ash::vk::ShaderStageFlags;
+    use mutate_vulkan::pipeline::layout::LayoutSpec;
+    use mutate_vulkan::pipeline::ComputePipelineSpec;
+
+    fn assert_push<S: ComputePipelineSpec<Push = ComputeConstants>>() {}
+    fn assert_stage<S: ComputePipelineSpec<Stage = ComputeStage>>() {}
+    assert_push::<TestPipeline>();
+    assert_stage::<TestPipeline>();
+
+    let ranges = <ComputeConstants as LayoutSpec>::RANGES;
+    assert_eq!(
+        ranges.len(),
+        1,
+        "expected exactly one push constant range for ComputeConstants",
+    );
+    assert_eq!(
+        ranges[0].stage_flags,
+        ShaderStageFlags::COMPUTE,
+        "the single range must be visible to COMPUTE only",
+    );
+    assert_eq!(
+        ranges[0].offset, 0,
+        "single-field push constant range must start at offset 0",
+    );
+    assert_eq!(
+        ranges[0].size,
+        std::mem::size_of::<u32>() as u32,
+        "UInt is 4 bytes; range size must match",
+    );
+}
