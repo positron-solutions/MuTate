@@ -15,14 +15,14 @@ use syn::{
 
 use mutate_assets as assets;
 
-struct ShaderAttr {
+struct StageAttr {
     file: LitStr,
     /// Stage marker type, one that implements `[StageSlot](mutate_vulkan::pipeline::stage::StageSlot)`.
     stage: syn::Ident,
     entry: Option<LitCStr>,
 }
 
-impl Parse for ShaderAttr {
+impl Parse for StageAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let file: LitStr = input.parse()?;
         input.parse::<Token![,]>()?;
@@ -33,7 +33,7 @@ impl Parse for ShaderAttr {
         } else {
             None
         };
-        Ok(ShaderAttr { file, stage, entry })
+        Ok(StageAttr { file, stage, entry })
     }
 }
 
@@ -45,11 +45,11 @@ pub(crate) fn stage(attr: TokenStream, item: TokenStream) -> syn::Result<TokenSt
     let input = syn::parse2::<syn::DeriveInput>(item)?;
     let type_name = &input.ident;
 
-    let ShaderAttr {
+    let StageAttr {
         file: file_literal,
         stage,
         entry,
-    } = syn::parse2::<ShaderAttr>(attr)?;
+    } = syn::parse2::<StageAttr>(attr)?;
 
     let file_string = file_literal.value();
     let dirs = assets::AssetDirs::new();
