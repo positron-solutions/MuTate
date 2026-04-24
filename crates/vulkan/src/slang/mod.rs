@@ -594,7 +594,15 @@ pub const fn field_start(node: &FieldNode, idx: usize, rule: DataLayoutToken) ->
                 }
                 i += 1;
             }
-            offset
+            // Align up to the requirement of the field being queried.
+            // The loop leaves `offset` at the end of field idx-1's data;
+            // field idx may require additional padding before it starts.
+            if idx < fields.len() {
+                let align = node_align(&fields[idx], rule);
+                align_up(offset, align)
+            } else {
+                offset
+            }
         }
     }
 }
@@ -1147,10 +1155,10 @@ mod tests {
 
         // field 0: Bool → offset 0
         assert_eq!(field_start(foo_node, 0, D::DATA_LAYOUT), 0);
-        // field 1: TestBar → offset 4 (Bool is 4 bytes)
-        assert_eq!(field_start(foo_node, 1, D::DATA_LAYOUT), 4);
-        // field 2: UInt8 → offset 20 (4 + 16)
-        assert_eq!(field_start(foo_node, 2, D::DATA_LAYOUT), 20);
+        // field 1: TestBar → offset 8 (Bool is 4 bytes, TestBar requires 8-byte alignment)
+        assert_eq!(field_start(foo_node, 1, D::DATA_LAYOUT), 8);
+        // field 2: UInt8 → offset 24 (8 + 16)
+        assert_eq!(field_start(foo_node, 2, D::DATA_LAYOUT), 24);
 
         // field 0: UInt   → 0
         assert_eq!(field_start(bar_node, 0, D::DATA_LAYOUT), 0);
@@ -1161,18 +1169,136 @@ mod tests {
 
         // TestBar total = 4 + 4 + 8 = 16
         assert_eq!(<TestBar as GpuType<D>>::SIZE, 16);
-        // TestFoo total = 4 + 16 + 1 = 21
-        assert_eq!(<TestFoo as GpuType<D>>::SIZE, 21);
+        // TestFoo total = 8 (pad to align TestBar) + 16 + 1, rounded to align 8 = 32
+        assert_eq!(<TestFoo as GpuType<D>>::SIZE, 32);
+    }
 
-        // field_start(foo, 1) == SIZE of prefix (just Bool)
+    #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
+    struct TestQux {
+        count: UInt,   // 4 bytes
+        weight: Float, // 4 bytes
+        extra: UInt,   // 4 bytes
+    }
+
+    unsafe impl bytemuck::Zeroable for TestQux {}
+    unsafe impl bytemuck::Pod for TestQux {}
+
+    impl<D: DataLayout> GpuType<D> for TestQux {
+        const FIELD_NODE: FieldNode = FieldNode::Tree {
+            slang_name: "TestQux",
+            fields: &[
+                <UInt as GpuType<D>>::FIELD_NODE,
+                <Float as GpuType<D>>::FIELD_NODE,
+                <UInt as GpuType<D>>::FIELD_NODE,
+            ],
+        };
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
+    struct TestPoo {
+        flag: Bool,   //  4 bytes
+        bar: TestQux, // 12 bytes (align 4, no gap after Bool)
+        tag: UInt8,   //  1 byte
+    }
+
+    unsafe impl bytemuck::Zeroable for TestPoo {}
+    unsafe impl bytemuck::Pod for TestPoo {}
+
+    impl<D: DataLayout> GpuType<D> for TestPoo {
+        const FIELD_NODE: FieldNode = FieldNode::Tree {
+            slang_name: "TestPoo",
+            fields: &[
+                <Bool as GpuType<D>>::FIELD_NODE,
+                <TestQux as GpuType<D>>::FIELD_NODE,
+                <UInt8 as GpuType<D>>::FIELD_NODE,
+            ],
+        };
+    }
+
+    // A second outer struct that exercises the alignment-gap path explicitly.
+    #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
+    struct TestBaz {
+        tag: UInt8,  //  1 byte; pad 7 to reach Int64's align
+        addr: Int64, //  8 bytes
+        flag: Bool,  //  4 bytes
+    }
+
+    unsafe impl bytemuck::Zeroable for TestBaz {}
+    unsafe impl bytemuck::Pod for TestBaz {}
+
+    impl<D: DataLayout> GpuType<D> for TestBaz {
+        const FIELD_NODE: FieldNode = FieldNode::Tree {
+            slang_name: "TestBaz",
+            fields: &[
+                <UInt8 as GpuType<D>>::FIELD_NODE,
+                <Int64 as GpuType<D>>::FIELD_NODE,
+                <Bool as GpuType<D>>::FIELD_NODE,
+            ],
+        };
+    }
+
+    #[test]
+    fn composed_structure_field_transitive() {
+        type D = Scalar;
+        let foo_node = &<TestPoo as GpuType<D>>::FIELD_NODE;
+        let bar_node = &<TestQux as GpuType<D>>::FIELD_NODE;
+        let baz_node = &<TestBaz as GpuType<D>>::FIELD_NODE;
+
+        // --- TestQux: all fields align-4, no padding ---
+        // field 0: UInt  → offset 0
+        assert_eq!(field_start(bar_node, 0, D::DATA_LAYOUT), 0);
+        // field 1: Float → offset 4
+        assert_eq!(field_start(bar_node, 1, D::DATA_LAYOUT), 4);
+        // field 2: UInt  → offset 8
+        assert_eq!(field_start(bar_node, 2, D::DATA_LAYOUT), 8);
+        // TestQux total = 4 + 4 + 4 = 12, align 4 → no trailing pad
+        assert_eq!(<TestQux as GpuType<D>>::SIZE, 12);
+
+        // --- TestPoo: Bool(4) + TestQux(12, align 4) + UInt8(1) ---
+        // field 0: Bool     → offset 0
+        assert_eq!(field_start(foo_node, 0, D::DATA_LAYOUT), 0);
+        // field 1: TestQux  → offset 4 (align 4, fits immediately after Bool)
+        assert_eq!(field_start(foo_node, 1, D::DATA_LAYOUT), 4);
+        // field 2: UInt8    → offset 16
+        assert_eq!(field_start(foo_node, 2, D::DATA_LAYOUT), 16);
+        // TestPoo total = 4 + 12 + 1 = 17, align 4 → round up to 20
+        assert_eq!(<TestPoo as GpuType<D>>::SIZE, 20);
+
+        // Consistency with SIZE of prefix
         assert_eq!(
             field_start(foo_node, 1, D::DATA_LAYOUT),
             <Bool as GpuType<D>>::SIZE,
         );
-        // field_start(foo, 2) == SIZE of Bool + SIZE of TestBar
         assert_eq!(
             field_start(foo_node, 2, D::DATA_LAYOUT),
-            <Bool as GpuType<D>>::SIZE + <TestBar as GpuType<D>>::SIZE,
+            <Bool as GpuType<D>>::SIZE + <TestQux as GpuType<D>>::SIZE,
+        );
+
+        // --- TestBaz: explicit alignment gap before Int64 ---
+        // field 0: UInt8 → offset 0
+        assert_eq!(field_start(baz_node, 0, D::DATA_LAYOUT), 0);
+        // field 1: Int64 → offset 8 (align 8; 7 bytes of padding after UInt8)
+        assert_eq!(field_start(baz_node, 1, D::DATA_LAYOUT), 8);
+        // field 2: Bool  → offset 16
+        assert_eq!(field_start(baz_node, 2, D::DATA_LAYOUT), 16);
+        // TestBaz total = 1 + 7pad + 8 + 4 = 20, align 8 → round up to 24
+        assert_eq!(<TestBaz as GpuType<D>>::SIZE, 24);
+
+        // Cross-check against Rust's own repr(C) layout
+        assert_eq!(
+            std::mem::size_of::<TestQux>(),
+            <TestQux as GpuType<D>>::SIZE
+        );
+        assert_eq!(
+            std::mem::size_of::<TestPoo>(),
+            <TestPoo as GpuType<D>>::SIZE
+        );
+        assert_eq!(
+            std::mem::size_of::<TestBaz>(),
+            <TestBaz as GpuType<D>>::SIZE
         );
     }
 }
