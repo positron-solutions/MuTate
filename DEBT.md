@@ -225,6 +225,16 @@ Detecting the need to do a queue transfer before present is unavoidably tedious.
 
 You know what?  We assume the first queue to present (usually graphics, usually the zeroth index) is the right one.  Any support that looks complete is an accident.  If you need weird things, try commercial support or go do some coding `(◕‿◕)ノ彡☆`
 
+## Transfer / Staging vs UMA
+
+UMA architectures, becoming increasingly important, don't really benefit from transfer queues.  This suggests we would want an abstraction to hide the implementation so users don't need to change what they express on DMA vs UMA.
+
+We'd probably like to make thread-safe writes over sub-ranges and that infra will be extremely similar to 1) preparing and streaming data in a worker thread 2) using upload slots with a timeline semaphore and notifications for the render thread.  The streaming data write case will make DMA and UMA wind up at the same semantics and API, which is the right surface to abstract away.
+
+### For Now
+
+Transfer?  Use the UMA path until something is actually big.  Maybe put it behind a dummy interface with some kind of sensible semantics that will work for the above.
+
 ## Bytemuck Traits in Slang Module
 
 Current code is a rough draft.  We need `Pod` and `Zeroable` but getting the derive macro paths right is very fiddly  *inside* the crate.  Proper fix might be to split the crate and do integration tests downstream.
