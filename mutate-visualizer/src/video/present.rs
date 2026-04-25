@@ -16,6 +16,7 @@ use ash::khr::present_wait;
 use ash::vk;
 use smallvec::SmallVec;
 
+// XXX go fix up prelude for most of these.
 use mutate_lib::vulkan::{
     dispatch::{
         command::{CommandPool, RecordingSlot},
@@ -37,6 +38,7 @@ pub struct SurfacePresent {
 
     // NEXT Pool rings can likely be abstracted.  It's a very solid piece of infrastructure.
     // Just enough for front & back frame.
+    queue: Queue<Graphics>,
     pools: [CommandPool; 2],
     /// A ring index, always advances by 1.  Longer pool rings could be used if there's a reason for
     /// longer serial work to pipeline in parallel, likely using only a few warps (because otherwise
@@ -73,8 +75,13 @@ impl SurfacePresent {
         // XXX Make into Recording Context for the right Queue
         let queue_family_index = device_context.queues.graphics(QueuePriority::High).family();
 
+        // NEXT make the command pools / rings / recording slots do this without dropping to raw types.
+        let queue = device_context
+            .queues
+            .graphics(vk_context, surface, QueuePriority::High)
+            .unwrap();
         let pools: [CommandPool; 2] =
-            std::array::from_fn(|_| CommandPool::new(device_context, queue_family_index));
+            std::array::from_fn(|_| CommandPool::new(device_context, queue.family()));
 
         let present = sync::PresentConsumer::new(vk_context, device_context, swapchain.swapchain)
             .expect("Could not start up the present wait gizmo");
@@ -86,6 +93,7 @@ impl SurfacePresent {
 
             recording_index: 0,
             pools,
+            queue,
 
             swapchain,
         }
@@ -294,11 +302,10 @@ impl SurfacePresent {
             .signal_semaphore_infos(&signal_infos)
             .command_buffer_infos(slice::from_ref(&cb_info));
 
-        let queue = unsafe { &context.queues.graphics(QueuePriority::High).raw() };
         unsafe {
             context
                 .device()
-                .queue_submit2(*queue, &[submit], vk::Fence::null())
+                .queue_submit2(self.queue.raw(), &[submit], vk::Fence::null())
                 .unwrap();
         }
     }
@@ -307,7 +314,6 @@ impl SurfacePresent {
     // presentation for swapchain stuff.  The present wait tangling demonstrates that we will need
     // some builders and intermediate structures to fan in any kind of composed behaviors.
     pub fn present(&mut self, device_context: &DeviceContext, acquired_image: AcquiredImage) {
-        let queue = unsafe { &device_context.queues.graphics(QueuePriority::High).raw() };
         match self.present.read_last_present() {
             Some(last) => {
                 // if last.last_window != std::time::Duration::MAX {
@@ -324,7 +330,8 @@ impl SurfacePresent {
             .image_indices(slice::from_ref(&acquired_image.swapchain_image_index))
             .push_next(&mut present_id);
 
-        self.swapchain.present(*queue, &present_info);
+        self.swapchain
+            .present(unsafe { self.queue.raw() }, &present_info);
         self.present.notify_waiter();
     }
 }

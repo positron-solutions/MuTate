@@ -127,7 +127,7 @@ pub mod prelude {
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::present::surface::VkSurface;
 
-    pub use crate::context::queue::QueuePriority;
+    pub use crate::context::queue::prelude::*;
     pub use crate::descriptor_newtype;
     pub use crate::device_address_newtype;
     pub use crate::pipeline::prelude::*;
@@ -143,8 +143,10 @@ pub(crate) mod internal {
     pub use smallvec::SmallVec;
 
     pub use super::VulkanError;
+    pub use crate::context::queue::prelude::*;
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::present::surface::VkSurface;
+    pub use crate::present::swapchain::SwapchainContext;
     pub use crate::slang::prelude::*;
 }
 
@@ -185,6 +187,9 @@ pub enum VulkanError {
 
     #[error("ash: other {0}")]
     Ash(vk::Result),
+
+    #[error("driver error: {0}")]
+    DriverError(String),
 }
 
 impl From<vk::Result> for VulkanError {

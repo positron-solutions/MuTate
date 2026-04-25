@@ -12,7 +12,7 @@ use ash::{
     vk,
 };
 
-use crate::context::{DeviceContext, VkContext};
+use crate::internal::*;
 
 /// Embodied decisions about how we will use a [`ash::vk::SurfaceKHR`] and the raw handles for
 /// bookkeeping.
@@ -35,8 +35,9 @@ impl VkSurface {
     pub fn new(
         surface: vk::SurfaceKHR,
         vk_context: &VkContext,
-        physical_device: vk::PhysicalDevice,
+        device_context: &DeviceContext,
     ) -> Self {
+        let physical_device = device_context.physical_device;
         let surface_loader = vk_context.surface_loader();
         let VkContext { entry, instance } = vk_context;
 

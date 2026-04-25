@@ -119,6 +119,8 @@ impl ApplicationHandler for App {
         // window, and one device may serve multiple windows.  Headless rendering needs to remain
         // supported.
         let vk_context = &self.vk_context;
+
+        // Get a window and surface.  Create a logical device and swapchain for that surface.
         let window = Window::from_args(&self.args, event_loop);
         let surface = {
             let display_handle = event_loop
@@ -135,8 +137,6 @@ impl ApplicationHandler for App {
                     .expect("ash_window: could not create surface")
             }
         };
-        // NOTE while we can create the surface before we have a logical device,
-        // Get the surface support
         let supported_devices: Vec<SupportedDevice> = vk_context
             .supported_devices(&[])
             .into_iter()
@@ -145,14 +145,15 @@ impl ApplicationHandler for App {
         if supported_devices.is_empty() {
             panic!("main: no devices supporting surface found.");
         }
-        // If we were going to ask the user, the time is now.
+        // NEXT read a default preferred device from a config or poll the user.
         let selected = supported_devices[0].clone();
         println!("device selected: {}", selected.name);
+        let mut device_context = selected.into_logical(&vk_context);
+
         // XXX During swapchain rebuild, remember to re-poll the surface since a lot of the answers
         // might be dynamic over surface lifetime(?)
-        let surface = VkSurface::new(surface, vk_context, selected.device());
-        // Inspect devices for present queue support and other support
-        let mut device_context = selected.into_logical(&vk_context);
+        let surface = VkSurface::new(surface, vk_context, &device_context);
+
         // XXX extent
         let fallback = window.render_size();
         let extent = surface

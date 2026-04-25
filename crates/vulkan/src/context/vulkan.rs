@@ -15,6 +15,7 @@
 use std::{os::raw::c_char, ffi::{c_void, CStr}};
 
 use ash::vk;
+use smallvec::SmallVec;
 
 use mutate_assets as assets;
 
@@ -423,21 +424,25 @@ impl SupportedDevice {
         }
     }
 
-    /// Returns `true` if any queue family on this device supports presentation to the given surface.
+    /// Returns `true` if any queue family on this device supports presentation to the given
+    /// surface.  Use to decide which devices to present to the user as options for a particular
+    /// surface.  Use [`Queues`](super::queue::Queues) to obtain a graphics queue that can present
+    /// to a particular surface.
     pub fn supports_surface(
         &self,
         surface: vk::SurfaceKHR,
         vk_context: &VkContext,
     ) -> bool {
         let surface_loader = vk_context.surface_loader();
-        let VkContext { entry, instance } = vk_context;
-        unsafe {
+        let VkContext { entry: _, instance } = vk_context;
+        let families = unsafe {
             instance.get_physical_device_queue_family_properties(self.physical_device)
-        }
-            .iter()
+        };
+        families.iter()
             .enumerate()
-            .any(|(index, _family)| {
-                unsafe {
+            .any(|(index, family)| {
+                let has_graphics = family.queue_flags.contains(vk::QueueFlags::GRAPHICS);
+                let has_present = unsafe {
                     surface_loader
                         .get_physical_device_surface_support(
                             self.physical_device,
@@ -445,7 +450,8 @@ impl SupportedDevice {
                             surface,
                         )
                         .unwrap_or(false)
-                }
+                };
+                has_graphics && has_present
             })
     }
 

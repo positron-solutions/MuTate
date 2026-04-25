@@ -95,8 +95,7 @@ impl DeviceContext {
             .push_next(&mut features_1_1)
             .push_next(&mut swapchain_maintenance1);
 
-        // XXX present families!
-        let queue_plan = queue::QueuePlan::new(&instance, physical_device, &[]).unwrap();
+        let queue_plan = queue::QueuePlan::new(&instance, physical_device).unwrap();
         let queue_cis = queue_plan.queue_cis(); // borrows queue_plan, no allocation
         let extensions: Vec<*const i8> = extensions.iter().map(|ext| ext.as_ptr()).collect();
         let mut device_info = vk::DeviceCreateInfo {
