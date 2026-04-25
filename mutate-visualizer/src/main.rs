@@ -114,10 +114,6 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // MAYBE This sequence of initialization is almost a series of contracts.  It may be
-        // appropriate to bind lifetimes and encode a series of choices.  There may be more than one
-        // window, and one device may serve multiple windows.  Headless rendering needs to remain
-        // supported.
         let vk_context = &self.vk_context;
 
         // Get a window and surface.  Create a logical device and swapchain for that surface.
@@ -162,17 +158,15 @@ impl ApplicationHandler for App {
                 width: 800,
                 height: 600,
             });
-
         // XXX the surface.. .should know its extent.  Even if we update it because of window
         // changes, our VkSurface is a context that should encapsulate this state.
         let sp = video::present::SurfacePresent::new(&device_context, vk_context, &surface, extent);
 
         let mut render_node = video::spectrum::SpectrumNode::new(&device_context);
-        // DEBT memory management, resources, render graph
         render_node
             .provision(
                 &mut device_context,
-                // XXX made up size :-)
+                // XXX made up size.  Extent threading.. Again. :-)
                 vk::Extent2D {
                     height: 800,
                     width: 800,

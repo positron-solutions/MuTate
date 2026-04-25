@@ -1,15 +1,18 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// A swapchain exists when we are presenting to a Surface.  We can use it as a render target.  Not
-// all render targets need presentation, but a swapchain does.  Aligning the fields and structs with
-// this abstraction is underway.
+// What remains is to break this apart into the graphics vs compute-present paths and move it into
+// Vulkan.  The extent handling is gross between here and main.  Synchronization might need a little
+// better first class treatment.  Existing sync is just inherited first-pass code.
+//
+// Current vibes are that presentation is a runtime thing.  User will ask for a fully equipped
+// window or an off-screen render loop. The contents we plug into those boxes don't need to care
+// what they are rendering to.
+//
+// Both graphics-present and compute-present ultimately provide recording slots and their command
+// buffers, so all graphics and compute users downstream can just consume the command buffers as-is.
+// They don't need to know or care if presentation will happen or rendering is even on screen.
 
-// NEXT enable options for variable and fixed frame rate rendering, likely using MAILBOX for
-// variable and FIFO for fixed rate.  This requires looking at the actual swapchain image count
-// before allocating per-image resources like command buffers.
-
-// XXX move into Vulkan!
 use std::slice;
 
 use ash::khr::present_wait;
@@ -37,7 +40,7 @@ pub struct SurfacePresent {
     present: sync::PresentConsumer,
 
     // NEXT Pool rings can likely be abstracted.  It's a very solid piece of infrastructure.
-    // Just enough for front & back frame.
+    // Just enough for front & back frame.  Didn't we do this with recording slots and rings?
     queue: Queue<Graphics>,
     pools: [CommandPool; 2],
     /// A ring index, always advances by 1.  Longer pool rings could be used if there's a reason for
@@ -71,9 +74,6 @@ impl SurfacePresent {
                 .create_semaphore(&semaphore_ci, None)
                 .unwrap()
         };
-
-        // XXX Make into Recording Context for the right Queue
-        let queue_family_index = device_context.queues.graphics(QueuePriority::High).family();
 
         // NEXT make the command pools / rings / recording slots do this without dropping to raw types.
         let queue = device_context
