@@ -95,9 +95,9 @@ impl DeviceContext {
             .push_next(&mut features_1_1)
             .push_next(&mut swapchain_maintenance1);
 
-        let queue_families = queue::QueueFamilies::new(&instance, &physical_device);
-        let queue_priorities = [1.0];
-        let queue_cis = queue_families.queue_cis(&queue_priorities);
+        // XXX present families!
+        let queue_plan = queue::QueuePlan::new(&instance, physical_device, &[]).unwrap();
+        let queue_cis = queue_plan.queue_cis(); // borrows queue_plan, no allocation
         let extensions: Vec<*const i8> = extensions.iter().map(|ext| ext.as_ptr()).collect();
         let mut device_info = vk::DeviceCreateInfo {
             ..Default::default()
@@ -111,7 +111,7 @@ impl DeviceContext {
                 .create_device(physical_device, &device_info, None)
                 .unwrap()
         };
-        let queues = queue::Queues::new(&device, queue_families);
+        let queues = queue::Queues::new(&device, queue_plan);
         let descriptors = descriptors::Descriptors::new(&device).unwrap();
 
         let memory_props =
@@ -149,7 +149,6 @@ impl DeviceContext {
     pub fn destroy(&self) {
         unsafe {
             self.descriptors.destroy(&self.device);
-            self.queues.destroy(&self.device);
             self.device.destroy_device(None);
         };
     }

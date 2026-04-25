@@ -21,6 +21,7 @@ use mutate_lib::vulkan::{
         command::{CommandPool, RecordingSlot},
         sync,
     },
+    prelude::*,
     present::swapchain::{AcquiredImage, SwapchainContext},
 };
 use mutate_lib::{self as utate, prelude::*};
@@ -70,7 +71,8 @@ impl SurfacePresent {
         };
 
         // XXX Make into Recording Context for the right Queue
-        let queue_family_index = device_context.queues.graphics_family_index;
+        let queue_family_index = device_context.queues.graphics(QueuePriority::High).family();
+
         let pools: [CommandPool; 2] =
             std::array::from_fn(|_| CommandPool::new(device_context, queue_family_index));
 
@@ -292,7 +294,7 @@ impl SurfacePresent {
             .signal_semaphore_infos(&signal_infos)
             .command_buffer_infos(slice::from_ref(&cb_info));
 
-        let queue = &context.queues.graphics_queue();
+        let queue = unsafe { &context.queues.graphics(QueuePriority::High).raw() };
         unsafe {
             context
                 .device()
@@ -305,7 +307,7 @@ impl SurfacePresent {
     // presentation for swapchain stuff.  The present wait tangling demonstrates that we will need
     // some builders and intermediate structures to fan in any kind of composed behaviors.
     pub fn present(&mut self, device_context: &DeviceContext, acquired_image: AcquiredImage) {
-        let queue = &device_context.queues.graphics_queue();
+        let queue = unsafe { &device_context.queues.graphics(QueuePriority::High).raw() };
         match self.present.read_last_present() {
             Some(last) => {
                 // if last.last_window != std::time::Duration::MAX {
