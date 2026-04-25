@@ -40,7 +40,6 @@ fn pipeline_declare() {
     pub struct TestPipeline;
 
     vulkan::with_context!(|device_ctx| {
-        // instantiate the pipeline!
         let pipeline: ComputePipeline<TestPipeline> =
             ComputePipeline::<TestPipeline>::new(&device_ctx)
                 .expect("pipeline instantiation failed");
@@ -65,7 +64,49 @@ fn pipeline_declare_inline_stage() {
     pub struct TestPipeline;
 
     vulkan::with_context!(|device_ctx| {
-        // instantiate the pipeline!
+        let pipeline: ComputePipeline<TestPipeline> =
+            ComputePipeline::<TestPipeline>::new(&device_ctx)
+                .expect("pipeline instantiation failed");
+
+        pipeline.destroy(&device_ctx);
+    })
+}
+
+#[test]
+fn pipeline_declare_inline_push() {
+    #[stage("test/hello_compute", Compute, c"main")]
+    pub struct ComputeStage {}
+
+    #[compute_pipeline(
+        compute = ComputeStage,
+        push = push!(ComputeConstants {
+            #[visible(Compute)]
+            foo: UInt,
+        }),
+    )]
+    pub struct TestPipeline;
+
+    vulkan::with_context!(|device_ctx| {
+        let pipeline: ComputePipeline<TestPipeline> =
+            ComputePipeline::<TestPipeline>::new(&device_ctx)
+                .expect("pipeline instantiation failed");
+
+        pipeline.destroy(&device_ctx);
+    })
+}
+
+#[test]
+fn pipeline_declare_inline_all() {
+    #[compute_pipeline(
+        compute = stage!("test/hello_compute", Compute, c"main"),
+        push = push!(ComputeConstants {
+            #[visible(Compute)]
+            foo: UInt,
+        }),
+    )]
+    pub struct TestPipeline;
+
+    vulkan::with_context!(|device_ctx| {
         let pipeline: ComputePipeline<TestPipeline> =
             ComputePipeline::<TestPipeline>::new(&device_ctx)
                 .expect("pipeline instantiation failed");
