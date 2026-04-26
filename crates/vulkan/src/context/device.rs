@@ -35,7 +35,9 @@ pub struct DeviceContext {
 
 impl DeviceContext {
     pub(crate) fn new(vk_context: &vulkan::VkContext, supported_device: SupportedDevice) -> Self {
-        let vulkan::VkContext { entry, instance } = &vk_context;
+        let vulkan::VkContext {
+            entry, instance, ..
+        } = &vk_context;
         let physical_device = supported_device.device();
         let extensions = &supported_device.extensions;
 
@@ -88,12 +90,16 @@ impl DeviceContext {
 
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .features(vk::PhysicalDeviceFeatures::default().shader_int16(true))
-            .push_next(&mut pw_features)
-            .push_next(&mut pwid_features)
             .push_next(&mut features_1_3)
             .push_next(&mut features_1_2)
-            .push_next(&mut features_1_1)
-            .push_next(&mut swapchain_maintenance1);
+            .push_next(&mut features_1_1);
+
+        if supported_device.profile.surface {
+            features2 = features2
+                .push_next(&mut pw_features)
+                .push_next(&mut pwid_features)
+                .push_next(&mut swapchain_maintenance1);
+        }
 
         let queue_plan = queue::QueuePlan::new(&instance, physical_device).unwrap();
         let queue_cis = queue_plan.queue_cis(); // borrows queue_plan, no allocation

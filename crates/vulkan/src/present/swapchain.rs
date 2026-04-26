@@ -76,7 +76,9 @@ impl SwapchainContext {
         surface: &VkSurface,
         extent: vk::Extent2D,
     ) -> Self {
-        let VkContext { entry, instance } = &vk_context;
+        let VkContext {
+            entry, instance, ..
+        } = &vk_context;
         let loader =
             ash::khr::swapchain::Device::new(&vk_context.instance, &device_context.device());
 
