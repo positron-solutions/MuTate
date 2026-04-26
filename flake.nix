@@ -98,12 +98,34 @@
           export LIBCLANG_PATH=${pkgs.llvmPackages.libclang.lib}/lib
         '';
       };
+
+      # Headless shell for CI: no display system, lavapipe software ICD for Vulkan.
+      # mesa.drivers includes libvulkan_lvp.so and the lvp_icd JSON manifest.
+      ciShell = pkgs.mkShell {
+        buildInputs = with pkgs; [
+          pkg-config
+          mesa.drivers
+        ] ++ pipewireDeps ++ vulkanDeps;
+
+        shellHook = ''
+          ${vulkanEnv}
+          ${pipewireEnv}
+
+          # Software Vulkan ICD (lavapipe) — no GPU required.
+          export VK_DRIVER_FILES=${pkgs.mesa.drivers}/share/vulkan/icd.d/lvp_icd.x86_64.json
+
+          export LD_LIBRARY_PATH
+
+          export LIBCLANG_PATH=${pkgs.llvmPackages.libclang.lib}/lib
+        '';
+      };
     in {
       devShells = {
         x86_64-linux = {
           default = waylandShell;
           wayland = waylandShell;
           x11 = x11Shell;
+          ciShell = ciShell;
         };
       };
     };

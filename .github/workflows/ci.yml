@@ -15,7 +15,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v13
       - name: Load Shell
-        run: nix develop .#x11
+        run: nix develop .#ciShell
 
   test:
     needs: setup
@@ -37,7 +37,7 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@v13
       - name: Test ${{ matrix.crate }}
         run: |
-          nix develop .#x11 --command cargo test \
+          nix develop .#ciShell --command cargo test \
             --manifest-path ${{ matrix.crate }}/Cargo.toml \
             ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
   build:
@@ -48,4 +48,4 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v13
       - name: Build mutate-visualizer
-        run: nix develop .#x11 --command cargo build --manifest-path mutate-visualizer/Cargo.toml
+        run: nix develop .#ciShell --command cargo build --manifest-path mutate-visualizer/Cargo.toml
