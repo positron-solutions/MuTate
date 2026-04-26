@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
+      - name: Load Shell
+        run: nix develop .#x11
+
+  test:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: crates/vulkan
+          - crate: crates/untorn
+          - crate: crates/slide
+          - crate: crates/macros
+          - crate: crates/assets
+          - crate: mutate-lib
+            features: vulkan
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
+      - name: Test ${{ matrix.crate }}
+        run: |
+          nix develop .#x11 --command cargo test \
+            --manifest-path ${{ matrix.crate }}/Cargo.toml \
+            ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+  build:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
+      - name: Build mutate-visualizer
+        run: nix develop .#x11 --command cargo build --manifest-path mutate-visualizer/Cargo.toml
