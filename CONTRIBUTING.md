@@ -16,7 +16,7 @@ As mentioned in that link, see the [DEBT.md](./DEBT.md) for a listing of things 
 
 ## AI Use Policy
 
-**Quality of the submission is the only durable metric.**  We will not be witch-hunting em dashes or counting your fingers etc.  Submissions are likely to be given a first pass by various AI tools.  Verbose submissions and those 
+**Quality of the submission is the only durable metric.**  We will not be witch-hunting em dashes or counting your fingers etc.  Submissions are likely to be given a first pass by various AI tools.  Verbose submissions etc disrespect people's time and will lead to being told off, so try to communicate like it's the 2000's internet and everyone is a dog, just professional dogs that speak engineer and have limited time and a lot of code to write.
 
 ## A Word on Rigor
 
