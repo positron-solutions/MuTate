@@ -26,20 +26,53 @@ use super::device;
 pub struct VkContext {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
+    pub profile: InstanceProfile,
 }
 
-const INSTANCE_EXTENSIONS: &[&CStr] = &[
+// For non-surface applications.
+const INSTANCE_EXTENSIONS_CORE: &[&CStr] = &[];
+const INSTANCE_EXTENSIONS_SURFACE: &[&CStr] = &[
     vk::KHR_SURFACE_NAME,
     vk::KHR_GET_SURFACE_CAPABILITIES2_NAME,
     vk::EXT_SURFACE_MAINTENANCE1_NAME,
 ];
+// Useful for headless swapchain CI tests later (no running window system).
+// pub const EXTENSIONS_HEADLESS: &[&CStr] = &[
+//     vk::EXT_HEADLESS_SURFACE_NAME,
+// ];
+
+/// Which categories of instance extensions were loaded.  This gates which device
+/// extension sets are legal to request.  All logical device contexts this instance creates will
+/// inherit this profile.
+// NEXT this implementation is a stub to fix CI while building the infrastructure to move in the
+// correct direction for later.  More robust support would expose a bon builder for the user to
+// tweak their Vulkan buffet without relying on us to set every option.  The instance, supported
+// device, and device context then all must be kept consistent by building the profile into the
+// instance and logical device extensions lists at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InstanceProfile {
+    pub surface: bool,
+}
+
+impl InstanceProfile {
+    pub const HEADLESS: Self = Self { surface: false };
+    pub const SURFACE:  Self = Self { surface: true  };
+
+    pub(crate) fn device_extensions(self) -> Vec<&'static CStr> {
+        let mut exts: Vec<&'static CStr> = DEVICE_EXTENSIONS_CORE.to_vec();
+        if self.surface {
+            exts.extend_from_slice(DEVICE_EXTENSIONS_SURFACE);
+        }
+        exts
+    }
+}
 
 /// Required extensions for core behaviors.  You may request additional features via
 /// [`supported_devices`].
 // Waiting for this value to show up in ash
 // pub(crate) const KHR_PRESENT_TIMING_NAME: &CStr = c"VK_EXT_present_timing";
 // DEBT currently the requirements and support checks are all hardcoded.
-pub(crate) const DEVICE_EXTENSIONS: &[&CStr] = &[
+pub(crate) const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
     vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME,
     // NEXT better debug gating (see validation layer activation above).
     // Enables some debug functionality in shaders.
@@ -58,12 +91,8 @@ pub(crate) const DEVICE_EXTENSIONS: &[&CStr] = &[
     vk::EXT_MEMORY_BUDGET_NAME,
     vk::EXT_MEMORY_PRIORITY_NAME,
 
-    vk::KHR_SWAPCHAIN_NAME,
-    vk::KHR_PRESENT_WAIT_NAME,
-    vk::KHR_PRESENT_ID_NAME,
     // ROLL VK_EXT_present_timing is still too new.  I have no supported devices / drivers yet.
     // KHR_PRESENT_TIMING_NAME,
-    vk::EXT_SWAPCHAIN_MAINTENANCE1_NAME,
 
     // MAYBE this is Windows only?  Evidently only old windows?
     // vk::EXT_FULL_SCREEN_EXCLUSIVE_NAME,
@@ -71,19 +100,21 @@ pub(crate) const DEVICE_EXTENSIONS: &[&CStr] = &[
     // vk::KHR_ACCELERATION_STRUCTURE_NAME,
     // vk::KHR_DEFERRED_HOST_OPERATIONS_NAME,
 ];
-
-// Useful for CI tests later.
-// pub const EXTENSIONS_HEADLESS: &[&CStr] = &[
-//     vk::EXT_HEADLESS_SURFACE_NAME,
-// ];
+pub(crate) const DEVICE_EXTENSIONS_SURFACE: &[&CStr] = &[
+    vk::KHR_SWAPCHAIN_NAME,
+    vk::KHR_PRESENT_WAIT_NAME,
+    vk::KHR_PRESENT_ID_NAME,
+    vk::EXT_SWAPCHAIN_MAINTENANCE1_NAME,
+];
 
 // DEBT Errors instead of panics, but that might require a lot of test re-writing that should be
 // done with macros to ease future pain.
 impl VkContext {
-    /// Basic context for testing.  Does not have platform extensions for windows etc.  Still useful
-    /// for some workloads like compute.
-    pub fn new () -> Self {
-        Self::with_extensions(&[])
+    /// Basic context for testing.  Does not have platform extensions for window or surface etc.
+    /// Still useful for some workloads like compute or test rendering without swapchain or
+    /// presentation.
+    pub fn new_headless() -> Self {
+        Self::with_extensions_inner(&[], &[], InstanceProfile::HEADLESS)
     }
 
     /// Context with `required_exts` for the display platform enabled.  You cannot create a context
@@ -94,7 +125,11 @@ impl VkContext {
     /// let required = ash_window::enumerate_required_extensions(event_loop);
     /// let vk_context = VkContext::with_extensions(required)
     /// ```
-    pub fn with_extensions (required_exts: &[*const i8]) -> Self {
+    pub fn with_extensions(required_exts: &[*const i8]) -> Self {
+        Self::with_extensions_inner(required_exts, INSTANCE_EXTENSIONS_SURFACE, InstanceProfile::SURFACE)
+    }
+
+    fn with_extensions_inner(required_exts: &[*const i8], instance_exts: &[&CStr], profile: InstanceProfile) -> Self {
         let entry = unsafe { ash::Entry::load().expect("failed to load Vulkan library") };
 
         // XXX Was about to add some explicit errors, but need to stabilize for mass text replace of
@@ -111,9 +146,11 @@ impl VkContext {
                 .enumerate_instance_extension_properties(None)
                 .expect("Failed to enumerate instance extensions")
         };
+
         for req in required_exts.iter().copied()
             .map(|p| unsafe { CStr::from_ptr(p) })
-            .chain(INSTANCE_EXTENSIONS.iter().copied())
+            .chain(INSTANCE_EXTENSIONS_CORE.iter().copied())
+            .chain(instance_exts.iter().copied())
             {
                 assert!(
                     available_instance_extensions.iter().any(|ext| {
@@ -134,7 +171,8 @@ impl VkContext {
         ];
 
         let ext_ptrs: Vec<*const i8> = required_exts.iter().copied()
-            .chain(INSTANCE_EXTENSIONS.iter().map(|s| s.as_ptr()))
+            .chain(INSTANCE_EXTENSIONS_CORE.iter().map(|s| s.as_ptr()))
+            .chain(instance_exts.iter().map(|s| s.as_ptr()))
             .collect();
         let instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
@@ -144,6 +182,7 @@ impl VkContext {
         Self {
             entry,
             instance,
+            profile,
         }
     }
 
@@ -165,12 +204,11 @@ impl VkContext {
                 .expect("No physical devices with Vulkan support found")
         };
         let extensions: Vec<&'static CStr> = if extensions.is_empty() {
-            DEVICE_EXTENSIONS.iter().copied().collect()
+            self.profile.device_extensions()
         } else {
-            DEVICE_EXTENSIONS.iter()
-                .chain(extensions.iter())
-                .copied()
-                .collect()
+            let mut exts = self.profile.device_extensions();
+            exts.extend_from_slice(extensions);
+            exts
         };
         let mut physical_devices: Vec<(vk::PhysicalDevice, vk::PhysicalDeviceProperties)> = physical_devices
             .into_iter()
@@ -205,7 +243,7 @@ impl VkContext {
         });
         physical_devices
             .into_iter()
-            .map(|(physical_device, _)| SupportedDevice::new(physical_device, self, &extensions))
+            .map(|(physical_device, _)| SupportedDevice::new(physical_device, self, &extensions, self.profile))
             .collect()
     }
 
@@ -370,7 +408,7 @@ impl VkContext {
 #[macro_export]
 macro_rules! with_context {
     (|$context:ident| $($body:tt)*) => {{
-        let mut vk_context = $crate::context::VkContext::with_extensions(&[]);
+        let mut vk_context = $crate::context::VkContext::new_headless();
         let mut physical_device = vk_context.supported_devices(&[]).remove(0);
         let mut $context = physical_device.into_logical(&vk_context);
         let __result = (|| { $($body)* })();
@@ -379,7 +417,7 @@ macro_rules! with_context {
         __result
     }};
     (|$context:ident, $vk_context:ident| $($body:tt)*) => {{
-        let mut $vk_context = $crate::context::VkContext::with_extensions(&[]);
+        let mut $vk_context = $crate::context::VkContext::new_headless();
         let mut physical_device = $vk_context.supported_devices(&[]).remove(0);
         let mut $context = physical_device.into_logical(&$vk_context);
         let __result = (|| { $($body)* })();
@@ -403,10 +441,13 @@ pub struct SupportedDevice {
     /// require into the [`supported_devices`] call.
     // DEBT no dynamic feature and technique negotiation or fallback support.
     pub extensions: Vec<&'static CStr>,
+
+    pub profile: InstanceProfile,
 }
 
 impl SupportedDevice {
-    fn new(physical_device: vk::PhysicalDevice, vk_context: &VkContext, extensions: &[&'static CStr]) -> SupportedDevice{
+    fn new(physical_device: vk::PhysicalDevice, vk_context: &VkContext, extensions: &[&'static
+    CStr], profile: InstanceProfile) -> SupportedDevice{
         let name = unsafe {
             let props =
                 vk_context.instance.get_physical_device_properties(physical_device);
@@ -421,6 +462,7 @@ impl SupportedDevice {
             physical_device,
             name,
             extensions,
+            profile,
         }
     }
 
@@ -434,7 +476,7 @@ impl SupportedDevice {
         vk_context: &VkContext,
     ) -> bool {
         let surface_loader = vk_context.surface_loader();
-        let VkContext { entry: _, instance } = vk_context;
+        let VkContext { entry: _, instance, .. } = vk_context;
         let families = unsafe {
             instance.get_physical_device_queue_family_properties(self.physical_device)
         };

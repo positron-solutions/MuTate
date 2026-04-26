@@ -39,7 +39,9 @@ impl VkSurface {
     ) -> Self {
         let physical_device = device_context.physical_device;
         let surface_loader = vk_context.surface_loader();
-        let VkContext { entry, instance } = vk_context;
+        let VkContext {
+            entry, instance, ..
+        } = vk_context;
 
         let formats = unsafe {
             surface_loader

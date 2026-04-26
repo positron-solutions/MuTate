@@ -127,7 +127,9 @@ impl ApplicationHandler for App {
                 .window_handle()
                 .expect("raw_window_handle: platform unsupported")
                 .as_raw();
-            let VkContext { entry, instance } = vk_context;
+            let VkContext {
+                entry, instance, ..
+            } = vk_context;
             unsafe {
                 ash_window::create_surface(entry, instance, display_handle, window_handle, None)
                     .expect("ash_window: could not create surface")
