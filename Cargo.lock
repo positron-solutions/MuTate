@@ -1118,7 +1118,6 @@ dependencies = [
  "ringbuf",
  "smallvec 2.0.0-alpha.12",
  "thiserror 2.0.18",
- "toml 0.9.8",
  "winit",
 ]
 

@@ -31,7 +31,6 @@ mutate-assets = {workspace = true, features = ["runtime"]}
 mutate-slide.workspace = true
 
 [build-dependencies]
-toml.workspace = true
 mutate-assets = {workspace = true, features = ["build"]}
 
 [package.metadata.mutate]
