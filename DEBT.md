@@ -234,3 +234,11 @@ The `Pod` and `Zeroable` markers were just thrown in by hand so we don't even ne
 ### For Now
 
 Focus on the semantics.  We want synchronous, local stack, then finally trick out the implementation.
+
+## CI & Nix Caching
+
+We should be using Crane to build test artifacts and caching the dependency buids in Nix or using a Rust cache of some kind (impure, but better than nothing).
+
+### For Now
+
+Using cold target dirs.  Fortunately most of our builds are cheap enough to not cause 45min CI times.  The PMR tool hast the heaviest dependencies right now.
