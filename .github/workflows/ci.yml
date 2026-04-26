@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 # ah, the great ping pong begins.
+# CI is great
 jobs:
   test:
     runs-on: ubuntu-latest
