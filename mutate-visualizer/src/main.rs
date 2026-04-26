@@ -27,7 +27,7 @@ use window::WindowExt;
 
 #[derive(Parser, Debug)]
 struct Args {
-    /// Run in fullscreen mode
+    /// Start in fullscreen mode
     #[arg(short = 'f', long = "fullscreen")]
     fullscreen: bool,
 }
@@ -259,14 +259,7 @@ impl ApplicationHandler for App {
 fn main() -> Result<(), utate::MutateError> {
     // NEXT Merge over toml config values obtained as resources
     let args = Args::parse();
-    let mut builder = EventLoop::builder();
-    #[cfg(target_os = "linux")]
-    {
-        if std::env::var("WAYLAND_DISPLAY").is_ok() {
-            builder.with_wayland();
-        }
-    }
-    let event_loop = builder.build().unwrap();
+    let event_loop = EventLoop::builder().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let display_handle = event_loop
