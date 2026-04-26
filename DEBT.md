@@ -23,23 +23,6 @@ The big pieces that are missing and expected areas of coupled design-development
 - Resource management absolutely depends on the prior two areas receiving some treatment.
 - Runtime render graph tasks can't really settle in until resource specs begin to stabilize.
 
-## Foreword on Rigor
-
-Yee-Haw Index: 7 of 10 🤠.  Pick your favorite three-archetypes of engineers model, such as:
-
-- pioneers
-- settlers
-- town planners
-
-**This is absolutely not the time for town planners.**  If you can't ignore dirty code, move along or learn!  Code will change out from under things, and all your premature polishing will be for naught.  Brutal refactorings are welcome.  Last-write-wins.
-
-Put Clippy away.  Add `#[allow(unused)]` to your dirty tree and don't tell
-anyone.  Slop in the blanks.  Just be sure to encode some useful facts and
-preserve truth faster than you destroy it.  Write code for a 5 or 6 out of 10 so that we can get there.
-
-This phase will last until approximately the render graph API is being used and
-render crossfades are supported.
-
 # Currently Paying Down
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
