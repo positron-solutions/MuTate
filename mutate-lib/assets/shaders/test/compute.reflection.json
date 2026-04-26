@@ -1,0 +1,214 @@
+{
+    "parameters": [
+        {
+            "name": "pushData",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "GlobalPushConstants",
+                    "fields": [
+                        {
+                            "name": "normal_scalar",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "half_scalar",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint16"
+                            },
+                            "binding": {"kind": "uniform", "offset": 4, "size": 2, "elementStride": 0}
+                        },
+                        {
+                            "name": "byte_scalar",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint8"
+                            },
+                            "binding": {"kind": "uniform", "offset": 6, "size": 1, "elementStride": 0}
+                        },
+                        {
+                            "name": "diffuseIdx",
+                            "type": {
+                                "kind": "struct",
+                                "name": "DescriptorHandle",
+                                "fields": [
+                                    {
+                                        "name": "index",
+                                        "type": {
+                                            "kind": "scalar",
+                                            "scalarType": "uint32"
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "normalIdx",
+                            "type": {
+                                "kind": "struct",
+                                "name": "DescriptorHandle",
+                                "fields": [
+                                    {
+                                        "name": "index",
+                                        "type": {
+                                            "kind": "scalar",
+                                            "scalarType": "uint32"
+                                        },
+                                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                    }
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "lightColor",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "GlobalPushConstants",
+                        "fields": [
+                            {
+                                "name": "normal_scalar",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "half_scalar",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint16"
+                                },
+                                "binding": {"kind": "uniform", "offset": 4, "size": 2, "elementStride": 0}
+                            },
+                            {
+                                "name": "byte_scalar",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint8"
+                                },
+                                "binding": {"kind": "uniform", "offset": 6, "size": 1, "elementStride": 0}
+                            },
+                            {
+                                "name": "diffuseIdx",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "DescriptorHandle",
+                                    "fields": [
+                                        {
+                                            "name": "index",
+                                            "type": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint32"
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "normalIdx",
+                                "type": {
+                                    "kind": "struct",
+                                    "name": "DescriptorHandle",
+                                    "fields": [
+                                        {
+                                            "name": "index",
+                                            "type": {
+                                                "kind": "scalar",
+                                                "scalarType": "uint32"
+                                            },
+                                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                        }
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "lightColor",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 32, "elementStride": 0}
+                }
+            }
+        },
+        {
+            "name": "outputBuffer",
+            "binding": {"kind": "descriptorTableSlot", "index": 0},
+            "type": {
+                "kind": "resource",
+                "baseShape": "byteAddressBuffer",
+                "access": "readWrite"
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "main",
+            "stage": "compute",
+            "parameters": [
+                {
+                    "name": "dispatchThreadID",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                }
+            ],
+            "threadGroupSize": [1, 1, 1],
+            "bindings": [
+                {
+                    "name": "pushData",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                {
+                    "name": "outputBuffer",
+                    "binding": {"kind": "descriptorTableSlot", "index": 0}
+                }
+            ]
+        }
+    ],
+    "bindlessSpaceIndex": 1
+}
