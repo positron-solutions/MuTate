@@ -14,12 +14,10 @@ default-run = "mutate-visualizer"
 
 [dependencies]
 ash.workspace = true
-ash-window.workspace = true
 clap = {workspace = true, features = ["derive"]}
 num-traits.workspace = true
 palette.workspace = true
 rand.workspace = true
-raw-window-handle.workspace = true
 rgb.workspace = true
 ringbuf.workspace = true
 smallvec.workspace = true

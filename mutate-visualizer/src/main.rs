@@ -10,7 +10,6 @@ mod window;
 
 use ash::vk;
 use clap::Parser;
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -115,26 +114,9 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let vk_context = &self.vk_context;
-
         // Get a window and surface.  Create a logical device and swapchain for that surface.
         let window = Window::from_args(&self.args, event_loop);
-        let surface = {
-            let display_handle = event_loop
-                .display_handle()
-                .expect("Event loop has no display handle")
-                .as_raw();
-            let window_handle = window
-                .window_handle()
-                .expect("raw_window_handle: platform unsupported")
-                .as_raw();
-            let VkContext {
-                entry, instance, ..
-            } = vk_context;
-            unsafe {
-                ash_window::create_surface(entry, instance, display_handle, window_handle, None)
-                    .expect("ash_window: could not create surface")
-            }
-        };
+        let surface = vk_context.surface(&window, &event_loop);
         let supported_devices: Vec<SupportedDevice> = vk_context
             .supported_devices(&[])
             .into_iter()
@@ -263,15 +245,7 @@ fn main() -> Result<(), utate::MutateError> {
     let args = Args::parse();
     let event_loop = EventLoop::builder().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
-
-    let display_handle = event_loop
-        .display_handle()
-        .expect("winit: event loop has no raw display handle")
-        .as_raw();
-    let required_exts = ash_window::enumerate_required_extensions(display_handle)
-        .expect("ash_window: unknown platform");
-    let vk_context = VkContext::with_extensions(required_exts);
-
+    let vk_context = VkContext::with_display(&event_loop, &[]);
     let mut app = App {
         args,
         running: true,

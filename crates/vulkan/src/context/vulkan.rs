@@ -18,13 +18,15 @@ use ash::vk;
 use smallvec::SmallVec;
 
 use mutate_assets as assets;
+#[cfg(feature="winit")]
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 
 use crate::present::surface::VkSurface;
 use super::device;
 
 /// The entry and instance represent a connection to the Vulkan implementation.
 pub struct VkContext {
-    pub entry: ash::Entry,
+    pub(crate) entry: ash::Entry,
     pub instance: ash::Instance,
     pub profile: InstanceProfile,
 }
@@ -129,6 +131,30 @@ impl VkContext {
         Self::with_extensions_inner(required_exts, INSTANCE_EXTENSIONS_SURFACE, InstanceProfile::SURFACE)
     }
 
+    /// Context with the required extensions learned from a display handle, provided by winit
+    /// applications.  Extra user-supplied `extensions` will be appended to those required by the
+    /// display (in practice, required by the compositor such as Wayland or X).
+    #[cfg(feature="winit")]
+    pub fn with_display(event_loop: &winit::event_loop::EventLoop<()>, extra_exts: &[*const i8]) -> Self {
+        let display_handle = event_loop
+            .display_handle()
+            .expect("winit: event loop has no raw display handle")
+            .as_raw();
+        let platform_exts = ash_window::enumerate_required_extensions(display_handle)
+            .expect("ash_window: unknown platform");
+
+        // NOTE this merge into a Vec is fine for now, but if anyone wants to switch to iterator and
+        // collect later at the raw ash call, that would be fine.  Didn't do it since nobody will
+        // likely use it that way.
+        let all_exts: Vec<*const i8> = platform_exts
+            .iter()
+            .chain(extra_exts.iter())
+            .copied()
+            .collect();
+
+        Self::with_extensions_inner(&all_exts, INSTANCE_EXTENSIONS_SURFACE, InstanceProfile::SURFACE)
+    }
+
     fn with_extensions_inner(required_exts: &[*const i8], instance_exts: &[&CStr], profile: InstanceProfile) -> Self {
         let entry = unsafe { ash::Entry::load().expect("failed to load Vulkan library") };
 
@@ -188,6 +214,25 @@ impl VkContext {
 
     pub fn surface_loader(&self) -> ash::khr::surface::Instance {
        ash::khr::surface::Instance::new(&self.entry, &self.instance)
+    }
+
+    #[cfg(feature = "winit")]
+    pub fn surface(
+        &self, window: &winit::window::Window,
+        event_loop:&winit::event_loop::ActiveEventLoop
+    ) -> vk::SurfaceKHR {
+        let display_handle = event_loop
+                .display_handle()
+                .expect("Event loop has no display handle")
+                .as_raw();
+            let window_handle = window
+                .window_handle()
+                .expect("raw_window_handle: platform unsupported")
+                .as_raw();
+            unsafe {
+                ash_window::create_surface(&self.entry, &self.instance, display_handle, window_handle, None)
+                    .expect("ash_window: could not create surface")
+            }
     }
 
     /// Returns a list of physical devices that meet requirements, sorted in order of preference for

@@ -57,10 +57,6 @@ impl SurfacePresent {
         surface: &VkSurface,
         extent: vk::Extent2D,
     ) -> Self {
-        let VkContext {
-            entry, instance, ..
-        } = &vk_context;
-
         let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent);
 
         // NEXT bon builder for semaphores.  This is nonsense.

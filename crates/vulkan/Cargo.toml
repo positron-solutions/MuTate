@@ -20,3 +20,11 @@ thiserror.workspace = true
 
 mutate-assets = {workspace = true, features = ["runtime"]}
 mutate-untorn.workspace = true
+
+winit = {workspace = true, optional = true}
+ash-window = {workspace = true, optional = true}
+raw-window-handle = {workspace = true, optional = true}
+
+[features]
+default = ["winit"]
+winit = ["dep:winit", "dep:ash-window", "dep:raw-window-handle"]
