@@ -20,7 +20,6 @@ palette.workspace = true
 rand.workspace = true
 rgb.workspace = true
 ringbuf.workspace = true
-smallvec.workspace = true
 thiserror.workspace = true
 winit.workspace = true
 

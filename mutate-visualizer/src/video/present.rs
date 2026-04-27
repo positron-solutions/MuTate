@@ -17,7 +17,6 @@ use std::slice;
 
 use ash::khr::present_wait;
 use ash::vk;
-use smallvec::SmallVec;
 
 // XXX go fix up prelude for most of these.
 use mutate_lib::vulkan::{
