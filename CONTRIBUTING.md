@@ -1,18 +1,35 @@
 # Onboarding
 
-Coming soon!
-
-- [ ] list binaries and test commands
-- [ ] CI
-- [ ] crate layout
+- `cargo run` will run the visualizer.
+- `cargo test --features vulkan` in `/mutate-lib` will run the integration tests for key crates like `vulkan` and `macros`.
+- `cargo workbench --help` uses a cargo alias to run the workbench program (a binary CLI tool using `mutate-lib` with the `dsp` feature for testing filter behaviors and generating pre-baked filter bank setups.
+- `cargo pmr` runs the Parks-McClellen-Remez solver for FIR weight generation.
 
 ## Discussions
 
 Design considerations have been landing in the Github [discussions](https://github.com/positron-solutions/MuTate/discussions).  In particular, the [recruiting contributors](https://github.com/positron-solutions/MuTate/discussions/2) discussion lists some good places to get started.
 
-## DEBT
+## Debt
 
-As mentioned in that link, see the [DEBT.md](./DEBT.md) for a listing of things that are trading a little temporary speed and certainty for a bit more pain in the future and attempting to reduce that pain until we ~~default~~ pay off the debt.
+See the [DEBT.md](./DEBT.md) for a maintained list of places we are trading a little temporary convenience & certainty for a bit more pain in the future.  It also records recommendations to reduce that pain until we ~~declare technical bankruptcy~~ pay off the debt.
+
+## Layout
+
+- `./crates/assets/` Build-time support for build scripts.  Runs `slangc` to emit SPIR-V and reflection data.  Runtime support for loading assets.
+- `./crates/vulkan/` Vulkan is a buffet.  Our Vulkan crate is a plate from the buffet, a coherent set of features given a much reduced API that abstracts over a Vulkan subset to present a fully functional but much more ergonomic interface.
+- `./crates/macros/` Proc macros for fanning in data form multiple types for agreement checking of ensembles like pipelines and their stage layouts.
+
+### For Publishing
+
+- `./mutate-lib/` An integration crate.  Includes the DSP crate right now.  Re-exports vulkan.  Intended as the public library for applications that want real-time DSP with vulkan integration.
+
+- `./mutate-visualizer/` Uses mutate-lib to deliver a functioning music visualizer with window integration.
+
+### Future Spin-Out Crates
+
+- `./crates/slide/` - We use sliding windows.  Ring buffers typically have partially filled semantics, which means downstream has to deal with incomplete windows and potentially buffer the window themselves. This crate will likely mature and be spun out.
+
+- `./crates/untorn/` - A triple buffering (seqlock first pass implementation) solution to effectively give us atomic structs with completely synchronous semantics over shared mutable memory.  There are times where we just don't want the ceremony of locking.  This crate will likely also mature and be spun out.
 
 ## AI Use Policy
 
@@ -30,7 +47,7 @@ Yee-Haw Index: 7 of 10 🤠.  Pick your favorite three-archetypes of engineers m
 
 Put Clippy away.  Add `#[allow(warnings)]` to your dirty tree and don't tell
 anyone.  Slop in the blanks.  Just be sure to encode some useful facts and
-preserve truth faster than you destroy it.  Write code for a yee-haw level of 5 or 6 out of 10 so that we can get there via [strangler fig](https://en.wikipedia.org/wiki/Strangler_fig_pattern) effects.
+**preserve truth faster than you destroy it.**  Write code for a yee-haw level of 5 or 6 out of 10 so that we can get there via [strangler fig](https://en.wikipedia.org/wiki/Strangler_fig_pattern) effects.
 
 This chaotic phase will last until approximately the render graph API is being
 used and render crossfades are supported.
