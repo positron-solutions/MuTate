@@ -1105,7 +1105,6 @@ name = "mutate-visualizer"
 version = "0.1.0"
 dependencies = [
  "ash",
- "ash-window",
  "clap",
  "mutate-assets",
  "mutate-lib",
@@ -1113,7 +1112,6 @@ dependencies = [
  "num-traits",
  "palette",
  "rand 0.9.2",
- "raw-window-handle",
  "rgb",
  "ringbuf",
  "smallvec 2.0.0-alpha.12",
@@ -1126,13 +1124,16 @@ name = "mutate-vulkan"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "ash-window",
  "bytemuck",
  "half",
  "mutate-assets",
  "mutate-untorn",
  "parking",
+ "raw-window-handle",
  "smallvec 2.0.0-alpha.12",
  "thiserror 2.0.18",
+ "winit",
 ]
 
 [[package]]
