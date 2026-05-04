@@ -16,3 +16,6 @@ ui_test.workspace = true
 [[test]]
 name = "ui"
 harness = false
+
+[features]
+runtime = []

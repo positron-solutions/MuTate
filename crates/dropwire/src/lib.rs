@@ -25,7 +25,7 @@
 //!     // In your constructor, use the handy `ARMED` constant to remind yourself that this type
 //!     // requires disarming (and consumption).
 //!     pub fn new(raw: u64) -> Self {
-//!         Self { raw, wire: DropWire::ARMED }
+//!         Self { raw, wire: DropWire::armed() }
 //!     }
 //!
 //!     // Valid consuming methods should destructure self, disarm the wire, and consume the payload
@@ -78,6 +78,20 @@
 //!
 //! One field.  One method.  Zero runtime overhead.
 //!
+//! ## Locating Illegal Drops
+//!
+//! The compile-time check cannot lead you to the call site.  It can only tell you that your program
+//! contains a code path that drops an armed wire.  The **type** in the compiler error output may
+//! narrow down the possibilities enough.
+//!
+//! If you can't find the drop on inspection, you can try to trigger the drop at runtime.  Enable
+//! the `runtime` feature of the crate and the compile-time check will be replaced with a runtime
+//! panic that indicates both the wire's construction and drop location.  Even if you cannot trigger
+//! the drop by using your program, you can rule out paths that are executed and isolate the
+//! inspection surface to code that did not execute.
+//!
+//! If the drop site is actually triggered by running your program,
+//!
 //! ## Limitations
 //!
 //! - **Lack of Scope Knowledge** - The offending scope in which a drop occurs cannot be indicated.
@@ -107,47 +121,16 @@
 //! the types are not strictly guaranteed to be linear.  According to Bothan spies, they are known
 //! as "relevant" types, but only people without boats understand this kind of stuff.
 
-// NEXT add a feature to enable runtime creation / drop detection.  It won't detect drops that don't
-// happen, but it can rule out many that might with minimal pain, enabling a more focused audit on
-// paths that remain.
 // NEXT We can possibly write a new DropWire that piggybacks on the owning type's drop-illegal
 // typestate parameters to enable disarming by simply modifying the owner's typestate in a normal
 // typestate transition.
 
-use std::marker::PhantomData;
+#[cfg(not(feature = "runtime"))]
+mod ct;
+#[cfg(feature = "runtime")]
+mod rt;
 
-// MAYBE variance needs further inspection.
-pub struct DropWire<O>(PhantomData<fn() -> O>);
-
-impl<O> DropWire<O> {
-    pub const ARMED: Self = DropWire(PhantomData);
-
-    /// Disarm the wire, attesting that a valid consuming method has been called.
-    ///
-    /// This must be called after destructuring the guarded type and before the binding holding
-    /// this wire goes out of scope.  Only blessed private methods of the guarded type should
-    /// call this.
-    #[inline(always)]
-    pub fn disarm(self) {
-        //
-        std::mem::forget(self);
-    }
-}
-
-impl<O> Drop for DropWire<O> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        const {
-            panic!("DropWire tripped: consumer did not call disarm on a guarded value");
-        }
-    }
-}
-
-// XXX can the dropwire ever actually be represented on a type or does it boil away at runtime?
-impl<O> std::fmt::Debug for DropWire<O> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // This always-armed format is because disarmed states are forgotten.  If disarmed states
-        // ever become part of concrete types, we may want to represent them.
-        write!(f, "DropWire<{}>(armed)", std::any::type_name::<O>())
-    }
-}
+#[cfg(not(feature = "runtime"))]
+pub use ct::DropWire;
+#[cfg(feature = "runtime")]
+pub use rt::DropWire;

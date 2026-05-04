@@ -16,7 +16,11 @@ impl Bomb {
     }
 }
 
+struct Bomber {
+    bomb: Bomb,
+}
+
 fn main() {
-    let _b = Bomb::new();
+    let _bomber = Bomber { bomb: Bomb::new() };
 }
 //@error-in-other-file: evaluation panicked
