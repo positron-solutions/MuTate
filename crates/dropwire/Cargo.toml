@@ -1,0 +1,18 @@
+[package]
+name = "mutate-dropwire"
+description = "Compile-time enforcement of must-consume semantics."
+readme = "./README.md"
+
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dev-dependencies]
+ui_test.workspace = true
+
+[[test]]
+name = "ui"
+harness = false

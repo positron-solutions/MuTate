@@ -42,7 +42,7 @@ Work to implement an ergonomic architecture while implementing the headline feat
 - [ ] Multiple frontend support, such as using off-screen rendering converted to terminal output similar to [alemidev/scope-tui](https://github.com/alemidev/scope-tui).
 - [ ] Online real-time machine learning to modulate and feed procedural rendering techniques.
 
-See [DEBT.md](./DEBT.md) and [discussions](https://github.com/positron-solutions/MuTate/discussions) for design and feature planning.
+See [DEBT.md](./DEBT.md) and [discussions](https://github.com/positron-solutions/MuTate/discussions) for design and feature planning.  Chat on [our Discord](https://discord.gg/KzSpewYU).  If you want to work on this library or the visualizer.
 
 ### Platform Support
 

@@ -1,0 +1,24 @@
+error[E0080]: evaluation panicked: DropWire tripped: consumer did not call disarm on a guarded value
+  --> /nix/store/wrmank3d6hvc8xp56mih7785fvi5b68l-rust-mixed/lib/rustlib/src/rust/library/core/src/panic.rs:62:9
+   |
+62 |         $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `<mutate_dropwire::DropWire<Bomb> as std::ops::Drop>::drop::{constant#0}` failed here
+   |
+  --> crates/dropwire/src/lib.rs:141:12
+   |
+   = note: in this macro invocation
+
+note: erroneous constant encountered
+ --> crates/dropwire/src/lib.rs:140:8
+
+note: the above error was encountered while instantiating `fn <DropWire<Bomb> as Drop>::drop`
+   --> /nix/store/wrmank3d6hvc8xp56mih7785fvi5b68l-rust-mixed/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:805:1
+    |
+805 | / pub const unsafe fn drop_in_place<T: PointeeSized>(to_drop: *mut T)
+806 | | where
+807 | |     T: [const] Destruct,
+    | |________________________^
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0080`.

@@ -30,6 +30,7 @@ ringbuf = "0.4.8"
 smallvec = "2.0.0-alpha.12"
 thiserror = "2.0.17"
 toml = "0.9.8"
+ui_test = "0.30.4"
 winit = "0.30.12"
 
 # DSP
@@ -57,6 +58,7 @@ mutate-assets = {path = "./crates/assets"}
 mutate-vulkan = {path = "./crates/vulkan"}
 mutate-slide = {path = "./crates/slide"}
 mutate-untorn = {path = "./crates/untorn"}
+mutate-dropwire = {path = "./crates/dropwire"}
 
 # Build fast dependencies
 [profile.dev.package."*"]
