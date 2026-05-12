@@ -124,6 +124,7 @@ use ash::vk;
 
 pub mod prelude {
     pub use super::VulkanError;
+    pub use crate::context::device::{BinarySemaphore, Fence, TimelineSemaphore};
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::present::surface::VkSurface;
 
@@ -143,6 +144,7 @@ pub(crate) mod internal {
     pub use smallvec::SmallVec;
 
     pub use super::VulkanError;
+    pub use crate::context::device::{BinarySemaphore, Fence, TimelineSemaphore};
     pub use crate::context::queue::prelude::*;
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::present::surface::VkSurface;

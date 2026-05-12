@@ -9,9 +9,9 @@
 
 use std::ffi::{c_void, CStr};
 
-use ash::vk;
-
 use mutate_assets as assets;
+
+use crate::internal::*;
 
 use super::descriptors;
 use super::queue;
@@ -158,10 +158,79 @@ impl DeviceContext {
         };
     }
 
-    /// Returns a vanilla binary semaphore.
-    // NEXT bon this for making timeline and other semaphores?
-    pub fn make_semaphore(&self) -> vk::Semaphore {
+    /// Create a binary semaphore.  These should only be used in Vulkan APIs that require them, such
+    /// as swapchain image acquisition.  Use timeline semaphores elsewhere.
+    pub fn make_binary_semaphore(&self) -> Result<BinarySemaphore, VulkanError> {
         let semaphore_ci = vk::SemaphoreCreateInfo::default();
-        unsafe { self.device().create_semaphore(&semaphore_ci, None).unwrap() }
+        let raw = unsafe { self.device().create_semaphore(&semaphore_ci, None)? };
+        Ok(BinarySemaphore(raw))
+    }
+
+    /// Create a timeline semaphore.
+    pub fn make_timeline_semaphore(
+        &self,
+        initial_value: u64,
+    ) -> Result<TimelineSemaphore, VulkanError> {
+        let mut type_ci = vk::SemaphoreTypeCreateInfo::default()
+            .semaphore_type(vk::SemaphoreType::TIMELINE)
+            .initial_value(initial_value);
+        let ci = vk::SemaphoreCreateInfo::default().push_next(&mut type_ci);
+        let raw = unsafe { self.device.create_semaphore(&ci, None)? };
+        Ok(TimelineSemaphore(raw))
+    }
+
+    /// Creates a fence, initialized to the `signaled` state.  Prefer timeline semaphores where possible.
+    pub fn make_fence(&self, signaled: bool) -> Result<Fence, VulkanError> {
+        let flags = if signaled {
+            vk::FenceCreateFlags::SIGNALED
+        } else {
+            vk::FenceCreateFlags::empty()
+        };
+        let ci = vk::FenceCreateInfo::default().flags(flags);
+        let fence = unsafe { self.device.create_fence(&ci, None)? };
+        Ok(Fence(fence))
+    }
+}
+
+// DEBT RAII.  Perhaps when these types grow state and methods, we will also understand their
+// lifetimes and how the handles need to travel across threads and finally be destroyed.
+#[derive(Copy, Clone, Debug)]
+pub struct Fence(pub vk::Fence);
+
+impl Fence {
+    pub fn into_raw(self) -> vk::Fence {
+        self.0
+    }
+
+    pub fn as_raw(&self) -> vk::Fence {
+        self.0
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+/// Type-safe binary semaphore.
+pub struct BinarySemaphore(pub vk::Semaphore);
+
+impl BinarySemaphore {
+    pub fn into_raw(self) -> vk::Semaphore {
+        self.0
+    }
+
+    pub fn as_raw(&self) -> vk::Semaphore {
+        self.0
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+/// Type-safe timeline semaphore
+pub struct TimelineSemaphore(pub vk::Semaphore);
+
+impl TimelineSemaphore {
+    pub fn into_raw(self) -> vk::Semaphore {
+        self.0
+    }
+
+    pub fn as_raw(&self) -> vk::Semaphore {
+        self.0
     }
 }

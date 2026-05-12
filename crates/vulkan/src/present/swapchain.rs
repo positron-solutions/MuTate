@@ -106,8 +106,10 @@ impl SwapchainContext {
         let image_views =
             create_image_views(&device_context.device(), &images, surface.format.format);
 
-        let image_available_semaphores = std::array::from_fn(|_| device_context.make_semaphore());
-        let present_ready_semaphores = std::array::from_fn(|_| device_context.make_semaphore());
+        let image_available_semaphores =
+            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap().into_raw());
+        let present_ready_semaphores =
+            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap().into_raw());
         Self {
             present_ready_semaphores,
             image_available_semaphores,
