@@ -110,6 +110,22 @@ impl<T> MappedAllocation<T> {
         Ok(())
     }
 
+    /// Refresh host view with device writes.
+    pub fn invalidate(&mut self, context: &DeviceContext) -> Result<(), VulkanError> {
+        let invalidate_range = vk::MappedMemoryRange {
+            memory: self.memory,
+            offset: 0,
+            size: self.size_bytes,
+            ..Default::default()
+        };
+        unsafe {
+            context
+                .device()
+                .invalidate_mapped_memory_ranges(&[invalidate_range])?;
+        }
+        Ok(())
+    }
+
     // XXX argument order
     pub fn bound(&self, context: &mut DeviceContext) -> descriptors::SsboIdx {
         let device = &context.device;
