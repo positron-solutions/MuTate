@@ -146,7 +146,8 @@ pub trait ComputePipelineSpec {
 /// carry forward layout and stage information.
 pub struct ComputePipeline<S: ComputePipelineSpec> {
     pipeline: vk::Pipeline,
-    layout: layout::Layout<S::LayoutSpec>,
+    // XXX re-private
+    pub layout: layout::Layout<S::LayoutSpec>,
     _marker: PhantomData<S>,
 }
 
@@ -169,7 +170,7 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
 
         let pipeline_ci = vk::ComputePipelineCreateInfo::default()
             .stage(stage)
-            .layout(layout.raw());
+            .layout(layout.as_raw());
         // NEXT PSO compiling can take a while and definitely should be queued into background via resources.
         let pipeline = unsafe {
             device
@@ -185,18 +186,35 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
 
     // XXX typed recording slot
     // XXX possibly keep a device borrow on recording slots?
-    pub fn push(&self, device: &ash::Device, cb: vk::CommandBuffer, data: &S::Push) {
-        self.layout.push(device, cb, data);
+    pub fn push(&self, device_ctx: &DeviceContext, cb: vk::CommandBuffer, data: &S::Push) {
+        self.layout.push(device_ctx.device(), cb, data);
     }
 
     /// Bind and dispatch this pipeline
     // NEXT bounds checked vs bounds guaranteed dispatch geometries for compute shaders.  There is a
     // correlation between `[numthreads(4, 8, 1)]` style geometry in the shader declaration and
     // dividing input geometry by 4 and 8 for the dispatch.  We should find a way to integrate
-    // reflection and bounds checking (or omission).  Unchecked can use const expressions to ensure
-    // perfect geometry by type contract.
-    pub fn dispatch(&self, device: &ash::Device, cb: vk::CommandBuffer, x: u32, y: u32, z: u32) {
+    // reflection and bounds checking (or const calculation).  Compile time can use const
+    // expressions to ensure perfect geometry by type contract.
+    pub fn dispatch(
+        &self,
+        device_ctx: &DeviceContext,
+        cb: vk::CommandBuffer,
+        x: u32,
+        y: u32,
+        z: u32,
+    ) {
+        let device = device_ctx.device();
         unsafe {
+            // NEXT persist the ID or hash in a CB state shadow and no-op this re-bind when already identical.
+            device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::COMPUTE,
+                self.layout.as_raw(),
+                0,
+                &[device_ctx.descriptors.set()],
+                &[],
+            );
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
             device.cmd_dispatch(cb, x, y, z);
         }

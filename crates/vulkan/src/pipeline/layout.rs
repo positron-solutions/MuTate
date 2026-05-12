@@ -41,7 +41,7 @@ impl<S: LayoutSpec> Layout<S> {
         })
     }
 
-    pub fn raw(&self) -> vk::PipelineLayout {
+    pub fn as_raw(&self) -> vk::PipelineLayout {
         self.raw
     }
 
