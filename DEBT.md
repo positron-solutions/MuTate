@@ -160,7 +160,17 @@ Error handling has traditionally been an area of ergonomic innovation in Rust.  
 - Return `Result` types from fallible operations to ensure proper combinator usages are happening.
 - Use any MuTate error that seams appropriate or make a new one, and be honest about its use when documenting.
 - If you are a saint, go implement proper tracing, tracing formatting, options for consumers that want to ignore tracing, spans and the like.
-- If you are less of a saint, find panics where continuing has some meaningful use case and conver them to `Result` and do something useful after returning it.
+- If you are less of a saint, find panics where continuing has some meaningful use case and convert them to `Result` and do something useful after returning it.
+
+## Fallible Resource Acquisition
+
+Creating multiple Vulkan objects within a higher level constructor can be viewed as a resource transaction.  If one thing fails, the partial construction must be unwound.  Because the partial values are typically created on the stack, consuming RAII patterns can be useful to enforce destruction on temporaries while lifting the RAII restrictions on the final output value.
+
+### For Now
+
+- Manual destruction is tolerable for simple cases.
+- We are generally building ownership contracts from leaf types up, not from root types down.  Start with short scopes, not long ones.
+- Avoid RAII in the public API.   RAII wrapped resources transitively carry their lifetime contracts even in cases where soundness is created some other way far downstream.  This dictates API shape in ways we don't want to make rigid too early.  Stick with manual destruction of high-level types and let validation catch accounting errors.
 
 ## Vulkan Versions, Device & Platform Compatibility
 
