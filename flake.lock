@@ -24,11 +24,11 @@
         "rust-analyzer-src": "rust-analyzer-src"
       },
       "locked": {
-        "lastModified": 1771917501,
-        "narHash": "sha256-pyjD5s19JzH/aw6OnjyxYddoQWD/F1ygj9bku9td+MI=",
+        "lastModified": 1777708550,
+        "narHash": "sha256-Qif3UXT0l5OQq8H9pRWt4/ia4gF48MWK2oHKL8uVx8U=",
         "owner": "nix-community",
         "repo": "fenix",
-        "rev": "1d6ea44fd28bd5ad7cfd4bb39a7a225225484593",
+        "rev": "74c1591efaff494756b8d35ebe357c6c2bbdca96",
         "type": "github"
       },
       "original": {
@@ -139,11 +139,11 @@
         "systems": "systems"
       },
       "locked": {
-        "lastModified": 1771952604,
-        "narHash": "sha256-eWylIh9nCiPcylNG1AFBVA4iP56MbOSBf0UZ9ePjHJc=",
+        "lastModified": 1777786233,
+        "narHash": "sha256-0QIx7mMBGBf4E1Z2w/nANO9ilO5/J+seUaNdBMMVeZU=",
         "ref": "refs/heads/master",
-        "rev": "dd7eb94c13a02202017bd1407f0d6eb1f2354d6b",
-        "revCount": 9,
+        "rev": "5cc505dcecfed03f2f01f44a51cb3f5fab01146a",
+        "revCount": 11,
         "type": "git",
         "url": "https://github.com/positron-solutions/pins.git"
       },
@@ -168,11 +168,11 @@
     "rust-analyzer-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1771830288,
-        "narHash": "sha256-Key/V7kjPYdPFeAw6cPS9M//6hGb6l1pLJroy7aUcfU=",
+        "lastModified": 1777639980,
+        "narHash": "sha256-6d7Hdurvbjc5uwJuc0YiK7rZBGj6Gs3uzfBFcTs+xCc=",
         "owner": "rust-lang",
         "repo": "rust-analyzer",
-        "rev": "05da4cf3c4dfb8aa3430343f41e73c4cfad46bd5",
+        "rev": "64cdaeb06f69b6b769a492edd88b022ae88e8ca2",
         "type": "github"
       },
       "original": {
