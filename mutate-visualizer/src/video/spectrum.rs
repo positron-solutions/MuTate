@@ -13,7 +13,6 @@ use mutate_assets as assets;
 use mutate_lib::{self as utate, prelude::*};
 use utate::vulkan::{
     context::descriptors::SsboIdx,
-    dispatch::command::{CommandPool, RecordingSlot},
     present::swapchain::AcquiredImage,
     resource::{buffer, image},
     util,
@@ -152,18 +151,17 @@ impl SpectrumNode {
     /// composite the output and stuff.
     pub fn draw(
         &mut self,
-        recording_slot: &RecordingSlot,
+        cb: &RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
         input: &[crate::audio::cqt::Cqt],
         context: &crate::DeviceContext,
         // NEXT This extent is basically part of the target
         extent: vk::Extent2D,
     ) {
-        let cb = recording_slot.command_buffer;
         let device = context.device();
 
         unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.compute_pipeline);
+            device.cmd_bind_pipeline(**cb, vk::PipelineBindPoint::COMPUTE, self.compute_pipeline);
         }
 
         // Transition the output layout for writing.
@@ -171,7 +169,7 @@ impl SpectrumNode {
         let range = image::range();
         image::transition_layout(
             out_image,
-            &cb,
+            &**cb,
             range,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -209,7 +207,7 @@ impl SpectrumNode {
         };
         unsafe {
             device.cmd_push_constants(
-                cb,
+                **cb,
                 self.pipeline_layout,
                 vk::ShaderStageFlags::COMPUTE,
                 0,
@@ -234,14 +232,14 @@ impl SpectrumNode {
             // constants (or sets, which we avoid ever changing) change, we need to rebind
             // descriptors before the pipeline.
             device.cmd_bind_descriptor_sets(
-                cb,
+                **cb,
                 vk::PipelineBindPoint::COMPUTE,
                 self.pipeline_layout,
                 0,
                 &[context.descriptors.set()],
                 &[],
             );
-            device.cmd_dispatch(cb, dispatch_x, dispatch_y, 1);
+            device.cmd_dispatch(**cb, dispatch_x, dispatch_y, 1);
         }
 
         // Insert a buffer barrier so we can write it to the target
@@ -254,7 +252,7 @@ impl SpectrumNode {
         let region = buffer::buffer_image_copy_full(extent);
         unsafe {
             device.cmd_copy_buffer_to_image(
-                cb,
+                **cb,
                 self.output_buffer.as_ref().unwrap().buffer,
                 out_image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -266,7 +264,7 @@ impl SpectrumNode {
         // NEXT make unknown transitions fail instead!
         image::transition_layout(
             out_image,
-            &cb,
+            &**cb,
             range,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::PRESENT_SRC_KHR,

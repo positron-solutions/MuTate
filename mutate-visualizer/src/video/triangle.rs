@@ -8,7 +8,7 @@
 use ash::vk;
 
 use mutate_assets as assets;
-use mutate_lib::vulkan::{present::swapchain::AcquiredImage, dispatch::command::{RecordingSlot}};
+use mutate_lib::vulkan::prelude::*;
 
 // This will be an interface after more nodes exist
 pub struct TriangleNode {
@@ -164,24 +164,23 @@ impl TriangleNode {
 
     pub fn draw(
         &self,
-        recording_slot: &RecordingSlot,
+        cb: RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
         context: &crate::DeviceContext,
         rgb: palette::Srgb<f32>,
         scale: f32,
         extent: &vk::Extent2D,
     ) {
-        let cb = recording_slot.command_buffer;
         let device = context.device();
         let pipeline = self.pipelines[0];
         unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
         }
 
         let combined_push: [f32; 5] = [rgb.red, rgb.green, rgb.blue, 1.0, scale];
         unsafe {
             device.cmd_push_constants(
-                cb,
+                *cb,
                 self.pipeline_layout,
                 vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
                 0,
@@ -205,11 +204,11 @@ impl TriangleNode {
         };
 
         unsafe {
-            device.cmd_set_viewport(cb, 0, &[viewport]);
-            device.cmd_set_scissor(cb, 0, &[scissor]);
+            device.cmd_set_viewport(*cb, 0, &[viewport]);
+            device.cmd_set_scissor(*cb, 0, &[scissor]);
 
             // The triangle ▲
-            device.cmd_draw(cb, 3, 1, 0, 0)
+            device.cmd_draw(*cb, 3, 1, 0, 0)
         };
     }
 
