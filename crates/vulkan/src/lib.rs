@@ -131,6 +131,7 @@ pub mod prelude {
     pub use crate::context::queue::prelude::*;
     pub use crate::descriptor_newtype;
     pub use crate::device_address_newtype;
+    pub use crate::dispatch::prelude::*;
     pub use crate::pipeline::prelude::*;
     pub use crate::slang::prelude::*;
     pub use crate::slang_newtype;
@@ -147,6 +148,7 @@ pub(crate) mod internal {
     pub use crate::context::device::{BinarySemaphore, Fence, TimelineSemaphore};
     pub use crate::context::queue::prelude::*;
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
+    pub use crate::dispatch::internal::*;
     pub use crate::present::surface::VkSurface;
     pub use crate::present::swapchain::SwapchainContext;
     pub use crate::slang::prelude::*;
