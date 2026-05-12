@@ -1,212 +1,153 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! # Dispatch
+//! # Recording & Dispatch
 //!
-//! Command buffers and you.  This module encapsulates the valid lifecycle of a command buffer.  The
-//! overall strategy can be described as **optionally typed** for callees.  Give any command buffer
-//! to ash bindings.  However, at internal API boundaries that are prone to abuse, typed buffers can
-//! be specified to prevent actual plausible mix-ups.
+//! Record commands into command buffers.  Submit buffers to queues.  Recycle and reset command
+//! buffers and pools.  This module encompasses how we feed the queues and enable runtime components
+//! to get their commands recorded without knowing too much about the pools and buffers we give to
+//! them.
 //!
-//! Guarantees We Support:
+//! ## Pool Geometry
 //!
-//! - A command buffer obtained as if from a transfer queue cannot be given to a graphics-only call
-//!   (unless you opt out by directly calling ash bindings).  The same guarantee is made for
-//!   a buffer requested as compute-only becoming used as graphics.
-//! - Command buffer recording lifecycles are enforced.
-//! - Just call `into_inner` if some contract is in the way for now.
+//! - [`Pool`] - A single command pool, used alone for transient bulk operations or persistent
+//!   buffer sets.  The vended buffers can use any recording model but the default is `OneTime`.
 //!
-//! ## Lifecycle
+//! - [`PoolRing`] - A literal `Pool` ring for epoch style use.  Per-cycle one pool is taken from
+//!   the ring and all of the buffers that the pool vends will be used once and implicitly reset
+//!   when the same pool is handed out again.
 //!
-//! ```text
-//! Initial ──begin()──► Recording ──end()──► Executable ──submit()──► Pending
-//!                          │                                              │
-//!                     (commands)                                        (reset)
-//! ```
+//! ## Buffer Recording & Submission Models
 //!
-//! State transitions are consuming — you cannot hold a `CommandBuffer<_, Recording>` and
-//! accidentally call `submit()` on it.  The raw handle is recoverable at any state via `Deref`.
+//! - [`OneTime`] - Recorded and submitted only once.  This is the default.
+//!
+//! - [`Sequential`] - May be re-submitted exclusively with synchronization on previous submission.
+//!   Use this for repetitive work where re-recording can be avoided.
+//!
+//! - [`Simultaneous`] - May re-submitted even while in flight.  Reclaim requires synchronization.
+//!   This style can be heavy on drivers.  It is only useful when overlapping dispatches of the same
+//!   command buffer are required.
+//!
+//! ### Reset Support
+//!
+//! Reset of individual buffers is supported for use cases where it fits the pool better than
+//! resetting the entire pool.  Individual buffer reset cannot make sense for epoch style `PoolRing`
+//! usage and is not supported.
+//!
+//! Individual reset can make sense for bulk submissions of one-time-use buffers that don't present
+//! a good timing to reset the entire pool.  Individual reset can also make sense for a pool of
+//! long-lived, rarely updated multi-submission buffers.
+//!
+//! Reset is distinct from reclaiming & re-vending a new buffer, which may require more
+//! re-allocation overhead.  However, reclaim & re-vend is an available tactic even when reset is
+//! not.
+//!
+//! ## Thread Safety
+//!
+//! Pools are not thread-safe.  To use a ring or pool on multiple threads, instead give each thread
+//! its own ring or pool and use semaphores and host synchronization for coordinating submission /
+//! order.  Queue submission is thread-safe through the [`Queue`] abstraction.
+//!
+//! ## Queue Family Compatibility
+//!
+//! Buffers from different pools in the same queue family may be submitted together.  Secondary
+//! buffers may be executed in primary buffers from a different pool as long as their pools belong
+//! to the same family.
+//!
+//! ## Secondary Buffers
+//!
+//! A command pool can allocate secondary command buffers that may be used in a primary as long as
+//! the pools are both in the same queue family.  Even if the primary or its pool is reset, the
+//! secondary can be re-used if its model is `Sequential` or `Simultaneous`.  If `Simultaneous`, the
+//! same secondary can be used in two different primaries concurrently.
+//!
+//! - [`SecondaryRecording`]
 
-pub mod command;
-// pub mod compute;
-// pub mod graphics;
+//! TODO move onto pool ring size argument
+//! ## Pool Ring Size
+//!
+//! There are usually two generations in
+//! order to pipeline recording beside parallel dispatch.  The epochs form a ring and the ring has
+//! slots.
+//!
+
+// NEXT protected support
+
+pub mod cb;
+pub mod pool;
+pub mod submit;
 pub mod sync;
-// pub mod transfer;
+
+pub mod prelude {
+    // Put traits into there as they show up
+
+    // Marker types
+    pub use super::OneTime;
+    pub use super::Sequential;
+    pub use super::Simultaneous;
+
+    pub use super::cb::{
+        ExecutableBuffer, ExecutableSecondary, RecordingBuffer, RecordingSecondary,
+        RenderingBuffer, RenderingSecondary,
+    };
+    pub use super::pool::{CommandPool, PoolLease};
+}
+
+pub(crate) mod internal {
+    pub use super::OneTime;
+    pub use super::Sequential;
+    pub use super::Simultaneous;
+
+    pub use super::cb::{
+        ExecutableBuffer, ExecutableSecondary, RecordingBuffer, RecordingSecondary,
+        RenderingBuffer, RenderingSecondary,
+    };
+}
 
 use std::marker::PhantomData;
 
 use ash::vk;
 
-use crate::{context::DeviceContext, VulkanError};
+use crate::internal::*;
 
-// Marker traits for capabilities
-trait TransferCap {}
-trait ComputeCap: TransferCap {}
-trait GraphicsCap: ComputeCap {}
-
-// Command buffer capabilities
-pub struct Graphics;
-pub struct Compute;
-pub struct Transfer;
-
-impl TransferCap for Transfer {}
-impl TransferCap for Compute {}
-impl TransferCap for Graphics {}
-impl ComputeCap for Compute {}
-impl ComputeCap for Graphics {}
-impl GraphicsCap for Graphics {}
-
-/// Allocated but `vkBeginCommandBuffer` has not been called.
-pub struct Initial;
-/// `vkBeginCommandBuffer` has been called; commands may be recorded.
-pub struct Recording;
-/// `vkEndCommandBuffer` has been called; ready for submission.
-pub struct Executable;
-/// Submitted to a queue; GPU may be executing this buffer.
-/// The buffer must not be re-recorded or re-submitted until the
-/// associated fence has signalled and the pool has reset it.
-pub struct Pending;
-
-/// A command buffer parameterised by both capability (`Cap`) and lifecycle state (`State`).
-/// Type-state transitions are consuming.
-#[derive(Copy, Clone)]
-pub struct CommandBuffer<Cap, State> {
-    raw: vk::CommandBuffer,
-    _cap: PhantomData<Cap>,
-    _state: PhantomData<State>,
-}
-
-impl<Cap, State> CommandBuffer<Cap, State> {
-    /// Return a clone of the raw handle for any function calls not yet supported through contract.
-    #[inline]
-    pub fn raw(self) -> vk::CommandBuffer {
-        self.raw
+mod sealed {
+    pub trait SubmissionModel {
+        const BUFFER_FLAGS: ash::vk::CommandBufferUsageFlags;
+        const POOL_FLAGS: ash::vk::CommandPoolCreateFlags;
     }
 }
 
-impl<Cap> CommandBuffer<Cap, Initial> {
-    /// Begin recording.  Consumes the `Initial` buffer and returns it in the `Recording` state.
-    ///
-    /// Corresponds to `vkBeginCommandBuffer`.
-    pub fn begin(
-        self,
-        context: &DeviceContext,
-    ) -> Result<CommandBuffer<Cap, Recording>, VulkanError> {
-        let begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        unsafe {
-            context
-                .device()
-                .begin_command_buffer(self.raw, &begin_info)?
-        };
-        Ok(CommandBuffer {
-            raw: self.raw,
-            _cap: PhantomData,
-            _state: PhantomData,
-        })
-    }
+// XXX decide one
+// pub(crate) use sealed::SubmissionModel;
+pub trait SubmissionModel: sealed::SubmissionModel {}
+
+/// Buffer can only be recorded and submitted once.  It is considered reclaimed by the driver on
+/// submission.
+pub struct OneTime;
+/// Buffer can be dispatched multiple times, but only one dispatch may be in-flight at any time.
+// NEXT it would be useful to enforce single-use-in-flight, but the ownership lifecycle for sync
+// primitive and old-to-new-buffer type transition need to be figured out.  We may just tack sync
+// data onto each buffer but hide the detail from consumers.
+pub struct Sequential;
+/// Same buffer can be dispatched multiple times.
+// NEXT reclaiming this with copies in flight would be kind of bad.  Again, appending some sync data
+// may allow this to clean up naturally.  Threading calls through some recording context that
+// manages the pool's handles is another option.
+pub struct Simultaneous;
+
+impl sealed::SubmissionModel for OneTime {
+    const BUFFER_FLAGS: vk::CommandBufferUsageFlags = vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT;
+    const POOL_FLAGS: vk::CommandPoolCreateFlags = vk::CommandPoolCreateFlags::TRANSIENT;
+}
+impl sealed::SubmissionModel for Sequential {
+    const BUFFER_FLAGS: vk::CommandBufferUsageFlags = vk::CommandBufferUsageFlags::empty();
+    const POOL_FLAGS: vk::CommandPoolCreateFlags = vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER;
+}
+impl sealed::SubmissionModel for Simultaneous {
+    const BUFFER_FLAGS: vk::CommandBufferUsageFlags = vk::CommandBufferUsageFlags::SIMULTANEOUS_USE;
+    const POOL_FLAGS: vk::CommandPoolCreateFlags = vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER;
 }
 
-impl<Cap> CommandBuffer<Cap, Recording> {
-    /// Finish recording.  Consumes the `Recording` buffer and returns it in the `Executable` state.
-    ///
-    /// Corresponds to `vkEndCommandBuffer`.
-    pub fn end(
-        self,
-        context: &DeviceContext,
-    ) -> Result<CommandBuffer<Cap, Executable>, VulkanError> {
-        unsafe { context.device().end_command_buffer(self.raw)? };
-        Ok(CommandBuffer {
-            raw: self.raw,
-            _cap: PhantomData,
-            _state: PhantomData,
-        })
-    }
-}
-
-/// A temporary borrow that presents a `CommandBuffer` at a lower capability level.
-/// Useful for passing a `Graphics` buffer into a function that only needs `Transfer`.
-struct CommandBufferView<'a, Cap, State> {
-    raw: vk::CommandBuffer,
-    _borrow: PhantomData<&'a mut ()>,
-    _cap: PhantomData<Cap>,
-    _state: PhantomData<State>,
-}
-
-impl<Cap: GraphicsCap, State> CommandBuffer<Cap, State> {
-    pub fn as_compute(&mut self) -> CommandBufferView<'_, Compute, State> {
-        CommandBufferView {
-            raw: self.raw,
-            _borrow: PhantomData,
-            _cap: PhantomData,
-            _state: PhantomData,
-        }
-    }
-}
-
-impl<Cap: ComputeCap, State> CommandBuffer<Cap, State> {
-    pub fn as_transfer(&mut self) -> CommandBufferView<'_, Transfer, State> {
-        CommandBufferView {
-            raw: self.raw,
-            _borrow: PhantomData,
-            _cap: PhantomData,
-            _state: PhantomData,
-        }
-    }
-}
-
-// XXX Command Context?
-/// omg,
-pub struct CommandPool {
-    pool: vk::CommandPool,
-    // buffers: [CommandBuffer<Cap, Initial>; N],
-    // _cap: PhantomData<Cap>,
-}
-
-impl CommandPool {
-    pub fn new(context: &DeviceContext, frames: usize) -> Self {
-        // pub queue: vk::Queue,
-        // pub command_pool: vk::CommandPool,
-        todo!()
-    }
-
-    pub fn destroy(&self, context: &DeviceContext) {
-        todo!()
-    }
-
-    // /// Reset and return the command buffer for the given frame index,
-    // /// ready to begin recording.
-    // pub fn reset(&mut self, context: &DeviceContext, frame: usize) -> &CommandBuffer<Cap, Initial> {
-    //     todo!()
-    // }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    // fn needs_transfer(cmd: &mut impl TransferCommands) {
-    //     cmd.copy_buffer(0xDEAD, 0xBEEF, 1024);
-    // }
-
-    trait Null: Sized {
-        fn null() -> Self;
-    }
-
-    impl<Cap, State> Null for CommandBuffer<Cap, State> {
-        fn null() -> Self {
-            Self {
-                raw: vk::CommandBuffer::null(),
-                _cap: PhantomData,
-                _state: PhantomData,
-            }
-        }
-    }
-
-    // #[test]
-    // fn recording_borrow_downcast() {
-    //     let mut graphics_cmd: CommandBuffer<Graphics, Recording> = CommandBuffer::null();
-    //     let mut transfer_view = graphics_cmd.as_transfer();
-    //     needs_transfer(&mut transfer_view);
-    // }
-}
+impl SubmissionModel for OneTime {}
+impl SubmissionModel for Sequential {}
+impl SubmissionModel for Simultaneous {}
