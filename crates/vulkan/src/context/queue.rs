@@ -88,7 +88,9 @@ use smallvec::SmallVec;
 use crate::internal::*;
 
 pub mod prelude {
+    pub use super::Capability;
     pub use super::Queue;
+    pub use super::QueueCapability;
     pub use super::QueuePriority;
 
     pub use super::Compute;
@@ -97,7 +99,7 @@ pub mod prelude {
 }
 
 mod sealed {
-    pub trait Capability {
+    pub trait Capability: Clone + Copy {
         const CAPABILITY: super::QueueCapability;
     }
 }
@@ -201,7 +203,6 @@ impl Queues {
     pub fn new(device: &ash::Device, plan: QueuePlan) -> Self {
         Queues {
             physical_device: plan.physical_device,
-
             high_graphics: plan
                 .high_graphics
                 .iter()
@@ -212,7 +213,6 @@ impl Queues {
                 .iter()
                 .map(|&slot| Queue::new(device, slot))
                 .collect(),
-
             high_compute: Queue::new(device, plan.high_compute),
             low_compute: Queue::new(device, plan.low_compute),
             transfer: Queue::new(device, plan.transfer),
@@ -308,6 +308,7 @@ pub struct Queue<C: Capability> {
     /// the user.
     actual_flags: vk::QueueFlags,
     queue_match: QueueMatch,
+    #[allow(dead_code)]
     _marker: PhantomData<C>,
 }
 
