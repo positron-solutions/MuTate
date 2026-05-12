@@ -20,10 +20,7 @@ use ash::vk;
 
 // XXX go fix up prelude for most of these.
 use mutate_lib::vulkan::{
-    dispatch::{
-        command::{CommandPool, RecordingSlot},
-        sync,
-    },
+    dispatch::{pool::PoolRing, sync},
     prelude::*,
     present::swapchain::{AcquiredImage, SwapchainContext},
 };
@@ -32,16 +29,15 @@ use mutate_lib::{self as utate, prelude::*};
 pub struct SurfacePresent {
     swapchain: SwapchainContext,
 
-    frame_counter: u64,
-    in_flight: vk::Semaphore,
-
+    // frame_counter: u64,
+    // in_flight: vk::Semaphore,
     /// Present wait measurement
     present: sync::PresentConsumer,
 
     // NEXT Pool rings can likely be abstracted.  It's a very solid piece of infrastructure.
     // Just enough for front & back frame.  Didn't we do this with recording slots and rings?
     queue: Queue<Graphics>,
-    pools: [CommandPool; 2],
+    pools: PoolRing<Graphics>,
     /// A ring index, always advances by 1.  Longer pool rings could be used if there's a reason for
     /// longer serial work to pipeline in parallel, likely using only a few warps (because otherwise
     /// it's asking the scheduler to make it parallel).
@@ -64,28 +60,27 @@ impl SurfacePresent {
             initial_value: 0,
             ..Default::default()
         };
-        let semaphore_ci = vk::SemaphoreCreateInfo::default().push_next(&mut type_ci);
-        let in_flight = unsafe {
-            device_context
-                .device()
-                .create_semaphore(&semaphore_ci, None)
-                .unwrap()
-        };
+        // let semaphore_ci = vk::SemaphoreCreateInfo::default().push_next(&mut type_ci);
+        // let in_flight = unsafe {
+        //     device_context
+        //         .device()
+        //         .create_semaphore(&semaphore_ci, None)
+        //         .unwrap()
+        // };
 
         // NEXT make the command pools / rings / recording slots do this without dropping to raw types.
         let queue = device_context
             .queues
             .graphics(vk_context, surface, QueuePriority::High)
             .unwrap();
-        let pools: [CommandPool; 2] =
-            std::array::from_fn(|_| CommandPool::new(device_context, queue.family()));
+        let pools = PoolRing::new(device_context, &queue).unwrap();
 
         let present = sync::PresentConsumer::new(vk_context, device_context, swapchain.swapchain)
             .expect("Could not start up the present wait gizmo");
 
         Self {
-            frame_counter: 0,
-            in_flight,
+            // frame_counter: 0,
+            // in_flight,
             present,
 
             recording_index: 0,
@@ -96,14 +91,19 @@ impl SurfacePresent {
         }
     }
 
-    pub fn destroy(&self, context: &DeviceContext) {
+    pub fn destroy(self, context: &DeviceContext) {
         let device = &context.device();
         unsafe {
-            self.swapchain.destroy(context);
-            for pool in &self.pools {
-                pool.destroy(context);
-            }
-            device.destroy_semaphore(self.in_flight, None);
+            let SurfacePresent {
+                swapchain,
+                pools,
+                // in_flight,
+                ..
+            } = self;
+
+            swapchain.destroy(context);
+            pools.destroy(context);
+            // device.destroy_semaphore(in_flight, None);
         }
     }
 
@@ -125,44 +125,20 @@ impl SurfacePresent {
             .notify_swapchain_recreation(self.swapchain.swapchain);
     }
 
-    /// Wait for the previous submission to complete
-    pub fn draw_wait(&mut self, device_context: &DeviceContext) {
-        let wait_value = self.frame_counter;
-        let wait_info = vk::SemaphoreWaitInfo::default()
-            .semaphores(slice::from_ref(&self.in_flight))
-            .values(slice::from_ref(&wait_value));
-        unsafe {
-            device_context
-                .device()
-                .wait_semaphores(&wait_info, 100_000_000) // 100ms
-                .unwrap();
-        }
-    }
-
     /// Return a hot command buffer, image, and associated information used for drawing.
     pub fn render_target(
         &mut self,
         context: &DeviceContext,
         clear: vk::ClearValue, // XXX extract this because it's basically pretty annoying.
-    ) -> (RecordingSlot, AcquiredImage) {
+    ) -> (
+        (TimelineSemaphore, u64),
+        RecordingBuffer<Graphics, OneTime>,
+        AcquiredImage,
+    ) {
         let device = &context.device();
+        let lease = self.pools.acquire(&context).unwrap();
+        let cb = lease.primary(&context).unwrap();
         let acquired_image = self.swapchain.acquire();
-
-        // NEXT recording slots does indeed seem to be some kind of useful abstraction.  Its pools
-        // and submission semaphores will
-        let idx = self.recording_index as usize;
-        let pool = &mut self.pools[idx];
-        pool.reset(&context);
-        let command_buffer = pool.buffer(&context);
-        // XXX maybe do this on creation?
-        // this is the compute variant.  the graphics variant below has only a little more ceremony
-        // for roughly the same abstraction.
-        unsafe {
-            let begin = vk::CommandBufferBeginInfo::default();
-            device.begin_command_buffer(command_buffer, &begin).unwrap();
-        }
-        self.recording_index ^= 1;
-        let slot = RecordingSlot { command_buffer };
 
         // let barrier = vk::ImageMemoryBarrier2 {
         //     src_stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
@@ -211,7 +187,7 @@ impl SurfacePresent {
 
         // unsafe { device.cmd_begin_rendering(command_buffer, &render_info) };
 
-        (slot, acquired_image)
+        ((lease.timeline(), lease.signal_value()), cb, acquired_image)
     }
 
     /// Sync presentation image transform and present.
@@ -219,16 +195,11 @@ impl SurfacePresent {
     pub fn post_draw(
         &mut self,
         context: &DeviceContext,
-        slot: &RecordingSlot,
+        in_flight: (TimelineSemaphore, u64),
+        cb: RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
     ) {
         let device = context.device();
-        unsafe {
-            context
-                .device
-                .end_command_buffer(slot.command_buffer)
-                .unwrap()
-        };
 
         // XXX Unique for graphics
         // unsafe { device.cmd_end_rendering(target.command_buffer) };
@@ -266,20 +237,17 @@ impl SurfacePresent {
         //         .cmd_pipeline_barrier2(target.command_buffer, &dep2)
         // };
 
-        let wait_info = vk::SemaphoreSubmitInfo {
-            semaphore: acquired_image.image_available,
-            stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            ..Default::default()
-        };
+        let recorded = cb.end(context).unwrap();
+        let wait_info = vk::SemaphoreSubmitInfo::default()
+            .semaphore(acquired_image.image_available)
+            .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT);
 
-        let next_value = self.frame_counter + 1;
-        self.frame_counter = next_value;
-        // XXX Pacing on in_flight, but this kind of duplicates present_ready?  present_ready is
-        // a also useful for swapchain reconstruction.
+        // let next_value = self.frame_counter + 1;
+        // self.frame_counter = next_value;
         let in_flight = vk::SemaphoreSubmitInfo::default()
-            .semaphore(self.in_flight)
+            .semaphore(in_flight.0.into_raw())
             .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .value(next_value);
+            .value(in_flight.1);
 
         let signal_infos = [
             vk::SemaphoreSubmitInfo {
@@ -289,11 +257,7 @@ impl SurfacePresent {
             },
             in_flight,
         ];
-        let cb_info = vk::CommandBufferSubmitInfo {
-            command_buffer: slot.command_buffer,
-            ..Default::default()
-        };
-
+        let cb_info = vk::CommandBufferSubmitInfo::default().command_buffer(*recorded);
         let submit = vk::SubmitInfo2::default()
             .wait_semaphore_infos(slice::from_ref(&wait_info))
             .signal_semaphore_infos(&signal_infos)
@@ -305,6 +269,9 @@ impl SurfacePresent {
                 .queue_submit2(self.queue.raw(), &[submit], vk::Fence::null())
                 .unwrap();
         }
+
+        // XXX consume with submission
+        std::mem::forget(recorded);
     }
 
     // XXX this function demonstrates that command buffer presentation kind of re-couples at

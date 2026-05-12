@@ -127,6 +127,7 @@ pub mod prelude {
     pub use crate::context::device::{BinarySemaphore, Fence, TimelineSemaphore};
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::present::surface::VkSurface;
+    pub use crate::present::swapchain::AcquiredImage;
 
     pub use crate::context::queue::prelude::*;
     pub use crate::descriptor_newtype;
