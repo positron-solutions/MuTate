@@ -18,4 +18,6 @@ name = "ui"
 harness = false
 
 [features]
+# XXX existing dropwire is invalid fuck fuck fuck
+default = ["runtime"]
 runtime = []
