@@ -461,12 +461,12 @@ macro_rules! with_context {
         vk_context.destroy();
         __result
     }};
-    (|$context:ident, $vk_context:ident| $($body:tt)*) => {{
+    (|$device_context:ident, $vk_context:ident| $($body:tt)*) => {{
         let mut $vk_context = $crate::context::VkContext::new_headless();
         let mut physical_device = $vk_context.supported_devices(&[]).remove(0);
-        let mut $context = physical_device.into_logical(&$vk_context);
+        let mut $device_context = physical_device.into_logical(&$vk_context);
         let __result = (|| { $($body)* })();
-        $context.destroy();
+        $device_context.destroy();
         $vk_context.destroy();
         __result
     }};
