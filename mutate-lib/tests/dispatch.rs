@@ -85,7 +85,7 @@ fn dispatch_increment_read_back() {
             .semaphores(slice::from_ref(&wait_raw))
             .values(slice::from_ref(&1u64));
         unsafe {
-            device.wait_semaphores(&wait_info, 1_000_000u64).unwrap();
+            device.wait_semaphores(&wait_info, 100_000_000u64).unwrap(); // 100ms
         }
 
         // The read back
