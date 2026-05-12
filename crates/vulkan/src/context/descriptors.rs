@@ -261,7 +261,7 @@ impl Descriptors {
         self.set.clone()
     }
 
-    /// Return the default layout.  Useful for creating pipelines etc.
+    /// Return the default descriptor set layout.  Useful for creating pipelines etc.
     pub fn layout(&self) -> &[vk::DescriptorSetLayout] {
         std::slice::from_ref(&self.layout)
     }
