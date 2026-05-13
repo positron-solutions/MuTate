@@ -59,7 +59,7 @@
 // NEXT support device recorded commands.  Unsure workflow.  Go figure it out.
 use std::marker::PhantomData;
 
-use mutate_dropwire::DropWire;
+use drop_bomb::DropBomb;
 
 use crate::internal::*;
 
@@ -67,7 +67,7 @@ use super::SubmissionModel;
 
 pub struct CommandBuffer<C: Capability, M: SubmissionModel> {
     pub(crate) raw: vk::CommandBuffer,
-    pub(crate) wire: DropWire<Self>,
+    pub(crate) bomb: DropBomb,
     _cap: PhantomData<C>,
     _model: PhantomData<M>,
 }
@@ -81,8 +81,9 @@ impl<C: Capability, M: SubmissionModel> CommandBuffer<C, M> {
     /// Consume the raw `ash::vk::CommandBuffer` handle.  Drop protection is disarmed, so the caller
     /// is responsible for tracking further usage.
     pub unsafe fn into_raw(self) -> vk::CommandBuffer {
-        let this = std::mem::ManuallyDrop::new(self);
-        this.raw
+        let Self { mut bomb, raw, .. } = self;
+        bomb.defuse();
+        raw
     }
 }
 
@@ -97,7 +98,7 @@ macro_rules! cb_state {
         $(#[$meta])*
         pub struct $name< $( $param: $bound ),+ > {
             pub(crate) raw: vk::CommandBuffer,
-            pub(crate) wire: DropWire<$name< $($param),+ >>,
+            pub(crate) bomb: DropBomb,
             _phantom: PhantomData<( $( *const $param ),+ )>,
         }
 
@@ -106,16 +107,18 @@ macro_rules! cb_state {
             pub fn from_raw(raw: vk::CommandBuffer) -> Self {
                 Self {
                     raw,
-                    wire: DropWire::armed(),
+                    bomb: DropBomb::new(concat!(
+                        stringify!($name),
+                        " must be consumed via a typed transition method, not implicitly dropped"
+                    )),
                     _phantom: PhantomData,
                 }
             }
 
             pub(crate) fn into_parts(self) -> vk::CommandBuffer {
-                // NOTE using manually drop so that drop glue never monomorphizes the armed dropwire
-                // for panic.
-                let this = std::mem::ManuallyDrop::new(self);
-                this.raw
+                let Self {mut bomb, raw, ..} = self;
+                bomb.defuse();
+                raw
             }
         }
 

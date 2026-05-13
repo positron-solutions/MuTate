@@ -13,6 +13,7 @@ version.workspace = true
 [dependencies]
 ash.workspace = true
 bytemuck = {workspace = true, features = ["derive"]}
+drop_bomb.workspace = true
 half = { workspace = true, features = ["bytemuck"] }
 parking.workspace = true
 smallvec.workspace = true
@@ -20,7 +21,6 @@ thiserror.workspace = true
 
 mutate-assets = {workspace = true, features = ["runtime"]}
 mutate-untorn.workspace = true
-mutate-dropwire.workspace = true
 
 winit = {workspace = true, optional = true}
 ash-window = {workspace = true, optional = true}
