@@ -290,9 +290,12 @@ mod test {
         with_context!(|device_ctx, vk_ctx| {
             let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
             let pool = CommandPool::<Graphics, OneTime>::transient(&device_ctx, &queue).unwrap();
-            let _primary = pool.primary(&device_ctx).unwrap();
-            let _secondary = pool.secondary(&device_ctx).unwrap();
+            let primary = pool.primary(&device_ctx).unwrap();
+            let secondary = pool.secondary(&device_ctx).unwrap();
             pool.destroy(&device_ctx);
+
+            std::mem::forget(primary);
+            std::mem::forget(secondary);
         });
     }
 
@@ -312,7 +315,7 @@ mod test {
             let mut ring = PoolRing::<Graphics, 2, OneTime>::new(&device_ctx, &queue).unwrap();
 
             let lease = ring.acquire(&device_ctx).unwrap();
-            let _cb = lease.primary(&device_ctx).unwrap();
+            let cb = lease.primary(&device_ctx).unwrap();
             assert_eq!(lease.signal_value(), 1);
             // MAYBE If any ring were going to wait on next acquisition, it's unclear which
             // submission would signal that wait.  If no submission was done or that submission
@@ -320,6 +323,7 @@ mod test {
             // possibility is to wait on the last buffer that will complete for an epoch.
             drop(lease);
             ring.destroy(&device_ctx);
+            std::mem::forget(cb); // DropBomb
         });
     }
 }
