@@ -67,22 +67,10 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
         }
     }
 
-    pub fn secondary(
-        &self,
-        device_context: &DeviceContext,
-    ) -> Result<RecordingBuffer<C, M>, VulkanError> {
-        let device = device_context.device();
-        let alloc_info = vk::CommandBufferAllocateInfo::default()
-            .level(vk::CommandBufferLevel::SECONDARY)
-            .command_pool(self.raw)
-            .command_buffer_count(1);
-        unsafe {
-            let cb = device.allocate_command_buffers(&alloc_info)?[0];
-            let cb_begin_info = vk::CommandBufferBeginInfo::default().flags(M::BUFFER_FLAGS);
-            device.begin_command_buffer(cb, &cb_begin_info)?;
-            Ok(RecordingBuffer::from_raw(cb))
-        }
-    }
+    // NEXT secondary support for GRAPHICS is dependent on some implementation of a rendering state
+    // shadow.  It is not clear if we can provide that at compile or runtime ergonomically yet.  The
+    // state shadow will likely be useful for runtime composition of unlike pipelines, so that is
+    // the expected implementation driver.
 
     pub fn into_raw(self) -> vk::CommandPool {
         let CommandPool { raw, .. } = self;
@@ -96,6 +84,37 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
     pub fn destroy(self, device_context: &DeviceContext) {
         let CommandPool { raw, .. } = self;
         unsafe { device_context.device().destroy_command_pool(raw, None) };
+    }
+}
+
+impl<M> CommandPool<Compute, M>
+where
+    M: SubmissionModel,
+{
+    pub fn secondary(
+        &self,
+        device_context: &DeviceContext,
+    ) -> Result<RecordingBuffer<Compute, M>, VulkanError> {
+        let device = device_context.device();
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .level(vk::CommandBufferLevel::SECONDARY)
+            .command_pool(self.raw)
+            .command_buffer_count(1);
+
+        unsafe {
+            let cb = device.allocate_command_buffers(&alloc_info)?[0];
+
+            // Compute secondaries are never executed inside a rendering scope,
+            // so inheritance is all defaults and RENDER_PASS_CONTINUE must not
+            // be set in M::BUFFER_FLAGS.
+            let inheritance = vk::CommandBufferInheritanceInfo::default();
+            let begin = vk::CommandBufferBeginInfo::default()
+                .flags(M::BUFFER_FLAGS)
+                .inheritance_info(&inheritance);
+
+            device.begin_command_buffer(cb, &begin)?;
+            Ok(RecordingBuffer::from_raw(cb))
+        }
     }
 }
 
@@ -289,7 +308,7 @@ mod test {
     fn pool_buffer_create() {
         with_context!(|device_ctx, vk_ctx| {
             let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
-            let pool = CommandPool::<Graphics, OneTime>::transient(&device_ctx, &queue).unwrap();
+            let pool = CommandPool::<Compute, OneTime>::transient(&device_ctx, &queue).unwrap();
             let primary = pool.primary(&device_ctx).unwrap();
             let secondary = pool.secondary(&device_ctx).unwrap();
             pool.destroy(&device_ctx);
