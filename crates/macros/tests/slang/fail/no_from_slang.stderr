@@ -6,10 +6,11 @@ error[E0277]: the trait bound `f32: From<mutate_vulkan::slang::Float>` is not sa
    |
    = help: the following other types implement trait `From<T>`:
              `f32` implements `From<bool>`
+             `f32` implements `From<dpi::LogicalUnit<P>>`
+             `f32` implements `From<dpi::PhysicalUnit<P>>`
              `f32` implements `From<i16>`
              `f32` implements `From<i8>`
              `f32` implements `From<mutate_vulkan::prelude::half::bf16>`
              `f32` implements `From<mutate_vulkan::prelude::half::f16>`
              `f32` implements `From<u16>`
-             `f32` implements `From<u8>`
-             `f32` implements `From<zerocopy::byteorder::F32<O>>`
+           and $N others
