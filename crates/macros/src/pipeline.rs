@@ -151,6 +151,8 @@ impl Parse for ComputePipelineAttr {
 /// Express a shader stage as a concrete type.  Implements witness traits that enable downstream
 /// type checking.  Accepts shader file name (without extension), stage flags, and entry point.
 pub(crate) fn compute_pipeline(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
+    let root = crate::root::mutate_vulkan_root();
+
     let input = syn::parse2::<syn::DeriveInput>(item)?;
     let type_name = &input.ident;
 
@@ -181,7 +183,7 @@ pub(crate) fn compute_pipeline(attr: TokenStream, item: TokenStream) -> syn::Res
         #inline_push_items    // push struct + LayoutSpec + PushConstants impls
         #inline_stage_items   // Stage + StageReflection impls
 
-        impl ::mutate_vulkan::pipeline::ComputePipelineSpec for #type_name {
+        impl #root::__::ComputePipelineSpec for #type_name {
             type Push       = #push_type;
             type LayoutSpec = #push_type;
             type Stage      = #stage_type;

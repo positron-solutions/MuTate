@@ -3,7 +3,6 @@
 
 #![cfg(feature = "vulkan")]
 
-use mutate_macros::*;
 use mutate_vulkan as vulkan;
 use mutate_vulkan::prelude::*;
 
@@ -40,10 +39,7 @@ fn pipeline_declare() {
     pub struct TestPipeline;
 
     vulkan::with_context!(|device_ctx| {
-        let pipeline: ComputePipeline<TestPipeline> =
-            ComputePipeline::<TestPipeline>::new(&device_ctx)
-                .expect("pipeline instantiation failed");
-
+        let pipeline = ComputePipeline::<TestPipeline>::new(&device_ctx).unwrap();
         pipeline.destroy(&device_ctx);
     })
 }
@@ -64,10 +60,7 @@ fn pipeline_declare_inline_stage() {
     pub struct TestPipeline;
 
     vulkan::with_context!(|device_ctx| {
-        let pipeline: ComputePipeline<TestPipeline> =
-            ComputePipeline::<TestPipeline>::new(&device_ctx)
-                .expect("pipeline instantiation failed");
-
+        let pipeline = ComputePipeline::<TestPipeline>::new(&device_ctx).unwrap();
         pipeline.destroy(&device_ctx);
     })
 }
@@ -87,10 +80,7 @@ fn pipeline_declare_inline_push() {
     pub struct TestPipeline;
 
     vulkan::with_context!(|device_ctx| {
-        let pipeline: ComputePipeline<TestPipeline> =
-            ComputePipeline::<TestPipeline>::new(&device_ctx)
-                .expect("pipeline instantiation failed");
-
+        let pipeline = ComputePipeline::<TestPipeline>::new(&device_ctx).unwrap();
         pipeline.destroy(&device_ctx);
     })
 }
@@ -107,10 +97,7 @@ fn pipeline_declare_inline_all() {
     pub struct TestPipeline;
 
     vulkan::with_context!(|device_ctx| {
-        let pipeline: ComputePipeline<TestPipeline> =
-            ComputePipeline::<TestPipeline>::new(&device_ctx)
-                .expect("pipeline instantiation failed");
-
+        let pipeline = ComputePipeline::<TestPipeline>::new(&device_ctx).unwrap();
         pipeline.destroy(&device_ctx);
     })
 }

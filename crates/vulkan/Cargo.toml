@@ -20,6 +20,7 @@ smallvec.workspace = true
 thiserror.workspace = true
 
 mutate-assets = {workspace = true, features = ["runtime"]}
+mutate-macros.workspace = true
 mutate-untorn.workspace = true
 
 winit = {workspace = true, optional = true}

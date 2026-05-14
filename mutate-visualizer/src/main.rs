@@ -215,11 +215,9 @@ impl ApplicationHandler for App {
                 let device = &device_context.device;
 
                 device.device_wait_idle().unwrap();
-                self.render_node
-                    .as_ref()
-                    .unwrap()
-                    .destroy(device_context)
-                    .unwrap();
+                if let Some(render_node) = self.render_node.take() {
+                    render_node.destroy(device_context);
+                }
                 if let Some(surface_present) = self.surface_present.take() {
                     surface_present.destroy(device_context);
                 }

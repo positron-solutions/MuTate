@@ -122,20 +122,26 @@ pub mod util;
 
 use ash::vk;
 
+pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
+
 pub mod prelude {
+    pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
+
     pub use super::VulkanError;
     pub use crate::context::device::{BinarySemaphore, Fence, TimelineSemaphore};
-    pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
-    pub use crate::present::surface::VkSurface;
-    pub use crate::present::swapchain::AcquiredImage;
-
     pub use crate::context::queue::prelude::*;
+    pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::descriptor_newtype;
     pub use crate::device_address_newtype;
     pub use crate::dispatch::prelude::*;
     pub use crate::pipeline::prelude::*;
+    pub use crate::present::surface::VkSurface;
+    pub use crate::present::swapchain::AcquiredImage;
     pub use crate::slang::prelude::*;
     pub use crate::slang_newtype;
+
+    // test harness macros
+    pub use crate::with_context;
 }
 
 // Use as a private prelude.  Convenience without public immodesty 😦.
@@ -153,11 +159,23 @@ pub(crate) mod internal {
     pub use crate::present::surface::VkSurface;
     pub use crate::present::swapchain::SwapchainContext;
     pub use crate::slang::prelude::*;
+
+    // test harness macros
+    pub use crate::with_context;
 }
 
-// Re-export for slang's macros
+// Flattened paths and re-exports for use in proc macro expansions
 #[doc(hidden)]
-pub use bytemuck as __bytemuck;
+pub mod __ {
+    pub use crate::pipeline::stage as stage_slots;
+    pub use crate::pipeline::stage::{Stage, StageReflection, StageSlot, StageSpec};
+    pub use crate::pipeline::{layout::LayoutSpec, push::PushConstants, ComputePipelineSpec};
+    pub use crate::slang::{field_end, field_start, DataLayout, FieldNode, GpuType, Scalar};
+
+    // Re-exports.
+    pub use ash;
+    pub use bytemuck;
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum VulkanError {
