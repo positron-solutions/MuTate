@@ -133,21 +133,21 @@ pub(crate) fn derive_gpu_type(input: &DeriveInput) -> syn::Result<TokenStream> {
     // Build FieldNode list.
     //
     // Each entry looks like:
-    //   <FieldType as #root::__::GpuType<D>>::FIELD_NODE,
+    //   <FieldType as #root::GpuType<D>>::FIELD_NODE,
     let field_nodes = named_fields.named.iter().map(|f| {
         let ty = &f.ty;
         quote! {
-            <#ty as #root::__::GpuType<D>>::FIELD_NODE
+            <#ty as #root::GpuType<D>>::FIELD_NODE
         }
     });
 
     // DEBT bytemuck #[repr(C)] enforcement.
     let expanded = quote! {
-        impl<D: #root::__::DataLayout> #root::__::GpuType<D>
+        impl<D: #root::DataLayout> #root::GpuType<D>
             for #struct_ident
         {
-            const FIELD_NODE: #root::__::FieldNode =
-                #root::__::FieldNode::Tree {
+            const FIELD_NODE: #root::FieldNode =
+                #root::FieldNode::Tree {
                     slang_name: #slang_name,
                     fields: &[
                         #( #field_nodes ),*
@@ -161,8 +161,8 @@ pub(crate) fn derive_gpu_type(input: &DeriveInput) -> syn::Result<TokenStream> {
             fn clone(&self) -> Self { *self }
         }
 
-        unsafe impl #root::__::bytemuck::Zeroable for #struct_ident {}
-        unsafe impl #root::__::bytemuck::Pod    for #struct_ident {}
+        unsafe impl #root::bytemuck::Zeroable for #struct_ident {}
+        unsafe impl #root::bytemuck::Pod    for #struct_ident {}
     };
 
     Ok(expanded.into())

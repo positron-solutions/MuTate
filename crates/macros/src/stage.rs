@@ -112,19 +112,19 @@ pub(crate) fn emit_stage_impls(
     let constant_block_size: usize = 0;
 
     Ok(quote::quote! {
-        impl #root::__::Stage
-        <#root::__::stage_slots::#stage> for #target {
-            const SPEC: #root::__::StageSpec =
-                #root::__::StageSpec {
+        impl #root::Stage
+        <#root::stage_slots::#stage> for #target {
+            const SPEC: #root::StageSpec =
+                #root::StageSpec {
                     name:  #file_literal,
-                    stage: <#root::__::stage_slots::#stage
-                               as #root::__::StageSlot>::FLAGS,
+                    stage: <#root::stage_slots::#stage
+                               as #root::StageSlot>::FLAGS,
                     entry: #entry,
                 };
         }
 
-        impl #root::__::StageReflection
-        <#root::__::stage_slots::#stage> for #target {
+        impl #root::StageReflection
+        <#root::stage_slots::#stage> for #target {
             const CONSTANT_BLOCK_SIZE: usize = #constant_block_size;
         }
 

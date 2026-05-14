@@ -165,13 +165,13 @@ fn merge_ranges(coverage: Vec<StageCoverage>) -> Vec<MergedRange> {
 
 fn emit_range(root: &TokenStream, struct_name: &syn::Ident, range: &MergedRange) -> TokenStream {
     let bits_expr = range.stages.iter().fold(
-        quote! { #root::__::ash::vk::ShaderStageFlags::empty() },
+        quote! { #root::ash::vk::ShaderStageFlags::empty() },
         |acc, s| {
             quote! {
-                #root::__::ash::vk::ShaderStageFlags::from_raw(
+                #root::ash::vk::ShaderStageFlags::from_raw(
                     #acc.as_raw()
-                        | <#root::__::stage_slots::#s
-                           as #root::__::StageSlot>::FLAGS.as_raw()
+                        | <#root::stage_slots::#s
+                           as #root::StageSlot>::FLAGS.as_raw()
                 )
             }
         },
@@ -181,30 +181,30 @@ fn emit_range(root: &TokenStream, struct_name: &syn::Ident, range: &MergedRange)
     let last = range.last;
 
     let gpu_ty = quote! {
-        <#struct_name as #root::__::GpuType<#root::__::Scalar>>
+        <#struct_name as #root::GpuType<#root::Scalar>>
     };
 
     let offset_expr = quote! {
-        #root::__::field_start(
+        #root::field_start(
             &#gpu_ty::FIELD_NODE,
             #first,
-            #root::__::Scalar::DATA_LAYOUT,
+            #root::Scalar::DATA_LAYOUT,
         ) as u32
     };
     let size_expr = quote! {
-        (#root::__::field_end(
+        (#root::field_end(
             &#gpu_ty::FIELD_NODE,
             #last,
-            #root::__::Scalar::DATA_LAYOUT,
-        ) - #root::__::field_start(
+            #root::Scalar::DATA_LAYOUT,
+        ) - #root::field_start(
             &#gpu_ty::FIELD_NODE,
             #first,
-            #root::__::Scalar::DATA_LAYOUT,
+            #root::Scalar::DATA_LAYOUT,
         )) as u32
     };
 
     quote! {
-        #root::__::ash::vk::PushConstantRange {
+        #root::ash::vk::PushConstantRange {
             stage_flags: #bits_expr,
             offset:      #offset_expr,
             size:        #size_expr,
@@ -257,7 +257,7 @@ fn emit_push_impls(
     }
 
     let gpu_ty = quote! {
-        <#name as #root::__::GpuType<#root::__::Scalar>>
+        <#name as #root::GpuType<#root::Scalar>>
     };
 
     let ranges: Vec<TokenStream> = if field_infos.is_empty() {
@@ -265,13 +265,13 @@ fn emit_push_impls(
     } else if all_unannotated {
         let n = field_infos.len();
         vec![quote! {
-            #root::__::ash::vk::PushConstantRange {
-                stage_flags: #root::__::ash::vk::ShaderStageFlags::ALL,
+            #root::ash::vk::PushConstantRange {
+                stage_flags: #root::ash::vk::ShaderStageFlags::ALL,
                 offset: 0,
-                size: #root::__::field_end(
+                size: #root::field_end(
                     &#gpu_ty::FIELD_NODE,
                     #n - 1,
-                    #root::__::Scalar::DATA_LAYOUT,
+                    #root::Scalar::DATA_LAYOUT,
                 ) as u32,
             }
         }]
@@ -339,12 +339,12 @@ fn emit_push_impls(
     Ok(quote! {
         #struct_def
 
-        impl #root::__::PushConstants for #name {}
+        impl #root::PushConstants for #name {}
 
-        impl #root::__::LayoutSpec for #name {
-            type D    = #root::__::Scalar;
+        impl #root::LayoutSpec for #name {
+            type D    = #root::Scalar;
             type Push = Self;
-            const RANGES: &'static [#root::__::ash::vk::PushConstantRange] = &[ #(#ranges),* ];
+            const RANGES: &'static [#root::ash::vk::PushConstantRange] = &[ #(#ranges),* ];
         }
     })
 }

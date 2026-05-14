@@ -183,7 +183,7 @@ pub(crate) fn compute_pipeline(attr: TokenStream, item: TokenStream) -> syn::Res
         #inline_push_items    // push struct + LayoutSpec + PushConstants impls
         #inline_stage_items   // Stage + StageReflection impls
 
-        impl #root::__::ComputePipelineSpec for #type_name {
+        impl #root::ComputePipelineSpec for #type_name {
             type Push       = #push_type;
             type LayoutSpec = #push_type;
             type Stage      = #stage_type;
