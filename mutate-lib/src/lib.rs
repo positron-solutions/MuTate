@@ -33,11 +33,13 @@ use pipewire as pw;
 
 pub use mutate_assets as assets;
 #[cfg(feature = "vulkan")]
-pub use mutate_vulkan as vulkan;
+pub mod vulkan {
+    // NOTE includes __ for macro emissions to resolve via `mutate_lib::vulkan::__` paths.
+    pub use mutate_vulkan::*;
+}
 
 pub mod prelude {
     pub use crate::MutateError;
-    // NEXT feature flag the Vulkan stuff in one crate
     #[cfg(feature = "vulkan")]
     pub use mutate_vulkan::prelude::*;
 }

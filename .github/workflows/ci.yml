@@ -24,11 +24,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - crate: crates/vulkan
-          - crate: crates/untorn
-          - crate: crates/slide
-          - crate: crates/macros
           - crate: crates/assets
+          - crate: crates/macros
+          - crate: crates/slide
+          - crate: crates/tests
+          - crate: crates/untorn
+          - crate: crates/vulkan
           - crate: mutate-lib
             features: vulkan
     steps:

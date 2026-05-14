@@ -7,7 +7,6 @@ use std::slice;
 
 use ash::vk;
 
-use mutate_macros::*;
 use mutate_vulkan as vulkan;
 use mutate_vulkan::prelude::*;
 

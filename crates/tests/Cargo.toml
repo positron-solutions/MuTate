@@ -1,0 +1,25 @@
+[package]
+name = "mutate-tests"
+publish = false
+readme = "../README.md"
+description = "Integration tests against the lib facade.  Do it like users do."
+
+categories.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+mutate-lib = {workspace = true, features = ["vulkan"]}
+# This alternative should work via proc-macro-crate
+# mutate-vulkan.workspace = true
+
+[build-dependencies]
+mutate-assets = {workspace = true, features = ["build", "macro-time"]}
+
+[dev-dependencies]
+trybuild.workspace = true
+ash.workspace = true

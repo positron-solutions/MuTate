@@ -163,49 +163,48 @@ fn merge_ranges(coverage: Vec<StageCoverage>) -> Vec<MergedRange> {
     merged
 }
 
-fn emit_range(struct_name: &syn::Ident, range: &MergedRange) -> TokenStream {
-    let bits_expr =
-        range
-            .stages
-            .iter()
-            .fold(quote! { ::ash::vk::ShaderStageFlags::empty() }, |acc, s| {
-                quote! {
-                    ::ash::vk::ShaderStageFlags::from_raw(
-                        #acc.as_raw()
-                            | <::mutate_vulkan::pipeline::stage::#s
-                               as ::mutate_vulkan::pipeline::stage::StageSlot>::FLAGS.as_raw()
-                    )
-                }
-            });
+fn emit_range(root: &TokenStream, struct_name: &syn::Ident, range: &MergedRange) -> TokenStream {
+    let bits_expr = range.stages.iter().fold(
+        quote! { #root::__::ash::vk::ShaderStageFlags::empty() },
+        |acc, s| {
+            quote! {
+                #root::__::ash::vk::ShaderStageFlags::from_raw(
+                    #acc.as_raw()
+                        | <#root::__::stage_slots::#s
+                           as #root::__::StageSlot>::FLAGS.as_raw()
+                )
+            }
+        },
+    );
 
     let first = range.first;
     let last = range.last;
 
     let gpu_ty = quote! {
-        <#struct_name as ::mutate_vulkan::slang::GpuType<::mutate_vulkan::slang::Scalar>>
+        <#struct_name as #root::__::GpuType<#root::__::Scalar>>
     };
 
     let offset_expr = quote! {
-        ::mutate_vulkan::slang::field_start(
+        #root::__::field_start(
             &#gpu_ty::FIELD_NODE,
             #first,
-            ::mutate_vulkan::slang::Scalar::DATA_LAYOUT,
+            #root::__::Scalar::DATA_LAYOUT,
         ) as u32
     };
     let size_expr = quote! {
-        (::mutate_vulkan::slang::field_end(
+        (#root::__::field_end(
             &#gpu_ty::FIELD_NODE,
             #last,
-            ::mutate_vulkan::slang::Scalar::DATA_LAYOUT,
-        ) - ::mutate_vulkan::slang::field_start(
+            #root::__::Scalar::DATA_LAYOUT,
+        ) - #root::__::field_start(
             &#gpu_ty::FIELD_NODE,
             #first,
-            ::mutate_vulkan::slang::Scalar::DATA_LAYOUT,
+            #root::__::Scalar::DATA_LAYOUT,
         )) as u32
     };
 
     quote! {
-        ::ash::vk::PushConstantRange {
+        #root::__::ash::vk::PushConstantRange {
             stage_flags: #bits_expr,
             offset:      #offset_expr,
             size:        #size_expr,
@@ -228,6 +227,8 @@ fn emit_push_impls(
     fields: &[syn::Field],
     emit_struct: bool,
 ) -> syn::Result<TokenStream> {
+    let root = crate::root::mutate_vulkan_root();
+
     let field_infos: syn::Result<Vec<FieldInfo<'_>>> = fields
         .iter()
         .map(|f| {
@@ -256,7 +257,7 @@ fn emit_push_impls(
     }
 
     let gpu_ty = quote! {
-        <#name as ::mutate_vulkan::slang::GpuType<::mutate_vulkan::slang::Scalar>>
+        <#name as #root::__::GpuType<#root::__::Scalar>>
     };
 
     let ranges: Vec<TokenStream> = if field_infos.is_empty() {
@@ -264,13 +265,13 @@ fn emit_push_impls(
     } else if all_unannotated {
         let n = field_infos.len();
         vec![quote! {
-            ::ash::vk::PushConstantRange {
-                stage_flags: ::ash::vk::ShaderStageFlags::ALL,
+            #root::__::ash::vk::PushConstantRange {
+                stage_flags: #root::__::ash::vk::ShaderStageFlags::ALL,
                 offset: 0,
-                size: ::mutate_vulkan::slang::field_end(
+                size: #root::__::field_end(
                     &#gpu_ty::FIELD_NODE,
                     #n - 1,
-                    ::mutate_vulkan::slang::Scalar::DATA_LAYOUT,
+                    #root::__::Scalar::DATA_LAYOUT,
                 ) as u32,
             }
         }]
@@ -295,7 +296,7 @@ fn emit_push_impls(
             }
         }
 
-        merged.iter().map(|r| emit_range(name, r)).collect()
+        merged.iter().map(|r| emit_range(&root, name, r)).collect()
     };
 
     // XXX the default DataLayout, Scalar, might have drifted around when it should not.  No idea
@@ -312,12 +313,24 @@ fn emit_push_impls(
             })
             .collect();
 
-        quote! {
-            #[derive(::mutate_macros::GpuType)]
+        // Bare struct (no derive macro path — would fail to resolve through
+        // facade crates like mutate-lib).
+        let bare_struct = quote! {
             #[repr(C)]
             pub struct #name {
                 #(#struct_fields),*
             }
+        };
+
+        // Synthesize a DeriveInput and call derive_gpu_type directly.  Avoids
+        // emitting #[derive(::mutate_macros::GpuType)], which only resolves
+        // when the consuming crate depends on mutate-macros directly.
+        let derive_input: syn::DeriveInput = syn::parse2(bare_struct.clone())?;
+        let gpu_type_impls = crate::slang::derive_gpu_type(&derive_input)?;
+
+        quote! {
+            #bare_struct
+            #gpu_type_impls
         }
     } else {
         quote! {}
@@ -326,12 +339,12 @@ fn emit_push_impls(
     Ok(quote! {
         #struct_def
 
-        impl ::mutate_vulkan::pipeline::push::PushConstants for #name {}
+        impl #root::__::PushConstants for #name {}
 
-        impl ::mutate_vulkan::pipeline::layout::LayoutSpec for #name {
-            type D    = ::mutate_vulkan::slang::Scalar;
+        impl #root::__::LayoutSpec for #name {
+            type D    = #root::__::Scalar;
             type Push = Self;
-            const RANGES: &'static [::ash::vk::PushConstantRange] = &[ #(#ranges),* ];
+            const RANGES: &'static [#root::__::ash::vk::PushConstantRange] = &[ #(#ranges),* ];
         }
     })
 }

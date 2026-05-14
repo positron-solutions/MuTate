@@ -61,6 +61,8 @@ pub(crate) fn emit_stage_impls(
     target: &syn::Ident,
     attr: StageAttr,
 ) -> syn::Result<TokenStream> {
+    let root = crate::root::mutate_vulkan_root();
+
     let StageAttr {
         file: file_literal,
         stage,
@@ -110,19 +112,19 @@ pub(crate) fn emit_stage_impls(
     let constant_block_size: usize = 0;
 
     Ok(quote::quote! {
-        impl ::mutate_vulkan::pipeline::stage::Stage
-            <::mutate_vulkan::pipeline::stage::#stage> for #target {
-            const SPEC: ::mutate_vulkan::pipeline::stage::StageSpec =
-                ::mutate_vulkan::pipeline::stage::StageSpec {
+        impl #root::__::Stage
+        <#root::__::stage_slots::#stage> for #target {
+            const SPEC: #root::__::StageSpec =
+                #root::__::StageSpec {
                     name:  #file_literal,
-                    stage: <::mutate_vulkan::pipeline::stage::#stage
-                               as ::mutate_vulkan::pipeline::stage::StageSlot>::FLAGS,
+                    stage: <#root::__::stage_slots::#stage
+                               as #root::__::StageSlot>::FLAGS,
                     entry: #entry,
                 };
         }
 
-        impl ::mutate_vulkan::pipeline::stage::StageReflection
-            <::mutate_vulkan::pipeline::stage::#stage> for #target {
+        impl #root::__::StageReflection
+        <#root::__::stage_slots::#stage> for #target {
             const CONSTANT_BLOCK_SIZE: usize = #constant_block_size;
         }
 

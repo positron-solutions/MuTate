@@ -37,6 +37,7 @@
 mod force; // utilities for common assertions / ensures
 mod pipeline;
 mod push;
+mod root;
 mod slang;
 mod stage;
 
@@ -73,7 +74,6 @@ pub fn stage(
 ///
 /// ```
 /// use mutate_vulkan::prelude::*;
-/// use mutate_macros::*;
 ///
 /// #[derive(GpuType)]
 /// #[repr(C)]

@@ -24,6 +24,7 @@ drop_bomb = "0.1.5"
 palette = "0.7.6"
 parking = "2.2.1"
 pipewire = {version="0.9.2"}
+proc-macro-crate = "3.5.0"
 rand = "0.9.2"
 raw-window-handle = "0.6.2"
 rgb = "0.8.52"

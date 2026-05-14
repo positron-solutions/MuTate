@@ -704,8 +704,8 @@ macro_rules! slang_scalar {
         impl sealed::Sealed for $name {}
 
         // DEBT bytemuck
-        unsafe impl $crate::__bytemuck::Zeroable for $name {}
-        unsafe impl $crate::__bytemuck::Pod for $name {}
+        unsafe impl $crate::__::bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name {}
     };
@@ -757,8 +757,8 @@ macro_rules! slang_newtype {
         impl $crate::slang::sealed::Sealed for $name {}
 
         // DEBT bytemuck
-        unsafe impl $crate::__bytemuck::Zeroable for $name {}
-        unsafe impl $crate::__bytemuck::Pod for $name {}
+        unsafe impl $crate::__::bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name where $inner: GpuScalar {}
     };
@@ -914,8 +914,8 @@ macro_rules! device_address_newtype {
         impl $crate::slang::sealed::Sealed for $name {}
 
         // DEBT bytemuck
-        unsafe impl $crate::__bytemuck::Zeroable for $name {}
-        unsafe impl $crate::__bytemuck::Pod for $name {}
+        unsafe impl $crate::__::bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name {}
     };
@@ -971,8 +971,8 @@ macro_rules! descriptor_base {
         impl sealed::Sealed for $name {}
 
         // DEBT bytemuck
-        unsafe impl $crate::__bytemuck::Zeroable for $name {}
-        unsafe impl $crate::__bytemuck::Pod for $name {}
+        unsafe impl $crate::__::bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name {}
     };
@@ -1045,8 +1045,8 @@ macro_rules! descriptor_newtype {
         impl $crate::slang::sealed::Sealed for $name {}
 
         // DEBT bytemuck
-        unsafe impl $crate::__bytemuck::Zeroable for $name {}
-        unsafe impl $crate::__bytemuck::Pod for $name {}
+        unsafe impl $crate::__::bytemuck::Zeroable for $name {}
+        unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name where $inner: GpuScalar {}
     };

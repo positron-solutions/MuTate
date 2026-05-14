@@ -13,6 +13,8 @@ use syn::{
     Data, DeriveInput, Fields, LitStr, Token,
 };
 
+use crate::root::mutate_vulkan_root;
+
 // XXX test with a structure that requires alignment
 
 struct GpuTypeAttr {
@@ -62,6 +64,8 @@ impl Parse for GpuTypeAttr {
 }
 
 pub(crate) fn derive_gpu_type(input: &DeriveInput) -> syn::Result<TokenStream> {
+    let root = mutate_vulkan_root();
+
     // XXX well, we might need to support parameterized types for indirect types like Ssbo and BDA handles!
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
@@ -129,21 +133,21 @@ pub(crate) fn derive_gpu_type(input: &DeriveInput) -> syn::Result<TokenStream> {
     // Build FieldNode list.
     //
     // Each entry looks like:
-    //   <FieldType as ::mutate_vulkan::slang::GpuType<D>>::FIELD_NODE,
+    //   <FieldType as #root::__::GpuType<D>>::FIELD_NODE,
     let field_nodes = named_fields.named.iter().map(|f| {
         let ty = &f.ty;
         quote! {
-            <#ty as ::mutate_vulkan::slang::GpuType<D>>::FIELD_NODE
+            <#ty as #root::__::GpuType<D>>::FIELD_NODE
         }
     });
 
     // DEBT bytemuck #[repr(C)] enforcement.
     let expanded = quote! {
-        impl<D: ::mutate_vulkan::slang::DataLayout> ::mutate_vulkan::slang::GpuType<D>
+        impl<D: #root::__::DataLayout> #root::__::GpuType<D>
             for #struct_ident
         {
-            const FIELD_NODE: ::mutate_vulkan::slang::FieldNode =
-                ::mutate_vulkan::slang::FieldNode::Tree {
+            const FIELD_NODE: #root::__::FieldNode =
+                #root::__::FieldNode::Tree {
                     slang_name: #slang_name,
                     fields: &[
                         #( #field_nodes ),*
@@ -157,8 +161,8 @@ pub(crate) fn derive_gpu_type(input: &DeriveInput) -> syn::Result<TokenStream> {
             fn clone(&self) -> Self { *self }
         }
 
-        unsafe impl ::mutate_vulkan::__bytemuck::Zeroable for #struct_ident {}
-        unsafe impl ::mutate_vulkan::__bytemuck::Pod    for #struct_ident {}
+        unsafe impl #root::__::bytemuck::Zeroable for #struct_ident {}
+        unsafe impl #root::__::bytemuck::Pod    for #struct_ident {}
     };
 
     Ok(expanded.into())

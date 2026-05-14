@@ -230,7 +230,7 @@ Transfer?  Use the UMA path until something is actually big.  Maybe put it behin
 
 ## Bytemuck Traits in Slang Module
 
-Current code is a rough draft.  We need `Pod` and `Zeroable` but getting the derive macro paths right is very fiddly  *inside* the crate.  Proper fix might be to split the crate and do integration tests downstream.
+We need `Pod` and `Zeroable` on emitted types.
 
 ### For Now
 
