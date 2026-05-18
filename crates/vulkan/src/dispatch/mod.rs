@@ -117,8 +117,6 @@ mod sealed {
     }
 }
 
-// XXX decide one
-// pub(crate) use sealed::SubmissionModel;
 pub trait SubmissionModel: sealed::SubmissionModel {}
 
 /// Buffer can only be recorded and submitted once.  It is considered reclaimed by the driver on
