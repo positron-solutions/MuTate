@@ -7,52 +7,56 @@
 //!
 //! *The little engine that does or does not, but never tries (it just unwraps).*
 //!
-//! - Ergonomic Vulkan subset:
+//!  ⚠️ View all module documentation as design proposals.  If there are tests or something else
+//!  using a thing, that thing works.  Otherwise it may not exist.  Contact the maintainers to get
+//!  an overview of the most recent plan for the API shape and guidance on how to implement what you
+//!  need.
+//!
+//! ## An Ergonomic Vulkan Subset
+//!
+//! Vulkan is a buffet.  Buffets have to support a variety of ever-changing dishes that not every
+//! customer eats.  **Nobody stands at the buffet to eat.** They put some dishes that they want onto
+//! their plate and then take it back to their table.  That's a Vulkan library.
+//!
+//! **Key Vulkan subset choices:**
+//!
 //!   + Bindless descriptor arrays
 //!   + Dynamic rendering
 //!   + Scalar block layouts preferred
-//! - Type-safe communication with Slang via build-time introspection and explicit Slang type
-//!   analogs.
+//!
+//! ### Runtime Support
+//!
+//! Selecting fixed infrastructure strategies further reduces the Vulkan subset.  This kind of
+//! support goes further in the direction of a fixed engine but also allows more terse declarations
+//! for things like pipelines, reactive parameter updates, and asset loading.
+//!
+//! **Core MuTate goals:**
+//!
+//! - Runtime-driven modulation of pipeline parameters and dispatch topology.
+//! - Pipeline remixing that can adapt existing content to new pipelines.
+//! - User-consultative tuning and permutation flows back upstream into procedural resources
+//!   (runtime re-baking).
+//!
+//! Many of these goals can only be supported with deep runtime integration to enable vague user
+//! declarations to be adapted at runtime.
+//!
+//! ### Ergonomic Correctness
+//!
+//! - Host-GPU type and layout agreement for [Slang](https://shader-slang.org/) shader language via
+//!   build-time reflection and proc macro generated const witnesses.
+//!
 //! - Type-state and type-safe wrappers for raw Vulkan types, but only where the tradeoffs are a
 //!   clear win.
 //!
-//! ## Back Burner
+//! - On-stack builders for more fluent construction and usage of very common API paths.
 //!
-//! Graphics engines, let alone game engines, are a **huge** topic.  Certain modules are planned,
-//! but it is very dangerous to over-commit to designs before concrete needs are driving them.
+//! - Pipeline macros for compact declaration of several related types, using specs to combine
+//!   independent declarations by name.
 //!
-//! - Render graph for fine-grained aliasing, hazard detection, and automation of long-ranged sync
-//!   dependencies within command buffers.
-//! - Async resource streaming, shared ownership, intent-based resource resolution, reactive
-//!   resource updates, memory management, all mostly built on top of great **late binding
-//!   support**.
-//! - Independent timelines to provide course-grained fencing, scheduled dispatch, and to handle
-//!   self-pacing audio graph versus VRR synchronization problems.
+//! - All types can drop back to raw [`ash`](ash) bindings to work around missing support or API
+//!   friction.
 //!
-//! ## Ergonomics and Soundness
-//!
-//! Vulkan is extensible.  Once you choose what you will use, it's time to reduce that extensibility
-//! into a terse sub-language that only does those chosen things really well.  The reduced API locks
-//! the user into a specific model of using Vulkan in exchange for a vastly simplified set of
-//! expressions to implement a small but good set of tools.
-//!
-//! Making that reduced surface ergonomic provides some opportunities to eliminate obviously wrong
-//! choices by the user, and those are the only guarantees we chase at compile time.  Race towards
-//! ergonomics and performance first.  Build contracts and guard rails only after there are
-//! well-decided, high-value roads to guard.
-//!
-//! **Every GPU programmer has expressly opted into explicit synchronization of declared or easily
-//! decided hazards.** This model means shared mutability is the *default*.  The window to
-//! unsoundness is left open.  When you use this engine, you choose to be handed the keys.  We can
-//! make sound expressions easier, but fully safe APIs on the GPU is a quagmire, and we will not lie
-//! about **user responsibilities**.
-//!
-//! We don't want to over-specify contracts and get in the way of ergonomics or add onerous runtime
-//! or compile time weight.  We just want to provide a limited API over a smaller toolbox, type-safe
-//! code that can express obvious invariants, and macros to simplify emitting that type-safe code
-//! without being distracted by it or unduly inconvenienced by satisfying it.
-//!
-//! ## Type Outline (The Plan)
+//! ## Module Outline (The Plan)
 //!
 //! - Context
 //!   + Entry & Instance
@@ -72,11 +76,10 @@
 //!   + Stage
 //!   + Pipeline
 //! - Dispatch
-//!   + Recording Ring
-//!   + Recording Slot
-//!     * Compute
-//!     * Transfer
-//!     * Graphics
+//!   + CommandPool & PoolRing
+//!   + Command Buffers
+//!   + Queue Submissions
+//!   + Synchronization
 //! - Presentation
 //!   + Swapchain
 //!   + Alternative Frontends
@@ -96,21 +99,39 @@
 //!
 //! Size, alignment, and semantic agreement with Slang types.  Includes many inherent Slang types
 //! and type-safe wrappers.  Semantic wrappers can be used to specialize Slang types in Rust to
-//! avoid accidental mixing.
+//! avoid accidental mixing of byte-compatible types.
 //!
 //! ## Pipeline
 //!
 //! Agreement between Stages, their shaders, and Resources is handled here.  We use Slang
-//! introspection data to ensure that the Rust code will emit types that match the Slang layout.
+//! reflection data to ensure that the Rust code will emit types that match the Slang layout.
 //!
 //! ## Dispatch
 //!
-//! Recording, lifecycle, and submission of command buffers.
+//! Command pool lifecycle, command buffer recording, synchoronization, and queue submission.  We
+//! provide the common command pool ring, some type-state wrappers, and fluent builders for
+//! submissions.
 //!
 //! ## Presentation
 //!
 //! Swapchain abstraction, the wrapping around recording for graphics commands that will be
 //! presented, interfaces for alternative frontends.
+//!
+//! ## Current Back Burner
+//!
+//! Graphics engines, let alone game engines, are a **huge** topic.  Certain modules are planned,
+//! but it is unwise to over-commit to designs before concrete needs are driving them.
+//!
+//! - Render graph for fine-grained aliasing, hazard detection, and automation of long-ranged sync
+//!   dependencies within command buffers.
+//!
+//! - Async resource streaming, shared ownership, intent-based resource resolution, reactive
+//!   resource updates, memory management, all mostly built on top of great **late binding
+//!   support**.  This is probably needed first since users have a small limit for the number of
+//!   driver-decided allocations.
+//!
+//! - Independent timelines to provide course-grained fencing, scheduled dispatch, and to handle
+//!   self-pacing audio graph versus VRR synchronization problems.
 
 pub mod context;
 pub mod dispatch;
