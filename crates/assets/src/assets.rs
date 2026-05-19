@@ -27,12 +27,7 @@
 
 // Decouple MUTATE_ASSETS_DIR for the visualizer from other programs.
 
-use std::ffi::OsStr;
-use std::{
-    fs,
-    io::Read,
-    path::{Path, PathBuf},
-};
+use std::{io::Read, path::PathBuf};
 
 use crate::prelude::*;
 
