@@ -55,39 +55,23 @@ fn dispatch_increment_read_back() {
         }
 
         let done = cb.end(&device_ctx).unwrap();
-        // XXX submit info can be gotten off of the done buffer
-        let cb_info = vk::CommandBufferSubmitInfo::default().command_buffer(*done);
-        let raw = done.kill(&device_ctx).unwrap(); // XXX dropwire bullshit
-
         // Synchronize and submit
-        // XXX synchronization on the pool semaphore?
-        let wait = device_ctx.make_timeline_semaphore(0).unwrap();
-        let signal_info = vk::SemaphoreSubmitInfo::default()
-            .semaphore(wait.as_raw())
-            .value(1)
-            .stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER);
-        let submit = vk::SubmitInfo2::default()
-            .signal_semaphore_infos(slice::from_ref(&signal_info))
-            .command_buffer_infos(slice::from_ref(&cb_info));
+        let mut semaphore = device_ctx.make_timeline_semaphore().unwrap();
+        let intent = semaphore.next_signal();
+        let wait_value = intent.wait_value();
 
-        // XXX the submission is not interesting.. we can do safe... use our Queue and DeviceCtx
-        unsafe {
-            device
-                .queue_submit2(queue.raw(), &[submit], vk::Fence::null())
-                .unwrap();
-        }
+        queue
+            .submission()
+            .execute(*done)
+            .signal(intent, vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .submit(device, vk::Fence::null())
+            .unwrap();
 
-        // after waiting on the dispatch, read back the value from the buffer.
-        // XXX submissions should contain enough data to be waited on.
-        let wait_raw = wait.as_raw();
-        let wait_info = vk::SemaphoreWaitInfo::default()
-            .semaphores(slice::from_ref(&wait_raw))
-            .values(slice::from_ref(&1u64));
-        unsafe {
-            device.wait_semaphores(&wait_info, 100_000_000u64).unwrap(); // 100ms
-        }
+        // XXX make execution a consuming method.  Implement clone for
+        // multiple submissions where valid.
+        done.kill(&device_ctx);
 
-        // The read back
+        wait_value.wait(&device_ctx, 100_000_000).unwrap();
         output_buffer.invalidate(&device_ctx);
         let observed = output_buffer.as_mut_slice()[0];
 
@@ -95,7 +79,7 @@ fn dispatch_increment_read_back() {
         println!("observed output: {observed}");
 
         // Clean up
-        unsafe { device.destroy_semaphore(wait.into_raw(), None) };
+        semaphore.destroy(&device_ctx);
         pool.destroy(&device_ctx);
         output_buffer.destroy(&device_ctx);
         pipeline.destroy(&device_ctx);

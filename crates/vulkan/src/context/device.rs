@@ -160,27 +160,15 @@ impl DeviceContext {
 
     /// Create a binary semaphore.  These should only be used in Vulkan APIs that require them, such
     /// as swapchain image acquisition.  Use timeline semaphores elsewhere.
-    pub fn make_binary_semaphore(&self) -> Result<BinarySemaphore, VulkanError> {
+    pub(crate) fn make_binary_semaphore(&self) -> Result<BinarySemaphore, VulkanError> {
         let semaphore_ci = vk::SemaphoreCreateInfo::default();
         let raw = unsafe { self.device().create_semaphore(&semaphore_ci, None)? };
         Ok(BinarySemaphore(raw))
     }
 
-    /// Create a timeline semaphore.
-    pub fn make_timeline_semaphore(
-        &self,
-        initial_value: u64,
-    ) -> Result<TimelineSemaphore, VulkanError> {
-        let mut type_ci = vk::SemaphoreTypeCreateInfo::default()
-            .semaphore_type(vk::SemaphoreType::TIMELINE)
-            .initial_value(initial_value);
-        let ci = vk::SemaphoreCreateInfo::default().push_next(&mut type_ci);
-        let raw = unsafe { self.device.create_semaphore(&ci, None)? };
-        Ok(TimelineSemaphore(raw))
-    }
-
-    /// Creates a fence, initialized to the `signaled` state.  Prefer timeline semaphores where possible.
-    pub fn make_fence(&self, signaled: bool) -> Result<Fence, VulkanError> {
+    /// Creates a Vulkan fence, initialized to the `signaled` state.  Prefer timeline semaphores
+    /// instead where possible.
+    pub(crate) fn make_fence(&self, signaled: bool) -> Result<Fence, VulkanError> {
         let flags = if signaled {
             vk::FenceCreateFlags::SIGNALED
         } else {
@@ -190,11 +178,23 @@ impl DeviceContext {
         let fence = unsafe { self.device.create_fence(&ci, None)? };
         Ok(Fence(fence))
     }
+
+    /// Creates a new wrapped [`TimelineSemaphore`](crate::dispatch::sync::TimelineSemaphore).
+    pub fn make_timeline_semaphore(&self) -> Result<TimelineSemaphore, VulkanError> {
+        let mut type_ci = vk::SemaphoreTypeCreateInfo::default()
+            .semaphore_type(vk::SemaphoreType::TIMELINE)
+            .initial_value(0);
+        let ci = vk::SemaphoreCreateInfo::default().push_next(&mut type_ci);
+        let raw = unsafe { self.device.create_semaphore(&ci, None)? };
+
+        Ok(TimelineSemaphore::new(raw))
+    }
 }
 
 // DEBT RAII.  Perhaps when these types grow state and methods, we will also understand their
 // lifetimes and how the handles need to travel across threads and finally be destroyed.
 #[derive(Copy, Clone, Debug)]
+/// A signal-once fence that was traditionally used for GPU-to-CPU signaling.
 pub struct Fence(pub vk::Fence);
 
 impl Fence {
@@ -204,6 +204,10 @@ impl Fence {
 
     pub fn as_raw(&self) -> vk::Fence {
         self.0
+    }
+
+    pub fn destroy(self, device_ctx: &DeviceContext) {
+        unsafe { device_ctx.device().destroy_fence(self.0, None) }
     }
 }
 
@@ -219,18 +223,8 @@ impl BinarySemaphore {
     pub fn as_raw(&self) -> vk::Semaphore {
         self.0
     }
-}
 
-#[derive(Copy, Clone, Debug)]
-/// Type-safe timeline semaphore
-pub struct TimelineSemaphore(pub vk::Semaphore);
-
-impl TimelineSemaphore {
-    pub fn into_raw(self) -> vk::Semaphore {
-        self.0
-    }
-
-    pub fn as_raw(&self) -> vk::Semaphore {
-        self.0
+    pub fn destroy(self, device_ctx: &DeviceContext) {
+        unsafe { device_ctx.device().destroy_semaphore(self.0, None) }
     }
 }

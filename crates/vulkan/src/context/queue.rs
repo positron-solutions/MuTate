@@ -360,6 +360,10 @@ impl<C: Capability> Queue<C> {
         self.raw
     }
 
+    pub fn submission(&self) -> QueueSubmit {
+        QueueSubmit::new(self.raw)
+    }
+
     // NOTE destroy not implemented since logical devices own their queues and we can just drop handles.
 }
 

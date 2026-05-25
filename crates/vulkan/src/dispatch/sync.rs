@@ -3,245 +3,179 @@
 
 //! # Sync
 //!
-//! This module focuses on the phase alignment and pacing of recording and submission.  More
-//! granular timing or ordering of draw dependencies needs some other kind of timing &
-//! synchronization support.
+//! MuTate focuses on the timeline semaphore for course-grained inter-submission synchronization.
+//! Using timeline semaphores soundly and according to spec has several requirements:
 //!
-//! - [`PresentWaitConsumer`] collect presentation times for phase alignment and present to present
-//!   duration measurement using `VK_KHR_present_wait` and a waiter.
+//! - **Monotonic signaling** - Each value must only be signaled exactly once.
+//! - **No waiting without signaling** - Every wait is produced from an intent to signal.
+//! - **No dropped signal intents** - Every intent to signal is used (runtime enforced via DropBomb)
 //!
-//! - [`RenderTimings`] insert observable timestamp commands to estimate frame draw time.  Uses
-//!   `VK_KHR_calibrated_timestamps` and injects / measures / calibrates timing events.
+//! To help uphold no wait-without-signal, we require consumption of `SignalIntent` via drop bomb.
+//! Adding the signal to a `QueueSubmit` is the only endorsed way to consume each value of the
+//! timeline.  This is not fool-proof.  One can store several `QueueSubmits`, but there is little
+//! semantic or natural inclination to do so.
 //!
-//! - [`SwapchainContext`] wraps up swapchain herding 🐈‍⬛.  Centralizes decisions about when to
-//!   attempt the next render & presentation.
+//! The natural tendency is to make each `QueueSubmit` wait on the previous value and signal the
+//! current value, enforcing that at most one submission will be executing at a time.  The
+//! [`PoolRing`](super::pool::PoolRing) uses this style by default.
 
-use std::{
-    thread,
-    time::{Duration, Instant},
-};
+// NEXT Any encountered needs for "I know what I'm doing" patterns.
 
-use ash::{khr::present_wait::Device as PwDevice, vk};
+use ash::vk::{self, Handle};
+use drop_bomb::DropBomb;
 
-use mutate_untorn::prelude::*;
+use crate::prelude::*;
 
-use crate::{
-    context::{DeviceContext, VkContext},
-    VulkanError,
-};
-
-/// Observable state for the waiter.
-#[derive(Clone, Copy)]
-struct PresentConsumerState {
-    /// Sentinel for the internal thread to know to die.
-    alive: bool,
-    /// Newest present ID that can be waited on
-    next_id: u64,
-    /// Swapchain we are presenting against.
-    swapchain: vk::SwapchainKHR,
+/// Vulkan timeline [Semaphore](vk::Semaphore) with some light abstraction to encourage valid usage
+/// and shave off unneeded API surface.
+pub struct TimelineSemaphore {
+    semaphore: vk::Semaphore,
+    next: u64,
 }
 
-impl PresentConsumerState {
-    fn with_id(self, next_id: u64) -> Self {
-        Self { next_id, ..self }
+impl TimelineSemaphore {
+    /// Zero is the only value we treat as a valid initial value.
+    pub(crate) fn new(semaphore: vk::Semaphore) -> Self {
+        Self { semaphore, next: 0 }
     }
 
-    fn with_swapchain(self, swapchain: vk::SwapchainKHR) -> Self {
-        Self {
-            swapchain,
-            next_id: u64::MAX,
-            ..self
+    /// Return a [`SignalIntent`] and increment the counter for the next signal value.
+    ///
+    /// The `SignalIntent` **must** be used within a `QueueSubmit` that will signal before any wait
+    /// is attempted or deadlocks may occur.  Callers are responsible for tracking the
+    /// `SignalIntent` and propagating the `WaitValue` to waiters.
+    pub fn next_signal(&mut self) -> SignalIntent {
+        self.next += 1;
+        SignalIntent {
+            semaphore: self.semaphore,
+            value: self.next,
+            bomb: DropBomb::new(format!(
+                "Signal intent {} for {:0x}",
+                self.next,
+                self.semaphore.as_raw()
+            )),
         }
     }
 
-    fn with_dead(self) -> Self {
-        Self {
-            alive: false,
-            next_id: u64::MAX,
-            swapchain: vk::SwapchainKHR::null(),
+    pub fn as_raw(&self) -> vk::Semaphore {
+        self.semaphore
+    }
+
+    pub fn into_raw(self) -> vk::Semaphore {
+        self.semaphore
+    }
+
+    pub fn destroy(self, device_ctx: &DeviceContext) {
+        unsafe { device_ctx.device().destroy_semaphore(self.into_raw(), None) };
+    }
+}
+
+/// An intent to signal a [`Fence`] (backed by a Vulkan timeline semaphore).  This value **must** be
+/// consumed by a `QueueSubmit` that will only signal after the previous `SignalIntent` has signaled
+/// to uphold sound usage according to the Vulkan spec.  The value can also be consumed by signaling
+/// it on the CPU, but this requires waiting on the previous value.
+pub struct SignalIntent {
+    semaphore: vk::Semaphore,
+    value: u64,
+    bomb: DropBomb,
+}
+
+impl SignalIntent {
+    pub fn as_signal_submit_info(
+        mut self,
+        stage: vk::PipelineStageFlags2,
+    ) -> vk::SemaphoreSubmitInfo<'static> {
+        self.bomb.defuse();
+        vk::SemaphoreSubmitInfo::default()
+            .semaphore(self.semaphore)
+            .value(self.value)
+            .stage_mask(stage)
+    }
+
+    /// Consume this intent early by performing a **CPU-side** wait-then-signal.  Waits on previous
+    /// value and signals current.  Only necessary when something that waits on the value is
+    /// necessary for consistent progression.  Skipping to the next value instead is valid Vulkan.
+    ///
+    /// * `device` - Logical device that owns the semaphore.
+    /// * `timeout` - Nanosecond timeout forwarded to `vkWaitSemaphores`.  `u64::MAX` for
+    ///    indefinite.  Zero for immediate return.
+    ///
+    /// On failure, it is valid Vulkan behavior to simply use the next Fence value.  Monotonic is a
+    /// sufficient condition for valid usage.
+    pub fn try_consume(
+        mut self,
+        device_ctx: &DeviceContext,
+        timeout: u64,
+    ) -> Result<u64, VulkanError> {
+        let device = device_ctx.device();
+        self.bomb.defuse();
+
+        // Wait for the previous value since GPU submissions might not be finished.  If value is
+        // still zero, there is no previous submission, so we can safely skip this step.
+        if self.value > 0 {
+            let previous = self.value - 1;
+            let wait_info = vk::SemaphoreWaitInfo::default()
+                .semaphores(std::slice::from_ref(&self.semaphore))
+                .values(std::slice::from_ref(&previous));
+            unsafe { device.wait_semaphores(&wait_info, timeout) }?;
+        }
+
+        // Signal the value for this intent.
+        let signal_info = vk::SemaphoreSignalInfo::default()
+            .semaphore(self.semaphore)
+            .value(self.value);
+
+        unsafe { device.signal_semaphore(&signal_info) }?;
+        Ok(self.value)
+    }
+
+    /// Produce a `WaitValue` for this intent.
+    pub fn wait_value(&self) -> WaitValue {
+        WaitValue {
+            semaphore: self.semaphore,
+            value: self.value,
         }
     }
 }
 
-/// Polling handle for the incoming present data.  Notifies the waiter of the next waitable present
-/// ID.  Presentation is just one piece of timing data, so the control loop is going to live up in a
-/// higher context.
-pub struct PresentConsumer {
-    waiter_state: UntornReader<PresentWaiterState>,
-    consumer_state: UntornWriter<PresentConsumerState>,
-    waiter_thread: thread::JoinHandle<()>,
-    /// Temporary internal ID used between creating the present info and notifying the waiter.
-    id: u64,
-    unparker: parking::Unparker,
+unsafe impl Send for SignalIntent {}
+
+/// A value that will be signaled (the `SignalIntent` was created and will not be dropped).  It is
+/// valid to wait on a single value at multiple points, so `SignalValue` can be cloned.
+#[derive(Clone)]
+pub struct WaitValue {
+    semaphore: vk::Semaphore,
+    value: u64,
 }
 
-impl PresentConsumer {
-    pub fn new(
-        vk_context: &VkContext,
-        device_context: &DeviceContext,
-        swapchain: vk::SwapchainKHR,
-    ) -> Result<Self, VulkanError> {
-        let pw_device = PwDevice::new(&vk_context.instance, &device_context.device());
-
-        let (waiter_writer, waiter_reader) = Untorn::new(PresentWaiterState {
-            last_window: Duration::MAX,
-            last_present: Instant::now(),
-            last_id: u64::MAX,
-        })
-        .split();
-
-        let (consumer_writer, consumer_reader) = Untorn::new(PresentConsumerState {
-            alive: true,
-            swapchain: swapchain,
-            next_id: 0,
-        })
-        .split();
-
-        let (parker, unparker) = parking::pair();
-
-        let waiter = PresentWaiter {
-            waiter_state: waiter_writer,
-            consumer_state: consumer_reader,
-            pw_device,
-            parker,
-        };
-
-        let waiter_thread = std::thread::Builder::new()
-            .name("present-waiter".into())
-            .spawn(move || waiter.run())?;
-
-        Ok(Self {
-            waiter_state: waiter_reader,
-            consumer_state: consumer_writer,
-            waiter_thread,
-            id: 0,
-            unparker,
-        })
+impl WaitValue {
+    /// Build a `vk::SemaphoreSubmitInfo` wait entry for queue submission.
+    pub fn as_wait_submit_info(
+        &self,
+        stage: vk::PipelineStageFlags2,
+    ) -> vk::SemaphoreSubmitInfo<'static> {
+        vk::SemaphoreSubmitInfo::default()
+            .semaphore(self.semaphore)
+            .value(self.value)
+            .stage_mask(stage)
     }
 
-    /// Returns None when the last frame timing was not for consecutive IDs, meaning some presents
-    /// were missed or some other likely garbage state.
-    pub fn read_last_present(&self) -> Option<Presentation> {
-        let last = self.waiter_state.read();
-        if last.last_window == Duration::MAX {
-            None
-        } else {
-            Some(last)
-        }
-    }
-
-    /// Get the next id that should be polled.  Without calling `notify_waiter`, the id will be
-    /// skipped in the data stream, and the waiter will report a zero window until it waits on
-    /// consecutive frames again.
-    pub fn next_present_id(&mut self) -> u64 {
-        self.id += 1;
-        self.id
-    }
-
-    /// Updates state and wakes up the waiter if it was parked.
-    pub fn notify_waiter(&mut self) {
-        let current = self.consumer_state.read();
-        self.consumer_state.write(current.with_id(self.id));
-        self.unparker.unpark();
-    }
-
-    /// Provide a new swapchain.  (Indicates max ID to force reset).
-    pub fn notify_swapchain_recreation(&mut self, swapchain: vk::SwapchainKHR) {
-        let updated = self.consumer_state.read().with_swapchain(swapchain);
-        self.consumer_state.write(updated);
-    }
-
-    pub fn destroy(mut self) {
-        let current = self.consumer_state.read();
-        self.consumer_state.write(current.with_dead());
-        self.unparker.unpark();
-        self.waiter_thread.join().ok();
+    /// Block the calling thread until this value has been signaled.
+    pub fn wait(&self, device_ctx: &DeviceContext, timeout: u64) -> Result<(), vk::Result> {
+        let wait_info = vk::SemaphoreWaitInfo::default()
+            .semaphores(std::slice::from_ref(&self.semaphore))
+            .values(std::slice::from_ref(&self.value));
+        unsafe { device_ctx.device().wait_semaphores(&wait_info, timeout) }
     }
 }
 
-/// A snapshot of presentation data for the consumer
-#[derive(Clone, Copy)]
-pub struct PresentWaiterState {
-    /// Most recent present-to-present window.
-    pub last_window: Duration,
-    /// Timing of most recent present.
-    pub last_present: Instant,
-    /// Most recently observed ID, not the most recently awaited.
-    pub last_id: u64,
-}
-// If the present wait state gets more complex, these will diverge.
-type Presentation = PresentWaiterState;
+#[cfg(test)]
+mod test {
+    use super::*;
 
-impl PresentWaiterState {
-    fn missed(mut self) -> Self {
-        Self {
-            last_id: u64::MAX,
-            last_present: Instant::now(),
-            last_window: Duration::MAX,
-        }
-    }
+    pub fn create() {}
 
-    fn caught(mut self, id: u64) -> Self {
-        let now = Instant::now();
-        if id.saturating_sub(1) == self.last_id {
-            self.last_window = now - self.last_present;
-        } else {
-            self.last_window = Duration::MAX;
-        }
-        self.last_present = now;
-        self.last_id = id;
-        self
-    }
-}
+    pub fn wait_cpu() {}
 
-pub struct PresentWaiter {
-    waiter_state: UntornWriter<PresentWaiterState>,
-    consumer_state: UntornReader<PresentConsumerState>,
-
-    // Device is a bit more durable than swapchains.  We probably have been detroyed if there's a
-    // new device because it needs to reset a lot.
-    pw_device: ash::khr::present_wait::Device,
-    parker: parking::Parker,
-}
-
-impl PresentWaiter {
-    pub fn run(&self) {
-        loop {
-            self.parker.park();
-            let consumer = self.consumer_state.read();
-            if !consumer.alive {
-                break;
-            }
-            let mut state = self.waiter_state.read();
-
-            // Nothing presented yet, or we've already waited on this ID.  Re-park.
-            if consumer.next_id == u64::MAX || consumer.next_id == state.last_id {
-                continue;
-            }
-
-            let id = consumer.next_id;
-            let swapchain = consumer.swapchain;
-
-            // XXX Pick an actual expected timeout duration.  We need the graphics timing in order
-            // to do this (doesn't exist yet)
-            // NEXT we really need KHR_present_timing.  This method has jitter of about 2ms that did
-            // not go away with a zero timeout spin-loop polling setup.  It also doesn't tell us the
-            // extremely critical present deadline.
-            match unsafe { self.pw_device.wait_for_present(swapchain, id, 6_000_000) } {
-                Ok(_) => {
-                    self.waiter_state.write(state.caught(id));
-                }
-                Err(vk::Result::TIMEOUT) => {
-                    // Missed the latch window — loop and try again with the same id.
-                    // Consumer may have advanced next_id in the meantime; we'll pick
-                    // that up at the top of the loop.
-                    self.waiter_state.write(state.missed());
-                }
-                Err(e) => {
-                    self.waiter_state.write(state.missed());
-                    eprintln!("present wait error: {:?}", e);
-                }
-            }
-        }
-    }
+    // NEXT on-device test
 }

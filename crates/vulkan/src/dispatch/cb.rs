@@ -6,11 +6,20 @@
 //! Raw Vulkan command buffers, wrapped in compile-time guarantees to enable building reliable APIs
 //! for consumers.
 //!
-//! ## Typed Begin & End
+//! ## Type-State Lifecycle
 //!
 //! - no commands before beginning recording
 //! - no rendering-specific commands outside rendering
 //! - no submission while still recording
+//!
+//! See the [vulkan spec](https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html) section on
+//! command buffers for an explanation of the full state machine we're wrapping.
+//!
+//! ### Reuse Ergonomics
+//!
+//! Valid re-use of sequential buffers requires on a timeline semaphore to exclude concurrent
+//! execution of the same buffer. `SimultaneousUse` buffers can be used several times even within
+//! the same submission although data dependencies would require barriers anyway.
 //!
 //! ## Enforced Usage
 //!
@@ -44,26 +53,20 @@
 //!
 //! The `as_raw()` and `into_raw()` methods returns the [`ash::vk::CommandBuffer`] handle as a
 //! temporary escape hatch for missing support.
-//!
-//! ## Submission Ergonomics
-//!
-//! - group together submissions
-//! - append signal or wait semaphores and fences to each group
-//! - obtain signal semaphores for use in other groups
 
-// MAYBE barrier chaining API to add a barrier between A and B.  Can use extra command buffers to
-// decouple recording ordering, enabling B to be recorded and then A->B barriers to be inserted
-// before B in the queue submission.  Other solutions involve stack discipline and accounting
-// structures to create the ordering and dependency before recording.  Seems like extra sync buffers
-// would be preferred amirite?
 // NEXT support device recorded commands.  Unsure workflow.  Go figure it out.
+// NEXT it would be useful to enforce single-use-in-flight for Sequential buffers, but that will
+// likely involve a wrapper type for each buffer so that necessary sync state can travel along with
+// the buffer.
+// NOTE Simultaneous model buffers can be re-used, but reset of an in-flight buffer is invalid, so
+// likely this remains unsafe since enforcing return of all handles across threads is not fun.
 use std::marker::PhantomData;
 
 use drop_bomb::DropBomb;
 
 use crate::internal::*;
 
-use super::SubmissionModel;
+use super::{Resettable, SubmissionModel};
 
 pub struct CommandBuffer<C: Capability, M: SubmissionModel> {
     pub(crate) raw: vk::CommandBuffer,
@@ -109,7 +112,7 @@ macro_rules! cb_state {
                     raw,
                     bomb: DropBomb::new(concat!(
                         stringify!($name),
-                        " must be consumed via a typed transition method, not implicitly dropped"
+                        " must be consumed via a typed transition method but was dropped"
                     )),
                     _phantom: PhantomData,
                 }
@@ -131,6 +134,8 @@ macro_rules! cb_state {
     };
 }
 
+cb_state!(InitialBuffer<C: Capability, M: SubmissionModel>);
+cb_state!(InitialSecondary<C: Capability, M: SubmissionModel>);
 cb_state!(ExecutableBuffer<C: Capability, M: SubmissionModel>);
 cb_state!(ExecutableSecondary<C: Capability, M: SubmissionModel>);
 cb_state!(RecordingBuffer<C: Capability, M: SubmissionModel>);
@@ -138,6 +143,49 @@ cb_state!(RecordingSecondary<C: Capability, M: SubmissionModel>);
 // NOTE Rendering buffers and adjacent type states implicitly bear Graphics Capability
 cb_state!(RenderingBuffer<M: SubmissionModel>);
 cb_state!(RenderingSecondary<M: SubmissionModel>);
+
+// Executable buffers are not used in any calls that would violate thread safety of the Pool.  They
+// are basically read only at this point and may be shared across threads.
+unsafe impl<C: Capability + Send, M: SubmissionModel + Send> Send for ExecutableBuffer<C, M> {}
+unsafe impl<C: Capability + Send, M: SubmissionModel + Send> Send for ExecutableSecondary<C, M> {}
+
+impl<C: Capability, M: SubmissionModel> InitialBuffer<C, M> {
+    /// Begin recording.  Consumes the initial-state handle and returns a recording-state handle.
+    pub fn begin(
+        self,
+        device_context: &DeviceContext,
+    ) -> Result<RecordingBuffer<C, M>, VulkanError> {
+        let raw = self.into_parts();
+        let begin_info = vk::CommandBufferBeginInfo::default().flags(M::BUFFER_FLAGS);
+        unsafe {
+            device_context
+                .device()
+                .begin_command_buffer(raw, &begin_info)?;
+        }
+        Ok(RecordingBuffer::from_raw(raw))
+    }
+}
+
+impl<C: Capability, M: SubmissionModel> InitialSecondary<C, M> {
+    /// Begin recording a secondary buffer.  For compute secondaries the inheritance info is
+    /// all-defaults; for graphics, the caller must supply the appropriate inheritance.
+    pub fn begin(
+        self,
+        device_context: &DeviceContext,
+        inheritance: &vk::CommandBufferInheritanceInfo,
+    ) -> Result<RecordingSecondary<C, M>, VulkanError> {
+        let raw = self.into_parts();
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(M::BUFFER_FLAGS)
+            .inheritance_info(inheritance);
+        unsafe {
+            device_context
+                .device()
+                .begin_command_buffer(raw, &begin_info)?;
+        }
+        Ok(RecordingSecondary::from_raw(raw))
+    }
+}
 
 impl<C: Capability, M: SubmissionModel> RecordingBuffer<C, M> {
     pub fn end(
@@ -202,7 +250,52 @@ impl<M: SubmissionModel> RenderingBuffer<M> {
     }
 }
 
+impl<C: Capability, M: SubmissionModel + Resettable> ExecutableBuffer<C, M> {
+    /// Reinterpret this buffer as being in the initial state.  This is implicit if you can
+    /// guarantee that the source pool has been reset.
+    pub unsafe fn assume_initial(self) -> InitialBuffer<C, M> {
+        InitialBuffer::from_raw(self.into_parts())
+    }
+
+    /// When using recording models that support individual buffer resets, such as `Sequential` or
+    /// `Simultaneous`, it is valid to reset individual buffers.  This must not be done while the
+    /// buffers are in flight anywhere.
+    pub unsafe fn reset(
+        self,
+        device_context: &DeviceContext,
+        flags: vk::CommandBufferResetFlags,
+    ) -> Result<InitialBuffer<C, M>, VulkanError> {
+        let raw = self.into_parts();
+        device_context.device().reset_command_buffer(raw, flags)?;
+        Ok(InitialBuffer::from_raw(raw))
+    }
+}
+
+impl<C: Capability, M: SubmissionModel + Resettable> ExecutableSecondary<C, M> {
+    /// Reinterpret this buffer as being in the initial state.  This is implicit if you can
+    /// guarantee that the source pool has been reset.
+    pub unsafe fn assume_initial(self) -> InitialSecondary<C, M> {
+        InitialSecondary::from_raw(self.into_parts())
+    }
+
+    /// When using recording models that support individual buffer resets, such as `Sequential` or
+    /// `Simultaneous`, it is valid to reset individual buffers.  This must not be done while the
+    /// buffers are in flight anywhere.
+    pub unsafe fn reset(
+        self,
+        device_context: &DeviceContext,
+        flags: vk::CommandBufferResetFlags,
+    ) -> Result<InitialSecondary<C, M>, VulkanError> {
+        let raw = self.into_parts();
+        device_context.device().reset_command_buffer(raw, flags)?;
+        Ok(InitialSecondary::from_raw(raw))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[cfg(test)]
+    pub fn test() {}
 }

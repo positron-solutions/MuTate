@@ -3,19 +3,19 @@
 
 //! # Recording & Dispatch
 //!
-//! Record commands into command buffers.  Submit buffers to queues.  Recycle and reset command
-//! buffers and pools.  This module encompasses how we feed the queues and enable runtime components
-//! to get their commands recorded without knowing too much about the pools and buffers we give to
-//! them.
+//! Record commands into command buffers.  Synchronize and submit buffers to queues.  Recycle and
+//! reset command buffers and pools.  This module encompasses how we feed the queues and enable
+//! runtime components to get their commands recorded without knowing too much about the pools and
+//! buffers we give to them.
 //!
 //! ## Pool Geometry
 //!
 //! - [`Pool`] - A single command pool, used alone for transient bulk operations or persistent
 //!   buffer sets.  The vended buffers can use any recording model but the default is `OneTime`.
 //!
-//! - [`PoolRing`] - A literal `Pool` ring for epoch style use.  Per-cycle one pool is taken from
-//!   the ring and all of the buffers that the pool vends will be used once and implicitly reset
-//!   when the same pool is handed out again.
+//! - [`PoolRing`] - A literal ring of `Pool`s for epoch style use.  Per-cycle one pool is taken
+//!   from the ring and all of the buffers that the pool vends will be used once and implicitly
+//!   reset when the same pool is handed out again.
 //!
 //! ## Buffer Recording & Submission Models
 //!
@@ -30,29 +30,49 @@
 //!
 //! ### Reset Support
 //!
-//! Reset of individual buffers is supported for use cases where it fits the pool better than
-//! resetting the entire pool.  Individual buffer reset cannot make sense for epoch style `PoolRing`
-//! usage and is not supported.
+//! Reset of individual buffers is supported for `Sequential` and `Simultaneous` models.  When using
+//! buffers multiple times from the same pool, it is natural to want to reset individual buffers
+//! instead of the whole pool.  The extra recording cost is amortized over many queue submissions
+//! and avoided for the other buffers in the pool that can avoid re-recording.
 //!
-//! Individual reset can make sense for bulk submissions of one-time-use buffers that don't present
-//! a good timing to reset the entire pool.  Individual reset can also make sense for a pool of
-//! long-lived, rarely updated multi-submission buffers.
+//! Reset and re-use support works by splitting the buffer into two parts prior to submission.
+//! Simultaneous use buffers may be submitted multiple times into the same `SubmitInfo` and so can
+//! be re-used directly.  Sequential buffers may be submitted multiple times but must exclude
+//! concurrent re-use via a synchronization token.
+//!
+//! Not all use cases can benefit from reset.  Individual buffer reset is unnatural for epoch style
+//! `PoolRing` usage and is not supported. Streaming or large batch submissions can benefit from
+//! resetting buffers from a small pool instead of waiting for moments to reset the entire pool.
+//! Individual reset can also make sense for a pool of long-lived, rarely updated multi-submission
+//! buffers that frequently are partially in flight and don't present a good timing to reset the
+//! entire pool.
 //!
 //! Reset is distinct from reclaiming & re-vending a new buffer, which may require more
 //! re-allocation overhead.  However, reclaim & re-vend is an available tactic even when reset is
-//! not.
+//! not, so it works with all submission models.
 //!
-//! ## Thread Safety
+//! ## Safety
 //!
 //! Pools are not thread-safe.  To use a ring or pool on multiple threads, instead give each thread
 //! its own ring or pool and use semaphores and host synchronization for coordinating submission /
-//! order.  Queue submission is thread-safe through the [`Queue`] abstraction.
+//! order.  Recorded command buffers may be shared across threads for queue submission.  Queue
+//! submission is thread-safe through the [`Queue`] abstraction.
+//!
+//! Reset of pool is difficult to make fully safe without reference counting and synchronization.
+//! `PoolRing` usage is not fully safe if you leak command buffer handles outside the epoch.  Leaked
+//! buffers will become invalid and the type-state transition cannot be enforced by compile-time
+//! knowledge.  For standalone pools, it can be more natural to hold onto buffers somewhere and less
+//! natural to reset the entire pool.  **Do not hold onto buffers if you want to reset a pool.**
+//!
+//! Completely safe runtime abstractions are straightforward to make but immediately begin taxing
+//! other code with API shape or runtime overhead, so you're on your own for idiot-proof
+//! abstractions.
 //!
 //! ## Queue Family Compatibility
 //!
 //! Buffers from different pools in the same queue family may be submitted together.  Secondary
-//! buffers may be executed in primary buffers from a different pool as long as their pools belong
-//! to the same family.
+//! buffers may be executed by primary buffers from a different pool as long as their pools belong
+//! to the same queue family.
 //!
 //! ## Secondary Buffers
 //!
@@ -61,20 +81,39 @@
 //! secondary can be re-used if its model is `Sequential` or `Simultaneous`.  If `Simultaneous`, the
 //! same secondary can be used in two different primaries concurrently.
 //!
-//! - [`SecondaryRecording`]
-
-//! TODO move onto pool ring size argument
-//! ## Pool Ring Size
+//! ## Render Phase Alignment
 //!
-//! There are usually two generations in
-//! order to pipeline recording beside parallel dispatch.  The epochs form a ring and the ring has
-//! slots.
+//! Depending on the compositor and winit, the phase alignment between dispatch and presentation
+//! could be quite off.  Since the swapchain might acquire at too fast of pace, only the command
+//! pool epoch synchronization becomes both naturally aligned and reasonably self-pacing.
 //!
+//! The (present wait)[super::pw] module was intended to help with this problem, but the
+//! capabilities demonstrated are not clearly going to fix problems just yet.
 
-// NEXT protected support
+// NOTE This module seems really prone to covering all of the bases in terms of safe contracts vs
+// API tax and capability.  For example, any sophisticated modular recording scheme will likely pass
+// buffers between threads.  Resetting the source pools resets the buffers.  Expressing this remote
+// type transition (spooky action at a distance) requires expressing relations that don't follow the
+// scope or ownership topology.  Well, Rust can't express that yet.
+//
+// Perhaps someday there will be a mechanism of injecting type through scope that will affect all
+// force-sensitive types.  Transmuting just one owning object is another option that propagates
+// less spookily but still requires us to mint some kind of phantom tokens.  We can use any
+// phase-coordinating point to mint such a token, but is that part of this crate's API or do we
+// provide public methods for implementing such ghostery?
+//
+// Choices made so far are conservative in avoiding API tax and retaining full capability.  **This
+// is at the expense of safety and validity.** Please guide the semantics, what the code says it
+// does, towards natural soundness (ie the users get it right because the API suggests doing things
+// right) and API convenience until real needs can pull development more directly.
+
+// NEXT Secondary recording into a primary.
+// NEXT The re-use token structure for sequential buffers is not yet decided, but simultaneous use
+// buffers do not need any synchronization support.
 
 pub mod cb;
 pub mod pool;
+pub mod pw;
 pub mod submit;
 pub mod sync;
 
@@ -90,7 +129,9 @@ pub mod prelude {
         ExecutableBuffer, ExecutableSecondary, RecordingBuffer, RecordingSecondary,
         RenderingBuffer, RenderingSecondary,
     };
-    pub use super::pool::{CommandPool, PoolLease};
+    pub use super::pool::{CommandPool, PoolRing};
+    pub use super::submit::QueueSubmit;
+    pub use super::sync::TimelineSemaphore;
 }
 
 pub(crate) mod internal {
@@ -102,6 +143,9 @@ pub(crate) mod internal {
         ExecutableBuffer, ExecutableSecondary, RecordingBuffer, RecordingSecondary,
         RenderingBuffer, RenderingSecondary,
     };
+    pub use super::pool::CommandPool;
+    pub use super::submit::QueueSubmit;
+    pub use super::sync::{SignalIntent, TimelineSemaphore, WaitValue};
 }
 
 use std::marker::PhantomData;
@@ -123,14 +167,8 @@ pub trait SubmissionModel: sealed::SubmissionModel {}
 /// submission.
 pub struct OneTime;
 /// Buffer can be dispatched multiple times, but only one dispatch may be in-flight at any time.
-// NEXT it would be useful to enforce single-use-in-flight, but the ownership lifecycle for sync
-// primitive and old-to-new-buffer type transition need to be figured out.  We may just tack sync
-// data onto each buffer but hide the detail from consumers.
 pub struct Sequential;
 /// Same buffer can be dispatched multiple times.
-// NEXT reclaiming this with copies in flight would be kind of bad.  Again, appending some sync data
-// may allow this to clean up naturally.  Threading calls through some recording context that
-// manages the pool's handles is another option.
 pub struct Simultaneous;
 
 impl sealed::SubmissionModel for OneTime {
@@ -149,3 +187,7 @@ impl sealed::SubmissionModel for Simultaneous {
 impl SubmissionModel for OneTime {}
 impl SubmissionModel for Sequential {}
 impl SubmissionModel for Simultaneous {}
+
+pub(crate) trait Resettable {}
+impl Resettable for Sequential {}
+impl Resettable for Simultaneous {}
