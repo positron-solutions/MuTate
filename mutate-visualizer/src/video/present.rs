@@ -1,18 +1,6 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// What remains is to break this apart into the graphics vs compute-present paths and move it into
-// Vulkan.  The extent handling is gross between here and main.  Synchronization might need a little
-// better first class treatment.  Existing sync is just inherited first-pass code.
-//
-// Current vibes are that presentation is a runtime thing.  User will ask for a fully equipped
-// window or an off-screen render loop. The contents we plug into those boxes don't need to care
-// what they are rendering to.
-//
-// Both graphics-present and compute-present ultimately provide recording slots and their command
-// buffers, so all graphics and compute users downstream can just consume the command buffers as-is.
-// They don't need to know or care if presentation will happen or rendering is even on screen.
-
 use std::slice;
 
 use ash::khr::present_wait;
@@ -72,13 +60,11 @@ impl SurfacePresent {
             let SurfacePresent {
                 swapchain,
                 pool_ring,
-                // in_flight,
                 ..
             } = self;
 
             swapchain.destroy(context);
             pool_ring.destroy(context);
-            // device.destroy_semaphore(in_flight, None);
         }
     }
 
