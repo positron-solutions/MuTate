@@ -104,7 +104,6 @@ impl SurfacePresent {
     pub fn render_target(
         &mut self,
         context: &DeviceContext,
-        clear: vk::ClearValue, // XXX extract this because it's basically pretty annoying.
     ) -> (
         SignalIntent,
         RecordingBuffer<Graphics, OneTime>,
@@ -145,9 +144,8 @@ impl SurfacePresent {
         // let color_attachment = vk::RenderingAttachmentInfo {
         //     image_view: image_view,
         //     image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        //     load_op: vk::AttachmentLoadOp::CLEAR,
+        //     load_op: vk::AttachmentLoadOp::DONT_CARE
         //     store_op: vk::AttachmentStoreOp::STORE,
-        //     clear_value: clear,
         //     ..Default::default()
         // };
 

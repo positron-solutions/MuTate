@@ -76,16 +76,10 @@ impl App {
 
         let cqt = self.cqt.produce();
 
-        let clear = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
-            },
-        };
-
         let sp = self.surface_present.as_mut().unwrap();
 
         // Obtain swapchain image and hot command buffer
-        let (signal_intent, cb, acquired_image) = sp.render_target(device_context, clear);
+        let (signal_intent, cb, acquired_image) = sp.render_target(device_context);
 
         // XXX hold size on swapchain updates?  A parameter system would 😉
         let size = self.window.as_ref().unwrap().render_size();
