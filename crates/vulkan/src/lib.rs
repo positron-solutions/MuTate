@@ -151,7 +151,7 @@ pub mod prelude {
     pub use super::VulkanError;
     // NEXT move these out of prelude and de-emphasize in favor of consistent timeline semaphore
     // usage except where required (swapchain acquisition, presentation etc).
-    pub use crate::context::device::{BinarySemaphore, Fence};
+    pub use crate::context::device::Fence;
     pub use crate::context::queue::prelude::*;
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::descriptor_newtype;
@@ -175,7 +175,7 @@ pub(crate) mod internal {
     pub use smallvec::SmallVec;
 
     pub use super::VulkanError;
-    pub use crate::context::device::{BinarySemaphore, Fence};
+    pub use crate::context::device::Fence;
     pub use crate::context::queue::prelude::*;
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::dispatch::internal::*;

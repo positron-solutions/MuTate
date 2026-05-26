@@ -39,6 +39,14 @@ impl TimelineSemaphore {
         Self { semaphore, next: 0 }
     }
 
+    /// Used to provide already-signaled wait values for initializing other structuress.
+    pub(crate) fn wait_initial(&self) -> WaitValue {
+        WaitValue {
+            semaphore: self.semaphore,
+            value: self.next,
+        }
+    }
+
     /// Return a [`SignalIntent`] and increment the counter for the next signal value.
     ///
     /// The `SignalIntent` **must** be used within a `QueueSubmit` that will signal before any wait
@@ -166,6 +174,97 @@ impl WaitValue {
             .semaphores(std::slice::from_ref(&self.semaphore))
             .values(std::slice::from_ref(&self.value));
         unsafe { device_ctx.device().wait_semaphores(&wait_info, timeout) }
+    }
+}
+
+/// Vulkan **binary** [Semaphore](vk::Semaphore) with some light abstraction to encourage valid
+/// usage and shave off unneeded API surface.
+// MAYBE as a matter of style, any zero-size wrappers are completely fine to implement copy for.  We
+// might even just want to go ahead and add some derives for into_raw and as_raw.
+#[derive(Clone, Copy)]
+pub struct BinarySemaphore {
+    semaphore: vk::Semaphore,
+}
+
+impl BinarySemaphore {
+    pub(crate) fn new(semaphore: vk::Semaphore) -> Self {
+        Self { semaphore }
+    }
+
+    /// Produce a paired signal and wait intent for one semaphore cycle.
+    ///
+    /// The `BinarySignal` **must** be consumed in a submission that signals this semaphore.  The
+    /// `BinaryWait` must be consumed in a subsequent submission or deadlock may occur.
+    pub fn next(&self) -> (BinarySignal, BinaryWait) {
+        let signal = BinarySignal {
+            semaphore: self.semaphore,
+        };
+        let wait = BinaryWait {
+            semaphore: self.semaphore,
+        };
+        (signal, wait)
+    }
+
+    /// Produce only the signal intent.  Used when the wait side is external, such as presentation
+    /// waiting on rendering to signal.
+    pub fn signal(&self) -> BinarySignal {
+        BinarySignal {
+            semaphore: self.semaphore,
+        }
+    }
+
+    /// Produce only the wait intent.  Used when the signal side is external, such as swapchain
+    /// image acquisition completing.
+    pub fn wait(&self) -> BinaryWait {
+        BinaryWait {
+            semaphore: self.semaphore,
+        }
+    }
+
+    pub fn as_raw(&self) -> vk::Semaphore {
+        self.semaphore
+    }
+
+    pub fn into_raw(self) -> vk::Semaphore {
+        self.semaphore
+    }
+
+    pub fn destroy(self, device_ctx: &DeviceContext) {
+        unsafe { device_ctx.device().destroy_semaphore(self.semaphore, None) };
+    }
+}
+
+/// Intent to signal a binary semaphore from a queue submission.  This value **must** be consumed or
+/// else the wait may deadlock.
+#[derive(Clone, Copy)]
+pub struct BinarySignal {
+    semaphore: vk::Semaphore,
+}
+
+impl BinarySignal {
+    pub fn as_raw(&self) -> vk::Semaphore {
+        self.semaphore
+    }
+
+    pub fn into_raw(self) -> vk::Semaphore {
+        self.semaphore
+    }
+}
+
+/// Intent to wait on a binary semaphore from a queue submission.  This value **must** be consumed
+/// or else a double-signal and undefined behavior may result.
+#[derive(Clone, Copy)]
+pub struct BinaryWait {
+    semaphore: vk::Semaphore,
+}
+
+impl BinaryWait {
+    pub fn as_raw(&self) -> vk::Semaphore {
+        self.semaphore
+    }
+
+    pub fn into_raw(self) -> vk::Semaphore {
+        self.semaphore
     }
 }
 

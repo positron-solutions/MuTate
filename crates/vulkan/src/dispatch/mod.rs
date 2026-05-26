@@ -110,6 +110,8 @@
 // NEXT Secondary recording into a primary.
 // NEXT The re-use token structure for sequential buffers is not yet decided, but simultaneous use
 // buffers do not need any synchronization support.
+// NEXT Sync is not well presented in these module docs.  The command pool docs probably need pushed
+// into pool and a top level doc needs to present the high-level overview.
 
 pub mod cb;
 pub mod pool;
@@ -131,7 +133,10 @@ pub mod prelude {
     };
     pub use super::pool::{CommandPool, PoolRing};
     pub use super::submit::QueueSubmit;
-    pub use super::sync::TimelineSemaphore;
+    // XXX make binary private after pulling in swapchain presentation gear
+    pub use super::sync::{
+        BinarySemaphore, BinarySignal, BinaryWait, SignalIntent, TimelineSemaphore, WaitValue,
+    };
 }
 
 pub(crate) mod internal {
@@ -145,7 +150,9 @@ pub(crate) mod internal {
     };
     pub use super::pool::CommandPool;
     pub use super::submit::QueueSubmit;
-    pub use super::sync::{SignalIntent, TimelineSemaphore, WaitValue};
+    pub use super::sync::{
+        BinarySemaphore, BinarySignal, BinaryWait, SignalIntent, TimelineSemaphore, WaitValue,
+    };
 }
 
 use std::marker::PhantomData;

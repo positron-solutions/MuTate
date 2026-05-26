@@ -35,19 +35,20 @@ use ash::vk;
 use smallvec::SmallVec;
 
 use super::surface::VkSurface;
-use crate::context::{DeviceContext, VkContext};
+
+use crate::internal::*;
 
 // Acquired images come from the swapchain, which might have to do something obtuse and hand us back
 // a bizarre index, such as 2, due to the compositor being late at giving us the image back.
 pub struct AcquiredImage {
     /// Swapchain signals this semaphore when rendering / use of the image may begin.
-    pub image_available: vk::Semaphore,
+    pub image_available: BinaryWait,
     /// The index provided by the swapchain (which may cycle swapchain images out of order) during
     /// acquisition.
     pub swapchain_image_index: u32, // present will use this field
     pub image: vk::Image,
-    /// Signals when presentation may begin (after rendering).
-    pub present_ready: vk::Semaphore,
+    /// User signals when presentation may begin (after rendering).
+    pub present_ready: BinarySignal,
 }
 
 /// A package deal!
@@ -65,8 +66,8 @@ pub struct SwapchainContext {
     images: SmallVec<vk::Image, 4>,
     frames: usize,
     frame_index: usize,
-    image_available_semaphores: [vk::Semaphore; 4],
-    present_ready_semaphores: [vk::Semaphore; 4],
+    image_available_semaphores: [BinarySemaphore; 4],
+    present_ready_semaphores: [BinarySemaphore; 4],
 }
 
 impl SwapchainContext {
@@ -107,9 +108,9 @@ impl SwapchainContext {
             create_image_views(&device_context.device(), &images, surface.format.format);
 
         let image_available_semaphores =
-            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap().into_raw());
+            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
         let present_ready_semaphores =
-            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap().into_raw());
+            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
         Self {
             present_ready_semaphores,
             image_available_semaphores,
@@ -219,10 +220,10 @@ impl SwapchainContext {
             }
             self.loader.destroy_swapchain(self.swapchain, None);
             self.image_available_semaphores.iter().for_each(|s| {
-                device.destroy_semaphore(*s, None);
+                s.destroy(context);
             });
             self.present_ready_semaphores.iter().for_each(|s| {
-                device.destroy_semaphore(*s, None);
+                s.destroy(context);
             });
         }
     }
@@ -239,7 +240,7 @@ impl SwapchainContext {
                 .acquire_next_image(
                     self.swapchain,
                     100_000_000, // 100ms
-                    image_available,
+                    image_available.as_raw(),
                     vk::Fence::null(),
                 )
                 .unwrap() // XXX will error in ways we should catch
@@ -251,10 +252,10 @@ impl SwapchainContext {
         let image = self.images[swapchain_image_index as usize];
 
         AcquiredImage {
-            image_available,
+            image_available: image_available.wait(),
             swapchain_image_index,
             image,
-            present_ready,
+            present_ready: present_ready.signal(),
         }
     }
 }

@@ -85,7 +85,7 @@ impl App {
         let sp = self.surface_present.as_mut().unwrap();
 
         // Obtain swapchain image and hot command buffer
-        let ((in_flight, epoch), cb, acquired_image) = sp.render_target(device_context, clear);
+        let (signal_intent, cb, acquired_image) = sp.render_target(device_context, clear);
 
         // XXX hold size on swapchain updates?  A parameter system would 😉
         let size = self.window.as_ref().unwrap().render_size();
@@ -99,7 +99,7 @@ impl App {
         // Presentation closes the command buffer, submits to queue, transforms image, and presents.
         // Also waits on presentation.
         let window = self.window.as_ref().unwrap();
-        sp.post_draw(device_context, (in_flight, epoch), cb, &acquired_image);
+        sp.post_draw(device_context, signal_intent, cb, &acquired_image);
         // Winit says this helps align the window system latching with REDRAW_REQUESTED events.
         // However, it is supported only on Wayland at this time.
         window.pre_present_notify();

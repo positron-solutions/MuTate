@@ -163,7 +163,7 @@ impl DeviceContext {
     pub(crate) fn make_binary_semaphore(&self) -> Result<BinarySemaphore, VulkanError> {
         let semaphore_ci = vk::SemaphoreCreateInfo::default();
         let raw = unsafe { self.device().create_semaphore(&semaphore_ci, None)? };
-        Ok(BinarySemaphore(raw))
+        Ok(BinarySemaphore::new(raw))
     }
 
     /// Creates a Vulkan fence, initialized to the `signaled` state.  Prefer timeline semaphores
@@ -208,23 +208,5 @@ impl Fence {
 
     pub fn destroy(self, device_ctx: &DeviceContext) {
         unsafe { device_ctx.device().destroy_fence(self.0, None) }
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-/// Type-safe binary semaphore.
-pub struct BinarySemaphore(pub vk::Semaphore);
-
-impl BinarySemaphore {
-    pub fn into_raw(self) -> vk::Semaphore {
-        self.0
-    }
-
-    pub fn as_raw(&self) -> vk::Semaphore {
-        self.0
-    }
-
-    pub fn destroy(self, device_ctx: &DeviceContext) {
-        unsafe { device_ctx.device().destroy_semaphore(self.0, None) }
     }
 }

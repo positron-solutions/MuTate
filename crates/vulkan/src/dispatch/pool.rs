@@ -177,7 +177,7 @@ pub struct PoolRing<C: Capability, const N: usize = 2, M: SubmissionModel = OneT
     timeline: TimelineSemaphore,
     /// Timeline value each slot's prior lease promised to signal.  `0` on the first lap matches
     /// the timeline's initial value, so the first `advance` per slot doesn't block.
-    done_values: [u64; N],
+    done_values: [WaitValue; N],
     /// Slot index vended by the next `acquire`.
     cursor: usize,
     _cap: PhantomData<C>,
@@ -219,7 +219,7 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
         };
 
         // The zero initial value is always signaled, so all waits immediately acquire on the first lap.
-        let done_values = [0; N];
+        let done_values: [WaitValue; N] = std::array::from_fn(|_| timeline.wait_initial());
 
         Ok(Self {
             pools,
@@ -251,17 +251,7 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
     ) -> Result<(&CommandPool<C, M>, SignalIntent), VulkanError> {
         let device = device_ctx.device();
         let slot = self.cursor;
-
-        // NEXT we can probably add some internal convenience via WaitValue or TimelineSemaphore
-        // that would make this manual construction more expressive and re-use our
-        // as_wait_submit_info method.
-        let wait_values = [self.done_values[slot]];
-        let wait_semaphores = [self.timeline.as_raw()];
-        let wait_info = vk::SemaphoreWaitInfo::default()
-            .semaphores(&wait_semaphores)
-            .values(&wait_values);
-        unsafe { device.wait_semaphores(&wait_info, timeout)? };
-
+        self.done_values[slot].wait(device_ctx, timeout)?;
         unsafe {
             device.reset_command_pool(
                 *self.pools[slot].as_raw(),
@@ -269,6 +259,7 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
             )?;
         }
         let intent = self.timeline.next_signal();
+        self.done_values[slot] = intent.wait_value();
         self.cursor = (slot + 1) % N;
         Ok((&self.pools[slot], intent))
     }
@@ -323,7 +314,7 @@ mod test {
     }
 
     #[test]
-    fn acquire_lease() {
+    fn acquire_pool() {
         with_context!(|device_ctx, vk_ctx| {
             let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
             let mut ring = PoolRing::<Graphics, 2, OneTime>::new(&device_ctx, &queue).unwrap();

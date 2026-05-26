@@ -18,9 +18,8 @@ use std::slice;
 use ash::khr::present_wait;
 use ash::vk;
 
-// XXX go fix up prelude for most of these.
 use mutate_lib::vulkan::{
-    dispatch::{pool::PoolRing, sync},
+    dispatch::pw,
     prelude::*,
     present::swapchain::{AcquiredImage, SwapchainContext},
 };
@@ -29,15 +28,11 @@ use mutate_lib::{self as utate, prelude::*};
 pub struct SurfacePresent {
     swapchain: SwapchainContext,
 
-    // frame_counter: u64,
-    // in_flight: vk::Semaphore,
     /// Present wait measurement
-    present: sync::PresentConsumer,
+    present: pw::PresentConsumer,
 
-    // NEXT Pool rings can likely be abstracted.  It's a very solid piece of infrastructure.
-    // Just enough for front & back frame.  Didn't we do this with recording slots and rings?
     queue: Queue<Graphics>,
-    pools: PoolRing<Graphics>,
+    pool_ring: PoolRing<Graphics>,
     /// A ring index, always advances by 1.  Longer pool rings could be used if there's a reason for
     /// longer serial work to pipeline in parallel, likely using only a few warps (because otherwise
     /// it's asking the scheduler to make it parallel).
@@ -45,7 +40,7 @@ pub struct SurfacePresent {
 }
 
 impl SurfacePresent {
-    // TODO give swapchain during construction?
+    // MAYBE give a swapchain during construction?
     pub fn new(
         device_context: &DeviceContext,
         vk_context: &VkContext,
@@ -53,38 +48,18 @@ impl SurfacePresent {
         extent: vk::Extent2D,
     ) -> Self {
         let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent);
-
-        // NEXT bon builder for semaphores.  This is nonsense.
-        let mut type_ci = vk::SemaphoreTypeCreateInfo {
-            semaphore_type: vk::SemaphoreType::TIMELINE,
-            initial_value: 0,
-            ..Default::default()
-        };
-        // let semaphore_ci = vk::SemaphoreCreateInfo::default().push_next(&mut type_ci);
-        // let in_flight = unsafe {
-        //     device_context
-        //         .device()
-        //         .create_semaphore(&semaphore_ci, None)
-        //         .unwrap()
-        // };
-
-        // NEXT make the command pools / rings / recording slots do this without dropping to raw types.
         let queue = device_context
             .queues
             .graphics(vk_context, surface, QueuePriority::High)
             .unwrap();
-        let pools = PoolRing::new(device_context, &queue).unwrap();
-
-        let present = sync::PresentConsumer::new(vk_context, device_context, swapchain.swapchain)
+        let pool_ring = PoolRing::new(device_context, &queue).unwrap();
+        let present = pw::PresentConsumer::new(vk_context, device_context, swapchain.swapchain)
             .expect("Could not start up the present wait gizmo");
-
         Self {
-            // frame_counter: 0,
-            // in_flight,
             present,
 
             recording_index: 0,
-            pools,
+            pool_ring,
             queue,
 
             swapchain,
@@ -96,13 +71,13 @@ impl SurfacePresent {
         unsafe {
             let SurfacePresent {
                 swapchain,
-                pools,
+                pool_ring,
                 // in_flight,
                 ..
             } = self;
 
             swapchain.destroy(context);
-            pools.destroy(context);
+            pool_ring.destroy(context);
             // device.destroy_semaphore(in_flight, None);
         }
     }
@@ -131,13 +106,15 @@ impl SurfacePresent {
         context: &DeviceContext,
         clear: vk::ClearValue, // XXX extract this because it's basically pretty annoying.
     ) -> (
-        (TimelineSemaphore, u64),
+        SignalIntent,
         RecordingBuffer<Graphics, OneTime>,
         AcquiredImage,
     ) {
         let device = &context.device();
-        let lease = self.pools.acquire(&context).unwrap();
-        let cb = lease.primary(&context).unwrap();
+        // DEBT Full 1s timeout, but realistically, self-pacing should make this rarely crash until
+        // error handling gets cleaned up.  Slow frames are warnings.
+        let (pool, intent) = self.pool_ring.acquire(&context, 1_000_000_000).unwrap();
+        let cb = pool.primary(&context).unwrap();
         let acquired_image = self.swapchain.acquire();
 
         // let barrier = vk::ImageMemoryBarrier2 {
@@ -187,15 +164,15 @@ impl SurfacePresent {
 
         // unsafe { device.cmd_begin_rendering(command_buffer, &render_info) };
 
-        ((lease.timeline(), lease.signal_value()), cb, acquired_image)
+        (intent, cb, acquired_image)
     }
 
-    /// Sync presentation image transform and present.
-    /// NEXT close out the command buffer and do submission separately.
+    /// Sync presentation, image transform, and present.
+    // NEXT close out the command buffer and do submission separately.
     pub fn post_draw(
         &mut self,
         context: &DeviceContext,
-        in_flight: (TimelineSemaphore, u64),
+        render_done: SignalIntent,
         cb: RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
     ) {
@@ -238,40 +215,22 @@ impl SurfacePresent {
         // };
 
         let recorded = cb.end(context).unwrap();
-        let wait_info = vk::SemaphoreSubmitInfo::default()
-            .semaphore(acquired_image.image_available)
-            .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT);
+        let raw_cb = recorded.kill(context).unwrap(); // XXX consuming method still needed
 
-        // let next_value = self.frame_counter + 1;
-        // self.frame_counter = next_value;
-        let in_flight = vk::SemaphoreSubmitInfo::default()
-            .semaphore(in_flight.0.into_raw())
-            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .value(in_flight.1);
-
-        let signal_infos = [
-            vk::SemaphoreSubmitInfo {
-                semaphore: acquired_image.present_ready,
-                stage_mask: vk::PipelineStageFlags2::ALL_GRAPHICS,
-                ..Default::default()
-            },
-            in_flight,
-        ];
-        let cb_info = vk::CommandBufferSubmitInfo::default().command_buffer(*recorded);
-        let submit = vk::SubmitInfo2::default()
-            .wait_semaphore_infos(slice::from_ref(&wait_info))
-            .signal_semaphore_infos(&signal_infos)
-            .command_buffer_infos(slice::from_ref(&cb_info));
-
-        unsafe {
-            context
-                .device()
-                .queue_submit2(self.queue.raw(), &[submit], vk::Fence::null())
-                .unwrap();
-        }
-
-        // XXX consume with submission
-        std::mem::forget(recorded);
+        self.queue
+            .submission()
+            .wait_binary(
+                acquired_image.image_available,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            )
+            .execute(raw_cb)
+            .signal_binary(
+                acquired_image.present_ready,
+                vk::PipelineStageFlags2::ALL_GRAPHICS,
+            )
+            .signal(render_done, vk::PipelineStageFlags2::ALL_COMMANDS)
+            .submit(device, vk::Fence::null())
+            .unwrap();
     }
 
     // XXX this function demonstrates that command buffer presentation kind of re-couples at
@@ -288,12 +247,14 @@ impl SurfacePresent {
         }
         let next_id = self.present.next_present_id();
         let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
+        let present_ready = acquired_image.present_ready.as_raw();
         let present_info = vk::PresentInfoKHR::default()
-            .wait_semaphores(slice::from_ref(&acquired_image.present_ready))
+            .wait_semaphores(slice::from_ref(&present_ready))
             .swapchains(slice::from_ref(&self.swapchain.swapchain))
             .image_indices(slice::from_ref(&acquired_image.swapchain_image_index))
             .push_next(&mut present_id);
 
+        // NEXT holding queue on the swapchain probably not problematic
         self.swapchain
             .present(unsafe { self.queue.raw() }, &present_info);
         self.present.notify_waiter();

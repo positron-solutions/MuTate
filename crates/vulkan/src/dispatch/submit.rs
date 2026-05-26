@@ -150,17 +150,14 @@ impl QueueSubmit {
 
     /// Wait on a binary semaphore before executing subsequent commands.  This is only used for APIs
     /// that require binary semaphores, such as presentation and swapchain acquisition.  Prefer
-    /// timeline semaphores elswhere.
-    pub(crate) fn wait_binary(
-        mut self,
-        sem: &BinarySemaphore,
-        stage: vk::PipelineStageFlags2,
-    ) -> Self {
+    /// timeline semaphores elsewhere.
+    // XXX make crate-public after pulling in swapchain things
+    pub fn wait_binary(mut self, wait: BinaryWait, stage: vk::PipelineStageFlags2) -> Self {
         self.maybe_close_current();
         self.waits[self.nw as usize].write(
             vk::SemaphoreSubmitInfo::default()
-                .semaphore(sem.as_raw())
-                .value(0) // ignored for binary semaphores
+                .semaphore(wait.into_raw())
+                .value(0)
                 .stage_mask(stage),
         );
         self.nw += 1;
@@ -188,14 +185,11 @@ impl QueueSubmit {
     /// Signal a binary semaphore after the commands in this `SubmitInfo` complete.  This is only
     /// used for APIs that require binary semaphores, such as presentation and swapchain
     /// acquisition.  Prefer timeline semaphores elsewhere.
-    pub(crate) fn signal_binary(
-        mut self,
-        sem: &BinarySemaphore,
-        stage: vk::PipelineStageFlags2,
-    ) -> Self {
+    // XXX make crate-public again after pulling in swapchain things
+    pub fn signal_binary(mut self, signal: BinarySignal, stage: vk::PipelineStageFlags2) -> Self {
         self.signals[self.ns as usize].write(
             vk::SemaphoreSubmitInfo::default()
-                .semaphore(sem.as_raw())
+                .semaphore(signal.into_raw())
                 .value(0)
                 .stage_mask(stage),
         );
@@ -291,10 +285,13 @@ pub mod test {
             let image_ready = device_ctx.make_binary_semaphore().unwrap();
             let render_done = device_ctx.make_binary_semaphore().unwrap();
 
+            let (image_ready_signal, image_ready_wait) = image_ready.next();
+            let (render_done_signal, render_done_wait) = render_done.next();
+
             // Signal the first binary semaphore so that we can wait on it in a second submission.
             queue
                 .submission()
-                .signal_binary(&image_ready, vk::PipelineStageFlags2::ALL_COMMANDS)
+                .signal_binary(image_ready_signal, vk::PipelineStageFlags2::ALL_COMMANDS)
                 .submit(device, vk::Fence::null())
                 .unwrap();
 
@@ -308,10 +305,10 @@ pub mod test {
             queue
                 .submission()
                 .wait_binary(
-                    &image_ready,
+                    image_ready_wait,
                     vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                 )
-                .signal_binary(&render_done, vk::PipelineStageFlags2::ALL_COMMANDS)
+                .signal_binary(render_done_signal, vk::PipelineStageFlags2::ALL_COMMANDS)
                 .signal(intent, vk::PipelineStageFlags2::ALL_COMMANDS)
                 .submit(device, vk::Fence::null())
                 .unwrap();
@@ -323,7 +320,7 @@ pub mod test {
 
             queue
                 .submission()
-                .wait_binary(&render_done, vk::PipelineStageFlags2::ALL_COMMANDS)
+                .wait_binary(render_done_wait, vk::PipelineStageFlags2::ALL_COMMANDS)
                 .signal(present_intent, vk::PipelineStageFlags2::ALL_COMMANDS)
                 .submit(device, vk::Fence::null())
                 .unwrap();
