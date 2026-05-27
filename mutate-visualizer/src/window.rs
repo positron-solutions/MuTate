@@ -15,6 +15,9 @@ use mutate_lib::vulkan::context::VkContext;
 
 use crate::Args;
 
+// NEXT after the main restructuring, the LIES comments in this module about multi-monitor support
+// may be relevant again.
+
 pub trait WindowExt {
     fn from_args(args: &Args, event_loop: &ActiveEventLoop) -> Window;
     fn toggle_fullscreen(&self);
@@ -22,7 +25,7 @@ pub trait WindowExt {
 }
 
 impl WindowExt for Window {
-    /// Create the window according to our sauce. 😋
+    /// Create the window from the visualizer's configuration options.
     fn from_args(args: &Args, event_loop: &ActiveEventLoop) -> Window {
         let mut attrs = Window::default_attributes().with_title("µTate");
         if args.fullscreen {

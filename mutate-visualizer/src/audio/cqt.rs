@@ -326,9 +326,6 @@ impl CqtNode {
         self.output.as_ref()
     }
 
-    #[allow(unused_variables)]
-    pub fn destroy(&self, device: &ash::Device) {}
-
     pub fn resolution(&self) -> usize {
         self.bins.len()
     }
