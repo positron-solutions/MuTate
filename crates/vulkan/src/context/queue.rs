@@ -360,7 +360,7 @@ impl<C: Capability> Queue<C> {
         self.raw
     }
 
-    pub fn submission(&self) -> QueueSubmit {
+    pub fn submission(&self) -> QueueSubmit<C> {
         QueueSubmit::new(self.raw)
     }
 

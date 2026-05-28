@@ -36,17 +36,39 @@
 //! will finish last during that pool's epoch.  Failure could result in reset of a pool with
 //! commands in flight, resulting in invalid and undefined behavior.
 
-// NEXT The chosen implementation is one way of doing a builder while waiting on generic_const_exprs
+// ROLL The chosen implementation is one way of doing a builder while waiting on generic_const_exprs
 // to stabilize.  In the meantime, we use a fixed maximum size and try to just make it easy on the
 // compiler to prove everything away.  We are aided by the user-facing API resulting in clean arrays
 // that are laid out in order already, matching Vulkan's use of slices when assembling the
 // submission for the C API.
 // NEXT protected support can likely inherit from the queue or command buffer.
 
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
 use super::SubmissionModel;
 use crate::internal::*;
+
+mod sealed {
+    /// Marker trait for command buffers that may be used as part of a submission.  Submissions
+    /// bound for less capable queues may not receive command buffers that require higher
+    /// capabilities.  See [`QueueCapability`](crate::context::queues::QueueCapability).
+    pub trait SubmittableTo<Q: super::Capability>: super::Capability {}
+}
+
+// Transfer buffers can run on any queue
+impl sealed::SubmittableTo<Graphics> for Transfer {}
+impl sealed::SubmittableTo<Compute> for Transfer {}
+impl sealed::SubmittableTo<Transfer> for Transfer {}
+
+// Compute buffers need at least a compute-capable queue
+impl sealed::SubmittableTo<Graphics> for Compute {}
+impl sealed::SubmittableTo<Compute> for Compute {}
+
+// Graphics buffers need a graphics capable queue
+impl sealed::SubmittableTo<Graphics> for Graphics {}
+
+pub use sealed::SubmittableTo;
 
 const MAX_OPS: usize = 32;
 const MAX_SUBMIT_INFOS: usize = MAX_OPS; // One op per vk::SubmitInfo2
@@ -74,8 +96,9 @@ struct InfoSpans {
     signals: Span,
 }
 
-pub struct QueueSubmit {
+pub struct QueueSubmit<QC: Capability> {
     queue: vk::Queue,
+    _cap: PhantomData<QC>,
 
     // Flat arrays of pre-built Vulkan structs — these are sliced directly at submit time.
     waits: [MaybeUninit<vk::SemaphoreSubmitInfo<'static>>; MAX_OPS],
@@ -96,10 +119,11 @@ pub struct QueueSubmit {
     has_signal: bool,
 }
 
-impl QueueSubmit {
+impl<QC: Capability> QueueSubmit<QC> {
     pub(crate) fn new(queue: vk::Queue) -> Self {
         Self {
             queue,
+            _cap: PhantomData,
             waits: std::array::from_fn(|_| MaybeUninit::uninit()),
             cmds: std::array::from_fn(|_| MaybeUninit::uninit()),
             signals: std::array::from_fn(|_| MaybeUninit::uninit()),
@@ -166,7 +190,7 @@ impl QueueSubmit {
     }
 
     /// Execute the commands of a command buffer.
-    pub fn execute<C: Capability, M: SubmissionModel>(
+    pub fn execute<C: Capability + SubmittableTo<QC>, M: SubmissionModel>(
         mut self,
         cmd: ExecutableBuffer<C, M>,
     ) -> Self {
