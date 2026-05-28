@@ -32,7 +32,7 @@ fn dispatch_increment_read_back() {
         let output_idx: SsboIdx = output_buffer.bound(&mut device_ctx);
 
         let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
-        let pool = CommandPool::<Compute, OneTime>::transient(&device_ctx, &queue).unwrap();
+        let mut pool = CommandPool::<Compute, OneTime>::transient(&device_ctx, &queue).unwrap();
         let cb = pool.primary(&device_ctx).unwrap();
         let device = device_ctx.device(); // XXX use device context in more places
 

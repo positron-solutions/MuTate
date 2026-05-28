@@ -39,9 +39,16 @@ use crate::internal::*;
 use super::cb;
 use super::SubmissionModel;
 
+/// Individual pools track the handles they have given out in order to support reset.
+// MAYBE we might wind up with more than one Pool abstraction, but likely the PoolRing will always
+// use just one of those abstractions.
 pub struct CommandPool<C: Capability, M: SubmissionModel = OneTime> {
     raw: vk::CommandPool,
     queue: Queue<C>,
+    primary_handles: smallvec::SmallVec<vk::CommandBuffer, 8>,
+    primary_cursor: usize,
+    secondary_handles: smallvec::SmallVec<vk::CommandBuffer, 8>,
+    secondary_cursor: usize,
     _cap: PhantomData<C>,
     _model: PhantomData<M>,
 }
@@ -61,6 +68,10 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
         Ok(Self {
             raw: pool,
             queue: queue.clone(),
+            primary_handles: smallvec::SmallVec::new(),
+            primary_cursor: 0,
+            secondary_handles: smallvec::SmallVec::new(),
+            secondary_cursor: 0,
             _cap: PhantomData,
             _model: PhantomData,
         })
@@ -68,19 +79,15 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
 
     // XXX build with Bon builder and provide some override gear for arguments too.
     pub fn primary(
-        &self,
+        &mut self,
         device_ctx: &DeviceContext,
     ) -> Result<RecordingBuffer<C, M>, VulkanError> {
-        let device = device_ctx.device();
-        let alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(self.raw)
-            .command_buffer_count(1);
+        let cb = self.next_primary(device_ctx)?;
+        let begin_info = vk::CommandBufferBeginInfo::default().flags(M::BUFFER_FLAGS);
         unsafe {
-            let cb = device.allocate_command_buffers(&alloc_info)?[0];
-            let cb_begin_info = vk::CommandBufferBeginInfo::default().flags(M::BUFFER_FLAGS);
-            device.begin_command_buffer(cb, &cb_begin_info)?;
-            Ok(RecordingBuffer::from_raw(cb))
+            device_ctx.device().begin_command_buffer(cb, &begin_info)?;
         }
+        Ok(RecordingBuffer::from_raw(cb))
     }
 
     /// Reset the pool, returning all allocated command buffers to the initial state.
@@ -92,19 +99,56 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
     /// pool has finished execution on the GPU.  Any outstanding buffers must call `assume_reset` or
     /// rebuild as initial states.
     pub unsafe fn reset(
-        &self,
+        &mut self,
         device_ctx: &DeviceContext,
-        release: bool,
+        release_resources: bool,
     ) -> Result<(), VulkanError> {
-        let flags = if release {
-            vk::CommandPoolResetFlags::empty()
-        } else {
+        let flags = if release_resources {
             vk::CommandPoolResetFlags::RELEASE_RESOURCES
+        } else {
+            vk::CommandPoolResetFlags::empty()
         };
-        device_ctx
-            .device()
-            .reset_command_pool(self.raw, flags)
-            .map_err(Into::into)
+        device_ctx.device().reset_command_pool(self.raw, flags)?;
+        // Restore both cursors to the full length of each list
+        self.primary_cursor = self.primary_handles.len();
+        self.secondary_cursor = self.secondary_handles.len();
+        Ok(())
+    }
+
+    fn next_primary(
+        &mut self,
+        device_ctx: &DeviceContext,
+    ) -> Result<vk::CommandBuffer, VulkanError> {
+        if self.primary_cursor > 0 {
+            self.primary_cursor -= 1;
+            Ok(self.primary_handles[self.primary_cursor])
+        } else {
+            let alloc_info = vk::CommandBufferAllocateInfo::default()
+                .command_pool(self.raw)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+            let cb = unsafe { device_ctx.device().allocate_command_buffers(&alloc_info)?[0] };
+            self.primary_handles.push(cb);
+            Ok(cb)
+        }
+    }
+
+    fn next_secondary(
+        &mut self,
+        device_ctx: &DeviceContext,
+    ) -> Result<vk::CommandBuffer, VulkanError> {
+        if self.secondary_cursor > 0 {
+            self.secondary_cursor -= 1;
+            Ok(self.secondary_handles[self.secondary_cursor])
+        } else {
+            let alloc_info = vk::CommandBufferAllocateInfo::default()
+                .command_pool(self.raw)
+                .level(vk::CommandBufferLevel::SECONDARY)
+                .command_buffer_count(1);
+            let cb = unsafe { device_ctx.device().allocate_command_buffers(&alloc_info)?[0] };
+            self.secondary_handles.push(cb);
+            Ok(cb)
+        }
     }
 
     // NEXT secondary support for GRAPHICS is dependent on some implementation of a rendering state
@@ -132,29 +176,22 @@ where
     M: SubmissionModel,
 {
     pub fn secondary(
-        &self,
+        &mut self,
         device_ctx: &DeviceContext,
     ) -> Result<RecordingBuffer<Compute, M>, VulkanError> {
-        let device = device_ctx.device();
-        let alloc_info = vk::CommandBufferAllocateInfo::default()
-            .level(vk::CommandBufferLevel::SECONDARY)
-            .command_pool(self.raw)
-            .command_buffer_count(1);
+        let cb = self.next_secondary(device_ctx)?;
 
+        // Compute secondaries are never executed inside a rendering scope,
+        // so inheritance is all defaults and RENDER_PASS_CONTINUE must not
+        // be set in M::BUFFER_FLAGS.
+        let inheritance = vk::CommandBufferInheritanceInfo::default();
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(M::BUFFER_FLAGS)
+            .inheritance_info(&inheritance);
         unsafe {
-            let cb = device.allocate_command_buffers(&alloc_info)?[0];
-
-            // Compute secondaries are never executed inside a rendering scope,
-            // so inheritance is all defaults and RENDER_PASS_CONTINUE must not
-            // be set in M::BUFFER_FLAGS.
-            let inheritance = vk::CommandBufferInheritanceInfo::default();
-            let begin = vk::CommandBufferBeginInfo::default()
-                .flags(M::BUFFER_FLAGS)
-                .inheritance_info(&inheritance);
-
-            device.begin_command_buffer(cb, &begin)?;
-            Ok(RecordingBuffer::from_raw(cb))
+            device_ctx.device().begin_command_buffer(cb, &begin)?;
         }
+        Ok(RecordingBuffer::from_raw(cb))
     }
 }
 
@@ -248,7 +285,7 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
         &mut self,
         device_ctx: &DeviceContext,
         timeout: u64,
-    ) -> Result<(&CommandPool<C, M>, SignalIntent), VulkanError> {
+    ) -> Result<(&mut CommandPool<C, M>, SignalIntent), VulkanError> {
         let device = device_ctx.device();
         let slot = self.cursor;
         self.done_values[slot].wait(device_ctx, timeout)?;
@@ -261,7 +298,7 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
         let intent = self.timeline.next_signal();
         self.done_values[slot] = intent.wait_value();
         self.cursor = (slot + 1) % N;
-        Ok((&self.pools[slot], intent))
+        Ok((&mut self.pools[slot], intent))
     }
 
     pub fn destroy(self, device_ctx: &DeviceContext) {
@@ -294,7 +331,7 @@ mod test {
     fn pool_buffer_create() {
         with_context!(|device_ctx, vk_ctx| {
             let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
-            let pool = CommandPool::<Compute, OneTime>::transient(&device_ctx, &queue).unwrap();
+            let mut pool = CommandPool::<Compute, OneTime>::transient(&device_ctx, &queue).unwrap();
             let primary = pool.primary(&device_ctx).unwrap();
             let secondary = pool.secondary(&device_ctx).unwrap();
             pool.destroy(&device_ctx);
