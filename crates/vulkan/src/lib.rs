@@ -27,8 +27,8 @@
 //! ### Runtime Support
 //!
 //! Selecting fixed infrastructure strategies further reduces the Vulkan subset.  This kind of
-//! support goes further in the direction of a fixed engine but also allows more terse declarations
-//! for things like pipelines, reactive parameter updates, and asset loading.
+//! support goes further in the direction of a fixed capability engine but also allows more terse
+//! declarations for things like pipelines, reactive parameter updates, and asset loading.
 //!
 //! **Core MuTate goals:**
 //!
@@ -82,6 +82,7 @@
 //!   + Synchronization
 //! - Presentation
 //!   + Swapchain
+//!   + Surface
 //!   + Alternative Frontends
 //!
 //! ## Context
@@ -159,7 +160,7 @@ pub mod prelude {
     pub use crate::dispatch::prelude::*;
     pub use crate::pipeline::prelude::*;
     pub use crate::present::surface::VkSurface;
-    pub use crate::present::swapchain::AcquiredImage;
+    pub use crate::present::swapchain::{AcquiredImage, SwapchainContext};
     pub use crate::slang::prelude::*;
     pub use crate::slang_newtype;
 
@@ -180,7 +181,7 @@ pub(crate) mod internal {
     pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::dispatch::internal::*;
     pub use crate::present::surface::VkSurface;
-    pub use crate::present::swapchain::SwapchainContext;
+    pub use crate::present::swapchain::{AcquiredImage, SwapchainContext};
     pub use crate::slang::prelude::*;
 
     // test harness macros

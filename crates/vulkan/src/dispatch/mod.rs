@@ -148,7 +148,7 @@ pub(crate) mod internal {
         ExecutableBuffer, ExecutableSecondary, RecordingBuffer, RecordingSecondary,
         RenderingBuffer, RenderingSecondary,
     };
-    pub use super::pool::CommandPool;
+    pub use super::pool::{CommandPool, PoolRing};
     pub use super::submit::QueueSubmit;
     pub use super::sync::{
         BinarySemaphore, BinarySignal, BinaryWait, SignalIntent, TimelineSemaphore, WaitValue,

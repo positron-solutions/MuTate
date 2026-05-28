@@ -57,6 +57,7 @@ impl WindowExt for Window {
         }
     }
 
+    // XXX Extent threading
     fn render_size(&self) -> vk::Extent2D {
         let size = self.inner_size();
         vk::Extent2D {

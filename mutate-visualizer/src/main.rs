@@ -27,7 +27,11 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use mutate_lib::{self as utate, prelude::*, vulkan::prelude::*};
+use mutate_lib::{
+    self as utate,
+    prelude::*,
+    vulkan::{prelude::*, present::ComputePresent},
+};
 
 use graph::node;
 use window::WindowExt;
@@ -50,7 +54,7 @@ struct Args {
 struct WindowContext {
     window: winit::window::Window,
     surface: VkSurface,
-    surface_present: video::present::SurfacePresent,
+    surface_present: ComputePresent,
 
     // NEXT As the render architecture gets more sophisticated, a lot of the spectrum work on the
     // device can be shared per window that the device supports.  Rare device-per-window cases, if
@@ -74,8 +78,7 @@ impl WindowContext {
                 width: 800,
                 height: 600,
             });
-        let surface_present =
-            video::present::SurfacePresent::new(device_context, vk_context, &surface, extent);
+        let surface_present = ComputePresent::new(device_context, vk_context, &surface, extent);
         let mut render_node = video::spectrum::SpectrumNode::new(device_context);
         render_node.provision(device_context, extent).unwrap();
         Self {

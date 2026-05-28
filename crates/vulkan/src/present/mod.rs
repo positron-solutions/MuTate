@@ -5,7 +5,377 @@
 //!
 //! Presentation tends to live slightly outside of command recording and has a bit specific
 //! synchronization requirements.  This module encapsulates the pre and post-render integration with
-//! surrounding optional bits such as windows.
+//! surrounding `Surface` and `Swapchain`.
 
 pub mod surface;
 pub mod swapchain;
+
+use std::marker::PhantomData;
+use std::slice;
+
+use ash::vk::Handle;
+
+use crate::dispatch::pw;
+use crate::internal::*;
+
+// NEXT update command buffer wrapper to support beginning and ending rendering, then use that to
+// implement GraphicsPresent
+// NEXT create kinds of targets that may only use specific layouts such as those valid for certain
+// blit and transfer operations.
+pub struct Target<Layout> {
+    /// The image view is necessary to call begin rendering.
+    pub image_view: vk::ImageView,
+    /// Extent describes the dimensions of the output image.
+    pub extent: vk::Extent2D,
+    /// Format is determined at runtime for swapchain presentation but can be any format for
+    /// non-presentation cases.
+    pub format: vk::Format,
+    _layout: PhantomData<Layout>,
+}
+
+pub struct GraphicsPresent {
+    pool_ring: PoolRing<Graphics>,
+    /// Present wait measurement
+    present: pw::PresentConsumer,
+    queue: Queue<Graphics>,
+    swapchain: SwapchainContext,
+}
+
+impl GraphicsPresent {
+    pub fn new(
+        device_context: &DeviceContext,
+        vk_context: &VkContext,
+        surface: &VkSurface,
+        extent: vk::Extent2D,
+    ) -> Self {
+        let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent);
+        let queue = device_context
+            .queues
+            .graphics(vk_context, surface, QueuePriority::High)
+            .unwrap();
+        let pool_ring = PoolRing::new(device_context, &queue).unwrap();
+        let present = pw::PresentConsumer::new(vk_context, device_context, swapchain.swapchain)
+            .expect("Could not start up the present wait gizmo");
+        Self {
+            present,
+            pool_ring,
+            queue,
+            swapchain,
+        }
+    }
+
+    /// Return a hot command buffer, image, and associated information used for drawing.
+    pub fn render_target(
+        &mut self,
+        context: &DeviceContext,
+    ) -> (
+        SignalIntent,
+        RecordingBuffer<Graphics, OneTime>,
+        AcquiredImage,
+    ) {
+        let device = &context.device();
+        // DEBT Full 1s timeout, but realistically, self-pacing should make this rarely crash until
+        // error handling gets cleaned up.  Slow frames are warnings.
+        let (pool, intent) = self.pool_ring.acquire(&context, 1_000_000_000).unwrap();
+        let cb = pool.primary(&context).unwrap();
+        let acquired_image = self.swapchain.acquire();
+
+        // DEBT this code uses the old style struct pattern.  It is some of the last remaining code
+        // using that style.
+        let barrier = vk::ImageMemoryBarrier2 {
+            src_stage_mask: vk::PipelineStageFlags2::TOP_OF_PIPE,
+            dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            old_layout: vk::ImageLayout::UNDEFINED,
+            new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            src_access_mask: vk::AccessFlags2::empty(),
+            dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            image: acquired_image.image,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                level_count: 1,
+                layer_count: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let dep_info = vk::DependencyInfo {
+            image_memory_barrier_count: 1,
+            p_image_memory_barriers: &barrier,
+            ..Default::default()
+        };
+
+        unsafe { device.cmd_pipeline_barrier2(*cb, &dep_info) };
+
+        let color_attachment = vk::RenderingAttachmentInfo {
+            image_view: todo!(), // XXX swapchain AcquiredImage missing ImageView
+            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            load_op: vk::AttachmentLoadOp::DONT_CARE,
+            store_op: vk::AttachmentStoreOp::STORE,
+            ..Default::default()
+        };
+
+        let render_info = vk::RenderingInfo {
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: todo!(), // XXX AcquiredImage missing extent
+            },
+            layer_count: 1,
+            color_attachment_count: 1,
+            p_color_attachments: &color_attachment,
+            ..Default::default()
+        };
+
+        unsafe { device.cmd_begin_rendering(*cb, &render_info) };
+
+        (intent, cb, acquired_image)
+    }
+
+    /// Sync presentation, image transform, and present.
+    // NEXT close out the command buffer and do submission separately.
+    pub fn post_draw(
+        &mut self,
+        context: &DeviceContext,
+        render_done: SignalIntent,
+        cb: RecordingBuffer<Graphics, OneTime>,
+        acquired_image: &AcquiredImage,
+    ) {
+        let device = context.device();
+        unsafe { device.cmd_end_rendering(*cb) };
+
+        let barrier2 = vk::ImageMemoryBarrier2 {
+            src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            dst_stage_mask: vk::PipelineStageFlags2::NONE,
+            dst_access_mask: vk::AccessFlags2::empty(),
+
+            // NOTE source layout differs in graphics vs compute case
+            old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+
+            image: acquired_image.image,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                level_count: 1,
+                layer_count: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let dep2 = vk::DependencyInfo {
+            image_memory_barrier_count: 1,
+            p_image_memory_barriers: &barrier2,
+            ..Default::default()
+        };
+
+        unsafe { device.cmd_pipeline_barrier2(*cb, &dep2) };
+
+        let recorded = cb.end(context).unwrap();
+        self.queue
+            .submission()
+            .wait_binary(
+                acquired_image.image_available,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            )
+            .execute(recorded)
+            .signal_binary(
+                acquired_image.present_ready,
+                vk::PipelineStageFlags2::ALL_GRAPHICS,
+            )
+            .signal(render_done, vk::PipelineStageFlags2::ALL_COMMANDS)
+            .submit(device, vk::Fence::null())
+            .unwrap();
+    }
+
+    pub fn present(&mut self, device_context: &DeviceContext, acquired_image: AcquiredImage) {
+        match self.present.read_last_present() {
+            Some(last) => {
+                // if last.last_window != std::time::Duration::MAX {
+                //     println!("present duration: {:8.0}", last.last_window.as_micros())
+                // }
+            }
+            None => {}
+        }
+        let next_id = self.present.next_present_id();
+        let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
+        let present_ready = acquired_image.present_ready.as_raw();
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(slice::from_ref(&present_ready))
+            .swapchains(slice::from_ref(&self.swapchain.swapchain))
+            .image_indices(slice::from_ref(&acquired_image.swapchain_image_index))
+            .push_next(&mut present_id);
+
+        self.swapchain
+            .present(unsafe { self.queue.raw() }, &present_info);
+        self.present.notify_waiter();
+    }
+
+    pub fn destroy(self, context: &DeviceContext) {
+        let device = &context.device();
+        unsafe {
+            let Self {
+                swapchain,
+                pool_ring,
+                ..
+            } = self;
+
+            swapchain.destroy(context);
+            pool_ring.destroy(context);
+        }
+    }
+
+    pub fn recreate_images(
+        &mut self,
+        surface: &VkSurface,
+        size: vk::Extent2D,
+        context: &DeviceContext,
+    ) {
+        let device = &context.device;
+        let physical_device = context.physical_device;
+        // XXX replace with semaphore wait on last frame in flight
+        unsafe {
+            device.device_wait_idle().unwrap();
+        }
+
+        self.swapchain.recreate(context, surface, size);
+        self.present
+            .notify_swapchain_recreation(self.swapchain.swapchain);
+    }
+}
+
+/// Present a swapchain image written by compute pipeline.  This struct encapsulates the swapchain
+/// acquisition, queue submission, and presentation.
+pub struct ComputePresent {
+    pool_ring: PoolRing<Graphics>,
+    /// Present wait measurement
+    present: pw::PresentConsumer,
+    queue: Queue<Graphics>,
+    swapchain: SwapchainContext,
+}
+
+impl ComputePresent {
+    pub fn new(
+        device_context: &DeviceContext,
+        vk_context: &VkContext,
+        surface: &VkSurface,
+        extent: vk::Extent2D,
+    ) -> Self {
+        let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent);
+        let queue = device_context
+            .queues
+            .graphics(vk_context, surface, QueuePriority::High)
+            .unwrap();
+        let pool_ring = PoolRing::new(device_context, &queue).unwrap();
+        let present = pw::PresentConsumer::new(vk_context, device_context, swapchain.swapchain)
+            .expect("Could not start up the present wait gizmo");
+        Self {
+            present,
+            pool_ring,
+            queue,
+            swapchain,
+        }
+    }
+
+    /// Return a hot command buffer, image, and associated information used for drawing.
+    pub fn render_target(
+        &mut self,
+        context: &DeviceContext,
+    ) -> (
+        SignalIntent,
+        RecordingBuffer<Graphics, OneTime>,
+        AcquiredImage,
+    ) {
+        let device = &context.device();
+        // DEBT Full 1s timeout, but realistically, self-pacing should make this rarely crash until
+        // error handling gets cleaned up.  Slow frames are warnings.
+        let (pool, intent) = self.pool_ring.acquire(&context, 1_000_000_000).unwrap();
+        let cb = pool.primary(&context).unwrap();
+        let acquired_image = self.swapchain.acquire();
+        (intent, cb, acquired_image)
+    }
+
+    /// Sync presentation, image transform, and present.
+    // NEXT close out the command buffer and do submission separately.
+    pub fn post_draw(
+        &mut self,
+        context: &DeviceContext,
+        render_done: SignalIntent,
+        cb: RecordingBuffer<Graphics, OneTime>,
+        acquired_image: &AcquiredImage,
+    ) {
+        let device = context.device();
+        let recorded = cb.end(context).unwrap();
+        self.queue
+            .submission()
+            .wait_binary(
+                acquired_image.image_available,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            )
+            .execute(recorded)
+            .signal_binary(
+                acquired_image.present_ready,
+                vk::PipelineStageFlags2::ALL_GRAPHICS,
+            )
+            .signal(render_done, vk::PipelineStageFlags2::ALL_COMMANDS)
+            .submit(device, vk::Fence::null())
+            .unwrap();
+    }
+
+    // XXX this function demonstrates that command buffer presentation kind of re-couples at
+    // presentation for swapchain stuff.  The present wait tangling demonstrates that we will need
+    // some builders and intermediate structures to fan in any kind of composed behaviors.
+    pub fn present(&mut self, device_context: &DeviceContext, acquired_image: AcquiredImage) {
+        match self.present.read_last_present() {
+            Some(last) => {
+                // if last.last_window != std::time::Duration::MAX {
+                //     println!("present duration: {:8.0}", last.last_window.as_micros())
+                // }
+            }
+            None => {}
+        }
+        let next_id = self.present.next_present_id();
+        let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
+        let present_ready = acquired_image.present_ready.as_raw();
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(slice::from_ref(&present_ready))
+            .swapchains(slice::from_ref(&self.swapchain.swapchain))
+            .image_indices(slice::from_ref(&acquired_image.swapchain_image_index))
+            .push_next(&mut present_id);
+
+        self.swapchain
+            .present(unsafe { self.queue.raw() }, &present_info);
+        self.present.notify_waiter();
+    }
+
+    pub fn destroy(self, context: &DeviceContext) {
+        let device = &context.device();
+        unsafe {
+            let Self {
+                swapchain,
+                pool_ring,
+                ..
+            } = self;
+
+            swapchain.destroy(context);
+            pool_ring.destroy(context);
+        }
+    }
+
+    pub fn recreate_images(
+        &mut self,
+        surface: &VkSurface,
+        size: vk::Extent2D,
+        context: &DeviceContext,
+    ) {
+        let device = &context.device;
+        let physical_device = context.physical_device;
+        // XXX replace with semaphore wait on last frame in flight
+        unsafe {
+            device.device_wait_idle().unwrap();
+        }
+        self.swapchain.recreate(context, surface, size);
+        self.present
+            .notify_swapchain_recreation(self.swapchain.swapchain);
+    }
+}
