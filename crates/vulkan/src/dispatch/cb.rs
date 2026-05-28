@@ -55,9 +55,10 @@
 //! temporary escape hatch for missing support.
 
 // NEXT support device recorded commands.  Unsure workflow.  Go figure it out.
-// NEXT it would be useful to enforce single-use-in-flight for Sequential buffers, but that will
-// likely involve a wrapper type for each buffer so that necessary sync state can travel along with
-// the buffer.
+// NEXT Exclusive execution (non-self-concurrent) for Sequential buffers.  Spec requires a semaphore
+// separating submissions.  Allowing the user to provide their own semaphore would enable full
+// flexibility for the user to decide which semaphore will exclude execution.  Still not sure which
+// contract or how much contract we want.
 // NOTE Simultaneous model buffers can be re-used, but reset of an in-flight buffer is invalid, so
 // likely this remains unsafe since enforcing return of all handles across threads is not fun.
 use std::marker::PhantomData;
@@ -282,6 +283,32 @@ impl<C: Capability, M: SubmissionModel + Resettable> ExecutableSecondary<C, M> {
         let raw = self.into_parts();
         device_context.device().reset_command_buffer(raw, flags)?;
         Ok(InitialSecondary::from_raw(raw))
+    }
+}
+
+impl<C: Capability> Clone for ExecutableBuffer<C, Simultaneous> {
+    fn clone(&self) -> Self {
+        Self {
+            raw: self.raw,
+            bomb: DropBomb::new(
+                "ExecutableBuffer<_, Simultaneous> clone must be consumed \
+                 via a typed transition method but was dropped",
+            ),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<C: Capability> Clone for ExecutableSecondary<C, Simultaneous> {
+    fn clone(&self) -> Self {
+        Self {
+            raw: self.raw,
+            bomb: DropBomb::new(
+                "ExecutableSecondary<_, Simultaneous> clone must be consumed \
+                 via a typed transition method but was dropped",
+            ),
+            _phantom: PhantomData,
+        }
     }
 }
 
