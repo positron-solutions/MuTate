@@ -66,7 +66,7 @@ fn dispatch_increment_read_back() {
             .submission()
             .execute(done)
             .signal(intent, vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .submit(device, vk::Fence::null())
+            .submit(&device_ctx, vk::Fence::null())
             .unwrap();
 
         // Wait host-side, invalidate and read back.

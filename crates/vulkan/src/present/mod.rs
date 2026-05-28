@@ -169,7 +169,7 @@ impl GraphicsPresent {
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
             )
             .signal(intent, vk::PipelineStageFlags2::ALL_COMMANDS)
-            .submit(device_ctx.device(), vk::Fence::null())
+            .submit(device_ctx, vk::Fence::null())
             .unwrap();
         post_draw_fn();
 
@@ -287,7 +287,7 @@ impl ComputePresent {
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
             )
             .signal(intent, vk::PipelineStageFlags2::ALL_COMMANDS)
-            .submit(device_ctx.device(), vk::Fence::null())
+            .submit(device_ctx, vk::Fence::null())
             .unwrap();
         post_draw_fn();
 

@@ -202,7 +202,11 @@ impl QueueSubmit {
         self
     }
 
-    pub fn submit(mut self, device: &ash::Device, fence: vk::Fence) -> Result<(), vk::Result> {
+    pub fn submit(
+        mut self,
+        device_ctx: &DeviceContext,
+        fence: vk::Fence,
+    ) -> Result<(), vk::Result> {
         // Close the final (possibly only) SubmitInfo.
         self.info_spans[self.ni] = InfoSpans {
             waits: Span {
@@ -234,7 +238,7 @@ impl QueueSubmit {
         }
 
         unsafe {
-            device.queue_submit2(
+            device_ctx.device().queue_submit2(
                 self.queue,
                 // SAFETY: [0..self.ni] written above
                 unsafe {
