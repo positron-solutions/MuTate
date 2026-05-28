@@ -14,17 +14,11 @@ use mutate_lib::vulkan::{
 use mutate_lib::{self as utate, prelude::*};
 
 pub struct SurfacePresent {
-    swapchain: SwapchainContext,
-
+    pool_ring: PoolRing<Graphics>,
     /// Present wait measurement
     present: pw::PresentConsumer,
-
     queue: Queue<Graphics>,
-    pool_ring: PoolRing<Graphics>,
-    /// A ring index, always advances by 1.  Longer pool rings could be used if there's a reason for
-    /// longer serial work to pipeline in parallel, likely using only a few warps (because otherwise
-    /// it's asking the scheduler to make it parallel).
-    recording_index: u32,
+    swapchain: SwapchainContext,
 }
 
 impl SurfacePresent {
@@ -45,11 +39,8 @@ impl SurfacePresent {
             .expect("Could not start up the present wait gizmo");
         Self {
             present,
-
-            recording_index: 0,
             pool_ring,
             queue,
-
             swapchain,
         }
     }
