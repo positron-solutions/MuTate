@@ -64,20 +64,15 @@ impl GraphicsPresent {
         }
     }
 
-    /// Return a hot command buffer, image, and associated information used for drawing.
-    pub fn render_target(
-        &mut self,
-        context: &DeviceContext,
-    ) -> (
-        SignalIntent,
-        RecordingBuffer<Graphics, OneTime>,
-        AcquiredImage,
-    ) {
-        let device = &context.device();
+    pub fn draw<F, G>(&mut self, device_ctx: &DeviceContext, draw_fn: F, post_draw_fn: G)
+    where
+        F: FnOnce(&RecordingBuffer<Graphics, OneTime>, &AcquiredImage),
+        G: FnOnce(),
+    {
         // DEBT Full 1s timeout, but realistically, self-pacing should make this rarely crash until
         // error handling gets cleaned up.  Slow frames are warnings.
-        let (pool, intent) = self.pool_ring.acquire(&context, 1_000_000_000).unwrap();
-        let cb = pool.primary(&context).unwrap();
+        let (pool, intent) = self.pool_ring.acquire(device_ctx, 1_000_000_000).unwrap();
+        let cb = pool.primary(device_ctx).unwrap();
         let acquired_image = self.swapchain.acquire();
 
         // DEBT this code uses the old style struct pattern.  It is some of the last remaining code
@@ -105,7 +100,7 @@ impl GraphicsPresent {
             ..Default::default()
         };
 
-        unsafe { device.cmd_pipeline_barrier2(*cb, &dep_info) };
+        unsafe { device_ctx.device().cmd_pipeline_barrier2(*cb, &dep_info) };
 
         let color_attachment = vk::RenderingAttachmentInfo {
             image_view: todo!(), // XXX swapchain AcquiredImage missing ImageView
@@ -126,21 +121,11 @@ impl GraphicsPresent {
             ..Default::default()
         };
 
-        unsafe { device.cmd_begin_rendering(*cb, &render_info) };
+        unsafe { device_ctx.device().cmd_begin_rendering(*cb, &render_info) };
 
-        (intent, cb, acquired_image)
-    }
+        draw_fn(&cb, &acquired_image);
 
-    /// Sync presentation, image transform, and present.
-    // NEXT close out the command buffer and do submission separately.
-    pub fn post_draw(
-        &mut self,
-        context: &DeviceContext,
-        render_done: SignalIntent,
-        cb: RecordingBuffer<Graphics, OneTime>,
-        acquired_image: &AcquiredImage,
-    ) {
-        let device = context.device();
+        let device = device_ctx.device();
         unsafe { device.cmd_end_rendering(*cb) };
 
         let barrier2 = vk::ImageMemoryBarrier2 {
@@ -171,7 +156,7 @@ impl GraphicsPresent {
 
         unsafe { device.cmd_pipeline_barrier2(*cb, &dep2) };
 
-        let recorded = cb.end(context).unwrap();
+        let recorded = cb.end(device_ctx).unwrap();
         self.queue
             .submission()
             .wait_binary(
@@ -183,12 +168,11 @@ impl GraphicsPresent {
                 acquired_image.present_ready,
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
             )
-            .signal(render_done, vk::PipelineStageFlags2::ALL_COMMANDS)
-            .submit(device, vk::Fence::null())
+            .signal(intent, vk::PipelineStageFlags2::ALL_COMMANDS)
+            .submit(device_ctx.device(), vk::Fence::null())
             .unwrap();
-    }
+        post_draw_fn();
 
-    pub fn present(&mut self, device_context: &DeviceContext, acquired_image: AcquiredImage) {
         match self.present.read_last_present() {
             Some(last) => {
                 // if last.last_window != std::time::Duration::MAX {
@@ -277,35 +261,20 @@ impl ComputePresent {
         }
     }
 
-    /// Return a hot command buffer, image, and associated information used for drawing.
-    pub fn render_target(
-        &mut self,
-        context: &DeviceContext,
-    ) -> (
-        SignalIntent,
-        RecordingBuffer<Graphics, OneTime>,
-        AcquiredImage,
-    ) {
-        let device = &context.device();
+    pub fn draw<F, G>(&mut self, device_ctx: &DeviceContext, draw_fn: F, post_draw_fn: G)
+    where
+        F: FnOnce(&RecordingBuffer<Graphics, OneTime>, &AcquiredImage),
+        G: FnOnce(),
+    {
         // DEBT Full 1s timeout, but realistically, self-pacing should make this rarely crash until
         // error handling gets cleaned up.  Slow frames are warnings.
-        let (pool, intent) = self.pool_ring.acquire(&context, 1_000_000_000).unwrap();
-        let cb = pool.primary(&context).unwrap();
+        let (pool, intent) = self.pool_ring.acquire(device_ctx, 1_000_000_000).unwrap();
+        let cb = pool.primary(device_ctx).unwrap();
         let acquired_image = self.swapchain.acquire();
-        (intent, cb, acquired_image)
-    }
 
-    /// Sync presentation, image transform, and present.
-    // NEXT close out the command buffer and do submission separately.
-    pub fn post_draw(
-        &mut self,
-        context: &DeviceContext,
-        render_done: SignalIntent,
-        cb: RecordingBuffer<Graphics, OneTime>,
-        acquired_image: &AcquiredImage,
-    ) {
-        let device = context.device();
-        let recorded = cb.end(context).unwrap();
+        draw_fn(&cb, &acquired_image);
+
+        let recorded = cb.end(device_ctx).unwrap();
         self.queue
             .submission()
             .wait_binary(
@@ -317,15 +286,11 @@ impl ComputePresent {
                 acquired_image.present_ready,
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
             )
-            .signal(render_done, vk::PipelineStageFlags2::ALL_COMMANDS)
-            .submit(device, vk::Fence::null())
+            .signal(intent, vk::PipelineStageFlags2::ALL_COMMANDS)
+            .submit(device_ctx.device(), vk::Fence::null())
             .unwrap();
-    }
+        post_draw_fn();
 
-    // XXX this function demonstrates that command buffer presentation kind of re-couples at
-    // presentation for swapchain stuff.  The present wait tangling demonstrates that we will need
-    // some builders and intermediate structures to fan in any kind of composed behaviors.
-    pub fn present(&mut self, device_context: &DeviceContext, acquired_image: AcquiredImage) {
         match self.present.read_last_present() {
             Some(last) => {
                 // if last.last_window != std::time::Duration::MAX {

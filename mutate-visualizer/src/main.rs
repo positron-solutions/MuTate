@@ -101,16 +101,18 @@ impl WindowContext {
             audio.cqt.consume(&raw_out);
         }
         let cqt = audio.cqt.produce();
-
-        let (signal_intent, cb, acquired_image) =
-            self.surface_present.render_target(device_context);
         let size = self.window.render_size();
-        self.render_node
-            .draw(&cb, &acquired_image, cqt, device_context, size);
-        self.surface_present
-            .post_draw(device_context, signal_intent, cb, &acquired_image);
-        self.window.pre_present_notify();
-        self.surface_present.present(device_context, acquired_image);
+        self.surface_present.draw(
+            device_context,
+            |cb, acquired_image| {
+                let size = self.window.render_size();
+                self.render_node
+                    .draw(cb, acquired_image, cqt, device_context, size);
+            },
+            || {
+                self.window.pre_present_notify();
+            },
+        );
     }
 
     fn handle_resize(&mut self, device_context: &DeviceContext) {
