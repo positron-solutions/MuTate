@@ -62,14 +62,10 @@ fn dispatch_increment_read_back() {
 
         queue
             .submission()
-            .execute(*done)
+            .execute(done)
             .signal(intent, vk::PipelineStageFlags2::COMPUTE_SHADER)
             .submit(device, vk::Fence::null())
             .unwrap();
-
-        // XXX make execution a consuming method.  Implement clone for
-        // multiple submissions where valid.
-        done.kill(&device_ctx);
 
         wait_value.wait(&device_ctx, 100_000_000).unwrap();
         output_buffer.invalidate(&device_ctx);

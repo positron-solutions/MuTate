@@ -45,6 +45,7 @@
 
 use std::mem::MaybeUninit;
 
+use super::SubmissionModel;
 use crate::internal::*;
 
 const MAX_OPS: usize = 32;
@@ -165,9 +166,12 @@ impl QueueSubmit {
     }
 
     /// Execute the commands of a command buffer.
-    pub fn execute(mut self, cmd: vk::CommandBuffer) -> Self {
+    pub fn execute<C: Capability, M: SubmissionModel>(
+        mut self,
+        cmd: ExecutableBuffer<C, M>,
+    ) -> Self {
         self.cmds[self.nc as usize]
-            .write(vk::CommandBufferSubmitInfo::default().command_buffer(cmd));
+            .write(vk::CommandBufferSubmitInfo::default().command_buffer(cmd.into_parts()));
         self.nc += 1;
         self
     }

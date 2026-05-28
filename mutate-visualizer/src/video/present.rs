@@ -199,15 +199,13 @@ impl SurfacePresent {
         // };
 
         let recorded = cb.end(context).unwrap();
-        let raw_cb = recorded.kill(context).unwrap(); // XXX consuming method still needed
-
         self.queue
             .submission()
             .wait_binary(
                 acquired_image.image_available,
                 vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
             )
-            .execute(raw_cb)
+            .execute(recorded)
             .signal_binary(
                 acquired_image.present_ready,
                 vk::PipelineStageFlags2::ALL_GRAPHICS,

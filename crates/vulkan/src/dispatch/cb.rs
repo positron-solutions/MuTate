@@ -200,14 +200,7 @@ impl<C: Capability, M: SubmissionModel> RecordingBuffer<C, M> {
     }
 }
 
-// XXX get rid of this
-impl<C: Capability, M: SubmissionModel> ExecutableBuffer<C, M> {
-    pub fn kill(self, device_context: &DeviceContext) -> Result<vk::CommandBuffer, VulkanError> {
-        Ok(self.into_parts())
-    }
-}
-
-// DEBT Rendering info is quite unsafe.
+// DEBT Rendering info has no validity contracts yet.
 impl<M: SubmissionModel> RecordingBuffer<Graphics, M> {
     /// Begin a dynamic rendering scope.  end rendering via [`RenderingBuffer::end_rendering`] or
     /// [`RenderinBuffer::end`] to directly close the buffer as well.
