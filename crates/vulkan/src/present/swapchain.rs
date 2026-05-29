@@ -114,21 +114,20 @@ impl SwapchainContext {
             ash::khr::swapchain::Device::new(&vk_context.instance, &device_context.device());
 
         // somewhat duplicate with recreation.
-        let swapchain_ci = vk::SwapchainCreateInfoKHR {
-            surface: surface.as_raw(),
-            min_image_count: surface.swapchain_image_count,
-            image_format: surface.format.format,
-            image_color_space: surface.format.color_space,
-            image_extent: extent,
-            image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
-            image_sharing_mode: vk::SharingMode::EXCLUSIVE,
-            pre_transform: surface.pre_transform,
-            composite_alpha: surface.composite_alpha,
-            present_mode: surface.present_mode,
-            clipped: vk::TRUE,
-            flags: vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT,
-            ..Default::default()
+        let swapchain_ci = vk::SwapchainCreateInfoKHR::default()
+            .surface(surface.as_raw())
+            .min_image_count(surface.swapchain_image_count)
+            .image_format(surface.format.format)
+            .image_color_space(surface.format.color_space)
+            .image_extent(extent)
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
+            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .pre_transform(surface.pre_transform)
+            .composite_alpha(surface.composite_alpha)
+            .present_mode(surface.present_mode)
+            .clipped(true)
+            .flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT);
         };
 
         let swapchain = unsafe { loader.create_swapchain(&swapchain_ci, None).unwrap() };
