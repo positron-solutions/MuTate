@@ -37,14 +37,7 @@ impl WindowContext {
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
         let surface = VkSurface::new(raw_surface, vk_context, device_context);
-        // XXX re-thread the extent for the ComputePresent's swapchain
-        // let extent = surface
-        //     .resolve_size(device_context, Some(window.render_size()))
-        //     .unwrap_or();
-        let extent = vk::Extent2D {
-            width: 800,
-            height: 600,
-        };
+        let extent = surface.resolve_size(device_context, &window).unwrap();
 
         let compute_present = ComputePresent::new(device_context, vk_context, &surface, extent);
         let mut renderer = HelloDraw::new(
@@ -80,18 +73,8 @@ impl WindowContext {
         );
     }
 
-    // XXX interpret None a little better
     fn handle_resize(&mut self, device_context: &DeviceContext) {
-        if let Some(size) = {
-            let size = self.window.inner_size();
-            self.surface.resolve_size(
-                &device_context,
-                Some(vk::Extent2D {
-                    width: size.width,
-                    height: size.height,
-                }),
-            )
-        } {
+        if let Ok(size) = { self.surface.resolve_size(&device_context, &self.window) } {
             self.compute_present
                 .recreate_images(&self.surface, size, device_context);
         }

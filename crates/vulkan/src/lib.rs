@@ -203,7 +203,7 @@ pub mod __ {
 
 #[derive(thiserror::Error, Debug)]
 pub enum VulkanError {
-    #[error("Vulkan: {0}")]
+    #[error("vulkan: {0}")]
     // DEBT Use this only to begin returning results.  Use something else to actually start handling
     // them.
     ReplaceMe(&'static str),
@@ -211,6 +211,7 @@ pub enum VulkanError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
+    // Errors that coerce from ash::vk results should not be constructed manually.
     #[error("vulkan: Swapchain out of date")]
     SwapchainOutOfDate,
     #[error("vulkan: Surface lost")]
@@ -232,11 +233,20 @@ pub enum VulkanError {
     #[error("vulkan: VK_ERROR_UNKNOWN (-13)")]
     VulkanUnknown,
 
+    // Catch-all for ash results we don't know how to coerce yet.
     #[error("ash: other {0}")]
     Ash(vk::Result),
 
+    /// Polling the Vulkan implementation or device returned results we could not make sense of or
+    /// properly handle.  Use when something seems degenerate or inconsistent.
+    // NEXT separate Instance and Device errors
     #[error("driver error: {0}")]
     DriverError(String),
+
+    /// Polling the window and compositor could not decide a useable swapchain size, and the correct
+    /// behavior is to request redraw and wait for another event.
+    #[error("surface: degenerate extent ({width}x{height}); window may be minimized")]
+    DegenerateExtent { width: u32, height: u32 },
 }
 
 impl From<vk::Result> for VulkanError {

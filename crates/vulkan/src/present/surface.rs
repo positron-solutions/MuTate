@@ -3,14 +3,20 @@
 
 //! # Surface
 //!
-//! We're not doing a lot of work on top of the [`vk::SurfaceKHR`], but most of the decisions only
-//! happen once and are then repeated for the lifetime of the surface, so we will just encapsulate
-//! them as state in the [`VkSurface`] struct.
+//! Encapsulate decisions about the surface that are used to inform the swapchain creation (and
+//! re-creation).  Image format, size, and supported swapchain parameters are decided here.
+
+// NEXT should be okay to allow window and surface lifetime to travel together.  You know what,
+// letting the user re-supply a window is just extra bug surface.
+// NEXT split once-per-surface, once-per-user-settings update decisions from dynamic ones like
+// extent.
 
 use ash::{
     khr::{surface::Instance as SurfaceInstance, xlib_surface},
     vk,
 };
+#[cfg(feature = "winit")]
+use winit::window::Window;
 
 use crate::internal::*;
 
@@ -159,18 +165,18 @@ impl VkSurface {
     }
 
     /// Surface size is a bit subjective.  We use this function to decide how big to make swapchains
-    /// etc.  The behavior is platform specific and depends on headless vs windowed rendering.
-    /// There are cases where we throw up our hands and the result seems degenerate.  We return a
-    /// `None` in those cases, and Applications should do nothing and wait on another event.
+    /// etc.  The behavior is platform specific and depends on headless vs windowed rendering.  If
+    /// the result seems degenerate.  We return an error, and Applications should do nothing and
+    /// instead wait on another event to try again.
     ///
     /// - `device_context` - the physical device for this surface.
-    /// - `fallback` - when there is a window, its `inner_size` attribute may be helpful,  but there
-    ///    are cases where we infer that the window is degenerate (zero size) etc.
+    /// - `window` - the window under inspection.
+    #[cfg(feature = "winit")]
     pub fn resolve_size(
         &self,
         device_context: &DeviceContext,
-        fallback: Option<vk::Extent2D>,
-    ) -> Option<vk::Extent2D> {
+        window: &Window,
+    ) -> Result<vk::Extent2D, VulkanError> {
         let caps = unsafe {
             self.surface_loader
                 .get_physical_device_surface_capabilities(
@@ -182,24 +188,51 @@ impl VkSurface {
             let err = VulkanError::from(e);
             eprintln!("warning: surface queries could not be performed: {}", err);
             err
-        })
-        .ok()?;
+        })?;
 
-        let extent = if caps.current_extent.width != u32::MAX {
-            caps.current_extent
-        } else {
-            fallback?
-        };
-
-        if extent.width == 0 || extent.height == 0 {
-            return None;
+        // A valid surface must advertise at least a 1x1 max extent.  Zeros here indicate either a
+        // driver bug or a surface that is transitionally invalid (lost but not yet reported).
+        // Treat it as SurfaceLost so the caller tears down and recreates rather than idling.
+        if caps.max_image_extent.width == 0 || caps.max_image_extent.height == 0 {
+            eprintln!(
+                "warning: surface caps report zero max_image_extent; \
+                 treating as surface lost (driver bug or transitional state)"
+            );
+            return Err(VulkanError::SurfaceLost);
         }
 
-        Some(vk::Extent2D {
-            width: extent
+        // Resolve the raw extent before any clamping.  On X11/Win32 the compositor fills this in
+        // directly.  On Wayland it is always u32::MAX and we must use the window size instead.
+        let raw_extent = if caps.current_extent.width != u32::MAX {
+            caps.current_extent
+        } else {
+            let window_size = window.inner_size();
+            if window_size.width == 0 || window_size.height == 0 {
+                // Wayland + zero window: degenerate, cannot proceed.
+                return Err(VulkanError::DegenerateExtent {
+                    width: window_size.width,
+                    height: window_size.height,
+                });
+            }
+            vk::Extent2D {
+                width: window_size.width,
+                height: window_size.height,
+            }
+        };
+
+        // Guard degenerate extents (e.g. X11 during minimize) before clamping.
+        if raw_extent.width == 0 || raw_extent.height == 0 {
+            return Err(VulkanError::DegenerateExtent {
+                width: raw_extent.width,
+                height: raw_extent.height,
+            });
+        }
+
+        Ok(vk::Extent2D {
+            width: raw_extent
                 .width
                 .clamp(caps.min_image_extent.width, caps.max_image_extent.width),
-            height: extent
+            height: raw_extent
                 .height
                 .clamp(caps.min_image_extent.height, caps.max_image_extent.height),
         })
