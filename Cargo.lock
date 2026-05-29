@@ -1097,6 +1097,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mutate-minimal"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "ash-window",
+ "mutate-assets",
+ "mutate-lib",
+ "rgb",
+ "winit",
+]
+
+[[package]]
 name = "mutate-slide"
 version = "0.1.0"
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = [ "mutate-lib", "mutate-visualizer",  "crates/*"]
+members = [ "mutate-lib", "mutate-visualizer",  "crates/*", "examples/*" ]
 
 [workspace.package]
 categories = ["multimedia", "graphics", "rendering", "visualization"]

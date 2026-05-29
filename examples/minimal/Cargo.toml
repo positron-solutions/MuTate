@@ -1,0 +1,25 @@
+[package]
+name = "mutate-minimal"
+description = "Minimal render loop"
+readme = "./README.md"
+
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+publish = false
+
+[dependencies]
+ash.workspace = true
+ash-window.workspace = true
+rgb.workspace = true
+winit.workspace = true
+
+mutate-lib = {workspace = true, features = ["vulkan", "dsp"]}
+mutate-assets = {workspace = true, features = ["runtime"]}
+
+[build-dependencies]
+mutate-assets = {workspace = true, features = ["build"]}
