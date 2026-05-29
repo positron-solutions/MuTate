@@ -3,71 +3,101 @@
 
 //! # Swapchain
 //!
-//! Drawing on a screen, at least "normal" ones.
+//! This module abstracts over swapchain management and behavior.  Window resizing requires image
+//! recreation.  We don't control exactly how many swapchain images exist or which one is acquired.
+//! Each image we use need external synchronization primitives.  All of that juggling has been
+//! brought under one structure, the [`Swapchain`].
 //!
-//! A swapchain is a lazy allocation of some images that can be scanned out to a surface, usually
-//! for a physical display.  We obtain images, some command buffers draw things on them, and we hand
-//! them to a compositor or DRM for physical scan-out to some screen.
+//! ## Usage
+//!
+//! While you can manually acquire images and manage a command pool, see the `crate::present` module
+//! for the `Render` and its `GraphicsPresent` and `ComputePresent`
 //!
 //! ## Recreation
 //!
 //! Whenever windows are resized, the swapchain needs to be recreated.  We re-use the old swapchain
 //! to make it easy on the driver to handle the memory.  Images are lazily allocated to reduce the
-//! pressure during recreation.
+//! load during recreation.
+//!
+//! The signal for recreation can be a window resize event or an ash result of SUBOPTIMAL or
+//! OUT_OF_DATE.  More serious errors indicate a need to recreate the logical device instead.
+//!
+//! ## Surrounding Context
+//!
+//! A swapchain is a lazy allocation of some images that can be scanned out to a surface, usually
+//! for a physical display.  We obtain images, some command buffers draw things on them, and then we hand
+//! control of the images back to a compositor or DRM for physical scan-out to some screen.
+//!
+//! The [`VkSurface`] knows the format we select.  This is important for the renderer to ensure that
+//! the output of drawing is either compatible with or can be copied to the swapchain image for
+//! presentation.  The [`AcquiredImage`] carries along format, extent, and other information for
+//! renderers to write correctly to the output.
 //!
 //! ## Index Behavior
 //!
-//! The number of images created is not directly under our control.  During acquisition, the image
-//! index we get back is actually not under our control.  Even though we might be strictly double
-//! buffering, the compositor may be late.  The semaphore control is not given back in time.
+//! Due to the index rotation and array length being out of our control, the only way to indexes it
+//! straight is to keep one of each thing per *potential* image in flight (where in flight duration
+//! is up to a compositor usually).
 //!
-//! The only way to keep it straight is to keep one of each thing per *potential* image in flight
-//! (where in flight duration is up to a compositor usually).  The memory for actual images might
-//! not be allocated and the memory for semaphores etc is kind of cheap.  To make it all super
-//! simple, we just set up four slots for Vulkan handles.  We make semaphores and ImageViews.  Most
-//! of the time, only three will be used.  At least nobody ever has to count.
+//! To simplify having enough space for handles, we just set up four slots and then only fill the
+//! slots after the swapchain creation tells us how many images there actually are, most of the
+//! time, only three.
+//!
+//! In actual practice, our acquire-render-present loop primitives are designed around just-in-time
+//! render support and simultaneous machine learning workloads, all of which favor only one image
+//! being drawn to per-frame.  This behavior can *nearly* be satisfied by a front and back buffer
+//! only.  Compare with render-as-fast-as-you-can, which obviously uses all images.  Even so, the
+//! common use of three images prevents tiny bubbles where the compositor is slow to give us control
+//! of an image following its present phase before we can begin drawing to it (which usually is not
+//! *right* after the present phase anyway).
 
-// XXX no error handling for *highly expected* swapchain results like SUBOPTIMAL
-// XXX present function still seems tangled with old present module.
-// XXX extent handling and surface agreement likely silly
-
-use ash::vk;
+use ash::vk::{self, Handle};
 use smallvec::SmallVec;
 
 use super::surface::VkSurface;
 
 use crate::internal::*;
 
-// Acquired images come from the swapchain, which might have to do something obtuse and hand us back
-// a bizarre index, such as 2, due to the compositor being late at giving us the image back.
+/// An image from the swapchain and associated format, extent, and synchronization data necessary
+/// for presentation.
+// NEXT see presentation render target, which may be a trait for several types to implement,
+// enabling renderers to draw via common interface.
 pub struct AcquiredImage {
-    /// Swapchain signals this semaphore when rendering / use of the image may begin.
+    /// Swapchain signals when image is ready for use (start rendering).
     pub image_available: BinaryWait,
-    /// The index provided by the swapchain (which may cycle swapchain images out of order) during
-    /// acquisition.
-    pub swapchain_image_index: u32, // present will use this field
-    pub image: vk::Image,
-    /// User signals when presentation may begin (after rendering).
+    /// User signals when compositor may present image (after rendering).
     pub present_ready: BinarySignal,
+
+    /// Necessary to begin any rendering
+    pub image_view: vk::ImageView,
+    pub image: vk::Image,
+    pub extent: vk::Extent2D,
+
+    /// The index provided by the swapchain during acquisition.  Used in all presentation to tell
+    /// the other side of the swapchain which image we are requesting to present.
+    pub swapchain_image_index: u32,
 }
 
-/// A package deal!
-///
-/// ### Rule of Four
-///
-/// Let's just say no sane swapchain is coming back with four images.  With four slots, we always
-/// have enough space for any size of swapchain.  We only take up a few 64bit pointers that won't
-/// pack or load much better for three elements anyway.  In return, we save a lot of complication.
+/// An initialized swapchain with necessary synchronization and accounting data included.
+// Let's just say no sane swapchain is coming back with four images.  With four slots, we always
+// have enough space for any size of swapchain.  We only take up a few 64bit pointers that won't
+// pack or load much better for three elements anyway.  In return, we save a lot of complication.
+// DEBT rename to just Swapchain and replace any ash types with vk prefix.
 pub struct SwapchainContext {
-    /// XXX encapsulate
-    pub swapchain: vk::SwapchainKHR,
+    raw: vk::SwapchainKHR,
     loader: ash::khr::swapchain::Device,
     image_views: SmallVec<vk::ImageView, 4>,
     images: SmallVec<vk::Image, 4>,
     frames: usize,
+    /// During acquisition, we must provide a binary semaphore for the compositor to signal when the image
+    /// is ready.  Since we don't yet know the index of the image yet, we use our own index to cycle
+    /// through semaphores, ensuring no re-use on different images.
     frame_index: usize,
+    // note about choice of 4 in module docs
     image_available_semaphores: [BinarySemaphore; 4],
     present_ready_semaphores: [BinarySemaphore; 4],
+    extent: vk::Extent2D,
+    recreation_required: bool,
 }
 
 impl SwapchainContext {
