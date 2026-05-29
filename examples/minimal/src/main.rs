@@ -39,7 +39,8 @@ impl WindowContext {
         let surface = VkSurface::new(raw_surface, vk_context, device_context);
         let extent = surface.resolve_size(device_context, &window).unwrap();
 
-        let compute_present = ComputePresent::new(device_context, vk_context, &surface, extent);
+        let compute_present =
+            ComputePresent::new(device_context, vk_context, &surface, extent).unwrap();
         let mut renderer = HelloDraw::new(
             device_context,
             // XXX Go support Float4 in slang module
@@ -56,27 +57,24 @@ impl WindowContext {
 
     /// Draw using the
     fn draw_frame(&mut self, device_context: &DeviceContext) {
-        let extent = {
-            let size = self.window.inner_size();
-            vk::Extent2D {
-                width: size.width,
-                height: size.height,
-            }
-        };
+        // XXX at the conclusion of pulling image acquisition out, then presentation out, we would
+        // be left wanting to put them back together and discovering that we have one
+        // acquire-draw-present loop that is generic over some kind of inner render support.
         self.compute_present.draw(
             device_context,
             |cb, acquired_image| {
-                self.renderer
-                    .draw(cb, acquired_image, device_context, extent);
+                self.renderer.draw(cb, acquired_image, device_context);
             },
             || self.window.pre_present_notify(),
         );
     }
 
+    // XXX make this into a try_resize method that can propagate recreation back up to the
+    // application for device re-creation.
     fn handle_resize(&mut self, device_context: &DeviceContext) {
         if let Ok(size) = { self.surface.resolve_size(&device_context, &self.window) } {
             self.compute_present
-                .recreate_images(&self.surface, size, device_context);
+                .recreate_images(device_context, &self.surface, size);
         }
     }
 

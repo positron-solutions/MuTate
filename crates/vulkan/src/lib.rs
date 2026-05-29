@@ -212,6 +212,8 @@ pub enum VulkanError {
     Io(#[from] std::io::Error),
 
     // Errors that coerce from ash::vk results should not be constructed manually.
+    #[error("vulkan: Swapchain suboptimal")]
+    SwapchainSuboptimal,
     #[error("vulkan: Swapchain out of date")]
     SwapchainOutOfDate,
     #[error("vulkan: Surface lost")]
@@ -242,6 +244,10 @@ pub enum VulkanError {
     // NEXT separate Instance and Device errors
     #[error("driver error: {0}")]
     DriverError(String),
+    /// No queue family on the logical device had the correct capabilities or presentation
+    /// capability on the surface.
+    #[error("queue: no queue family with requested capabilities found")]
+    QueueNotFound,
 
     /// Polling the window and compositor could not decide a useable swapchain size, and the correct
     /// behavior is to request redraw and wait for another event.
@@ -253,6 +259,7 @@ impl From<vk::Result> for VulkanError {
     fn from(r: vk::Result) -> Self {
         match r {
             vk::Result::ERROR_OUT_OF_DATE_KHR => Self::SwapchainOutOfDate,
+            vk::Result::SUBOPTIMAL_KHR => Self::SwapchainSuboptimal,
             vk::Result::ERROR_SURFACE_LOST_KHR => Self::SurfaceLost,
             vk::Result::ERROR_DEVICE_LOST => Self::DeviceLost,
             vk::Result::ERROR_OUT_OF_HOST_MEMORY => Self::OutOfHostMemory,

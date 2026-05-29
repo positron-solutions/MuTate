@@ -15,6 +15,8 @@ use mutate_lib::vulkan::context::VkContext;
 
 use crate::Args;
 
+// NEXT now that the vulkan module has a cfg gate for winit support, it is appropriate to move this
+// support into Vulkan.
 // NEXT after the main restructuring, the LIES comments in this module about multi-monitor support
 // may be relevant again.
 
@@ -44,7 +46,7 @@ impl WindowExt for Window {
 
     fn toggle_fullscreen(&self) {
         // LIES None is wrong if we know the monitor.  For multi-monitor fullscreen, we will need to
-        // use that argument.
+        // explicitly provide Some(monitor).
         match self.fullscreen() {
             Some(winit::window::Fullscreen::Borderless(None)) => {
                 self.set_fullscreen(None);
@@ -54,15 +56,6 @@ impl WindowExt for Window {
                 self.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                 self.set_cursor_visible(false);
             }
-        }
-    }
-
-    // XXX Extent threading
-    fn render_size(&self) -> vk::Extent2D {
-        let size = self.inner_size();
-        vk::Extent2D {
-            width: size.width,
-            height: size.height,
         }
     }
 }

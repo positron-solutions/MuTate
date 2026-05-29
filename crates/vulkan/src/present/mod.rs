@@ -20,8 +20,9 @@ use crate::internal::*;
 
 // NEXT update command buffer wrapper to support beginning and ending rendering, then use that to
 // implement GraphicsPresent
-// NEXT create kinds of targets that may only use specific layouts such as those valid for certain
-// blit and transfer operations.
+// NEXT create kinds of targets that may only use specific layouts that are valid for the upstream
+// render target.
+// XXX Target is not yet used
 pub struct Target<Layout> {
     /// The image view is necessary to call begin rendering.
     pub image_view: vk::ImageView,
@@ -47,33 +48,38 @@ impl GraphicsPresent {
         vk_context: &VkContext,
         surface: &VkSurface,
         extent: vk::Extent2D,
-    ) -> Self {
-        let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent);
+    ) -> Result<Self, VulkanError> {
+        let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent)?;
         let queue = device_context
             .queues
             .graphics(vk_context, surface, QueuePriority::High)
-            .unwrap();
-        let pool_ring = PoolRing::new(device_context, &queue).unwrap();
-        let present = pw::PresentConsumer::new(vk_context, device_context, swapchain.swapchain)
-            .expect("Could not start up the present wait gizmo");
-        Self {
+            .ok_or(VulkanError::QueueNotFound)?;
+        let pool_ring = PoolRing::new(device_context, &queue)?;
+        let present = pw::PresentConsumer::new(vk_context, device_context, *swapchain.as_raw())?;
+        Ok(Self {
             present,
             pool_ring,
             queue,
             swapchain,
-        }
+        })
     }
 
-    pub fn draw<F, G>(&mut self, device_ctx: &DeviceContext, draw_fn: F, post_draw_fn: G)
+    pub fn draw<F, G>(
+        &mut self,
+        device_ctx: &DeviceContext,
+        draw_fn: F,
+        post_draw_fn: G,
+    ) -> Result<(), VulkanError>
     where
         F: FnOnce(&RecordingBuffer<Graphics, OneTime>, &AcquiredImage),
         G: FnOnce(),
     {
+        let acquired_image = self.swapchain.acquire()?;
+
         // DEBT Full 1s timeout, but realistically, self-pacing should make this rarely crash until
         // error handling gets cleaned up.  Slow frames are warnings.
         let (pool, intent) = self.pool_ring.acquire(device_ctx, 1_000_000_000).unwrap();
         let cb = pool.primary(device_ctx).unwrap();
-        let acquired_image = self.swapchain.acquire();
 
         // DEBT this code uses the old style struct pattern.  It is some of the last remaining code
         // using that style.
@@ -186,13 +192,14 @@ impl GraphicsPresent {
         let present_ready = acquired_image.present_ready.as_raw();
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(slice::from_ref(&present_ready))
-            .swapchains(slice::from_ref(&self.swapchain.swapchain))
+            .swapchains(slice::from_ref(&self.swapchain.as_raw()))
             .image_indices(slice::from_ref(&acquired_image.swapchain_image_index))
             .push_next(&mut present_id);
 
         self.swapchain
             .present(unsafe { self.queue.raw() }, &present_info);
         self.present.notify_waiter();
+        Ok(())
     }
 
     pub fn destroy(self, context: &DeviceContext) {
@@ -211,20 +218,19 @@ impl GraphicsPresent {
 
     pub fn recreate_images(
         &mut self,
+        device_ctx: &DeviceContext,
         surface: &VkSurface,
         size: vk::Extent2D,
-        context: &DeviceContext,
     ) {
-        let device = &context.device;
-        let physical_device = context.physical_device;
+        let device = &device_ctx.device;
         // XXX replace with semaphore wait on last frame in flight
         unsafe {
             device.device_wait_idle().unwrap();
         }
 
-        self.swapchain.recreate(context, surface, size);
+        self.swapchain.recreate(device_ctx, surface, size);
         self.present
-            .notify_swapchain_recreation(self.swapchain.swapchain);
+            .notify_swapchain_recreation(*self.swapchain.as_raw());
     }
 }
 
@@ -244,33 +250,38 @@ impl ComputePresent {
         vk_context: &VkContext,
         surface: &VkSurface,
         extent: vk::Extent2D,
-    ) -> Self {
-        let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent);
+    ) -> Result<Self, VulkanError> {
+        let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent)?;
         let queue = device_context
             .queues
             .graphics(vk_context, surface, QueuePriority::High)
-            .unwrap();
-        let pool_ring = PoolRing::new(device_context, &queue).unwrap();
-        let present = pw::PresentConsumer::new(vk_context, device_context, swapchain.swapchain)
-            .expect("Could not start up the present wait gizmo");
-        Self {
+            .ok_or(VulkanError::QueueNotFound)?;
+        let pool_ring = PoolRing::new(device_context, &queue)?;
+        let present = pw::PresentConsumer::new(vk_context, device_context, *swapchain.as_raw())?;
+        Ok(Self {
             present,
             pool_ring,
             queue,
             swapchain,
-        }
+        })
     }
 
-    pub fn draw<F, G>(&mut self, device_ctx: &DeviceContext, draw_fn: F, post_draw_fn: G)
+    pub fn draw<F, G>(
+        &mut self,
+        device_ctx: &DeviceContext,
+        draw_fn: F,
+        post_draw_fn: G,
+    ) -> Result<(), VulkanError>
     where
         F: FnOnce(&RecordingBuffer<Graphics, OneTime>, &AcquiredImage),
         G: FnOnce(),
     {
+        let acquired_image = self.swapchain.acquire()?;
+
         // DEBT Full 1s timeout, but realistically, self-pacing should make this rarely crash until
         // error handling gets cleaned up.  Slow frames are warnings.
         let (pool, intent) = self.pool_ring.acquire(device_ctx, 1_000_000_000).unwrap();
         let cb = pool.primary(device_ctx).unwrap();
-        let acquired_image = self.swapchain.acquire();
 
         draw_fn(&cb, &acquired_image);
 
@@ -301,16 +312,18 @@ impl ComputePresent {
         }
         let next_id = self.present.next_present_id();
         let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
+        // NOTE had to stack this as_raw while internal use of raw is already stable.
         let present_ready = acquired_image.present_ready.as_raw();
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(slice::from_ref(&present_ready))
-            .swapchains(slice::from_ref(&self.swapchain.swapchain))
+            .swapchains(slice::from_ref(self.swapchain.as_raw()))
             .image_indices(slice::from_ref(&acquired_image.swapchain_image_index))
             .push_next(&mut present_id);
 
         self.swapchain
             .present(unsafe { self.queue.raw() }, &present_info);
         self.present.notify_waiter();
+        Ok(())
     }
 
     pub fn destroy(self, context: &DeviceContext) {
@@ -327,20 +340,21 @@ impl ComputePresent {
         }
     }
 
+    // NOTE unless the surface retains knowledge of the window, it cannot know the size.  We need to
+    // bind window and surface but also to provide a non-window surface for those odd cases.
     pub fn recreate_images(
         &mut self,
+        device_ctx: &DeviceContext,
         surface: &VkSurface,
         size: vk::Extent2D,
-        context: &DeviceContext,
     ) {
-        let device = &context.device;
-        let physical_device = context.physical_device;
+        let device = device_ctx.device();
         // XXX replace with semaphore wait on last frame in flight
         unsafe {
             device.device_wait_idle().unwrap();
         }
-        self.swapchain.recreate(context, surface, size);
+        self.swapchain.recreate(device_ctx, surface, size);
         self.present
-            .notify_swapchain_recreation(self.swapchain.swapchain);
+            .notify_swapchain_recreation(*self.swapchain.as_raw());
     }
 }

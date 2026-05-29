@@ -78,6 +78,7 @@
 // them in.  The mutable assets will mostly be exclusive to a surface and render loop per window.
 // Audio input can either be duplicated or shared.  A lot of hard problems await that will not get
 // simpler until the resource runtime infrastructure exists.
+// XXX Queue usage is not yet thread safe!  forgot to implement that!
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -250,12 +251,12 @@ impl Queues {
     /// may require use of queues from different queue families.  This function resolves those
     /// queues for `surface`.
     ///
-    /// If `None` is returned, the physical device for these queues cannot present to your surface.
-    /// You need to scan for present-capable devices again using the [`VkContext`] and create a new
-    /// logical device [`DeviceContext`], starting from scratch basically.
-    ///
     /// Returns `None` only if no graphics family on this physical device can present to the surface
-    /// at all, which means you need a different physical device or logical device.
+    /// at all, which means you need to re-scan for present-capable devices again using the
+    /// [`VkContext`] and surface before creating a new logical device [`DeviceContext`], starting
+    /// from scratch basically.
+    // DEBT promote missing queue to error for better upstream handling on the user side.  Create
+    // two error variants, one that is presentation specific so we can indicate the surface for debugging.
     pub fn graphics(
         &self,
         vk_context: &VkContext,

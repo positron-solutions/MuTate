@@ -61,11 +61,11 @@ impl HelloDraw {
         cb: &RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
         context: &DeviceContext,
-        extent: vk::Extent2D,
     ) {
         let device = context.device();
         let out_image = acquired_image.image;
         let range = image::range();
+        let extent = acquired_image.extent;
 
         image::transition_layout(
             out_image,

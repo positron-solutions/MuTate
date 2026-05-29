@@ -106,7 +106,7 @@ impl SwapchainContext {
         vk_context: &VkContext,
         surface: &VkSurface,
         extent: vk::Extent2D,
-    ) -> Self {
+    ) -> Result<Self, VulkanError> {
         let VkContext {
             entry, instance, ..
         } = &vk_context;
@@ -128,49 +128,49 @@ impl SwapchainContext {
             .present_mode(surface.present_mode)
             .clipped(true)
             .flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT);
+
+        // XXX failed creation case might not be able to re-create and this has not been resolved yet.
+        let swapchain = unsafe {
+            loader
+                .create_swapchain(&swapchain_ci, None)
+                .unwrap_or(vk::SwapchainKHR::null())
         };
 
-        let swapchain = unsafe { loader.create_swapchain(&swapchain_ci, None).unwrap() };
-        let images = unsafe { loader.get_swapchain_images(swapchain).unwrap() };
+        let images = unsafe { loader.get_swapchain_images(swapchain)? };
         let frames = images.len();
         let image_views =
             create_image_views(&device_context.device(), &images, surface.format.format);
 
+        // XXX only make semaphores for frames?  Also.. this panics.
         let image_available_semaphores =
             std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
         let present_ready_semaphores =
             std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
-        Self {
+
+        Ok(Self {
             present_ready_semaphores,
             image_available_semaphores,
             loader,
             images: images.into(),
             image_views: image_views,
-            swapchain,
+            raw: swapchain,
             frames,
             frame_index: 0,
-        }
+            extent,
+            recreation_required: swapchain.is_null(),
+        })
     }
 
+    /// Recreates the swapchain and images.  If this procedure fails, swapchain is likely in an
+    /// inconsistent state and more thorough teardown is advised.
     pub fn recreate(
         &mut self,
         device_context: &DeviceContext,
         surface: &VkSurface,
         extent: vk::Extent2D,
-    ) {
-        let device = device_context.device();
-        unsafe {
-            device_context.device();
-        }
-
-        // XXX The current window-swap-surface thing (still in visualizer?) doesn't know how to tell
-        // use when we can safely recreate images.  The present-wait must be poll-looped to
-        // determine if we have no images in flight.  The plumbing through the external present-wait
-        // structure means that only the window thing (which also gets resize events) can tell us
-        // when it's clear to recreate.  Until then....... device_wait_idle 🥉
-        unsafe { device.device_wait_idle() };
-
+    ) -> Result<(), VulkanError> {
         // Destroy old image views — images themselves are owned by the swapchain
+        let device = device_context.device();
         unsafe {
             for view in self.image_views.drain(..) {
                 device.destroy_image_view(view, None);
@@ -193,25 +193,19 @@ impl SwapchainContext {
             present_mode: surface.present_mode,
             clipped: vk::TRUE,
             flags: vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT,
-            old_swapchain: self.swapchain,
+            old_swapchain: self.raw,
             ..Default::default()
         };
 
-        let new_swapchain = unsafe { self.loader.create_swapchain(&swapchain_ci, None).unwrap() };
-
-        // Old swapchain is retired — safe to destroy now that new one is created
+        let new_swapchain = unsafe { self.loader.create_swapchain(&swapchain_ci, None)? };
+        // Old swapchain retired.  Safe to destroy.
         unsafe {
-            self.loader.destroy_swapchain(self.swapchain, None);
+            self.loader.destroy_swapchain(self.raw, None);
         }
+        self.raw = new_swapchain;
 
-        self.swapchain = new_swapchain;
-
-        self.images = unsafe {
-            self.loader
-                .get_swapchain_images(self.swapchain)
-                .unwrap()
-                .into()
-        };
+        // Recreate images
+        self.images = unsafe { self.loader.get_swapchain_images(self.raw)?.into() };
         self.image_views = create_image_views(
             &device_context.device(),
             &self.images,
@@ -220,16 +214,17 @@ impl SwapchainContext {
 
         let new_frames = self.images.len();
         if new_frames != self.frames {
+            // XXX we might need more or less semaphores!
             self.frames = new_frames;
             // LIES while this avoids a degenerate index that would crash, it might attempt to use
             // an image in flight unless acquire is properly called.  The semaphore wait before
             // swapchain recreation is what *actually* protects us.
             self.frame_index = self.frame_index.min(new_frames - 1);
         }
+        Ok(())
     }
 
-    // The caller is attaching extra present info and we don't have a good way to let everyone add
-    // their data to the chain, so it's being remixed externally before passed in as `present_info`.
+    // XXX this method is extremely thin.  Probably better to just expose the loader for raw usage.
     pub fn present(&self, queue: vk::Queue, present_info: &vk::PresentInfoKHR) {
         unsafe {
             match self.loader.queue_present(queue, present_info) {
@@ -247,7 +242,7 @@ impl SwapchainContext {
             for view in &self.image_views {
                 device.destroy_image_view(*view, None);
             }
-            self.loader.destroy_swapchain(self.swapchain, None);
+            self.loader.destroy_swapchain(self.raw, None);
             self.image_available_semaphores.iter().for_each(|s| {
                 s.destroy(context);
             });
@@ -257,8 +252,8 @@ impl SwapchainContext {
         }
     }
 
-    /// XXX mark chain dirty if this fails
-    pub fn acquire(&mut self) -> AcquiredImage {
+    /// Get the next swapchain image.  Errors may indicate need to request recreation.
+    pub fn acquire(&mut self) -> Result<AcquiredImage, VulkanError> {
         let idx = self.frame_index as usize;
         let image_available = self.image_available_semaphores[idx];
         let present_ready = self.present_ready_semaphores[idx];
@@ -267,25 +262,37 @@ impl SwapchainContext {
         let (swapchain_image_index, _) = unsafe {
             self.loader
                 .acquire_next_image(
-                    self.swapchain,
+                    self.raw,
                     100_000_000, // 100ms
                     image_available.as_raw(),
                     vk::Fence::null(),
                 )
-                .unwrap() // XXX will error in ways we should catch
-                          // XXX where all will these occur?
-                          // VK_ERROR_OUT_OF_DATE_KHR
-                          // VK_SUBOPTIMAL_KHR
+                .inspect_err(|e| {
+                    #[cfg(debug_assertions)]
+                    eprintln!("warning: swapchain acquisition failed: {:?}", e);
+                    self.recreation_required = true;
+                })?
         };
 
         let image = self.images[swapchain_image_index as usize];
+        let image_view = self.image_views[swapchain_image_index as usize];
 
-        AcquiredImage {
+        Ok(AcquiredImage {
             image_available: image_available.wait(),
-            swapchain_image_index,
-            image,
             present_ready: present_ready.signal(),
-        }
+            image,
+            image_view,
+            extent: self.extent,
+            swapchain_image_index,
+        })
+    }
+
+    pub fn as_raw(&self) -> &vk::SwapchainKHR {
+        &self.raw
+    }
+
+    pub fn into_raw(self) -> vk::SwapchainKHR {
+        self.raw
     }
 }
 
