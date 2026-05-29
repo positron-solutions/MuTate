@@ -213,7 +213,7 @@ impl ApplicationHandler for MinimalApp {
         let AppState::Active(active) = &mut self.state else {
             return;
         };
-        unsafe { active.device_context.device.device_wait_idle().unwrap() };
+        active.device_context.wait_idle().unwrap();
         for (_, wc) in active.windows.drain() {
             wc.destroy(&mut active.device_context);
         }

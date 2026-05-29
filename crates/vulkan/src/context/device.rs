@@ -138,6 +138,14 @@ impl DeviceContext {
         &self.device
     }
 
+    /// Device wait idle.  Waits until there is no in-flight work.  ⚠️ May not return if another
+    /// thread is continuously feeding device, resulting in **unbounded waiting**.  Caller should
+    /// ensure by application design that device will definitely idle before calling.
+    pub fn wait_idle(&self) -> Result<(), VulkanError> {
+        unsafe { self.device.device_wait_idle()? }
+        Ok(())
+    }
+
     // XXX pass-through... uuuuuuuuugly though.  Not sure we want to do it like this at all....
     // maybe hold on via another field.
     pub fn bind_sampled_image(
