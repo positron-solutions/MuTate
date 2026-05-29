@@ -54,7 +54,7 @@ struct Args {
 struct WindowContext {
     window: winit::window::Window,
     surface: VkSurface,
-    surface_present: ComputePresent,
+    compute_present: ComputePresent,
 
     // NEXT As the render architecture gets more sophisticated, a lot of the spectrum work on the
     // device can be shared per window that the device supports.  Rare device-per-window cases, if
@@ -78,13 +78,13 @@ impl WindowContext {
                 width: 800,
                 height: 600,
             });
-        let surface_present = ComputePresent::new(device_context, vk_context, &surface, extent);
+        let compute_present = ComputePresent::new(device_context, vk_context, &surface, extent);
         let mut render_node = video::spectrum::SpectrumNode::new(device_context);
         render_node.provision(device_context, extent).unwrap();
         Self {
             window,
             surface,
-            surface_present,
+            compute_present,
             render_node,
         }
     }
@@ -102,7 +102,7 @@ impl WindowContext {
         }
         let cqt = audio.cqt.produce();
         let size = self.window.render_size();
-        self.surface_present.draw(
+        self.compute_present.draw(
             device_context,
             |cb, acquired_image| {
                 let size = self.window.render_size();
@@ -118,7 +118,7 @@ impl WindowContext {
     fn handle_resize(&mut self, device_context: &DeviceContext) {
         let fallback = self.window.render_size();
         if let Some(size) = self.surface.resolve_size(device_context, Some(fallback)) {
-            self.surface_present
+            self.compute_present
                 .recreate_images(&self.surface, size, device_context);
         }
     }
@@ -126,7 +126,7 @@ impl WindowContext {
     /// Consumes self; call only after the device queue is idle for this window.
     fn destroy(self, device_context: &mut DeviceContext) {
         self.render_node.destroy(device_context);
-        self.surface_present.destroy(device_context);
+        self.compute_present.destroy(device_context);
         self.surface.destroy();
     }
 }
