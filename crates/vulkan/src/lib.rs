@@ -253,10 +253,10 @@ impl From<vk::Result> for VulkanError {
             // Full screen exclusive not supported.  See context.
             // vk::Result::ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT => Self::FullscreenExclusiveLost,
 
+            // Unknown is an explicit indication that must never be created manually.
+            vk::Result::ERROR_UNKNOWN => Self::VulkanUnknown,
             // Other extensions may land us here with new error types to encode.
             other => Self::Ash(other),
-            // But Unknown is an explicit indication that must never be created manually.
-            vk::Result::ERROR_UNKNOWN => Self::VulkanUnknown,
         }
     }
 }
