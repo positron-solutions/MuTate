@@ -79,7 +79,11 @@ impl VkSurface {
                 .copied()
                 .find(|f| f.format == format && f.color_space == color_space)
         })
-        .unwrap_or(formats[0]);
+        .unwrap_or_else(|| {
+            let fallback = formats[0];
+            eprintln!("warning: fallback surface format selected: {:?}", fallback);
+            fallback
+        });
 
         let present_modes = unsafe {
             surface_loader
@@ -172,6 +176,11 @@ impl VkSurface {
                     self.inner,
                 )
         }
+        .map_err(|e| {
+            let err = VulkanError::from(e);
+            eprintln!("warning: surface queries could not be performed: {}", err);
+            err
+        })
         .ok()?;
 
         let extent = if caps.current_extent.width != u32::MAX {
