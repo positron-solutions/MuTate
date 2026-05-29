@@ -51,7 +51,7 @@ impl VkSurface {
 
         // NEXT support HDR whenever we get some hardware that can display it.  Regular unorm
         // pseudo-float outputs fill up a larger dynamic range on HDR, so it's generally not that
-        // hard.
+        // hard.  See VK_EXT_swapchain_colorspace.
         let format = [
             // HDR formats
             // requires VK_EXT_swapchain_colorspace / VK_AMD_display_native_hdr
@@ -60,17 +60,19 @@ impl VkSurface {
             // (vk::Format::A2B10G10R10_UNORM_PACK32, vk::ColorSpaceKHR::HDR10_HLG_EXT),
             // (vk::Format::B10G11R11_UFLOAT_PACK32, vk::ColorSpaceKHR::DISPLAY_NATIVE_AMD),
 
-            // SDR
+            // SDR formats
             (vk::Format::B8G8R8A8_SRGB, vk::ColorSpaceKHR::SRGB_NONLINEAR),
-            (vk::Format::R8G8B8A8_SRGB, vk::ColorSpaceKHR::SRGB_NONLINEAR),
-            (
-                vk::Format::B8G8R8A8_UNORM,
-                vk::ColorSpaceKHR::SRGB_NONLINEAR,
-            ),
-            (
-                vk::Format::R8G8B8A8_UNORM,
-                vk::ColorSpaceKHR::SRGB_NONLINEAR,
-            ),
+            // NEXT add VkComponentMapping to support a different channel order.
+            // (vk::Format::R8G8B8A8_SRGB, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+            // NEXT unless we are controlling gamma encode, no use for this
+            // (
+            //     vk::Format::B8G8R8A8_UNORM,
+            //     vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            // ),
+            // (
+            //     vk::Format::R8G8B8A8_UNORM,
+            //     vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            // ),
         ]
         .iter()
         .find_map(|&(format, color_space)| {
