@@ -17,6 +17,7 @@ use ash::vk::Handle;
 
 use crate::dispatch::pw;
 use crate::internal::*;
+use crate::present::surface::ExtentSource;
 
 // NEXT update command buffer wrapper to support beginning and ending rendering, then use that to
 // implement GraphicsPresent
@@ -216,21 +217,22 @@ impl GraphicsPresent {
         }
     }
 
-    pub fn recreate_images(
+    pub fn maybe_update_swapchain<'a>(
         &mut self,
         device_ctx: &DeviceContext,
-        surface: &VkSurface,
-        size: vk::Extent2D,
-    ) {
-        let device = &device_ctx.device;
-        // XXX replace with semaphore wait on last frame in flight
-        unsafe {
-            device.device_wait_idle().unwrap();
-        }
+        surface: &mut VkSurface,
+        extent_source: impl Into<ExtentSource<'a>>,
+    ) -> Result<(), VulkanError> {
+        surface.update(device_ctx, extent_source)?;
 
-        self.swapchain.recreate(device_ctx, surface, size);
+        // XXX drain the swapchain and any command buffers in flight.
+        device_ctx.wait_idle()?;
+
+        self.swapchain.recreate(device_ctx, surface);
         self.present
             .notify_swapchain_recreation(*self.swapchain.as_raw());
+
+        Ok(())
     }
 }
 
@@ -340,21 +342,23 @@ impl ComputePresent {
         }
     }
 
-    // NOTE unless the surface retains knowledge of the window, it cannot know the size.  We need to
-    // bind window and surface but also to provide a non-window surface for those odd cases.
-    pub fn recreate_images(
+    // XXX we might not need to update the swapchain.  Check if invalid before blindly
+    // interpreting the upstream as a need to recreate.
+    pub fn maybe_update_swapchain<'a>(
         &mut self,
         device_ctx: &DeviceContext,
-        surface: &VkSurface,
-        size: vk::Extent2D,
-    ) {
-        let device = device_ctx.device();
-        // XXX replace with semaphore wait on last frame in flight
-        unsafe {
-            device.device_wait_idle().unwrap();
-        }
-        self.swapchain.recreate(device_ctx, surface, size);
+        surface: &mut VkSurface,
+        extent_source: impl Into<ExtentSource<'a>>,
+    ) -> Result<(), VulkanError> {
+        surface.update(device_ctx, extent_source)?;
+
+        // XXX drain the swapchain and any command buffers in flight.
+        device_ctx.wait_idle()?;
+
+        self.swapchain.recreate(device_ctx, surface);
         self.present
             .notify_swapchain_recreation(*self.swapchain.as_raw());
+
+        Ok(())
     }
 }

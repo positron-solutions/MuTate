@@ -218,21 +218,22 @@ impl VkContext {
 
     #[cfg(feature = "winit")]
     pub fn surface(
-        &self, window: &winit::window::Window,
+        &self,
         event_loop:&winit::event_loop::ActiveEventLoop
+        window: &winit::window::Window,
     ) -> vk::SurfaceKHR {
         let display_handle = event_loop
-                .display_handle()
-                .expect("Event loop has no display handle")
-                .as_raw();
-            let window_handle = window
-                .window_handle()
-                .expect("raw_window_handle: platform unsupported")
-                .as_raw();
-            unsafe {
-                ash_window::create_surface(&self.entry, &self.instance, display_handle, window_handle, None)
-                    .expect("ash_window: could not create surface")
-            }
+            .display_handle()
+            .expect("Event loop has no display handle")
+            .as_raw();
+        let window_handle = window
+            .window_handle()
+            .expect("raw_window_handle: platform unsupported")
+            .as_raw();
+        unsafe {
+            ash_window::create_surface(&self.entry, &self.instance, display_handle, window_handle, None)
+                .expect("ash_window: could not create surface")
+        }
     }
 
     /// Returns a list of physical devices that meet requirements, sorted in order of preference for

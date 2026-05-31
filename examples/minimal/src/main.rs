@@ -36,17 +36,17 @@ impl WindowContext {
         window: Window,
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
-        let surface = VkSurface::new(raw_surface, vk_context, device_context);
-        let extent = surface.resolve_size(device_context, &window).unwrap();
-
+        let surface = VkSurface::new(vk_context, device_context, raw_surface, &window).unwrap();
         let compute_present =
-            ComputePresent::new(device_context, vk_context, &surface, extent).unwrap();
+            ComputePresent::new(device_context, vk_context, &surface, surface.extent()).unwrap();
         let mut renderer = HelloDraw::new(
             device_context,
             // XXX Go support Float4 in slang module
             [0.0, 0.8, 0.1, 1.0], // BGRA
         );
-        renderer.provision(device_context, extent).unwrap();
+        renderer
+            .provision(device_context, surface.extent())
+            .unwrap();
         Self {
             window,
             surface,
@@ -55,11 +55,12 @@ impl WindowContext {
         }
     }
 
-    /// Draw using the
+    /// Use the compute present ring
     fn draw_frame(&mut self, device_context: &DeviceContext) {
         // XXX at the conclusion of pulling image acquisition out, then presentation out, we would
         // be left wanting to put them back together and discovering that we have one
         // acquire-draw-present loop that is generic over some kind of inner render support.
+        // XXX the window presentation notification is a tension we would like to take away.
         self.compute_present.draw(
             device_context,
             |cb, acquired_image| {
@@ -72,10 +73,9 @@ impl WindowContext {
     // XXX make this into a try_resize method that can propagate recreation back up to the
     // application for device re-creation.
     fn handle_resize(&mut self, device_context: &DeviceContext) {
-        if let Ok(size) = { self.surface.resolve_size(&device_context, &self.window) } {
-            self.compute_present
-                .recreate_images(device_context, &self.surface, size);
-        }
+        self.compute_present
+            .maybe_update_swapchain(device_context, &mut self.surface, &self.window)
+            .unwrap();
     }
 
     fn destroy(self, device_context: &mut DeviceContext) {
@@ -96,7 +96,7 @@ struct ActiveApp {
 impl ActiveApp {
     fn new(vk_context: &VkContext, event_loop: &ActiveEventLoop) -> Self {
         let window = make_window(event_loop);
-        let raw_surface = vk_context.surface(&window, event_loop);
+        let raw_surface = vk_context.surface(event_loop, &window);
 
         // Surfaces might only be supported on some devices.  This check ensures that we will be
         // able to use the chosen device for this window.

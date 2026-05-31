@@ -113,21 +113,7 @@ impl SwapchainContext {
         let loader =
             ash::khr::swapchain::Device::new(&vk_context.instance, &device_context.device());
 
-        // somewhat duplicate with recreation.
-        let swapchain_ci = vk::SwapchainCreateInfoKHR::default()
-            .surface(surface.as_raw())
-            .min_image_count(surface.swapchain_image_count)
-            .image_format(surface.format.format)
-            .image_color_space(surface.format.color_space)
-            .image_extent(extent)
-            .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
-            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .pre_transform(surface.pre_transform)
-            .composite_alpha(surface.composite_alpha)
-            .present_mode(surface.present_mode)
-            .clipped(true)
-            .flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT);
+        let swapchain_ci = surface.swapchain_ci();
 
         // XXX failed creation case might not be able to re-create and this has not been resolved yet.
         let swapchain = unsafe {
@@ -138,8 +124,7 @@ impl SwapchainContext {
 
         let images = unsafe { loader.get_swapchain_images(swapchain)? };
         let frames = images.len();
-        let image_views =
-            create_image_views(&device_context.device(), &images, surface.format.format);
+        let image_views = create_image_views(&device_context.device(), &images, surface.format());
 
         // XXX only make semaphores for frames?  Also.. this panics.
         let image_available_semaphores =
@@ -167,37 +152,23 @@ impl SwapchainContext {
         &mut self,
         device_context: &DeviceContext,
         surface: &VkSurface,
-        extent: vk::Extent2D,
     ) -> Result<(), VulkanError> {
-        // Destroy old image views — images themselves are owned by the swapchain
+        let extent = surface.extent();
+        // We made the image views.  We have to destroy them.
         let device = device_context.device();
         unsafe {
             for view in self.image_views.drain(..) {
                 device.destroy_image_view(view, None);
             }
         }
+        let mut swapchain_ci = surface.swapchain_ci();
+        let swapchain_ci = swapchain_ci.old_swapchain(self.raw);
 
-        // XXX recreation data is out of date and should be refreshed up in the Window-Swap-Surface
-        // stuff.
-        let swapchain_ci = vk::SwapchainCreateInfoKHR {
-            surface: surface.as_raw(),
-            min_image_count: surface.swapchain_image_count,
-            image_format: surface.format.format,
-            image_color_space: surface.format.color_space,
-            image_extent: extent,
-            image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
-            image_sharing_mode: vk::SharingMode::EXCLUSIVE,
-            pre_transform: surface.pre_transform,
-            composite_alpha: surface.composite_alpha,
-            present_mode: surface.present_mode,
-            clipped: vk::TRUE,
-            flags: vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT,
-            old_swapchain: self.raw,
-            ..Default::default()
-        };
-
+        // XXX try to handle the broken recreation case... We have already used "old swapchain" in
+        // the call.  Would we still need to destroy it if this call fails or is it in limbo?
+        // In addition to failing, would we set our pointer to null?
         let new_swapchain = unsafe { self.loader.create_swapchain(&swapchain_ci, None)? };
+
         // Old swapchain retired.  Safe to destroy.
         unsafe {
             self.loader.destroy_swapchain(self.raw, None);
@@ -206,21 +177,20 @@ impl SwapchainContext {
 
         // Recreate images
         self.images = unsafe { self.loader.get_swapchain_images(self.raw)?.into() };
-        self.image_views = create_image_views(
-            &device_context.device(),
-            &self.images,
-            surface.format.format,
-        );
+        self.image_views =
+            create_image_views(&device_context.device(), &self.images, surface.format());
 
         let new_frames = self.images.len();
         if new_frames != self.frames {
-            // XXX we might need more or less semaphores!
+            // XXX we might need more or less semaphores!  We created four semaphores to avoid
+            // tracking for now.
             self.frames = new_frames;
             // LIES while this avoids a degenerate index that would crash, it might attempt to use
             // an image in flight unless acquire is properly called.  The semaphore wait before
             // swapchain recreation is what *actually* protects us.
             self.frame_index = self.frame_index.min(new_frames - 1);
         }
+
         Ok(())
     }
 

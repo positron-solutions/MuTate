@@ -273,7 +273,7 @@ impl Queues {
             .iter()
             .find(|q| unsafe {
                 surface_loader
-                    .get_physical_device_surface_support(self.physical_device, q.family(), surface)
+                    .get_physical_device_surface_support(self.physical_device, q.family(), *surface)
                     .unwrap_or(false)
             })
             .copied()

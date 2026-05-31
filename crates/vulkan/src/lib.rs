@@ -253,6 +253,12 @@ pub enum VulkanError {
     /// behavior is to request redraw and wait for another event.
     #[error("surface: degenerate extent ({width}x{height}); window may be minimized")]
     DegenerateExtent { width: u32, height: u32 },
+    /// Surface support inferred that the window is minimized and the application likely wants to
+    /// idle while waiting for more event.
+    // NOTE if you arrive here and the window does not "seem" minimized, check the surface module.
+    // We inferred the minimized state from a zero inner pixel size.
+    #[error("surface: window seems minimized")]
+    WindowMinimized,
 }
 
 impl From<vk::Result> for VulkanError {
