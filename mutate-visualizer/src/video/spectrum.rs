@@ -150,8 +150,8 @@ impl SpectrumNode {
 
         // We will do a lot of these full-buffer shaders.  These workgroup dispatch sizes need to be
         // declared in one place and then propagated into slang, such as with a `slang!` macro.
-        let workgroup_size_x = 8;
-        let workgroup_size_y = 16;
+        let workgroup_size_x = 4;
+        let workgroup_size_y = 8;
 
         let dispatch_x = (extent.width + workgroup_size_x - 1) / workgroup_size_x;
         let dispatch_y = (extent.height + workgroup_size_y - 1) / workgroup_size_y;

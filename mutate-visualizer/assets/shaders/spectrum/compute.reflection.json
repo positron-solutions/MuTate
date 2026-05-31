@@ -161,7 +161,7 @@
                     }
                 }
             ],
-            "threadGroupSize": [8, 16, 1],
+            "threadGroupSize": [4, 8, 1],
             "bindings": [
                 {
                     "name": "PushConstants",

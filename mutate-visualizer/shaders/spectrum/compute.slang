@@ -20,7 +20,7 @@ StructuredBuffer<SpectrumSample> spectrum_table[];
 [[vk::binding(5, 0)]]
 RWByteAddressBuffer output_table[];
 
-[numthreads(8,16,1)]
+[numthreads(4,8,1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint2 pixel = dispatchThreadID.xy;

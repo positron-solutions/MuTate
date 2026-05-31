@@ -219,8 +219,8 @@ impl VkContext {
     #[cfg(feature = "winit")]
     pub fn surface(
         &self,
-        event_loop:&winit::event_loop::ActiveEventLoop
-        window: &winit::window::Window,
+        event_loop:&winit::event_loop::ActiveEventLoop,
+        window: &winit::window::Window
     ) -> vk::SurfaceKHR {
         let display_handle = event_loop
             .display_handle()
