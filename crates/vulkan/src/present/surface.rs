@@ -332,11 +332,12 @@ impl VkSurface {
             };
             // Even if the compositor is happy to use two images, we need at least three to avoid
             // lapping the semaaphores that synchronize them.
-            let desired = mode_minimum.max(raw_caps.min_image_count).max(3);
+            let desired = mode_minimum.max(raw_caps.min_image_count);
             if raw_caps.max_image_count == 0 {
                 desired
             } else {
-                // We only use up to four semaphores, so more than four images can't be synchronized.
+                // We only use up to four semaphores, so more than four images can't be
+                // synchronized.
                 desired.min(raw_caps.max_image_count.min(4))
             }
         };

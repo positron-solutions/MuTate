@@ -88,11 +88,11 @@ pub struct SwapchainContext {
     loader: ash::khr::swapchain::Device,
     image_views: SmallVec<vk::ImageView, 4>,
     images: SmallVec<vk::Image, 4>,
-    frames: usize,
+    slots: usize,
     /// During acquisition, we must provide a binary semaphore for the compositor to signal when the image
     /// is ready.  Since we don't yet know the index of the image yet, we use our own index to cycle
     /// through semaphores, ensuring no re-use on different images.
-    frame_index: usize,
+    slot_index: usize,
     // note about choice of 4 in module docs
     image_available_semaphores: [BinarySemaphore; 4],
     present_ready_semaphores: [BinarySemaphore; 4],
@@ -123,10 +123,12 @@ impl SwapchainContext {
         };
 
         let images = unsafe { loader.get_swapchain_images(swapchain)? };
-        let frames = images.len();
+        // Even if we only have 2 images, we need at least three semaphores to avoid lapping those
+        // in-flight.
+        let slots = images.len().max(3);
         let image_views = create_image_views(&device_context.device(), &images, surface.format());
 
-        // XXX only make semaphores for frames?  Also.. this panics.
+        // XXX only make semaphores for slots?  Also.. this panics.
         let image_available_semaphores =
             std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
         let present_ready_semaphores =
@@ -139,8 +141,8 @@ impl SwapchainContext {
             images: images.into(),
             image_views: image_views,
             raw: swapchain,
-            frames,
-            frame_index: 0,
+            slots,
+            slot_index: 0,
             extent,
             recreation_required: swapchain.is_null(),
         })
@@ -180,15 +182,10 @@ impl SwapchainContext {
         self.image_views =
             create_image_views(&device_context.device(), &self.images, surface.format());
 
-        let new_frames = self.images.len();
-        if new_frames != self.frames {
-            // XXX we might need more or less semaphores!  We created four semaphores to avoid
-            // tracking for now.
-            self.frames = new_frames;
-            // LIES while this avoids a degenerate index that would crash, it might attempt to use
-            // an image in flight unless acquire is properly called.  The semaphore wait before
-            // swapchain recreation is what *actually* protects us.
-            self.frame_index = self.frame_index.min(new_frames - 1);
+        let new_slots = self.images.len().max(3);
+        if new_slots != self.slots {
+            self.slots = new_slots;
+            self.slot_index = 0; // XXX drain within recreation and start back at the first slot.
         }
 
         Ok(())
@@ -224,10 +221,10 @@ impl SwapchainContext {
 
     /// Get the next swapchain image.  Errors may indicate need to request recreation.
     pub fn acquire(&mut self) -> Result<AcquiredImage, VulkanError> {
-        let idx = self.frame_index as usize;
+        let idx = self.slot_index as usize;
         let image_available = self.image_available_semaphores[idx];
         let present_ready = self.present_ready_semaphores[idx];
-        self.frame_index = (idx + 1) % self.frames;
+        self.slot_index = (idx + 1) % self.slots;
 
         let (swapchain_image_index, _) = unsafe {
             self.loader
