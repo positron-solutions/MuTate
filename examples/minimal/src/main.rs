@@ -56,15 +56,25 @@ impl WindowContext {
     }
 
     /// Use the compute present ring
-    fn draw_frame(&mut self, device_context: &DeviceContext) {
+    fn draw_frame(&mut self, device_context: &mut DeviceContext) {
         // XXX the window presentation notification is a tension we would like to take away.
-        self.present_ring.record(
-            device_context,
-            compute_present(device_context, |device_ctx, cb, acquired_image| {
-                self.renderer.draw(device_ctx, cb, acquired_image);
-            }),
-            || self.window.pre_present_notify(),
-        );
+        self.present_ring
+            .record(
+                device_context,
+                compute_present(device_context, |device_ctx, cb, acquired_image| {
+                    self.renderer.draw(device_ctx, cb, acquired_image);
+                }),
+                || self.window.pre_present_notify(),
+            )
+            .map_err(|e| match e {
+                utate::vulkan::VulkanError::SwapchainOutOfDate
+                | utate::vulkan::VulkanError::SwapchainSuboptimal => {
+                    self.handle_resize(device_context);
+                }
+                _ => {
+                    eprintln!("application: draw failed {:?}", e);
+                }
+            });
     }
 
     // XXX make this into a try_resize method that can propagate recreation back up to the
@@ -75,6 +85,7 @@ impl WindowContext {
             .maybe_update_swapchain(device_context, &mut self.surface, &self.window)
             .unwrap();
         self.renderer.provision(device_context, new_size)?;
+        self.window.request_redraw();
         Ok(())
     }
 
@@ -136,7 +147,7 @@ impl ActiveApp {
         match event {
             WindowEvent::RedrawRequested => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.draw_frame(&self.device_context);
+                    wc.draw_frame(&mut self.device_context);
                     wc.window.request_redraw();
                 }
             }
