@@ -58,23 +58,12 @@ impl HelloDraw {
 
     pub fn draw(
         &self,
+        context: &DeviceContext,
         cb: &RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
-        context: &DeviceContext,
     ) {
         let device = context.device();
-        let out_image = acquired_image.image;
-        let range = image::range();
         let extent = acquired_image.extent;
-
-        image::transition_layout(
-            out_image,
-            &**cb,
-            range,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            context,
-        );
 
         self.output_buffer
             .as_ref()
@@ -115,20 +104,11 @@ impl HelloDraw {
             device.cmd_copy_buffer_to_image(
                 **cb,
                 self.output_buffer.as_ref().unwrap().buffer,
-                out_image,
+                acquired_image.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[region],
             );
         }
-
-        image::transition_layout(
-            out_image,
-            &**cb,
-            range,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageLayout::PRESENT_SRC_KHR,
-            context,
-        );
     }
 
     pub fn destroy(self, context: &mut DeviceContext) -> Result<(), utate::MutateError> {

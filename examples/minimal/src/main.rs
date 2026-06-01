@@ -10,7 +10,11 @@ mod draw;
 use std::collections::HashMap;
 
 use ash::vk;
-use mutate_lib::{self as utate, prelude::*, vulkan::present::ComputePresent};
+use mutate_lib::{
+    self as utate,
+    prelude::*,
+    vulkan::present::{compute_present, PresentRing},
+};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -25,7 +29,7 @@ use draw::HelloDraw;
 struct WindowContext {
     window: Window,
     surface: VkSurface,
-    compute_present: ComputePresent,
+    present_ring: PresentRing,
     renderer: HelloDraw,
 }
 
@@ -38,7 +42,7 @@ impl WindowContext {
     ) -> Self {
         let surface = VkSurface::new(vk_context, device_context, raw_surface, &window).unwrap();
         let compute_present =
-            ComputePresent::new(device_context, vk_context, &surface, surface.extent()).unwrap();
+            PresentRing::new(device_context, vk_context, &surface, surface.extent()).unwrap();
         let mut renderer = HelloDraw::new(
             device_context,
             // XXX Go support Float4 in slang module
@@ -50,22 +54,19 @@ impl WindowContext {
         Self {
             window,
             surface,
-            compute_present,
+            present_ring: compute_present,
             renderer,
         }
     }
 
     /// Use the compute present ring
     fn draw_frame(&mut self, device_context: &DeviceContext) {
-        // XXX at the conclusion of pulling image acquisition out, then presentation out, we would
-        // be left wanting to put them back together and discovering that we have one
-        // acquire-draw-present loop that is generic over some kind of inner render support.
         // XXX the window presentation notification is a tension we would like to take away.
-        self.compute_present.draw(
+        self.present_ring.record(
             device_context,
-            |cb, acquired_image| {
-                self.renderer.draw(cb, acquired_image, device_context);
-            },
+            compute_present(device_context, |device_ctx, cb, acquired_image| {
+                self.renderer.draw(device_ctx, cb, acquired_image);
+            }),
             || self.window.pre_present_notify(),
         );
     }
@@ -73,14 +74,14 @@ impl WindowContext {
     // XXX make this into a try_resize method that can propagate recreation back up to the
     // application for device re-creation.
     fn handle_resize(&mut self, device_context: &DeviceContext) {
-        self.compute_present
+        self.present_ring
             .maybe_update_swapchain(device_context, &mut self.surface, &self.window)
             .unwrap();
     }
 
     fn destroy(self, device_context: &mut DeviceContext) {
         self.renderer.destroy(device_context);
-        self.compute_present.destroy(device_context);
+        self.present_ring.destroy(device_context);
         self.surface.destroy();
     }
 }
