@@ -130,14 +130,14 @@ impl PresentRing {
         device_ctx: &DeviceContext,
         surface: &mut VkSurface,
         extent_source: impl Into<ExtentSource<'a>>,
-    ) -> Result<(), VulkanError> {
+    ) -> Result<vk::Extent2D, VulkanError> {
         // XXX Check if surface actually needs recreation!
-        surface.update(device_ctx, extent_source)?;
+        let new_size = surface.update(device_ctx, extent_source)?;
         self.swapchain.drain_present(device_ctx)?;
         self.swapchain.recreate(device_ctx, surface);
         self.present
             .notify_swapchain_recreation(*self.swapchain.as_raw());
-        Ok(())
+        Ok(new_size)
     }
 
     pub fn destroy(self, context: &DeviceContext) {

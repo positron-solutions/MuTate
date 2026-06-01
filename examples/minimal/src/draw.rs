@@ -47,6 +47,14 @@ impl HelloDraw {
         context: &mut DeviceContext,
         size: vk::Extent2D,
     ) -> Result<(), utate::MutateError> {
+        if let Some(existing) = self.output_buffer.take() {
+            unsafe {
+                existing.destroy(context)?;
+                context.descriptors.unbind_ssbo(self.output_idx);
+            }
+            self.output_idx = SsboIdx::INVALID;
+        }
+
         let output_buffer =
             buffer::MappedAllocation::new((size.width * size.height) as usize, context)?;
 

@@ -73,10 +73,13 @@ impl WindowContext {
 
     // XXX make this into a try_resize method that can propagate recreation back up to the
     // application for device re-creation.
-    fn handle_resize(&mut self, device_context: &DeviceContext) {
-        self.present_ring
+    fn handle_resize(&mut self, device_context: &mut DeviceContext) -> Result<(), MutateError> {
+        let new_size = self
+            .present_ring
             .maybe_update_swapchain(device_context, &mut self.surface, &self.window)
             .unwrap();
+        self.renderer.provision(device_context, new_size)?;
+        Ok(())
     }
 
     fn destroy(self, device_context: &mut DeviceContext) {
@@ -143,7 +146,7 @@ impl ActiveApp {
             }
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.handle_resize(&self.device_context);
+                    wc.handle_resize(&mut self.device_context).unwrap();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {

@@ -51,7 +51,9 @@
 //! re-creation.  Nonetheless, the surface and dependencies for the surface can be found from the
 //! earliest stages of the application.
 
-// use ash::khr::{surface::Instance as SurfaceInstance, xlib_surface};
+// XXX We really need to propagate the surface update back to the application so that provisioned
+// things can be re-provisioned.  A runtime will eventually handle the threading, but for now...
+
 #[cfg(feature = "winit")]
 use winit::window::Window;
 
@@ -149,7 +151,7 @@ impl VkSurface {
         &mut self,
         device_context: &DeviceContext,
         extent_source: impl Into<ExtentSource<'a>>,
-    ) -> Result<(), VulkanError> {
+    ) -> Result<vk::Extent2D, VulkanError> {
         let extent_source = extent_source.into();
         let raw_caps = Self::fetch_raw_caps(
             &self.surface_loader,
@@ -164,7 +166,7 @@ impl VkSurface {
             &raw_caps,
             extent,
         )?;
-        Ok(())
+        Ok(self.caps.extent)
     }
 
     /// Query [`vk::SurfaceCapabilitiesKHR`] from the driver.  If queried caps advertise zero max
