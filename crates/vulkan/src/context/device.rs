@@ -218,3 +218,10 @@ impl Fence {
         unsafe { device_ctx.device().destroy_fence(self.0, None) }
     }
 }
+
+impl std::ops::Deref for Fence {
+    type Target = vk::Fence;
+    fn deref(&self) -> &vk::Fence {
+        &self.0
+    }
+}

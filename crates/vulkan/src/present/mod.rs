@@ -105,11 +105,19 @@ impl PresentRing {
         let next_id = self.present.next_present_id();
         let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
         let present_ready = acquired_image.present_ready.as_raw();
+        unsafe {
+            device_ctx
+                .device()
+                .reset_fences(slice::from_ref(&acquired_image.present_finished))?;
+        }
+        let mut present_finished = vk::SwapchainPresentFenceInfoEXT::default()
+            .fences(std::slice::from_ref(&acquired_image.present_finished));
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(slice::from_ref(&present_ready))
             .swapchains(slice::from_ref(self.swapchain.as_raw()))
             .image_indices(slice::from_ref(&acquired_image.swapchain_image_index))
-            .push_next(&mut present_id);
+            .push_next(&mut present_id)
+            .push_next(&mut present_finished);
 
         self.swapchain
             .present(unsafe { self.queue.raw() }, &present_info);
@@ -123,8 +131,9 @@ impl PresentRing {
         surface: &mut VkSurface,
         extent_source: impl Into<ExtentSource<'a>>,
     ) -> Result<(), VulkanError> {
+        // XXX Check if surface actually needs recreation!
         surface.update(device_ctx, extent_source)?;
-        device_ctx.wait_idle()?;
+        self.swapchain.drain_present(device_ctx)?;
         self.swapchain.recreate(device_ctx, surface);
         self.present
             .notify_swapchain_recreation(*self.swapchain.as_raw());

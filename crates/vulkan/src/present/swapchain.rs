@@ -67,6 +67,9 @@ pub struct AcquiredImage {
     pub image_available: BinaryWait,
     /// User signals when compositor may present image (after rendering).
     pub present_ready: BinarySignal,
+    /// Signaled by presentation when image is completely finished with.  Used for draining the
+    /// swapchain, but can also be used by other waiters.
+    pub present_finished: Fence,
 
     /// Necessary to begin any rendering
     pub image_view: vk::ImageView,
@@ -96,6 +99,7 @@ pub struct SwapchainContext {
     // note about choice of 4 in module docs
     image_available_semaphores: [BinarySemaphore; 4],
     present_ready_semaphores: [BinarySemaphore; 4],
+    present_finished_fences: [Fence; 4],
     extent: vk::Extent2D,
     recreation_required: bool,
 }
@@ -133,14 +137,20 @@ impl SwapchainContext {
             std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
         let present_ready_semaphores =
             std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
+        let present_finished_fences =
+            std::array::from_fn(|_| device_context.make_fence(true).unwrap());
 
         Ok(Self {
-            present_ready_semaphores,
-            image_available_semaphores,
+            raw: swapchain,
             loader,
+
+            image_available_semaphores,
+            present_ready_semaphores,
+            present_finished_fences,
+
             images: images.into(),
             image_views: image_views,
-            raw: swapchain,
+
             slots,
             slot_index: 0,
             extent,
@@ -216,6 +226,10 @@ impl SwapchainContext {
             self.present_ready_semaphores.iter().for_each(|s| {
                 s.destroy(context);
             });
+            self.drain_present(context).unwrap();
+            for fence in &self.present_finished_fences {
+                device.destroy_fence(**fence, None);
+            }
         }
     }
 
@@ -224,6 +238,7 @@ impl SwapchainContext {
         let idx = self.slot_index as usize;
         let image_available = self.image_available_semaphores[idx];
         let present_ready = self.present_ready_semaphores[idx];
+        let present_finished = self.present_finished_fences[idx];
         self.slot_index = (idx + 1) % self.slots;
 
         let (swapchain_image_index, _) = unsafe {
@@ -247,11 +262,21 @@ impl SwapchainContext {
         Ok(AcquiredImage {
             image_available: image_available.wait(),
             present_ready: present_ready.signal(),
+            present_finished,
             image,
             image_view,
             extent: self.extent,
             swapchain_image_index,
         })
+    }
+
+    /// This may be called by high-level support, but if you're wrapping a swapchain on your own,
+    /// this function enables waiting on all present-in-flight fences to signal, meaning it's safe
+    /// to recreate the swapchain.
+    pub fn drain_present(&self, device_ctx: &DeviceContext) -> Result<(), VulkanError> {
+        // XXX Grrrrr that newtype is in our way.  Let's drop a colony on the Earth to fix it.
+        let raw: [vk::Fence; 4] = self.present_finished_fences.map(|f| f.0);
+        unsafe { Ok(device_ctx.device().wait_for_fences(&raw, true, u64::MAX)?) }
     }
 
     pub fn as_raw(&self) -> &vk::SwapchainKHR {
