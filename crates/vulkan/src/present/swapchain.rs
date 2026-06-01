@@ -165,7 +165,10 @@ impl SwapchainContext {
         device_context: &DeviceContext,
         surface: &VkSurface,
     ) -> Result<(), VulkanError> {
-        let extent = surface.extent();
+        // XXX not reaching through the surface caused a bug earlier because of persisting a value
+        // from the initial extent.  This is duplication.  Let's begin tying the lifetimes where
+        // natural.
+        self.extent = surface.extent();
         // We made the image views.  We have to destroy them.
         let device = device_context.device();
         unsafe {
