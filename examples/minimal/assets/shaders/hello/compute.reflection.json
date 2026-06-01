@@ -9,16 +9,12 @@
                     "kind": "struct",
                     "fields": [
                         {
-                            "name": "color",
+                            "name": "counter",
                             "type": {
-                                "kind": "vector",
-                                "elementCount": 4,
-                                "elementType": {
-                                    "kind": "scalar",
-                                    "scalarType": "float32"
-                                }
+                                "kind": "scalar",
+                                "scalarType": "uint32"
                             },
-                            "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
+                            "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                         },
                         {
                             "name": "window_size",
@@ -30,7 +26,7 @@
                                     "scalarType": "float32"
                                 }
                             },
-                            "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 4}
+                            "binding": {"kind": "uniform", "offset": 4, "size": 8, "elementStride": 4}
                         },
                         {
                             "name": "output_idx",
@@ -38,7 +34,7 @@
                                 "kind": "scalar",
                                 "scalarType": "uint32"
                             },
-                            "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
                         }
                     ]
                 },
@@ -50,16 +46,12 @@
                         "kind": "struct",
                         "fields": [
                             {
-                                "name": "color",
+                                "name": "counter",
                                 "type": {
-                                    "kind": "vector",
-                                    "elementCount": 4,
-                                    "elementType": {
-                                        "kind": "scalar",
-                                        "scalarType": "float32"
-                                    }
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
                                 },
-                                "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
+                                "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
                             },
                             {
                                 "name": "window_size",
@@ -71,7 +63,7 @@
                                         "scalarType": "float32"
                                     }
                                 },
-                                "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 4}
+                                "binding": {"kind": "uniform", "offset": 4, "size": 8, "elementStride": 4}
                             },
                             {
                                 "name": "output_idx",
@@ -79,11 +71,11 @@
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
-                                "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 28, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 0}
                 }
             }
         },

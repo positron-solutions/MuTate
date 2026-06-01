@@ -3,7 +3,7 @@
 
 [[vk::push_constant]]
 cbuffer HelloConstants {
-    float4 color; // rgba
+    uint counter;
     float2 window_size;
     uint output_idx;
 };
@@ -20,11 +20,16 @@ void main(uint3 tid : SV_DispatchThreadID) {
 
     RWByteAddressBuffer output = storage_buffers[output_idx];
 
-    // BGRA?
-    uint packed = (uint(round(color.a * 255.0)) << 24)
-                | (uint(round(color.b * 255.0)) << 16)
-                | (uint(round(color.g * 255.0)) << 8)
-                |  uint(round(color.r * 255.0));
+
+    uint x = (pixel.x + counter) & 0xFF;
+    uint y = (pixel.y + counter) & 0xFF;
+    uint s = (pixel.x + pixel.y + counter) & 0xFF;
+
+    // BGRA: b=x, g=y, r=x+y, a=255
+    uint packed = (0xFFu << 24)
+                | (x    << 16)
+                | (y    <<  8)
+                |  s;
 
     uint byte_offset = (tid.y * (uint)window_size.x + tid.x) * 4; // placeholder stride
     output.Store(byte_offset, packed);

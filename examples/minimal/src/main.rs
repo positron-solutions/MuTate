@@ -43,11 +43,7 @@ impl WindowContext {
         let surface = VkSurface::new(vk_context, device_context, raw_surface, &window).unwrap();
         let compute_present =
             PresentRing::new(device_context, vk_context, &surface, surface.extent()).unwrap();
-        let mut renderer = HelloDraw::new(
-            device_context,
-            // XXX Go support Float4 in slang module
-            [0.0, 0.8, 0.1, 1.0], // BGRA
-        );
+        let mut renderer = HelloDraw::new(device_context);
         renderer
             .provision(device_context, surface.extent())
             .unwrap();

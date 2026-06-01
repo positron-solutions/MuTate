@@ -13,10 +13,7 @@ use utate::vulkan::resource::{buffer, image};
 #[compute_pipeline(
     compute = stage!("hello/compute", Compute, c"main"),
     push = push!(HelloConstants {
-        pub r: Float,
-        pub g: Float,
-        pub b: Float,
-        pub a: Float,
+        pub counter: UInt,
         pub window_width: Float,
         pub window_height: Float,
         pub output_idx: SsboIdx,
@@ -26,17 +23,17 @@ pub struct HelloPipeline;
 
 pub struct HelloDraw {
     pipeline: ComputePipeline<HelloPipeline>,
-    color: [f32; 4],
+    counter: u32,
 
     output_buffer: Option<buffer::MappedAllocation<rgb::Rgba<u8>>>,
     output_idx: SsboIdx,
 }
 
 impl HelloDraw {
-    pub fn new(context: &DeviceContext, color: [f32; 4]) -> Self {
+    pub fn new(context: &DeviceContext) -> Self {
         Self {
             pipeline: ComputePipeline::<HelloPipeline>::new(context).unwrap(),
-            color,
+            counter: 0,
             output_buffer: None,
             output_idx: SsboIdx::INVALID,
         }
@@ -65,7 +62,7 @@ impl HelloDraw {
     }
 
     pub fn draw(
-        &self,
+        &mut self,
         context: &DeviceContext,
         cb: &RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
@@ -79,16 +76,14 @@ impl HelloDraw {
             .barrier_compute_pre(&cb, context);
 
         let push = HelloConstants {
-            r: self.color[0].into(),
-            g: self.color[1].into(),
-            b: self.color[2].into(),
-            a: self.color[3].into(),
+            counter: self.counter.into(),
             window_width: (extent.width as f32).into(),
             window_height: (extent.height as f32).into(),
             output_idx: self.output_idx,
         };
         // XXX allow pushing to wrapped buffers
         self.pipeline.push(context, **cb, &push);
+        self.counter += 1;
 
         // This dispatch math needs to respect the compute stage's declared dimensions.  We can make
         // that adjustable with specialization constants during the pipeline compilation.  This math
