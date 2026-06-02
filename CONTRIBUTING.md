@@ -1,6 +1,7 @@
 # Onboarding
 
 - `cargo run` will run the visualizer.
+- `cargo run -p mutate-minimal` will run at least a small application using our Vulkan library.
 - `cargo test --features vulkan` in `/mutate-lib` will run the integration tests for key crates like `vulkan` and `macros`.
 - `cargo workbench --help` uses a cargo alias to run the workbench program (a binary CLI tool using `mutate-lib` with the `dsp` feature for testing filter behaviors and generating pre-baked filter bank setups.
 - `cargo pmr` runs the Parks-McClellen-Remez solver for FIR weight generation.
@@ -58,6 +59,10 @@ These are not project specific, but maintainer tendencies on mature projects (th
 
 - Always attempt to separate structural from behavioral code.  If you rearrange hunks, try to commit those changes separately so that behavior is very easy to see.
 - Small commits are preferred, especially those so tiny that each change is self-evident.
+
+## Style
+
+- All raw `ash` handles **must** be used behind either the `ash::` or `vk::` (`ash::vk::`) prefix.  Only µTate types should be used without prefix.  This makes raw types very easy to see in implementation code.
 
 ## PrizeForge, User-Lead Funding
 

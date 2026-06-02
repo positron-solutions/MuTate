@@ -11,7 +11,7 @@
 use ash::{khr::xlib_surface, vk};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use mutate_lib::vulkan::context::VkContext;
+use mutate_lib::prelude::*;
 
 use crate::Args;
 

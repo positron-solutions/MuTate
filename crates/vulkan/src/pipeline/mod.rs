@@ -124,12 +124,12 @@ impl<S> GraphicsPipeline<S>
 where
     S: GraphicsPipelineSpec,
 {
-    pub fn new(context: &DeviceContext) -> Result<Self, VulkanError> {
+    pub fn new(device: &Device) -> Result<Self, VulkanError> {
         todo!()
     }
 
     // XXX needs pipeline state (struct TBD) an a RecordingSlot<Graphics>
-    pub fn draw(&self, device_context: &DeviceContext) {
+    pub fn draw(&self, device: &Device) {
         todo!()
     }
 }
@@ -152,16 +152,14 @@ pub struct ComputePipeline<S: ComputePipelineSpec> {
 }
 
 impl<S: ComputePipelineSpec> ComputePipeline<S> {
-    pub fn new(context: &DeviceContext) -> Result<Self, VulkanError> {
-        let device = context.device();
-
+    pub fn new(device: &Device) -> Result<Self, VulkanError> {
         // Compute ranges only have one stage and only need one range.
-        let layout = layout::Layout::<S::LayoutSpec>::new(context)?;
+        let layout = layout::Layout::<S::LayoutSpec>::new(device)?;
 
         // NOTE the shader module is still just half-baked fumbling in the dark at the shape of the
         // async loading code.  Not going to live long.
         let stage_spec = <S::Stage as stage::Stage<stage::Compute>>::SPEC;
-        let shader = shader::ShaderModule::load(context, stage_spec.name)?;
+        let shader = shader::ShaderModule::load(device, stage_spec.name)?;
 
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
@@ -174,6 +172,7 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
         // NEXT PSO compiling can take a while and definitely should be queued into background via resources.
         let pipeline = unsafe {
             device
+                .as_raw()
                 .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_ci], None)
                 .map_err(|huh| huh.1)?[0] // XXX 🤠
         };
@@ -186,8 +185,8 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
 
     // XXX typed recording slot
     // XXX possibly keep a device borrow on recording slots?
-    pub fn push(&self, device_ctx: &DeviceContext, cb: vk::CommandBuffer, data: &S::Push) {
-        self.layout.push(device_ctx.device(), cb, data);
+    pub fn push(&self, device: &Device, cb: vk::CommandBuffer, data: &S::Push) {
+        self.layout.push(device, cb, data);
     }
 
     /// Bind and dispatch this pipeline
@@ -196,35 +195,28 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
     // dividing input geometry by 4 and 8 for the dispatch.  We should find a way to integrate
     // reflection and bounds checking (or const calculation).  Compile time can use const
     // expressions to ensure perfect geometry by type contract.
-    pub fn dispatch(
-        &self,
-        device_ctx: &DeviceContext,
-        cb: vk::CommandBuffer,
-        x: u32,
-        y: u32,
-        z: u32,
-    ) {
-        let device = device_ctx.device();
+    pub fn dispatch(&self, device: &Device, cb: vk::CommandBuffer, x: u32, y: u32, z: u32) {
         unsafe {
             // NEXT persist the ID or hash in a CB state shadow and no-op this re-bind when already identical.
-            device.cmd_bind_descriptor_sets(
+            device.as_raw().cmd_bind_descriptor_sets(
                 cb,
                 vk::PipelineBindPoint::COMPUTE,
                 self.layout.as_raw(),
                 0,
-                &[device_ctx.descriptors.set()],
+                &[device.descriptors.set()],
                 &[],
             );
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-            device.cmd_dispatch(cb, x, y, z);
+            device
+                .as_raw()
+                .cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.as_raw().cmd_dispatch(cb, x, y, z);
         }
     }
 
-    pub fn destroy(self, device_context: &DeviceContext) {
-        let device = device_context.device();
+    pub fn destroy(self, device: &Device) {
         unsafe {
-            device.destroy_pipeline(self.pipeline, None);
+            device.as_raw().destroy_pipeline(self.pipeline, None);
         }
-        self.layout.destroy(device_context);
+        self.layout.destroy(device);
     }
 }

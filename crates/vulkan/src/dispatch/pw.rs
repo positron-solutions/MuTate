@@ -14,8 +14,8 @@
 //! - [`RenderTimings`] insert observable timestamp commands to estimate frame draw time.  Uses
 //!   `VK_KHR_calibrated_timestamps` and injects / measures / calibrates timing events.
 //!
-//! - [`SwapchainContext`] wraps up swapchain herding 🐈‍⬛.  Centralizes decisions about when to
-//!   attempt the next render & presentation.
+//! - [`Swapchain`] wraps up swapchain herding 🐈‍⬛.  Centralizes decisions about when to attempt
+//!   the next render & presentation.
 
 // NEXT this module has not actually lived up to why it was being implemented.  Instead, we have
 // arrived at the same conclusions that we really want VK_EXT_present_timing.  See
@@ -30,10 +30,7 @@ use ash::{khr::present_wait::Device as PwDevice, vk};
 
 use mutate_untorn::prelude::*;
 
-use crate::{
-    context::{DeviceContext, VkContext},
-    VulkanError,
-};
+use crate::internal::*;
 
 /// Observable state for the waiter.
 #[derive(Clone, Copy)]
@@ -82,11 +79,11 @@ pub struct PresentConsumer {
 
 impl PresentConsumer {
     pub fn new(
-        vk_context: &VkContext,
-        device_context: &DeviceContext,
+        instance: &Instance,
+        device: &Device,
         swapchain: vk::SwapchainKHR,
     ) -> Result<Self, VulkanError> {
-        let pw_device = PwDevice::new(&vk_context.instance, &device_context.device());
+        let pw_device = PwDevice::new(&instance.raw, device.as_raw());
 
         let (waiter_writer, waiter_reader) = Untorn::new(PresentWaiterState {
             last_window: Duration::MAX,

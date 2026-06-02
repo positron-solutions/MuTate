@@ -1,7 +1,7 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(unused)]
+#![allow(warnings)]
 
 //! # Vulkan
 //!
@@ -58,12 +58,12 @@
 //!
 //! ## Module Outline (The Plan)
 //!
-//! - Context
-//!   + Entry & Instance
-//!   + Devices
-//!     * Queue
-//!   + memory (just raw allocation)
-//!   + Descriptor table
+//! - Instance
+//!   + SupportedDevice
+//! - Device
+//!   + Queue
+//!   + Memory
+//!   + Descriptors
 //! - Resources
 //!   + Image
 //!     * Sampler
@@ -85,11 +85,15 @@
 //!   + Surface
 //!   + Alternative Frontends
 //!
-//! ## Context
+//! ## Instance
 //!
-//! The `Context` covers only-once or very rarely touched things.  There's one Instance.  We
-//! initialize devices and things only once-ish.  We create descriptor tables once per-device.
-//! Queue families are probed once at device creation.
+//! Entry, instance, physical device scanning, and obtaining some other loaders that are most
+//! tightly bound to the top level raw `ash::Instance`.
+//!
+//! ## Device
+//!
+//! The logical device.  We set up the queues, descriptor table, and will **soon** add a memory
+//! sub-allocation manager.
 //!
 //! ## Resource
 //!
@@ -134,8 +138,9 @@
 //! - Independent timelines to provide course-grained fencing, scheduled dispatch, and to handle
 //!   self-pacing audio graph versus VRR synchronization problems.
 
-pub mod context;
+pub mod device;
 pub mod dispatch;
+pub mod instance;
 pub mod pipeline;
 pub mod present;
 pub mod resource;
@@ -150,17 +155,16 @@ pub mod prelude {
     pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
 
     pub use super::VulkanError;
-    // NEXT move these out of prelude and de-emphasize in favor of consistent timeline semaphore
+    // NEXT move fences out of prelude and de-emphasize in favor of consistent timeline semaphore
     // usage except where required (swapchain acquisition, presentation etc).
-    pub use crate::context::device::Fence;
-    pub use crate::context::queue::prelude::*;
-    pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
     pub use crate::descriptor_newtype;
+    pub use crate::device::prelude::*;
     pub use crate::device_address_newtype;
     pub use crate::dispatch::prelude::*;
+    pub use crate::instance::prelude::*;
     pub use crate::pipeline::prelude::*;
     pub use crate::present::prelude::*;
-    pub use crate::present::surface::VkSurface;
+    pub use crate::present::surface::Surface;
     pub use crate::slang::prelude::*;
     pub use crate::slang_newtype;
 
@@ -176,12 +180,11 @@ pub(crate) mod internal {
     pub use smallvec::SmallVec;
 
     pub use super::VulkanError;
-    pub use crate::context::device::Fence;
-    pub use crate::context::queue::prelude::*;
-    pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
+    pub use crate::device::prelude::*;
     pub use crate::dispatch::internal::*;
+    pub use crate::instance::prelude::*;
     pub use crate::present::prelude::*;
-    pub use crate::present::swapchain::{AcquiredImage, SwapchainContext};
+    pub use crate::present::swapchain::{AcquiredImage, Swapchain};
     pub use crate::slang::prelude::*;
 
     // test harness macros

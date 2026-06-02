@@ -73,8 +73,8 @@ impl TimelineSemaphore {
         self.semaphore
     }
 
-    pub fn destroy(self, device_ctx: &DeviceContext) {
-        unsafe { device_ctx.device().destroy_semaphore(self.into_raw(), None) };
+    pub fn destroy(self, device: &Device) {
+        unsafe { device.as_raw().destroy_semaphore(self.into_raw(), None) };
     }
 }
 
@@ -110,12 +110,7 @@ impl SignalIntent {
     ///
     /// On failure, it is valid Vulkan behavior to simply use the next Fence value.  Monotonic is a
     /// sufficient condition for valid usage.
-    pub fn try_consume(
-        mut self,
-        device_ctx: &DeviceContext,
-        timeout: u64,
-    ) -> Result<u64, VulkanError> {
-        let device = device_ctx.device();
+    pub fn try_consume(mut self, device: &Device, timeout: u64) -> Result<u64, VulkanError> {
         self.bomb.defuse();
 
         // Wait for the previous value since GPU submissions might not be finished.  If value is
@@ -125,7 +120,7 @@ impl SignalIntent {
             let wait_info = vk::SemaphoreWaitInfo::default()
                 .semaphores(std::slice::from_ref(&self.semaphore))
                 .values(std::slice::from_ref(&previous));
-            unsafe { device.wait_semaphores(&wait_info, timeout) }?;
+            unsafe { device.as_raw().wait_semaphores(&wait_info, timeout) }?;
         }
 
         // Signal the value for this intent.
@@ -133,7 +128,7 @@ impl SignalIntent {
             .semaphore(self.semaphore)
             .value(self.value);
 
-        unsafe { device.signal_semaphore(&signal_info) }?;
+        unsafe { device.as_raw().signal_semaphore(&signal_info) }?;
         Ok(self.value)
     }
 
@@ -169,11 +164,11 @@ impl WaitValue {
     }
 
     /// Block the calling thread until this value has been signaled.
-    pub fn wait(&self, device_ctx: &DeviceContext, timeout: u64) -> Result<(), vk::Result> {
+    pub fn wait(&self, device: &Device, timeout: u64) -> Result<(), vk::Result> {
         let wait_info = vk::SemaphoreWaitInfo::default()
             .semaphores(std::slice::from_ref(&self.semaphore))
             .values(std::slice::from_ref(&self.value));
-        unsafe { device_ctx.device().wait_semaphores(&wait_info, timeout) }
+        unsafe { device.as_raw().wait_semaphores(&wait_info, timeout) }
     }
 }
 
@@ -229,8 +224,8 @@ impl BinarySemaphore {
         self.semaphore
     }
 
-    pub fn destroy(self, device_ctx: &DeviceContext) {
-        unsafe { device_ctx.device().destroy_semaphore(self.semaphore, None) };
+    pub fn destroy(self, device: &Device) {
+        unsafe { device.as_raw().destroy_semaphore(self.semaphore, None) };
     }
 }
 

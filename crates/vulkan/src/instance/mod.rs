@@ -1,11 +1,13 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! # VkContext
+//! # Instance
 //!
-//! Talk to the platform's Vulkan implementation.  Inspect physical devices for required Vulkan
-//! extension support.  Prioritize devices.  Set up Vulkan for the platform's surface
-//! implementation.
+//! Set up a Vulkan Instance to support the platform's surface implementation.  Inspect physical
+//! devices for required Vulkan extension support.  Prioritize devices.
+//!
+//! We configure the instance to the support required for the Vulkan subset we support, which is
+//! Vulkan 1.4 with a fixed descriptor table, and scalar block layout support among others,
 //!
 //! For headless rendering to a TUI etc, we likely don't need any platform extensions, but for
 //! rendering to a window, check `with_extensions` and its use of `ash_window` to cooperate with a
@@ -21,13 +23,18 @@ use mutate_assets as assets;
 #[cfg(feature="winit")]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 
-use crate::present::surface::VkSurface;
-use super::device;
+use crate::present::surface::Surface;
+use crate::device;
+
+pub mod prelude {
+    pub use super::Instance;
+    pub use super::SupportedDevice;
+}
 
 /// The entry and instance represent a connection to the Vulkan implementation.
-pub struct VkContext {
+pub struct Instance {
     pub(crate) entry: ash::Entry,
-    pub instance: ash::Instance,
+    pub(crate) raw: ash::Instance,
     pub profile: InstanceProfile,
 }
 
@@ -111,7 +118,7 @@ pub(crate) const DEVICE_EXTENSIONS_SURFACE: &[&CStr] = &[
 
 // DEBT Errors instead of panics, but that might require a lot of test re-writing that should be
 // done with macros to ease future pain.
-impl VkContext {
+impl Instance {
     /// Basic context for testing.  Does not have platform extensions for window or surface etc.
     /// Still useful for some workloads like compute or test rendering without swapchain or
     /// presentation.
@@ -125,7 +132,7 @@ impl VkContext {
     /// ```ignore
     /// // `event_loop` from winit::event_loop::ActiveEventLoop
     /// let required = ash_window::enumerate_required_extensions(event_loop);
-    /// let vk_context = VkContext::with_extensions(required)
+    /// let instance = Instance::with_extensions(required)
     /// ```
     pub fn with_extensions(required_exts: &[*const i8]) -> Self {
         Self::with_extensions_inner(required_exts, INSTANCE_EXTENSIONS_SURFACE, InstanceProfile::SURFACE)
@@ -207,13 +214,13 @@ impl VkContext {
         let instance = unsafe { entry.create_instance(&instance_ci, None).unwrap() };
         Self {
             entry,
-            instance,
+            raw: instance,
             profile,
         }
     }
 
     pub fn surface_loader(&self) -> ash::khr::surface::Instance {
-       ash::khr::surface::Instance::new(&self.entry, &self.instance)
+       ash::khr::surface::Instance::new(&self.entry, &self.raw)
     }
 
     #[cfg(feature = "winit")]
@@ -231,7 +238,7 @@ impl VkContext {
             .expect("raw_window_handle: platform unsupported")
             .as_raw();
         unsafe {
-            ash_window::create_surface(&self.entry, &self.instance, display_handle, window_handle, None)
+            ash_window::create_surface(&self.entry, &self.raw, display_handle, window_handle, None)
                 .expect("ash_window: could not create surface")
         }
     }
@@ -245,7 +252,7 @@ impl VkContext {
     /// `extensions` are optional extra extensions that will be appended to [`DEVICE_EXTENSIONS`].
     pub fn supported_devices(&self, extensions: &[&'static CStr]) -> Vec<SupportedDevice> {
         let physical_devices = unsafe {
-            self.instance
+            self.raw
                 .enumerate_physical_devices()
                 .expect("No physical devices with Vulkan support found")
         };
@@ -259,7 +266,7 @@ impl VkContext {
         let mut physical_devices: Vec<(vk::PhysicalDevice, vk::PhysicalDeviceProperties)> = physical_devices
             .into_iter()
             .filter_map(|physical_device| {
-                let props = unsafe { self.instance.get_physical_device_properties(physical_device) };
+                let props = unsafe { self.raw.get_physical_device_properties(physical_device) };
                 let meets_version = {
                     let major = vk::api_version_major(props.api_version);
                     let minor = vk::api_version_minor(props.api_version);
@@ -278,7 +285,7 @@ impl VkContext {
                 _ => 2,
             };
 
-            let mem_props = unsafe { self.instance.get_physical_device_memory_properties(*physical_device) };
+            let mem_props = unsafe { self.raw.get_physical_device_memory_properties(*physical_device) };
             let max_memory = mem_props.memory_heaps[..mem_props.memory_heap_count as usize]
                 .iter()
                 .filter(|heap| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
@@ -309,7 +316,7 @@ impl VkContext {
             .push_next(&mut features_1_1);
 
         unsafe {
-            self.instance.get_physical_device_features2(physical_device, &mut features2);
+            self.raw.get_physical_device_features2(physical_device, &mut features2);
         }
 
         let checks: &[(&'static str, bool)] = &[
@@ -362,7 +369,7 @@ impl VkContext {
             #[cfg(debug_assertions)]
             {
                 let props = unsafe {
-                    self.instance.get_physical_device_properties(physical_device)
+                    self.raw.get_physical_device_properties(physical_device)
                 };
                 let name = unsafe { std::ffi::CStr::from_ptr(props.device_name.as_ptr()) };
                 println!("Physical device unsupported: {}", name.to_string_lossy());
@@ -375,7 +382,7 @@ impl VkContext {
     }
 
     fn device_meets_version(&self, physical_device: vk::PhysicalDevice) -> bool {
-        let props = unsafe { self.instance.get_physical_device_properties(physical_device) };
+        let props = unsafe { self.raw.get_physical_device_properties(physical_device) };
         let api_version = props.api_version;
 
         let major = vk::api_version_major(api_version);
@@ -389,7 +396,7 @@ impl VkContext {
         extensions: &[&CStr]
     ) -> bool {
         let available_device_extensions = unsafe {
-            self.instance
+            self.raw
                 .enumerate_device_extension_properties(physical_device)
                 .expect("Failed to enumerate device extensions")
         };
@@ -414,7 +421,7 @@ impl VkContext {
             #[cfg(debug_assertions)]
             {
                 let props = unsafe {
-                    self.instance.get_physical_device_properties(physical_device)
+                    self.raw.get_physical_device_properties(physical_device)
                 };
                 let name = unsafe { std::ffi::CStr::from_ptr(props.device_name.as_ptr()) };
                 println!("Physical device unsupported: {}", name.to_string_lossy());
@@ -427,13 +434,29 @@ impl VkContext {
     }
 
     pub fn destroy(&self) {
-        unsafe {self.instance.destroy_instance(None)}
+        unsafe {self.raw.destroy_instance(None)}
+    }
+
+    pub fn as_raw(&self) -> &ash::Instance {
+        &self.raw
+    }
+
+    pub fn into_raw(self) -> ash::Instance {
+        self.raw
+    }
+}
+
+impl std::ops::Deref for Instance {
+    type Target = ash::Instance;
+
+    fn deref(&self) -> &Self::Target {
+        &self.raw
     }
 }
 
 /// Runs a block with an initialized Vulkan context, handling creation and destruction automatically.
 ///
-/// Two forms are available depending on whether you need access to the underlying [`VkContext`]:
+/// Two forms are available depending on whether you need access to the underlying [`Instance`]:
 ///
 /// # Usage
 ///
@@ -441,40 +464,40 @@ impl VkContext {
 /// use mutate_vulkan::with_context;
 ///
 /// // With context only:
-/// with_context!(|context| {
-///     // `context: DeviceContext` is available here
+/// with_context!(|device| {
+///     // `device: Device` is available here
 /// });
 ///
-/// // With both context and vk_context:
-/// with_context!(|context, vk_context| {
-///     // `context: DeviceContext` is available here
-///     // `vk_context: VkContext` is available here
+/// // With both context and instance:
+/// with_context!(|device, instance| {
+///     // `device: Device` is available here
+///     // `instance: Instance` is available here
 /// });
 /// ```
 #[macro_export]
 macro_rules! with_context {
-    (|$context:ident| $($body:tt)*) => {{
-        let mut vk_context = $crate::context::VkContext::new_headless();
-        let mut physical_device = vk_context.supported_devices(&[]).remove(0);
-        let mut $context = physical_device.into_logical(&vk_context);
+    (|$device:ident| $($body:tt)*) => {{
+        let mut instance = $crate::instance::Instance::new_headless();
+        let mut physical_device = instance.supported_devices(&[]).remove(0);
+        let mut $device = physical_device.into_logical(&instance);
         let __result = (|| { $($body)* })();
-        $context.destroy();
-        vk_context.destroy();
+        $device.destroy();
+        instance.destroy();
         __result
     }};
-    (|$device_context:ident, $vk_context:ident| $($body:tt)*) => {{
-        let mut $vk_context = $crate::context::VkContext::new_headless();
-        let mut physical_device = $vk_context.supported_devices(&[]).remove(0);
-        let mut $device_context = physical_device.into_logical(&$vk_context);
+    (|$device:ident, $instance:ident| $($body:tt)*) => {{
+        let mut $instance = $crate::instance::Instance::new_headless();
+        let mut physical_device = $instance.supported_devices(&[]).remove(0);
+        let mut $device = physical_device.into_logical(&$instance);
         let __result = (|| { $($body)* })();
-        $device_context.destroy();
-        $vk_context.destroy();
+        $device.destroy();
+        $instance.destroy();
         __result
     }};
 }
 
 #[derive(Debug, Clone)]
-/// Query physical devices from the `VkContext` to obtain a list of `SupportedDevices`.  These can
+/// Query physical devices from the `Instance` to obtain a list of `SupportedDevices`.  These can
 /// be checked for surface support with `supports_surface`.  This only checks for a queue family
 /// that can present.  At that point, you want to ask the user which device to use.  Queue family
 /// selection for command recording happens later, during Swapchain construction.
@@ -492,11 +515,11 @@ pub struct SupportedDevice {
 }
 
 impl SupportedDevice {
-    fn new(physical_device: vk::PhysicalDevice, vk_context: &VkContext, extensions: &[&'static
+    fn new(physical_device: vk::PhysicalDevice, instance: &Instance, extensions: &[&'static
     CStr], profile: InstanceProfile) -> SupportedDevice{
         let name = unsafe {
             let props =
-                vk_context.instance.get_physical_device_properties(physical_device);
+                instance.raw.get_physical_device_properties(physical_device);
             std::ffi::CStr::from_ptr(props.device_name.as_ptr())
                 .to_string_lossy()
                 .to_string()
@@ -519,10 +542,10 @@ impl SupportedDevice {
     pub fn supports_surface(
         &self,
         surface: vk::SurfaceKHR,
-        vk_context: &VkContext,
+        instance: &Instance,
     ) -> bool {
-        let surface_loader = vk_context.surface_loader();
-        let VkContext { entry: _, instance, .. } = vk_context;
+        let surface_loader = instance.surface_loader();
+        let Instance { entry: _, raw: instance, .. } = instance;
         let families = unsafe {
             instance.get_physical_device_queue_family_properties(self.physical_device)
         };
@@ -544,8 +567,8 @@ impl SupportedDevice {
     }
 
     /// Instantiate the logical device context.
-    pub fn into_logical (self, vk_context: &VkContext) -> device::DeviceContext {
-        device::DeviceContext::new(vk_context, self)
+    pub fn into_logical (self, instance: &Instance) -> device::Device {
+        device::Device::new(instance, self)
     }
 
 }
@@ -555,6 +578,7 @@ impl SupportedDevice {
         &self.name
     }
 
+    // XXX deref to physical
     pub fn device(&self) -> vk::PhysicalDevice {
         self.physical_device.clone()
     }
@@ -568,8 +592,8 @@ mod test {
 
     #[test]
     fn supported_devices () {
-        let vk_context = VkContext::with_extensions(&[]);
-        let supported = vk_context.supported_devices(&[]);
+        let instance = Instance::with_extensions(&[]);
+        let supported = instance.supported_devices(&[]);
         println!("Supported devices:");
         for device in supported.iter() {
             println!("  {}", device.name());
@@ -578,8 +602,8 @@ mod test {
 
     #[test]
     fn custom_features () {
-        let vk_context = VkContext::with_extensions(&[]);
-        let supported = vk_context.supported_devices(&[c"VK_KHR_commercial_success"]);
+        let instance = Instance::with_extensions(&[]);
+        let supported = instance.supported_devices(&[c"VK_KHR_commercial_success"]);
         assert!(supported.is_empty());
     }
 
@@ -587,8 +611,8 @@ mod test {
     fn with_context (){
         // if it builds, we didn't break the macro. 👍  This macro is only used in tests, so we
         // prefer to break it within the module early.
-        with_context!(|vk_context| {});
-        with_context!(|vk_context, device_context| {});
+        with_context!(|instance| {});
+        with_context!(|instance, device| {});
     }
 
     // NEXT Headless tests.  Fake windows.  Something.  Want to check on surface support!

@@ -28,7 +28,7 @@
 //! for a physical display.  We obtain images, some command buffers draw things on them, and then we hand
 //! control of the images back to a compositor or DRM for physical scan-out to some screen.
 //!
-//! The [`VkSurface`] knows the format we select.  This is important for the renderer to ensure that
+//! The [`Surface`] knows the format we select.  This is important for the renderer to ensure that
 //! the output of drawing is either compatible with or can be copied to the swapchain image for
 //! presentation.  The [`AcquiredImage`] carries along format, extent, and other information for
 //! renderers to write correctly to the output.
@@ -54,7 +54,7 @@
 use ash::vk::{self, Handle};
 use smallvec::SmallVec;
 
-use super::surface::VkSurface;
+use super::surface::Surface;
 
 use crate::internal::*;
 
@@ -86,7 +86,7 @@ pub struct AcquiredImage {
 // have enough space for any size of swapchain.  We only take up a few 64bit pointers that won't
 // pack or load much better for three elements anyway.  In return, we save a lot of complication.
 // DEBT rename to just Swapchain and replace any ash types with vk prefix.
-pub struct SwapchainContext {
+pub struct Swapchain {
     raw: vk::SwapchainKHR,
     loader: ash::khr::swapchain::Device,
     image_views: SmallVec<vk::ImageView, 4>,
@@ -104,18 +104,19 @@ pub struct SwapchainContext {
     recreation_required: bool,
 }
 
-impl SwapchainContext {
+impl Swapchain {
     pub fn new(
-        device_context: &DeviceContext,
-        vk_context: &VkContext,
-        surface: &VkSurface,
+        device: &Device,
+        instance: &Instance,
+        surface: &Surface,
         extent: vk::Extent2D,
     ) -> Result<Self, VulkanError> {
-        let VkContext {
-            entry, instance, ..
-        } = &vk_context;
-        let loader =
-            ash::khr::swapchain::Device::new(&vk_context.instance, &device_context.device());
+        let Instance {
+            entry,
+            raw: instance,
+            ..
+        } = &instance;
+        let loader = ash::khr::swapchain::Device::new(instance, device.as_raw());
 
         let swapchain_ci = surface.swapchain_ci();
 
@@ -130,15 +131,14 @@ impl SwapchainContext {
         // Even if we only have 2 images, we need at least three semaphores to avoid lapping those
         // in-flight.
         let slots = images.len().max(3);
-        let image_views = create_image_views(&device_context.device(), &images, surface.format());
+        let image_views = create_image_views(&device, &images, surface.format());
 
         // XXX only make semaphores for slots?  Also.. this panics.
         let image_available_semaphores =
-            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
+            std::array::from_fn(|_| device.make_binary_semaphore().unwrap());
         let present_ready_semaphores =
-            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
-        let present_finished_fences =
-            std::array::from_fn(|_| device_context.make_fence(true).unwrap());
+            std::array::from_fn(|_| device.make_binary_semaphore().unwrap());
+        let present_finished_fences = std::array::from_fn(|_| device.make_fence(true).unwrap());
 
         Ok(Self {
             raw: swapchain,
@@ -160,20 +160,15 @@ impl SwapchainContext {
 
     /// Recreates the swapchain and images.  If this procedure fails, swapchain is likely in an
     /// inconsistent state and more thorough teardown is advised.
-    pub fn recreate(
-        &mut self,
-        device_context: &DeviceContext,
-        surface: &VkSurface,
-    ) -> Result<(), VulkanError> {
+    pub fn recreate(&mut self, device: &Device, surface: &Surface) -> Result<(), VulkanError> {
         // XXX not reaching through the surface caused a bug earlier because of persisting a value
         // from the initial extent.  This is duplication.  Let's begin tying the lifetimes where
         // natural.
         self.extent = surface.extent();
         // We made the image views.  We have to destroy them.
-        let device = device_context.device();
         unsafe {
             for view in self.image_views.drain(..) {
-                device.destroy_image_view(view, None);
+                device.as_raw().destroy_image_view(view, None);
             }
         }
         let mut swapchain_ci = surface.swapchain_ci();
@@ -192,8 +187,7 @@ impl SwapchainContext {
 
         // Recreate images
         self.images = unsafe { self.loader.get_swapchain_images(self.raw)?.into() };
-        self.image_views =
-            create_image_views(&device_context.device(), &self.images, surface.format());
+        self.image_views = create_image_views(device, &self.images, surface.format());
 
         let new_slots = self.images.len().max(3);
         if new_slots != self.slots {
@@ -216,22 +210,21 @@ impl SwapchainContext {
         }
     }
 
-    pub fn destroy(&self, context: &DeviceContext) {
-        let device = &context.device();
+    pub fn destroy(&self, device: &Device) {
         unsafe {
             for view in &self.image_views {
-                device.destroy_image_view(*view, None);
+                device.as_raw().destroy_image_view(*view, None);
             }
             self.loader.destroy_swapchain(self.raw, None);
             self.image_available_semaphores.iter().for_each(|s| {
-                s.destroy(context);
+                s.destroy(device);
             });
             self.present_ready_semaphores.iter().for_each(|s| {
-                s.destroy(context);
+                s.destroy(device);
             });
-            self.drain_present(context).unwrap();
+            self.drain_present(device).unwrap();
             for fence in &self.present_finished_fences {
-                device.destroy_fence(**fence, None);
+                unsafe { device.as_raw().destroy_fence(**fence, None) };
             }
         }
     }
@@ -276,10 +269,10 @@ impl SwapchainContext {
     /// This may be called by high-level support, but if you're wrapping a swapchain on your own,
     /// this function enables waiting on all present-in-flight fences to signal, meaning it's safe
     /// to recreate the swapchain.
-    pub fn drain_present(&self, device_ctx: &DeviceContext) -> Result<(), VulkanError> {
+    pub fn drain_present(&self, device: &Device) -> Result<(), VulkanError> {
         // XXX Grrrrr that newtype is in our way.  Let's drop a colony on the Earth to fix it.
         let raw: [vk::Fence; 4] = self.present_finished_fences.map(|f| f.0);
-        unsafe { Ok(device_ctx.device().wait_for_fences(&raw, true, u64::MAX)?) }
+        unsafe { Ok(device.as_raw().wait_for_fences(&raw, true, u64::MAX)?) }
     }
 
     pub fn as_raw(&self) -> &vk::SwapchainKHR {
@@ -293,7 +286,7 @@ impl SwapchainContext {
 
 // Creation and re-creation both make image views.
 fn create_image_views(
-    device: &ash::Device,
+    device: &Device,
     images: &[vk::Image],
     format: vk::Format,
 ) -> SmallVec<vk::ImageView, 4> {
@@ -313,7 +306,7 @@ fn create_image_views(
                 },
                 ..Default::default()
             };
-            unsafe { device.create_image_view(&view_ci, None).unwrap() }
+            unsafe { device.as_raw().create_image_view(&view_ci, None).unwrap() }
         })
         .collect()
 }

@@ -27,16 +27,12 @@ pub struct Layout<S: LayoutSpec> {
 }
 
 impl<S: LayoutSpec> Layout<S> {
-    pub fn new(device_context: &DeviceContext) -> Result<Self, VulkanError> {
+    pub fn new(device: &Device) -> Result<Self, VulkanError> {
         let layout_ci = vk::PipelineLayoutCreateInfo::default()
             .push_constant_ranges(S::RANGES)
-            .set_layouts(device_context.descriptors.layout());
+            .set_layouts(device.descriptors.layout());
         Ok(Self {
-            raw: unsafe {
-                device_context
-                    .device()
-                    .create_pipeline_layout(&layout_ci, None)?
-            },
+            raw: unsafe { device.as_raw().create_pipeline_layout(&layout_ci, None)? },
             _spec: PhantomData,
         })
     }
@@ -46,23 +42,25 @@ impl<S: LayoutSpec> Layout<S> {
     }
 
     // DEBT Lifetime Agreement & Destructor.
-    pub fn destroy(self, device_context: &DeviceContext) {
-        unsafe {
-            device_context
-                .device()
-                .destroy_pipeline_layout(self.raw, None)
-        }
+    pub fn destroy(self, device: &Device) {
+        unsafe { device.as_raw().destroy_pipeline_layout(self.raw, None) }
     }
 
     /// Push all bytes of the PushConstants
-    pub fn push(&self, device: &ash::Device, cb: vk::CommandBuffer, data: &S::Push) {
+    pub fn push(&self, device: &Device, cb: vk::CommandBuffer, data: &S::Push) {
         // ROLL once again, I am asking for your consts https://github.com/rust-lang/rust/issues/132980
         // PUSH_CONSTANT_MAX_BYTES is the Vulkan-spec hard ceiling (128 nom sayan?)
         let mut buf = [0u8; push::PUSH_CONSTANT_MAX_BYTES];
         let packed = <S::Push as Pack<S::D>>::PACKED_SIZE;
         <S::Push as Pack<S::D>>::pack_into(data, &mut buf);
         unsafe {
-            device.cmd_push_constants(cb, self.raw, vk::ShaderStageFlags::ALL, 0, &buf[..packed])
+            device.as_raw().cmd_push_constants(
+                cb,
+                self.raw,
+                vk::ShaderStageFlags::ALL,
+                0,
+                &buf[..packed],
+            )
         };
     }
 }

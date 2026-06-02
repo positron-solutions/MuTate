@@ -14,8 +14,8 @@
 //! ## Usage
 //!
 //! Obtain a raw surface handle.  With winit, this can be done by calling `surface` on the Vulkan
-//! instance.  The raw surface can be used to initialize the `VkSurface`.  Use this to obtain a
-//! swapchain and request queues with presentation support.  The `VkSurface` implements `Deref` to
+//! instance.  The raw surface can be used to initialize the `Surface`.  Use this to obtain a
+//! swapchain and request queues with presentation support.  The `Surface` implements `Deref` to
 //! [`ash::vk::Surface`] for use of raw ash.
 //!
 //! When you get window resize events or swapchain errors such as
@@ -105,7 +105,7 @@ impl From<vk::Extent2D> for ExtentSource<'_> {
 /// A Wrapper for [`ash::vk::SurfaceKHR`] that also stores results from a
 /// [`VkSurfaceCapabilitiesKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/VkSurfaceCapabilitiesKHR.html)
 /// query and a surface loader to conveniently use it.
-pub struct VkSurface {
+pub struct Surface {
     /// Raw Vulkan surface handle.
     raw: vk::SurfaceKHR,
     surface_loader: ash::khr::surface::Instance,
@@ -113,24 +113,23 @@ pub struct VkSurface {
     pub caps: SurfaceCaps,
 }
 
-impl VkSurface {
-    /// Create a [`VkSurface`].  You can pass either a [`Window`](winit::window::Window) or a raw
+impl Surface {
+    /// Create a [`Surface`].  You can pass either a [`Window`](winit::window::Window) or a raw
     /// [`Extent2D`](vk::Extent2D) as the [`ExtentSource`] to be used whenever the platform surface
     /// provider does not set the `current_extent` field.
     pub fn new<'a>(
-        vk_context: &VkContext,
-        device_context: &DeviceContext,
+        instance: &Instance,
+        device: &Device,
         surface: vk::SurfaceKHR,
         extent_source: impl Into<ExtentSource<'a>>,
     ) -> Result<Self, VulkanError> {
         let extent_source = extent_source.into();
-        let surface_loader = vk_context.surface_loader();
-        let raw_caps =
-            Self::fetch_raw_caps(&surface_loader, device_context.physical_device, surface)?;
+        let surface_loader = instance.surface_loader();
+        let raw_caps = Self::fetch_raw_caps(&surface_loader, device.physical_device, surface)?;
         let extent = Self::resolve_extent(&raw_caps, extent_source)?;
         let caps = Self::resolve_caps(
             &surface_loader,
-            device_context.physical_device,
+            device.physical_device,
             surface,
             &raw_caps,
             extent,
@@ -149,19 +148,16 @@ impl VkSurface {
     /// errors such as [`SurfaceLost`](crate::VulkanError::SurfaceLost)
     pub fn update<'a>(
         &mut self,
-        device_context: &DeviceContext,
+        device: &Device,
         extent_source: impl Into<ExtentSource<'a>>,
     ) -> Result<vk::Extent2D, VulkanError> {
         let extent_source = extent_source.into();
-        let raw_caps = Self::fetch_raw_caps(
-            &self.surface_loader,
-            device_context.physical_device,
-            self.raw,
-        )?;
+        let raw_caps =
+            Self::fetch_raw_caps(&self.surface_loader, device.physical_device, self.raw)?;
         let extent = Self::resolve_extent(&raw_caps, extent_source)?;
         self.caps = Self::resolve_caps(
             &self.surface_loader,
-            device_context.physical_device,
+            device.physical_device,
             self.raw,
             &raw_caps,
             extent,
@@ -417,7 +413,7 @@ impl VkSurface {
     }
 }
 
-impl std::ops::Deref for VkSurface {
+impl std::ops::Deref for Surface {
     type Target = vk::SurfaceKHR;
 
     fn deref(&self) -> &Self::Target {
