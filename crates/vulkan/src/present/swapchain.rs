@@ -86,7 +86,7 @@ pub struct AcquiredImage {
 // have enough space for any size of swapchain.  We only take up a few 64bit pointers that won't
 // pack or load much better for three elements anyway.  In return, we save a lot of complication.
 // DEBT rename to just Swapchain and replace any ash types with vk prefix.
-pub struct SwapchainContext {
+pub struct Swapchain {
     raw: vk::SwapchainKHR,
     loader: ash::khr::swapchain::Device,
     image_views: SmallVec<vk::ImageView, 4>,
@@ -104,7 +104,7 @@ pub struct SwapchainContext {
     recreation_required: bool,
 }
 
-impl SwapchainContext {
+impl Swapchain {
     pub fn new(
         device_context: &DeviceContext,
         vk_context: &VkContext,

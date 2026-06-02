@@ -37,7 +37,7 @@ pub mod prelude {
     pub use super::compute_present;
     pub use super::graphics_present;
     pub use super::surface::Surface;
-    pub use super::swapchain::{AcquiredImage, SwapchainContext};
+    pub use super::swapchain::{AcquiredImage, Swapchain};
     pub use super::PresentRing;
 }
 
@@ -45,7 +45,7 @@ pub struct PresentRing {
     pool_ring: PoolRing<Graphics>,
     present: pw::PresentConsumer,
     queue: Queue<Graphics>,
-    swapchain: SwapchainContext,
+    swapchain: Swapchain,
 }
 
 impl PresentRing {
@@ -55,7 +55,7 @@ impl PresentRing {
         surface: &Surface,
         extent: vk::Extent2D,
     ) -> Result<Self, VulkanError> {
-        let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent)?;
+        let swapchain = Swapchain::new(device_context, vk_context, surface, extent)?;
         let queue = device_context
             .queues
             .graphics(vk_context, surface, QueuePriority::High)

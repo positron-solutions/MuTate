@@ -14,8 +14,8 @@
 //! - [`RenderTimings`] insert observable timestamp commands to estimate frame draw time.  Uses
 //!   `VK_KHR_calibrated_timestamps` and injects / measures / calibrates timing events.
 //!
-//! - [`SwapchainContext`] wraps up swapchain herding 🐈‍⬛.  Centralizes decisions about when to
-//!   attempt the next render & presentation.
+//! - [`Swapchain`] wraps up swapchain herding 🐈‍⬛.  Centralizes decisions about when to attempt
+//!   the next render & presentation.
 
 // NEXT this module has not actually lived up to why it was being implemented.  Instead, we have
 // arrived at the same conclusions that we really want VK_EXT_present_timing.  See
