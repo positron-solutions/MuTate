@@ -179,18 +179,6 @@ In the end, we want push/pop style states for different rendering techniques so 
 
 Manual mode!  Grep for states and set / unset the relevant ones.
 
-## Audio Formats
-
-The actual type of the input buffers is **not** bytes.  We should either coerce
-all input streams to one format or handle multiple formats if we cannot coerce
-all target platform audio survers to give us a common denominator (and convert
-ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make
-this easy by doing it all the time with a good set of tools.
-
-### For Now
-
-Hardcode and mark with `// DEBT`
-
 ## Transfer / Staging vs UMA
 
 UMA architectures, becoming increasingly important, don't really benefit from transfer queues.  This suggests we would want an abstraction to hide the implementation so users don't need to change what they express on DMA vs UMA.
@@ -236,3 +224,14 @@ We're going with scalar block layout.  While it's pretty flexible, it's not `rep
 
 Ergonomics over contracts.  The APIs are *sufficient* to add the reflection checks.  Get `GraphicsPipeline` working first.
 
+## Audio Formats
+
+The actual type of the input buffers is **not** bytes.  We should either coerce
+all input streams to one format or handle multiple formats if we cannot coerce
+all target platform audio survers to give us a common denominator (and convert
+ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make
+this easy by doing it all the time with a good set of tools.
+
+### For Now
+
+Hardcode and mark with `// DEBT`
