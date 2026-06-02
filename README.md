@@ -23,11 +23,21 @@
 
 ### Build & Run
 
+You need `slangc` available for the build scripts.  You need a competent Vulkan implementation, so for example, install `vulkan-loader` and `vulkan-validation-layers`.
+
 This repository (optionally) provides non-Rust dependencies via a Nix shell with direnv integration available.  `direnv allow` or `nix develop .#x11` etc will load an environment.  Use `nix flake show` to list other shells for other platforms and runtime situations.
 
 #### Visualizer
 
 The default binary selected by `cargo run` is the Vulkan frontend, found in the mutate-visualizer crate.
+
+#### Minimal Vulkan Example
+
+```
+cargo run -p mutate-minimal
+```
+
+The internal `mutate-vulkan` crate can be used to make a windowed Vulkan applications by itself.  This crate demonstrates getting started with an application.  To develop small toy shaders, see the dispatch integration tests in `mutate-lib`.
 
 #### DSP Workbench
 
@@ -46,19 +56,13 @@ See [DEBT.md](./DEBT.md) and [discussions](https://github.com/positron-solutions
 
 ### Platform Support
 
-**These are good places to contribute**.  We need to draw on several kinds of Surfaces:
-
-- [x] Xlib
-- [ ] MacOS
-- [x] Wayland (untested)
-- [ ] Windows
-- [ ] Android (apk Packaging is the larger share of work)
-
 Platform-specific audio servers may be used for audio monitors:
 
 - [ ] CPAL (cross-platform, uses Pulse Audio on Linux)
 - [x] Pipewire
 - [ ] Other platforms optionally if CPAL monitoring doesn't work
+
+Surface support on each platform should be already working, but MacOS may need some tuning for the Molten support to function.  See [the recruiting thread](https://github.com/positron-solutions/MuTate/discussions/2) for more details on the state of hardware and platform support.
 
 ## What Can Done Better With A New Visualizer?
 

@@ -1,6 +1,7 @@
 # Onboarding
 
 - `cargo run` will run the visualizer.
+- `cargo run -p mutate-minimal` will run at least a small application using our Vulkan library.
 - `cargo test --features vulkan` in `/mutate-lib` will run the integration tests for key crates like `vulkan` and `macros`.
 - `cargo workbench --help` uses a cargo alias to run the workbench program (a binary CLI tool using `mutate-lib` with the `dsp` feature for testing filter behaviors and generating pre-baked filter bank setups.
 - `cargo pmr` runs the Parks-McClellen-Remez solver for FIR weight generation.
