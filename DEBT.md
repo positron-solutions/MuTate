@@ -1,10 +1,31 @@
 # Debt
 
-This is a record of "crimes" and the plans to later un-crime them.  Debt specifically covers crimes that cost us more later the longer we keep doing them and the rationale to keep doing them for now.
+This is a record of "crimes" and the plans to later un-crime them.  Debt specifically covers crimes that cost us more (**say why it costs more**) later the longer we keep doing them and the rationale to keep doing them for now.
 
 For more forward-looking feature
 [discussion](https://github.com/positron-solutions/MuTate/discussions), see
 Github.
+
+## Contents
+
+- [Currently Paying Down](#currently-paying-down)
+  - [Moving Spectrum Analyzer to GPU](#moving-spectrum-analyzer-to-gpu)
+  - [From Manual Destruction to Drop](#from-manual-destruction-to-drop)
+  - [Error Handling](#error-handling)
+  - [Memory Management](#memory-management)  
+  - [Reactive Updates](#reactive-updates)
+  - [Fallible Resource Acquisition](#fallible-resource-acquisition)
+- [Charging Interest](#charging-interest)
+  - [Logs & Tracing](#logs--tracing)
+  - [Dynamic Rendering State Shadow](#dynamic-rendering-state-shadow)
+  - [Transfer / Staging vs UMA](#transfer--staging-vs-uma)
+  - [Host-Slang Agreement](#host-slang-agreement)
+  - [Vulkan Versions, Device & Platform Compatibility](#vulkan-versions-device--platform-compatibility)
+  - [Audio Formats](#audio-formats)
+  - [General Image Layouts](#general-image-layouts)
+  - [CI & Nix Caching](#ci--nix-caching)
+  - [Bytemuck Traits in Slang Module](#bytemuck-traits-in-slang-module)
+  - [Untorn](#untorn)
 
 # Currently Paying Down
 
@@ -27,9 +48,11 @@ Rather than making the CQT faster on the CPU, which will mainly involve doing th
 
 The migration to Slang was going to itself require better engineering around pipeline-shader development.
 
+**All of the machine learning and graphics work depends on having a healthy spectrogram buffer on the device, and we don't have that yet.**
+
 ## From Manual Destruction to Drop
 
-In the beginning, all was done to expedite change.  An example of the longest lived things is the `Instance` and `Device`.  We need them nearly everywhere, on every thread, threaded directly or indirectly through nearly every function call.  They would be used for a lot of RAII, but then we're figuring out a root-to-leaf network on the first pass.
+**This concern leaks into a lot of signatures all over user code.**  In the beginning, all was done to expedite change.  An example of the longest lived things is the `Instance` and `Device`.  We need them nearly everywhere, on every thread, threaded directly or indirectly through nearly every function call.  They would be used for a lot of RAII, but then we're figuring out a root-to-leaf network on the first pass.
 
 The strategy being used to develop actual lifetime contracts is to start at leaf types, things with the **shortest lifetimes first**.  The `QueueSubmit` is one of the first types that started using lifetime contracts.  It is much easier to work out lifetime contracts from shortest lived things, which tend to live and die in a single scope.
 
@@ -37,47 +60,24 @@ Until we reach the root, prefer manual destruction.  Manual destruction avoids a
 
 There are also must-consume types, for which drops are almost assuredly program bugs, and so `DropBomb` is being used until some other kind of linear type solution (ever?) exists.  Why would a user drop a command buffer that is in the middle of recording, especially if the allocation would leak even after pool reset?
 
-# Charging Interest
+## Error Handling
 
-Each element includes two parts:
+The lib side is using `thiserror` and will present a single error `MutateError` type to consumers.  Farther upstream crates like `vulkan` have their own type (`VulkanError`) that is forwarded through `MutateError` variants.
 
-- A description of the problem being managed and how it may be solved better later.
-- "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
+The hierarchies may still have little semantic or diagnostic value at first. We need to know what error handlers want to get out of the upstream error source
+before providing views into the underlying causes depends on.  Without the
+forcing pressure from error consumers, we don't really know what types to
+separate or what information to expose yet.
 
-## Logs & Tracing
-
-We're need some real infra for emitting error feedback.  Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
-
-### For Now
-
-`println!` and `eprintln!`.  Easy enough to text-replace later.
-
-## Reactive Updates
-
-Dependents should be notified reactively (or enabling them to poll) when their dependencies change configuration.  They may then choose to kick off asynchronous resource updates.
-
-The first instance problem coming up is to resize a screen-dimension-sensitive visual when the screen size changes.  We may have to re-allocate the buffers and re-size the internal data structures.  The resize information comes from the presentation target, and these changes must reach dependents.
-
-Long term, reacting is coupled with the spec/hydration system being developed.
+Error handling has traditionally been an area of ergonomic innovation in Rust.  It's likely not beyond the innovation phase.
 
 ### For Now
 
-We just need things like new extents to reach dependents.  We can likely afford to just recreate resources on the fly.  Try to prepare for pointer swaps.  In general, code that can tolerate pointer swaps makes it easier to just swap in updated resources from a new ring while draining an old ring.
-
-## Timeline & Render Graph
-
-The big behaviors we're after:
-
-- Aliasing memory both for re-use and crossfade rendering
-- Independent timelines with exclusive phase support to do some machine learning between frames and handle audio graph self-pacing vs VRR frame latch deadlines
-- Automatic hazard detection (runtime) and barrier insertion (render graph)
-- Intent language style primitives that can evaluate to a graph efficiently and tell us most of these things relatively quickly
-
-### For Now
-
-We just have to do these things manually until some pain builds up.  General scheduling is hard, mainly because it's under-constrained for our use case, and should be avoided.  The same with general memory allocation.  **Focus on concrete needs** rather than perfect designs that make us over-commit to a particular pattern.
-
-The one thing that seems super clear is that without a single layer indirection for pointers, many cool things are not possible later.  Think in terms of late binding hot-swapping pointers on the GPU.  The pointer is only guaranteed not to be deleted while in flight.  Easy for the user.  Aliasing, reallocation, garbage collection etc all just boil down to swapping the pointers that readers are holding / looking up.  Pointers are atomic.  It makes life a lot simpler.
+- ~~Unwrap and panic liberally 🤠~~
+- Return `Result` types from fallible operations to **ensure proper return signatures are not piling up missing plumbing.**.
+- Use any MuTate error that seams appropriate or make a new one, and be honest about its use when documenting.
+- If you are a saint, go implement proper tracing, tracing formatting, options for consumers that want to ignore tracing, spans and the like.
+- If you are less of a saint, find panics where continuing has some meaningful use case and convert them to `Result` and do something useful after returning it.
 
 ## Memory Management
 
@@ -95,32 +95,17 @@ We don't really have any infra for one-big-allocation or deletion & compaction. 
 
 Don't go crazy avoiding copies just yet, especially where sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.  Until we have a solution that will do better than the driver, just allocate for each image / buffer.
 
-## General Image Layouts
+## Reactive Updates
 
-This is a pretty boring area of automation in terms of design.  Tracking or computing layouts is not hard.  We are supposed to do it.. for mobile?  Someday.  There are much more interesting things to automate that don't really depend on layouts.
+Dependents should be notified reactively (or enabling them to poll) when their dependencies change configuration.  They may then choose to kick off asynchronous resource updates.
 
-### For Now
+Without reactive updates, we have to manually provision and re-provision buffers and images.  This **absolutely will not scale into shared ownership or memory region aliasing.**
 
-The performance of `vk::ImageLayout::GENERAL` is just not bad.  It is sometimes guaranteed to be negligible and the driver is supposed to figure things out.  To keep ergonomics simple, let's lean on general where possible and let driver support or performance push decisions to add other layouts back in.
-
-## Error Handling
-
-The lib side is using `thiserror` and will present a single error `MutateError` type to consumers.  Farther upstream crates like `vulkan` have their own type (`VulkanError`) that is forwarded through `MutateError` variants.
-
-The hierarchies may still have little semantic or diagnostic value at first. We need to know what error handlers want to get out of the upstream error source
-before providing views into the underlying causes depends on.  Without the
-forcing pressure from error consumers, we don't really know what types to
-separate or what information to expose yet.
-
-Error handling has traditionally been an area of ergonomic innovation in Rust.  It's likely not beyond the innovation phase.
+The first instance problem coming up is to resize a screen-dimension-sensitive visual when the screen size changes.  The resize information comes from the presentation target, and these changes must reach dependents.
 
 ### For Now
 
-- Unwrap and panic liberally 🤠
-- Return `Result` types from fallible operations to ensure proper combinator usages are happening.
-- Use any MuTate error that seams appropriate or make a new one, and be honest about its use when documenting.
-- If you are a saint, go implement proper tracing, tracing formatting, options for consumers that want to ignore tracing, spans and the like.
-- If you are less of a saint, find panics where continuing has some meaningful use case and convert them to `Result` and do something useful after returning it.
+We just need things like new extents to reach dependents.  We can likely afford to just recreate resources on the fly.  Try to prepare for pointer swaps.  In general, code that can tolerate pointer swaps makes it easier to just swap in updated resources from a new ring while draining an old ring.
 
 ## Fallible Resource Acquisition
 
@@ -128,19 +113,22 @@ Creating multiple Vulkan objects within a higher level constructor can be viewed
 
 ### For Now
 
-Manual destruction is tolerable for simple cases.  See [When do Drop](#from-manual-destruction-to-drop).
+Manual destruction is tolerable for simple cases.  **It will be intolerable for more complex cases over time.**  See [When do Drop](#from-manual-destruction-to-drop).
 
-## Vulkan Versions, Device & Platform Compatibility
+# Charging Interest
 
-We don't have any infrastructure for falling back when devices don't support requested features.
+Each element includes two parts:
+
+- A description of the problem being managed and how it may be solved better later.
+- "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
+
+## Logs & Tracing
+
+We're need some real infra for emitting error feedback.  Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
 
 ### For Now
 
-The go-to pattern is use whatever is most ergonomic for development and then back-port features if there is still some target worth supporting.  It's most ergonomic to assume everyone is Vulkan 1.4 and supports everything. 😬
-
-- Use 1.3+ and any extensions from 1.4 that enhance productivity significantly
-- Use `cfg` gates only for platforms, not for Vulkan versions.  To switch on Vulkan support, use runtime conditions.
-- Plan on using Molten on Apple.  The slang compiler can target (Metal Shader Language) but likely first pass, just rely on Molten to translate SPIR-V.  You need an Apple tool for MSL ⇒ metallibs.   If we switch to MSL though, the type agreement must use Apple-specific introspection data and modified macro logic!
+`println!` and `eprintln!`.  Easy enough to text-replace later.  **They also don't have any kind of utility or span awareness that would aid development and we have to replace them all later.**
 
 ## Dynamic Rendering State Shadow
 
@@ -150,7 +138,7 @@ In the end, we want push/pop style states for different rendering techniques so 
 
 ### For Now
 
-Manual mode!  Grep for states and set / unset the relevant ones.
+Manual mode!  Grep for states and set / unset the relevant ones.  **Manually grepping will only get more painful.**
 
 ## Transfer / Staging vs UMA
 
@@ -160,7 +148,63 @@ We'd probably like to make thread-safe writes over sub-ranges and that infra wil
 
 ### For Now
 
-Transfer?  Use the UMA path until something is actually big.  Maybe put it behind a dummy interface with some kind of sensible semantics that will work for the above.
+Transfer?  Use the UMA path until something is actually big.  Maybe put it behind a dummy interface with some kind of sensible semantics that will work for the above.  **If a unified API can be used on top of a crap implementation, cost of debt is low.  Shaders just need pointers inserted into their control data, and that pointer indirection is flexible.**
+
+## Host-Slang Agreement
+
+The slang module and proc macros (`ComputePipeline`, `PushConstants`, etc) should be reading the reflection data and emitting const checks.
+
+We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).
+
+**Some types that are byte compatible are piling up but will not pass more strict named type reflection checks later.**
+
+### For Now
+
+Ergonomics over contracts.  The APIs are *sufficient* to add the reflection checks.  Get `GraphicsPipeline` working first.
+
+## Vulkan Versions, Device & Platform Compatibility
+
+We don't have any infrastructure for falling back when devices don't support requested features.
+
+**Cost is piling up missing dependent information flows.**
+
+### For Now
+
+The go-to pattern is use whatever is most ergonomic for development and then back-port features if there is still some target worth supporting.  It's most ergonomic to assume everyone is Vulkan 1.4 and supports everything. 😬
+
+- Use 1.3+ and any extensions from 1.4 that enhance productivity significantly
+- Use `cfg` gates only for platforms, not for Vulkan versions.  To switch on Vulkan support, use runtime conditions.
+- Plan on using Molten on Apple.  The slang compiler can target (Metal Shader Language) but likely first pass, just rely on Molten to translate SPIR-V.  You need an Apple tool for MSL ⇒ metallibs.   If we switch to MSL though, the type agreement must use Apple-specific introspection data and modified macro logic!
+
+## Audio Formats
+
+The actual type of the input buffers is **not** bytes.  We should either coerce
+all input streams to one format or handle multiple formats if we cannot coerce
+all target platform audio servers to give us a common denominator (and convert
+ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make
+this easy by doing it all the time with a good set of tools.  **Cost is that DSP algorithms and their buffers are not format-aware or channel-aware at all, piling up missing dependent information flows.**
+
+### For Now
+
+Hardcode and mark with `// DEBT`
+
+## General Image Layouts
+
+This is a pretty boring area of automation in terms of design.  Tracking or computing layouts is not hard.  We are supposed to do it.. for mobile?  Someday.  There are much more interesting things to automate that don't really depend on layouts.
+
+### For Now
+
+The performance of `vk::ImageLayout::GENERAL` is just not bad.  It is sometimes guaranteed to be negligible and the driver is supposed to figure things out.  To keep ergonomics simple, let's lean on general where possible and let driver support or performance push decisions to add other layouts back in.  **Cost is that we're not figuring out layouts and may be piling up missing dependent information flows.**
+
+## CI & Nix Caching
+
+We should be using Crane to build test artifacts and caching the dependency buids in Nix or using a Rust cache of some kind (impure, but better than nothing).  **Only cost is (maybe) slower tests.**
+
+### For Now
+
+Using cold target dirs.  Fortunately most of our builds are cheap enough to not cause 45min CI times.  The PMR tool hast the heaviest dependencies right now.
+
+There's more work coming to build and distribute binaries.  That's a good time to take a look at Nix caching.
 
 ## Bytemuck Traits in Slang Module
 
@@ -168,7 +212,7 @@ We need `Pod` and `Zeroable` on emitted types.
 
 ### For Now
 
-The `Pod` and `Zeroable` markers were just thrown in by hand so we don't even need derive.  This might not catch situations where the traits don't actually work 😬
+The `Pod` and `Zeroable` markers were just thrown in by hand so we don't even need derive.  **This might not catch situations where the traits don't actually work 😬**
 
 ## Untorn
 
@@ -177,36 +221,4 @@ The `Pod` and `Zeroable` markers were just thrown in by hand so we don't even ne
 
 ### For Now
 
-Focus on the semantics.  We want synchronous, local stack, then finally trick out the implementation.
-
-## CI & Nix Caching
-
-We should be using Crane to build test artifacts and caching the dependency buids in Nix or using a Rust cache of some kind (impure, but better than nothing).
-
-### For Now
-
-Using cold target dirs.  Fortunately most of our builds are cheap enough to not cause 45min CI times.  The PMR tool hast the heaviest dependencies right now.
-
-There's more work coming to build and distribute binaries.  That's a good time to take a look at Nix caching.
-
-## Host-Slang Agreement
-
-The slang module and proc macros (`ComputePipeline`, `PushConstants`, etc) should be reading the reflection data and emitting const checks.
-
-We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).
-
-### For Now
-
-Ergonomics over contracts.  The APIs are *sufficient* to add the reflection checks.  Get `GraphicsPipeline` working first.
-
-## Audio Formats
-
-The actual type of the input buffers is **not** bytes.  We should either coerce
-all input streams to one format or handle multiple formats if we cannot coerce
-all target platform audio servers to give us a common denominator (and convert
-ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make
-this easy by doing it all the time with a good set of tools.
-
-### For Now
-
-Hardcode and mark with `// DEBT`
+Focus on the semantics.  We want synchronous, local stack, then finally trick out the implementation.  **Cost is almost zero.**
