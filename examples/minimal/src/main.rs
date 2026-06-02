@@ -10,11 +10,7 @@ mod draw;
 use std::collections::HashMap;
 
 use ash::vk;
-use mutate_lib::{
-    self as utate,
-    prelude::*,
-    vulkan::present::{compute_present, PresentRing},
-};
+use mutate_lib::{self as utate, prelude::*};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,

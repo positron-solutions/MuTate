@@ -27,11 +27,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use mutate_lib::{
-    self as utate,
-    prelude::*,
-    vulkan::{prelude::*, present::ComputePresent},
-};
+use mutate_lib::{self as utate, prelude::*};
 
 use graph::node;
 use window::WindowExt;
@@ -54,7 +50,7 @@ struct Args {
 struct WindowContext {
     window: winit::window::Window,
     surface: VkSurface,
-    compute_present: ComputePresent,
+    present_ring: PresentRing,
 
     // NEXT As the render architecture gets more sophisticated, a lot of the spectrum work on the
     // device can be shared per window that the device supports.  Rare device-per-window cases, if
@@ -70,26 +66,22 @@ impl WindowContext {
         window: winit::window::Window,
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
-        let surface = VkSurface::new(raw_surface, vk_context, device_context);
-        let fallback = window.render_size();
-        let extent = surface
-            .resolve_size(device_context, Some(fallback))
-            .unwrap_or(vk::Extent2D {
-                width: 800,
-                height: 600,
-            });
-        let compute_present = ComputePresent::new(device_context, vk_context, &surface, extent);
+        let surface = VkSurface::new(vk_context, device_context, raw_surface, &window).unwrap();
+        let present_ring =
+            PresentRing::new(device_context, vk_context, &surface, surface.extent()).unwrap();
         let mut render_node = video::spectrum::SpectrumNode::new(device_context);
-        render_node.provision(device_context, extent).unwrap();
+        render_node
+            .provision(device_context, surface.extent())
+            .unwrap();
         Self {
             window,
             surface,
-            compute_present,
+            present_ring,
             render_node,
         }
     }
 
-    fn draw_frame(&mut self, audio: &mut Audio, device_context: &DeviceContext) {
+    fn draw_frame(&mut self, audio: &mut Audio, device_context: &mut DeviceContext) {
         // NEXT: audio is consumed once per draw_frame call; in a multi-window
         // setup this would double-consume.  Hoist the audio pump above the
         // per-window loop in ActiveApp when that becomes necessary.
@@ -101,32 +93,39 @@ impl WindowContext {
             audio.cqt.consume(&raw_out);
         }
         let cqt = audio.cqt.produce();
-        let size = self.window.render_size();
-        self.compute_present.draw(
-            device_context,
-            |cb, acquired_image| {
-                let size = self.window.render_size();
-                self.render_node
-                    .draw(cb, acquired_image, cqt, device_context, size);
-            },
-            || {
-                self.window.pre_present_notify();
-            },
-        );
+        self.present_ring
+            .record(
+                device_context,
+                compute_present(device_context, |device_ctx, cb, acquired_image| {
+                    self.render_node.draw(device_ctx, cb, acquired_image, cqt);
+                }),
+                || self.window.pre_present_notify(),
+            )
+            .map_err(|e| match e {
+                utate::vulkan::VulkanError::SwapchainOutOfDate
+                | utate::vulkan::VulkanError::SwapchainSuboptimal => {
+                    self.handle_resize(device_context);
+                }
+                _ => {
+                    eprintln!("application: draw failed {:?}", e);
+                }
+            });
     }
 
-    fn handle_resize(&mut self, device_context: &DeviceContext) {
-        let fallback = self.window.render_size();
-        if let Some(size) = self.surface.resolve_size(device_context, Some(fallback)) {
-            self.compute_present
-                .recreate_images(&self.surface, size, device_context);
-        }
+    fn handle_resize(&mut self, device_context: &mut DeviceContext) -> Result<(), MutateError> {
+        let new_size = self
+            .present_ring
+            .maybe_update_swapchain(device_context, &mut self.surface, &self.window)
+            .unwrap();
+        self.render_node.provision(device_context, new_size)?;
+        self.window.request_redraw();
+        Ok(())
     }
 
     /// Consumes self; call only after the device queue is idle for this window.
     fn destroy(self, device_context: &mut DeviceContext) {
         self.render_node.destroy(device_context);
-        self.compute_present.destroy(device_context);
+        self.present_ring.destroy(device_context);
         self.surface.destroy();
     }
 }
@@ -142,7 +141,7 @@ struct ActiveApp {
 impl ActiveApp {
     fn new(vk_context: &VkContext, args: &Args, event_loop: &ActiveEventLoop) -> Self {
         let window = Window::from_args(args, event_loop);
-        let raw_surface = vk_context.surface(&window, event_loop);
+        let raw_surface = vk_context.surface(event_loop, &window);
 
         let supported_devices: Vec<SupportedDevice> = vk_context
             .supported_devices(&[])
@@ -180,13 +179,13 @@ impl ActiveApp {
             // MAYBE do the get before matching the variant?
             WindowEvent::RedrawRequested => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.draw_frame(audio, &self.device_context);
+                    wc.draw_frame(audio, &mut self.device_context);
                     wc.window.request_redraw();
                 }
             }
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.handle_resize(&self.device_context);
+                    wc.handle_resize(&mut self.device_context);
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {

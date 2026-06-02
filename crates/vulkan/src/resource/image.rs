@@ -359,7 +359,7 @@ pub fn transition_layout(
         ),
 
         _ => panic!(
-            "Unsupported layout transition: {:?} → {:?}",
+            "Unsupported layout transition: {:?} -> {:?}",
             old_layout, new_layout
         ),
     };

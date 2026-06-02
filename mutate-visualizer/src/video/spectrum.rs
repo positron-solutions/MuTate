@@ -74,6 +74,21 @@ impl SpectrumNode {
         context: &mut DeviceContext,
         size: vk::Extent2D,
     ) -> Result<(), utate::MutateError> {
+        if let Some(existing) = self.spectrum_buffer.take() {
+            unsafe {
+                existing.destroy(context)?;
+                context.descriptors.unbind_ssbo(self.spectrum_idx);
+            }
+            self.spectrum_idx = SsboIdx::INVALID;
+        }
+        if let Some(existing) = self.output_buffer.take() {
+            unsafe {
+                existing.destroy(context)?;
+                context.descriptors.unbind_ssbo(self.output_idx);
+            }
+            self.output_idx = SsboIdx::INVALID;
+        }
+
         let spectrum_buffer = buffer::MappedAllocation::new(size.height as usize, context)?;
         let output_buffer =
             buffer::MappedAllocation::new((size.width * size.height) as usize, context)?;
@@ -97,26 +112,15 @@ impl SpectrumNode {
     /// composite the output and stuff.
     pub fn draw(
         &mut self,
+        context: &DeviceContext,
         cb: &RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
         input: &[crate::audio::cqt::Cqt],
-        context: &DeviceContext,
-        // NEXT This extent is basically part of the target
-        extent: vk::Extent2D,
     ) {
         let device = context.device();
 
         // Transition the output layout for writing.
         let out_image = acquired_image.image;
-        let range = image::range();
-        image::transition_layout(
-            out_image,
-            &**cb,
-            range,
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            context,
-        );
 
         let mut i = 0usize;
         let spectrum = self.spectrum_buffer.as_mut().unwrap();
@@ -140,6 +144,7 @@ impl SpectrumNode {
             .barrier_compute_pre(&cb, context);
 
         // Tell shader the location and geometry of the input
+        let extent = acquired_image.extent;
         let push_constants = SpectrumConstants {
             window_width: (extent.width as f32).into(),
             window_height: (extent.height as f32).into(),
@@ -176,17 +181,6 @@ impl SpectrumNode {
                 &[region],
             );
         }
-
-        // Transition the output back for presentation
-        // NEXT make unknown transitions fail instead!
-        image::transition_layout(
-            out_image,
-            &**cb,
-            range,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageLayout::PRESENT_SRC_KHR,
-            context,
-        );
     }
 
     pub fn destroy(self, context: &mut DeviceContext) -> Result<(), utate::MutateError> {

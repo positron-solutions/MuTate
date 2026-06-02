@@ -44,7 +44,7 @@
 //!   handles that our properly equipped instance can convert to a [`ash::vk::SurfaceKHR`].
 //!
 //! - The memory we write out to uses a ring of several images, the swapchain.  The swapchain
-//!   creation must know about the surface dgetails (the subject of this module) and any events that
+//!   creation must know about the surface details (the subject of this module) and any events that
 //!   change these details usually require swapchain recreation.
 //!
 //! This module focuses on the surface interrogation necessary to inform swapchain creation and

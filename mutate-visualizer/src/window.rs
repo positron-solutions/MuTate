@@ -23,7 +23,6 @@ use crate::Args;
 pub trait WindowExt {
     fn from_args(args: &Args, event_loop: &ActiveEventLoop) -> Window;
     fn toggle_fullscreen(&self);
-    fn render_size(&self) -> vk::Extent2D;
 }
 
 impl WindowExt for Window {

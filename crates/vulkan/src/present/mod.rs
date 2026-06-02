@@ -33,6 +33,14 @@ use crate::internal::*;
 use crate::present::surface::ExtentSource;
 use crate::resource::image;
 
+pub mod prelude {
+    pub use super::compute_present;
+    pub use super::graphics_present;
+    pub use super::surface::VkSurface;
+    pub use super::swapchain::{AcquiredImage, SwapchainContext};
+    pub use super::PresentRing;
+}
+
 pub struct PresentRing {
     pool_ring: PoolRing<Graphics>,
     present: pw::PresentConsumer,
