@@ -49,7 +49,7 @@ struct Args {
 /// window.
 struct WindowContext {
     window: winit::window::Window,
-    surface: VkSurface,
+    surface: Surface,
     present_ring: PresentRing,
 
     // NEXT As the render architecture gets more sophisticated, a lot of the spectrum work on the
@@ -66,7 +66,7 @@ impl WindowContext {
         window: winit::window::Window,
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
-        let surface = VkSurface::new(vk_context, device_context, raw_surface, &window).unwrap();
+        let surface = Surface::new(vk_context, device_context, raw_surface, &window).unwrap();
         let present_ring =
             PresentRing::new(device_context, vk_context, &surface, surface.extent()).unwrap();
         let mut render_node = video::spectrum::SpectrumNode::new(device_context);

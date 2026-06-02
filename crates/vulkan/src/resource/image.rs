@@ -358,6 +358,13 @@ pub fn transition_layout(
             vk::AccessFlags::MEMORY_READ,
         ),
 
+        (vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL) => (
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::AccessFlags::empty(),
+            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+        ),
+
         _ => panic!(
             "Unsupported layout transition: {:?} -> {:?}",
             old_layout, new_layout

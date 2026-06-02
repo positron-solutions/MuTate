@@ -28,7 +28,7 @@
 //! for a physical display.  We obtain images, some command buffers draw things on them, and then we hand
 //! control of the images back to a compositor or DRM for physical scan-out to some screen.
 //!
-//! The [`VkSurface`] knows the format we select.  This is important for the renderer to ensure that
+//! The [`Surface`] knows the format we select.  This is important for the renderer to ensure that
 //! the output of drawing is either compatible with or can be copied to the swapchain image for
 //! presentation.  The [`AcquiredImage`] carries along format, extent, and other information for
 //! renderers to write correctly to the output.
@@ -54,7 +54,7 @@
 use ash::vk::{self, Handle};
 use smallvec::SmallVec;
 
-use super::surface::VkSurface;
+use super::surface::Surface;
 
 use crate::internal::*;
 
@@ -108,7 +108,7 @@ impl SwapchainContext {
     pub fn new(
         device_context: &DeviceContext,
         vk_context: &VkContext,
-        surface: &VkSurface,
+        surface: &Surface,
         extent: vk::Extent2D,
     ) -> Result<Self, VulkanError> {
         let VkContext {
@@ -163,7 +163,7 @@ impl SwapchainContext {
     pub fn recreate(
         &mut self,
         device_context: &DeviceContext,
-        surface: &VkSurface,
+        surface: &Surface,
     ) -> Result<(), VulkanError> {
         // XXX not reaching through the surface caused a bug earlier because of persisting a value
         // from the initial extent.  This is duplication.  Let's begin tying the lifetimes where

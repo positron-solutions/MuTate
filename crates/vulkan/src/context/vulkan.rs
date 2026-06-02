@@ -21,7 +21,7 @@ use mutate_assets as assets;
 #[cfg(feature="winit")]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 
-use crate::present::surface::VkSurface;
+use crate::present::surface::Surface;
 use super::device;
 
 /// The entry and instance represent a connection to the Vulkan implementation.

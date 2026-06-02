@@ -14,8 +14,8 @@
 //! ## Usage
 //!
 //! Obtain a raw surface handle.  With winit, this can be done by calling `surface` on the Vulkan
-//! instance.  The raw surface can be used to initialize the `VkSurface`.  Use this to obtain a
-//! swapchain and request queues with presentation support.  The `VkSurface` implements `Deref` to
+//! instance.  The raw surface can be used to initialize the `Surface`.  Use this to obtain a
+//! swapchain and request queues with presentation support.  The `Surface` implements `Deref` to
 //! [`ash::vk::Surface`] for use of raw ash.
 //!
 //! When you get window resize events or swapchain errors such as
@@ -105,7 +105,7 @@ impl From<vk::Extent2D> for ExtentSource<'_> {
 /// A Wrapper for [`ash::vk::SurfaceKHR`] that also stores results from a
 /// [`VkSurfaceCapabilitiesKHR`](https://docs.vulkan.org/refpages/latest/refpages/source/VkSurfaceCapabilitiesKHR.html)
 /// query and a surface loader to conveniently use it.
-pub struct VkSurface {
+pub struct Surface {
     /// Raw Vulkan surface handle.
     raw: vk::SurfaceKHR,
     surface_loader: ash::khr::surface::Instance,
@@ -113,8 +113,8 @@ pub struct VkSurface {
     pub caps: SurfaceCaps,
 }
 
-impl VkSurface {
-    /// Create a [`VkSurface`].  You can pass either a [`Window`](winit::window::Window) or a raw
+impl Surface {
+    /// Create a [`Surface`].  You can pass either a [`Window`](winit::window::Window) or a raw
     /// [`Extent2D`](vk::Extent2D) as the [`ExtentSource`] to be used whenever the platform surface
     /// provider does not set the `current_extent` field.
     pub fn new<'a>(
@@ -417,7 +417,7 @@ impl VkSurface {
     }
 }
 
-impl std::ops::Deref for VkSurface {
+impl std::ops::Deref for Surface {
     type Target = vk::SurfaceKHR;
 
     fn deref(&self) -> &Self::Target {

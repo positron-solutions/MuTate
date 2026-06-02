@@ -36,7 +36,7 @@ use crate::resource::image;
 pub mod prelude {
     pub use super::compute_present;
     pub use super::graphics_present;
-    pub use super::surface::VkSurface;
+    pub use super::surface::Surface;
     pub use super::swapchain::{AcquiredImage, SwapchainContext};
     pub use super::PresentRing;
 }
@@ -52,7 +52,7 @@ impl PresentRing {
     pub fn new(
         device_context: &DeviceContext,
         vk_context: &VkContext,
-        surface: &VkSurface,
+        surface: &Surface,
         extent: vk::Extent2D,
     ) -> Result<Self, VulkanError> {
         let swapchain = SwapchainContext::new(device_context, vk_context, surface, extent)?;
@@ -136,7 +136,7 @@ impl PresentRing {
     pub fn maybe_update_swapchain<'a>(
         &mut self,
         device_ctx: &DeviceContext,
-        surface: &mut VkSurface,
+        surface: &mut Surface,
         extent_source: impl Into<ExtentSource<'a>>,
     ) -> Result<vk::Extent2D, VulkanError> {
         // XXX Check if surface actually needs recreation!

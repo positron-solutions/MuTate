@@ -260,7 +260,7 @@ impl Queues {
     pub fn graphics(
         &self,
         vk_context: &VkContext,
-        surface: &VkSurface,
+        surface: &Surface,
         priority: QueuePriority,
     ) -> Option<Queue<Graphics>> {
         let surface_loader = vk_context.surface_loader();

@@ -59,6 +59,10 @@ These are not project specific, but maintainer tendencies on mature projects (th
 - Always attempt to separate structural from behavioral code.  If you rearrange hunks, try to commit those changes separately so that behavior is very easy to see.
 - Small commits are preferred, especially those so tiny that each change is self-evident.
 
+## Style
+
+- All raw `ash` handles **must** be used behind either the `ash::` or `vk::` (`ash::vk::`) prefix.  Only µTate types should be used without prefix.  This makes raw types very easy to see in implementation code.
+
 ## PrizeForge, User-Lead Funding
 
 All contributors may be selected for paying out PrizeForge awards.  The aim is for users of PrizeForge to decide who gets paid and what features are important.  PrizeForge keeps decision power with the backers, not the project maintainers, so **don't ask us for backer money.  We don't control any.**  We are building discussion tools for PrizeForge to enable much more effective support and communication between backers and contributors, so eventually you can talk there.

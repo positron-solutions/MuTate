@@ -24,7 +24,7 @@ use draw::HelloDraw;
 /// Lives alongside each window.
 struct WindowContext {
     window: Window,
-    surface: VkSurface,
+    surface: Surface,
     present_ring: PresentRing,
     renderer: HelloDraw,
 }
@@ -36,7 +36,7 @@ impl WindowContext {
         window: Window,
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
-        let surface = VkSurface::new(vk_context, device_context, raw_surface, &window).unwrap();
+        let surface = Surface::new(vk_context, device_context, raw_surface, &window).unwrap();
         let compute_present =
             PresentRing::new(device_context, vk_context, &surface, surface.extent()).unwrap();
         let mut renderer = HelloDraw::new(device_context);

@@ -1,7 +1,7 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![allow(unused)]
+#![allow(warnings)]
 
 //! # Vulkan
 //!
@@ -160,7 +160,7 @@ pub mod prelude {
     pub use crate::dispatch::prelude::*;
     pub use crate::pipeline::prelude::*;
     pub use crate::present::prelude::*;
-    pub use crate::present::surface::VkSurface;
+    pub use crate::present::surface::Surface;
     pub use crate::slang::prelude::*;
     pub use crate::slang_newtype;
 
