@@ -7,4 +7,10 @@ pub mod descriptors;
 pub mod device;
 pub mod queue;
 
-pub use device::DeviceContext;
+pub use device::Device;
+
+pub mod prelude {
+    pub use super::device::Device;
+    pub use super::device::Fence;
+    pub use super::queue::prelude::*;
+}

@@ -62,17 +62,14 @@ struct WindowContext {
 impl WindowContext {
     fn new(
         instance: &Instance,
-        device_context: &mut DeviceContext,
+        device: &mut Device,
         window: winit::window::Window,
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
-        let surface = Surface::new(instance, device_context, raw_surface, &window).unwrap();
-        let present_ring =
-            PresentRing::new(device_context, instance, &surface, surface.extent()).unwrap();
-        let mut render_node = video::spectrum::SpectrumNode::new(device_context);
-        render_node
-            .provision(device_context, surface.extent())
-            .unwrap();
+        let surface = Surface::new(instance, device, raw_surface, &window).unwrap();
+        let present_ring = PresentRing::new(device, instance, &surface, surface.extent()).unwrap();
+        let mut render_node = video::spectrum::SpectrumNode::new(device);
+        render_node.provision(device, surface.extent()).unwrap();
         Self {
             window,
             surface,
@@ -81,7 +78,7 @@ impl WindowContext {
         }
     }
 
-    fn draw_frame(&mut self, audio: &mut Audio, device_context: &mut DeviceContext) {
+    fn draw_frame(&mut self, audio: &mut Audio, device: &mut Device) {
         // NEXT: audio is consumed once per draw_frame call; in a multi-window
         // setup this would double-consume.  Hoist the audio pump above the
         // per-window loop in ActiveApp when that becomes necessary.
@@ -95,16 +92,16 @@ impl WindowContext {
         let cqt = audio.cqt.produce();
         self.present_ring
             .record(
-                device_context,
-                compute_present(device_context, |device_ctx, cb, acquired_image| {
-                    self.render_node.draw(device_ctx, cb, acquired_image, cqt);
+                device,
+                compute_present(device, |device, cb, acquired_image| {
+                    self.render_node.draw(device, cb, acquired_image, cqt);
                 }),
                 || self.window.pre_present_notify(),
             )
             .map_err(|e| match e {
                 utate::vulkan::VulkanError::SwapchainOutOfDate
                 | utate::vulkan::VulkanError::SwapchainSuboptimal => {
-                    self.handle_resize(device_context);
+                    self.handle_resize(device);
                 }
                 _ => {
                     eprintln!("application: draw failed {:?}", e);
@@ -112,20 +109,20 @@ impl WindowContext {
             });
     }
 
-    fn handle_resize(&mut self, device_context: &mut DeviceContext) -> Result<(), MutateError> {
+    fn handle_resize(&mut self, device: &mut Device) -> Result<(), MutateError> {
         let new_size = self
             .present_ring
-            .maybe_update_swapchain(device_context, &mut self.surface, &self.window)
+            .maybe_update_swapchain(device, &mut self.surface, &self.window)
             .unwrap();
-        self.render_node.provision(device_context, new_size)?;
+        self.render_node.provision(device, new_size)?;
         self.window.request_redraw();
         Ok(())
     }
 
     /// Consumes self; call only after the device queue is idle for this window.
-    fn destroy(self, device_context: &mut DeviceContext) {
-        self.render_node.destroy(device_context);
-        self.present_ring.destroy(device_context);
+    fn destroy(self, device: &mut Device) {
+        self.render_node.destroy(device);
+        self.present_ring.destroy(device);
         self.surface.destroy();
     }
 }
@@ -134,7 +131,7 @@ impl WindowContext {
 // NEXT allow devices to vary at runtime and use different devices per window or different devices
 // for different roles.
 struct ActiveApp {
-    device_context: DeviceContext,
+    device: Device,
     windows: HashMap<WindowId, WindowContext>,
 }
 
@@ -154,17 +151,14 @@ impl ActiveApp {
         // NEXT: read a preferred device from config instead of always picking index 0.
         let selected = supported_devices[0].clone();
         println!("device selected: {}", selected.name);
-        let mut device_context = selected.into_logical(instance);
+        let mut device = selected.into_logical(instance);
 
-        let wc = WindowContext::new(instance, &mut device_context, window, raw_surface);
+        let wc = WindowContext::new(instance, &mut device, window, raw_surface);
         let window_id = wc.window.id();
         let mut windows = HashMap::new();
         windows.insert(window_id, wc);
 
-        Self {
-            device_context,
-            windows,
-        }
+        Self { device, windows }
     }
 
     fn handle_window_event(
@@ -176,16 +170,16 @@ impl ActiveApp {
         audio: &mut Audio,
     ) {
         match event {
-            // MAYBE do the get before matching the variant?
+            // MAYBE do they get before matching the variant?
             WindowEvent::RedrawRequested => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.draw_frame(audio, &mut self.device_context);
+                    wc.draw_frame(audio, &mut self.device);
                     wc.window.request_redraw();
                 }
             }
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.handle_resize(&mut self.device_context);
+                    wc.handle_resize(&mut self.device);
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -196,8 +190,8 @@ impl ActiveApp {
             WindowEvent::CloseRequested => {
                 if let Some(wc) = self.windows.remove(&window_id) {
                     // NEXT expose pool epoch for more precise waiting.
-                    unsafe { self.device_context.device.device_wait_idle().unwrap() };
-                    wc.destroy(&mut self.device_context);
+                    self.device.wait_idle();
+                    wc.destroy(&mut self.device);
                 }
                 if self.windows.is_empty() {
                     event_loop.exit();
@@ -275,11 +269,11 @@ impl ApplicationHandler for MutateApp {
         let AppState::Active(active) = &mut self.state else {
             return;
         };
-        unsafe { active.device_context.device.device_wait_idle().unwrap() };
+        unsafe { active.device.wait_idle().unwrap() };
         for (_, wc) in active.windows.drain() {
-            wc.destroy(&mut active.device_context);
+            wc.destroy(&mut active.device);
         }
-        active.device_context.destroy();
+        active.device.destroy();
     }
 }
 

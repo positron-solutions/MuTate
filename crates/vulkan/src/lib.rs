@@ -59,11 +59,11 @@
 //! ## Module Outline (The Plan)
 //!
 //! - Instance
-//! - Context
-//!   + Devices
-//!     * Queue
-//!   + memory (just raw allocation)
-//!   + Descriptor table
+//!   + SupportedDevice
+//! - Device
+//!   + Queue
+//!   + Memory
+//!   + Descriptors
 //! - Resources
 //!   + Image
 //!     * Sampler
@@ -90,9 +90,10 @@
 //! Entry, instance, physical device scanning, and obtaining some other loaders that are most
 //! tightly bound to the top level raw `ash::Instance`.
 //!
-//! ## Context
+//! ## Device
 //!
-//! We create descriptor tables once per-device.  Queue families are probed once at device creation.
+//! The logical device.  We set up the queues, descriptor table, and will **soon** add a memory
+//! sub-allocation manager.
 //!
 //! ## Resource
 //!
@@ -137,7 +138,7 @@
 //! - Independent timelines to provide course-grained fencing, scheduled dispatch, and to handle
 //!   self-pacing audio graph versus VRR synchronization problems.
 
-pub mod context;
+pub mod device;
 pub mod dispatch;
 pub mod instance;
 pub mod pipeline;
@@ -154,12 +155,10 @@ pub mod prelude {
     pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
 
     pub use super::VulkanError;
-    // NEXT move these out of prelude and de-emphasize in favor of consistent timeline semaphore
+    // NEXT move fences out of prelude and de-emphasize in favor of consistent timeline semaphore
     // usage except where required (swapchain acquisition, presentation etc).
-    pub use crate::context::device::Fence;
-    pub use crate::context::queue::prelude::*;
-    pub use crate::context::DeviceContext;
     pub use crate::descriptor_newtype;
+    pub use crate::device::prelude::*;
     pub use crate::device_address_newtype;
     pub use crate::dispatch::prelude::*;
     pub use crate::instance::prelude::*;
@@ -181,9 +180,7 @@ pub(crate) mod internal {
     pub use smallvec::SmallVec;
 
     pub use super::VulkanError;
-    pub use crate::context::device::Fence;
-    pub use crate::context::queue::prelude::*;
-    pub use crate::context::DeviceContext;
+    pub use crate::device::prelude::*;
     pub use crate::dispatch::internal::*;
     pub use crate::instance::prelude::*;
     pub use crate::present::prelude::*;

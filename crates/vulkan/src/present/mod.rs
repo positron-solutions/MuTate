@@ -50,18 +50,18 @@ pub struct PresentRing {
 
 impl PresentRing {
     pub fn new(
-        device_context: &DeviceContext,
+        device: &Device,
         instance: &Instance,
         surface: &Surface,
         extent: vk::Extent2D,
     ) -> Result<Self, VulkanError> {
-        let swapchain = Swapchain::new(device_context, instance, surface, extent)?;
-        let queue = device_context
+        let swapchain = Swapchain::new(device, instance, surface, extent)?;
+        let queue = device
             .queues
             .graphics(instance, surface, QueuePriority::High)
             .ok_or(VulkanError::QueueNotFound)?;
-        let pool_ring = PoolRing::new(device_context, &queue)?;
-        let present = pw::PresentConsumer::new(instance, device_context, *swapchain.as_raw())?;
+        let pool_ring = PoolRing::new(device, &queue)?;
+        let present = pw::PresentConsumer::new(instance, device, *swapchain.as_raw())?;
         Ok(Self {
             present,
             pool_ring,
@@ -78,21 +78,21 @@ impl PresentRing {
     /// to satisfy this contract without writing barriers by hand.
     pub fn record<F, G>(
         &mut self,
-        device_ctx: &DeviceContext,
+        device: &Device,
         record_fn: F,
         post_draw_fn: G,
     ) -> Result<(), VulkanError>
     where
-        F: FnOnce(&DeviceContext, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage),
+        F: FnOnce(&Device, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage),
         G: FnOnce(),
     {
         let acquired_image = self.swapchain.acquire()?;
-        let (pool, intent) = self.pool_ring.acquire(device_ctx, 1_000_000_000).unwrap();
-        let cb = pool.primary(device_ctx).unwrap();
+        let (pool, intent) = self.pool_ring.acquire(device, 1_000_000_000).unwrap();
+        let cb = pool.primary(device).unwrap();
 
-        record_fn(device_ctx, &cb, &acquired_image);
+        record_fn(device, &cb, &acquired_image);
 
-        let recorded = cb.end(device_ctx).unwrap();
+        let recorded = cb.end(device).unwrap();
         self.queue
             .submission()
             .wait_binary(
@@ -105,7 +105,7 @@ impl PresentRing {
                 vk::PipelineStageFlags2::ALL_GRAPHICS,
             )
             .signal(intent, vk::PipelineStageFlags2::ALL_COMMANDS)
-            .submit(device_ctx, vk::Fence::null())
+            .submit(device, vk::Fence::null())
             .unwrap();
         post_draw_fn();
 
@@ -114,8 +114,8 @@ impl PresentRing {
         let mut present_id = vk::PresentIdKHR::default().present_ids(slice::from_ref(&next_id));
         let present_ready = acquired_image.present_ready.as_raw();
         unsafe {
-            device_ctx
-                .device()
+            device
+                .as_raw()
                 .reset_fences(slice::from_ref(&acquired_image.present_finished))?;
         }
         let mut present_finished = vk::SwapchainPresentFenceInfoEXT::default()
@@ -135,27 +135,27 @@ impl PresentRing {
 
     pub fn maybe_update_swapchain<'a>(
         &mut self,
-        device_ctx: &DeviceContext,
+        device: &Device,
         surface: &mut Surface,
         extent_source: impl Into<ExtentSource<'a>>,
     ) -> Result<vk::Extent2D, VulkanError> {
         // XXX Check if surface actually needs recreation!
-        let new_size = surface.update(device_ctx, extent_source)?;
-        self.swapchain.drain_present(device_ctx)?;
-        self.swapchain.recreate(device_ctx, surface);
+        let new_size = surface.update(device, extent_source)?;
+        self.swapchain.drain_present(device)?;
+        self.swapchain.recreate(device, surface);
         self.present
             .notify_swapchain_recreation(*self.swapchain.as_raw());
         Ok(new_size)
     }
 
-    pub fn destroy(self, context: &DeviceContext) {
+    pub fn destroy(self, device: &Device) {
         let Self {
             swapchain,
             pool_ring,
             ..
         } = self;
-        swapchain.destroy(context);
-        pool_ring.destroy(context);
+        swapchain.destroy(device);
+        pool_ring.destroy(device);
     }
 }
 
@@ -168,32 +168,31 @@ impl PresentRing {
 /// enables the user to execute commands before beginning rendering and then to select their own
 /// render information setup.
 pub fn graphics_present<'d, F>(
-    device_ctx: &'d DeviceContext,
+    device: &'d Device,
     extent: vk::Extent2D,
     user_fn: F,
-) -> impl FnOnce(&DeviceContext, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage) + 'd
+) -> impl FnOnce(&Device, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage) + 'd
 where
-    F: FnOnce(&DeviceContext, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage) + 'd,
+    F: FnOnce(&Device, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage) + 'd,
 {
-    move |device_ctx, cb, acquired_image| {
-        let device = device_ctx.device();
+    move |device, cb, acquired_image| {
         image::transition_layout(
             acquired_image.image,
             &**cb,
             image::range(),
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            device_ctx,
+            device,
         );
         // The money
-        user_fn(device_ctx, cb, acquired_image);
+        user_fn(device, cb, acquired_image);
         image::transition_layout(
             acquired_image.image,
             &**cb,
             image::range(),
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::PRESENT_SRC_KHR,
-            device_ctx,
+            device,
         );
     }
 }
@@ -203,29 +202,29 @@ where
 /// [`vk::ImageLayout::PRESENT_SRC_KHR`] for presentation.  Inserts necessary barriers.  The user
 /// only needs to issue drawing commands and copy output to the destination buffer.
 pub fn compute_present<'d, F>(
-    device_ctx: &'d DeviceContext,
+    device: &'d Device,
     user_fn: F,
-) -> impl FnOnce(&DeviceContext, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage) + 'd
+) -> impl FnOnce(&Device, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage) + 'd
 where
-    F: FnOnce(&DeviceContext, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage) + 'd,
+    F: FnOnce(&Device, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage) + 'd,
 {
-    move |device_ctx, cb, acquired_image| {
+    move |device, cb, acquired_image| {
         image::transition_layout(
             acquired_image.image,
             &**cb,
             image::range(),
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            device_ctx,
+            device,
         );
-        user_fn(device_ctx, &cb, &acquired_image);
+        user_fn(device, &cb, &acquired_image);
         image::transition_layout(
             acquired_image.image,
             &**cb,
             image::range(),
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::PRESENT_SRC_KHR,
-            device_ctx,
+            device,
         );
     }
 }

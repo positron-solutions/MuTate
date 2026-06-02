@@ -50,11 +50,9 @@ pub struct SpectrumNode {
 }
 
 impl SpectrumNode {
-    pub fn new(context: &DeviceContext) -> Self {
-        let device = context.device();
+    pub fn new(device: &Device) -> Self {
         let assets = assets::AssetDirs::new();
-
-        let pipeline = ComputePipeline::<SpectrumPipeline>::new(&context).unwrap();
+        let pipeline = ComputePipeline::<SpectrumPipeline>::new(&device).unwrap();
 
         Self {
             pipeline,
@@ -71,30 +69,30 @@ impl SpectrumNode {
     // important problem to work on!
     pub fn provision(
         &mut self,
-        context: &mut DeviceContext,
+        device: &mut Device,
         size: vk::Extent2D,
     ) -> Result<(), utate::MutateError> {
         if let Some(existing) = self.spectrum_buffer.take() {
             unsafe {
-                existing.destroy(context)?;
-                context.descriptors.unbind_ssbo(self.spectrum_idx);
+                existing.destroy(device)?;
+                device.descriptors.unbind_ssbo(self.spectrum_idx);
             }
             self.spectrum_idx = SsboIdx::INVALID;
         }
         if let Some(existing) = self.output_buffer.take() {
             unsafe {
-                existing.destroy(context)?;
-                context.descriptors.unbind_ssbo(self.output_idx);
+                existing.destroy(device)?;
+                device.descriptors.unbind_ssbo(self.output_idx);
             }
             self.output_idx = SsboIdx::INVALID;
         }
 
-        let spectrum_buffer = buffer::MappedAllocation::new(size.height as usize, context)?;
+        let spectrum_buffer = buffer::MappedAllocation::new(size.height as usize, device)?;
         let output_buffer =
-            buffer::MappedAllocation::new((size.width * size.height) as usize, context)?;
+            buffer::MappedAllocation::new((size.width * size.height) as usize, device)?;
 
-        self.spectrum_idx = spectrum_buffer.bound(context);
-        self.output_idx = output_buffer.bound(context);
+        self.spectrum_idx = spectrum_buffer.bound(device);
+        self.output_idx = output_buffer.bound(device);
 
         self.spectrum_buffer = Some(spectrum_buffer);
         self.output_buffer = Some(output_buffer);
@@ -112,13 +110,11 @@ impl SpectrumNode {
     /// composite the output and stuff.
     pub fn draw(
         &mut self,
-        context: &DeviceContext,
+        device: &Device,
         cb: &RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
         input: &[crate::audio::cqt::Cqt],
     ) {
-        let device = context.device();
-
         // Transition the output layout for writing.
         let out_image = acquired_image.image;
 
@@ -135,13 +131,13 @@ impl SpectrumNode {
                 right_mag: bin.right.mag(),
             }
         });
-        spectrum.flush(context).unwrap();
+        spectrum.flush(device).unwrap();
 
         // Barrier between flush and use in shader
         self.output_buffer
             .as_ref()
             .unwrap()
-            .barrier_compute_pre(&cb, context);
+            .barrier_compute_pre(&cb, device);
 
         // Tell shader the location and geometry of the input
         let extent = acquired_image.extent;
@@ -151,7 +147,7 @@ impl SpectrumNode {
             spectrum_idx: self.spectrum_idx,
             output_idx: self.output_idx,
         };
-        self.pipeline.push(context, **cb, &push_constants);
+        self.pipeline.push(device, **cb, &push_constants);
 
         // We will do a lot of these full-buffer shaders.  These workgroup dispatch sizes need to be
         // declared in one place and then propagated into slang, such as with a `slang!` macro.
@@ -162,18 +158,18 @@ impl SpectrumNode {
         let dispatch_y = (extent.height + workgroup_size_y - 1) / workgroup_size_y;
 
         self.pipeline
-            .dispatch(context, **cb, dispatch_x, dispatch_y, 1);
+            .dispatch(device, **cb, dispatch_x, dispatch_y, 1);
 
         // Insert a buffer barrier so we can write it to the target
         self.output_buffer
             .as_ref()
             .unwrap()
-            .barrier_compute_post(&cb, context);
+            .barrier_compute_post(&cb, device);
 
         // Copy the buffer to the image.
         let region = buffer::buffer_image_copy_full(extent);
         unsafe {
-            device.cmd_copy_buffer_to_image(
+            device.as_raw().cmd_copy_buffer_to_image(
                 **cb,
                 self.output_buffer.as_ref().unwrap().buffer,
                 out_image,
@@ -183,8 +179,7 @@ impl SpectrumNode {
         }
     }
 
-    pub fn destroy(self, context: &mut DeviceContext) -> Result<(), utate::MutateError> {
-        let device = context.device();
+    pub fn destroy(self, device: &mut Device) -> Result<(), utate::MutateError> {
         let Self {
             pipeline,
             spectrum_buffer,
@@ -192,14 +187,14 @@ impl SpectrumNode {
             ..
         } = self;
         unsafe {
-            pipeline.destroy(context);
+            pipeline.destroy(device);
             if let Some(allocated) = spectrum_buffer {
-                allocated.destroy(&context)?;
-                context.descriptors.unbind_ssbo(self.spectrum_idx);
+                allocated.destroy(&device)?;
+                device.descriptors.unbind_ssbo(self.spectrum_idx);
             }
             if let Some(allocated) = output_buffer {
-                allocated.destroy(&context)?;
-                context.descriptors.unbind_ssbo(self.output_idx);
+                allocated.destroy(&device)?;
+                device.descriptors.unbind_ssbo(self.output_idx);
             }
         }
         Ok(())

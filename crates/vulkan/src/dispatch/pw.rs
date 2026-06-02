@@ -80,10 +80,10 @@ pub struct PresentConsumer {
 impl PresentConsumer {
     pub fn new(
         instance: &Instance,
-        device_context: &DeviceContext,
+        device: &Device,
         swapchain: vk::SwapchainKHR,
     ) -> Result<Self, VulkanError> {
-        let pw_device = PwDevice::new(&instance.raw, &device_context.device());
+        let pw_device = PwDevice::new(&instance.raw, device.as_raw());
 
         let (waiter_writer, waiter_reader) = Untorn::new(PresentWaiterState {
             last_window: Duration::MAX,

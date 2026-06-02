@@ -12,7 +12,7 @@ use std::ptr::NonNull;
 use ash::vk;
 
 use crate::{
-    context::{descriptors, DeviceContext},
+    device::{descriptors, Device},
     util, VulkanError,
 };
 
@@ -31,8 +31,7 @@ pub struct MappedAllocation<T> {
 
 // DEBT memory allocation.
 impl<T> MappedAllocation<T> {
-    pub fn new(size: usize, context: &DeviceContext) -> Result<Self, VulkanError> {
-        let device = context.device();
+    pub fn new(size: usize, device: &Device) -> Result<Self, VulkanError> {
         let buffer_info = vk::BufferCreateInfo {
             size: (std::mem::size_of::<T>() * size) as u64,
             usage: vk::BufferUsageFlags::STORAGE_BUFFER
@@ -42,11 +41,11 @@ impl<T> MappedAllocation<T> {
             sharing_mode: vk::SharingMode::EXCLUSIVE,
             ..Default::default()
         };
-        let buffer = unsafe { device.create_buffer(&buffer_info, None).unwrap() };
-        let mem_req = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let buffer = unsafe { device.as_raw().create_buffer(&buffer_info, None).unwrap() };
+        let mem_req = unsafe { device.as_raw().get_buffer_memory_requirements(buffer) };
         let memory_type_index = util::find_memory_type_index(
             &mem_req,
-            &context.memory_props,
+            &device.memory_props,
             vk::MemoryPropertyFlags::HOST_VISIBLE,
         )
         .ok_or(VulkanError::Ash(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY))?;
@@ -57,13 +56,16 @@ impl<T> MappedAllocation<T> {
             .allocation_size(mem_req.size)
             .memory_type_index(memory_type_index)
             .push_next(&mut flags);
-        let memory = unsafe { device.allocate_memory(&alloc_info, None)? };
+        let memory = unsafe { device.as_raw().allocate_memory(&alloc_info, None)? };
         unsafe {
-            device.bind_buffer_memory(buffer, memory, 0)?;
+            device.as_raw().bind_buffer_memory(buffer, memory, 0)?;
         }
 
-        let raw_ptr =
-            unsafe { device.map_memory(memory, 0, mem_req.size, vk::MemoryMapFlags::empty())? };
+        let raw_ptr = unsafe {
+            device
+                .as_raw()
+                .map_memory(memory, 0, mem_req.size, vk::MemoryMapFlags::empty())?
+        };
 
         let ptr = NonNull::new(raw_ptr as *mut T).unwrap();
 
@@ -79,8 +81,8 @@ impl<T> MappedAllocation<T> {
 
     // DEBT memory management.  We just need to devolve the allocation into a memento that can be
     // recycled or destroyed asynchronously.
-    pub fn destroy(&self, context: &DeviceContext) -> Result<(), VulkanError> {
-        let device = context.device();
+    pub fn destroy(&self, device: &Device) -> Result<(), VulkanError> {
+        let device = device.as_raw();
         unsafe {
             device.unmap_memory(self.memory);
             device.free_memory(self.memory, None);
@@ -95,7 +97,7 @@ impl<T> MappedAllocation<T> {
     }
 
     /// Move writes to device memory.
-    pub fn flush(&mut self, context: &DeviceContext) -> Result<(), VulkanError> {
+    pub fn flush(&mut self, device: &Device) -> Result<(), VulkanError> {
         let flush_range = vk::MappedMemoryRange {
             memory: self.memory,
             offset: 0,
@@ -103,15 +105,13 @@ impl<T> MappedAllocation<T> {
             ..Default::default()
         };
         unsafe {
-            context
-                .device()
-                .flush_mapped_memory_ranges(&[flush_range])?;
+            device.as_raw().flush_mapped_memory_ranges(&[flush_range])?;
         }
         Ok(())
     }
 
     /// Refresh host view with device writes.
-    pub fn invalidate(&mut self, context: &DeviceContext) -> Result<(), VulkanError> {
+    pub fn invalidate(&mut self, device: &Device) -> Result<(), VulkanError> {
         let invalidate_range = vk::MappedMemoryRange {
             memory: self.memory,
             offset: 0,
@@ -119,33 +119,29 @@ impl<T> MappedAllocation<T> {
             ..Default::default()
         };
         unsafe {
-            context
-                .device()
+            device
+                .as_raw()
                 .invalidate_mapped_memory_ranges(&[invalidate_range])?;
         }
         Ok(())
     }
 
     // XXX argument order
-    pub fn bound(&self, context: &mut DeviceContext) -> descriptors::SsboIdx {
-        let device = &context.device;
-        let descriptors = &mut context.descriptors;
+    pub fn bound(&self, device: &mut Device) -> descriptors::SsboIdx {
+        let descriptors = &mut device.descriptors;
         // XXX do this more cleaner 🤡
         let byte_size = (std::mem::size_of::<T>() * self.len) as u64;
-        descriptors.bind_ssbo(device, self.buffer, 0, byte_size)
+        descriptors.bind_ssbo(&mut device.raw, self.buffer, 0, byte_size)
     }
 
     // XXX Slang type for buffer device address
-    pub fn device_address(
-        &self,
-        context: &DeviceContext,
-    ) -> Result<vk::DeviceAddress, VulkanError> {
+    pub fn device_address(&self, device: &Device) -> Result<vk::DeviceAddress, VulkanError> {
         let info = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
-        Ok(unsafe { context.device().get_buffer_device_address(&info) })
+        Ok(unsafe { device.as_raw().get_buffer_device_address(&info) })
     }
 
     /// After-compute shader barrier.  Use after some compute shader writes to a buffer.
-    pub fn barrier_compute_post(&self, cb: &vk::CommandBuffer, context: &DeviceContext) {
+    pub fn barrier_compute_post(&self, cb: &vk::CommandBuffer, device: &Device) {
         let buffer_barrier = vk::BufferMemoryBarrier {
             src_access_mask: vk::AccessFlags::SHADER_WRITE,
             dst_access_mask: vk::AccessFlags::TRANSFER_READ,
@@ -158,7 +154,7 @@ impl<T> MappedAllocation<T> {
         };
 
         unsafe {
-            context.device().cmd_pipeline_barrier(
+            device.as_raw().cmd_pipeline_barrier(
                 *cb,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::TRANSFER,
@@ -172,7 +168,7 @@ impl<T> MappedAllocation<T> {
 
     /// Pre-compute shader barrier.
     /// Use after host writes + flush, before a compute shader reads/writes the buffer.
-    pub fn barrier_compute_pre(&self, cb: &vk::CommandBuffer, context: &DeviceContext) {
+    pub fn barrier_compute_pre(&self, cb: &vk::CommandBuffer, device: &Device) {
         let buffer_barrier = vk::BufferMemoryBarrier {
             src_access_mask: vk::AccessFlags::HOST_WRITE,
             dst_access_mask: vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
@@ -185,7 +181,7 @@ impl<T> MappedAllocation<T> {
         };
 
         unsafe {
-            context.device().cmd_pipeline_barrier(
+            device.as_raw().cmd_pipeline_barrier(
                 *cb,
                 vk::PipelineStageFlags::HOST,
                 vk::PipelineStageFlags::COMPUTE_SHADER,

@@ -106,7 +106,7 @@ pub struct Swapchain {
 
 impl Swapchain {
     pub fn new(
-        device_context: &DeviceContext,
+        device: &Device,
         instance: &Instance,
         surface: &Surface,
         extent: vk::Extent2D,
@@ -116,7 +116,7 @@ impl Swapchain {
             raw: instance,
             ..
         } = &instance;
-        let loader = ash::khr::swapchain::Device::new(instance, &device_context.device());
+        let loader = ash::khr::swapchain::Device::new(instance, device.as_raw());
 
         let swapchain_ci = surface.swapchain_ci();
 
@@ -131,15 +131,14 @@ impl Swapchain {
         // Even if we only have 2 images, we need at least three semaphores to avoid lapping those
         // in-flight.
         let slots = images.len().max(3);
-        let image_views = create_image_views(&device_context.device(), &images, surface.format());
+        let image_views = create_image_views(&device, &images, surface.format());
 
         // XXX only make semaphores for slots?  Also.. this panics.
         let image_available_semaphores =
-            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
+            std::array::from_fn(|_| device.make_binary_semaphore().unwrap());
         let present_ready_semaphores =
-            std::array::from_fn(|_| device_context.make_binary_semaphore().unwrap());
-        let present_finished_fences =
-            std::array::from_fn(|_| device_context.make_fence(true).unwrap());
+            std::array::from_fn(|_| device.make_binary_semaphore().unwrap());
+        let present_finished_fences = std::array::from_fn(|_| device.make_fence(true).unwrap());
 
         Ok(Self {
             raw: swapchain,
@@ -161,20 +160,15 @@ impl Swapchain {
 
     /// Recreates the swapchain and images.  If this procedure fails, swapchain is likely in an
     /// inconsistent state and more thorough teardown is advised.
-    pub fn recreate(
-        &mut self,
-        device_context: &DeviceContext,
-        surface: &Surface,
-    ) -> Result<(), VulkanError> {
+    pub fn recreate(&mut self, device: &Device, surface: &Surface) -> Result<(), VulkanError> {
         // XXX not reaching through the surface caused a bug earlier because of persisting a value
         // from the initial extent.  This is duplication.  Let's begin tying the lifetimes where
         // natural.
         self.extent = surface.extent();
         // We made the image views.  We have to destroy them.
-        let device = device_context.device();
         unsafe {
             for view in self.image_views.drain(..) {
-                device.destroy_image_view(view, None);
+                device.as_raw().destroy_image_view(view, None);
             }
         }
         let mut swapchain_ci = surface.swapchain_ci();
@@ -193,8 +187,7 @@ impl Swapchain {
 
         // Recreate images
         self.images = unsafe { self.loader.get_swapchain_images(self.raw)?.into() };
-        self.image_views =
-            create_image_views(&device_context.device(), &self.images, surface.format());
+        self.image_views = create_image_views(device, &self.images, surface.format());
 
         let new_slots = self.images.len().max(3);
         if new_slots != self.slots {
@@ -217,22 +210,21 @@ impl Swapchain {
         }
     }
 
-    pub fn destroy(&self, context: &DeviceContext) {
-        let device = &context.device();
+    pub fn destroy(&self, device: &Device) {
         unsafe {
             for view in &self.image_views {
-                device.destroy_image_view(*view, None);
+                device.as_raw().destroy_image_view(*view, None);
             }
             self.loader.destroy_swapchain(self.raw, None);
             self.image_available_semaphores.iter().for_each(|s| {
-                s.destroy(context);
+                s.destroy(device);
             });
             self.present_ready_semaphores.iter().for_each(|s| {
-                s.destroy(context);
+                s.destroy(device);
             });
-            self.drain_present(context).unwrap();
+            self.drain_present(device).unwrap();
             for fence in &self.present_finished_fences {
-                device.destroy_fence(**fence, None);
+                unsafe { device.as_raw().destroy_fence(**fence, None) };
             }
         }
     }
@@ -277,10 +269,10 @@ impl Swapchain {
     /// This may be called by high-level support, but if you're wrapping a swapchain on your own,
     /// this function enables waiting on all present-in-flight fences to signal, meaning it's safe
     /// to recreate the swapchain.
-    pub fn drain_present(&self, device_ctx: &DeviceContext) -> Result<(), VulkanError> {
+    pub fn drain_present(&self, device: &Device) -> Result<(), VulkanError> {
         // XXX Grrrrr that newtype is in our way.  Let's drop a colony on the Earth to fix it.
         let raw: [vk::Fence; 4] = self.present_finished_fences.map(|f| f.0);
-        unsafe { Ok(device_ctx.device().wait_for_fences(&raw, true, u64::MAX)?) }
+        unsafe { Ok(device.as_raw().wait_for_fences(&raw, true, u64::MAX)?) }
     }
 
     pub fn as_raw(&self) -> &vk::SwapchainKHR {
@@ -294,7 +286,7 @@ impl Swapchain {
 
 // Creation and re-creation both make image views.
 fn create_image_views(
-    device: &ash::Device,
+    device: &Device,
     images: &[vk::Image],
     format: vk::Format,
 ) -> SmallVec<vk::ImageView, 4> {
@@ -314,7 +306,7 @@ fn create_image_views(
                 },
                 ..Default::default()
             };
-            unsafe { device.create_image_view(&view_ci, None).unwrap() }
+            unsafe { device.as_raw().create_image_view(&view_ci, None).unwrap() }
         })
         .collect()
 }

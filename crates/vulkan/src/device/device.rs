@@ -1,11 +1,11 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! # DeviceContext
+//! # Device
 //!
 //! Fully initialized logical devices have a lot of associated things.  We know their queues, memory
-//! capability, and we have set up their descriptor tables.  The [`DeviceContext`] pulls all of
-//! these behaviors together into one unified lifecycle.
+//! capability, and we have set up their descriptor tables.  The [`Device`] pulls all of these
+//! behaviors together.
 
 use std::ffi::{c_void, CStr};
 
@@ -15,25 +15,23 @@ use crate::internal::*;
 
 use super::descriptors;
 use super::queue;
-use crate::prelude::*;
 
-pub struct DeviceContext {
+pub struct Device {
     pub physical_device: vk::PhysicalDevice,
-    /// Vulkan logical device
-    pub device: ash::Device,
-    /// Queues family info.
+    pub raw: ash::Device,
     pub queues: queue::Queues,
     // NEXT work on abstracting this to memory decisions.
     pub memory_props: vk::PhysicalDeviceMemoryProperties,
-    /// Descriptor table for
+    /// Descriptor table and runtime management of its entries.
     pub descriptors: descriptors::Descriptors,
 
-    // XXX move to some other higher context?
+    // XXX move to some other higher context?  PSOs are device-dependent, and we're using this to
+    // get PSOs, so probably the other context is runtime support for shader loading.
     /// Initialized assets
     pub assets: assets::AssetDirs,
 }
 
-impl DeviceContext {
+impl Device {
     pub(crate) fn new(instance: &Instance, supported_device: SupportedDevice) -> Self {
         let Instance {
             entry,
@@ -113,20 +111,20 @@ impl DeviceContext {
         .queue_create_infos(&queue_cis)
         .enabled_extension_names(&extensions);
 
-        let device = unsafe {
+        let raw = unsafe {
             instance
                 .create_device(physical_device, &device_info, None)
                 .unwrap()
         };
-        let queues = queue::Queues::new(&device, queue_plan);
-        let descriptors = descriptors::Descriptors::new(&device).unwrap();
+        let queues = queue::Queues::new(&raw, queue_plan);
+        let descriptors = descriptors::Descriptors::new(&raw).unwrap();
 
         let memory_props =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
         Self {
             physical_device,
-            device,
+            raw,
             memory_props,
             queues,
             descriptors,
@@ -136,15 +134,11 @@ impl DeviceContext {
         }
     }
 
-    pub fn device(&self) -> &ash::Device {
-        &self.device
-    }
-
     /// Device wait idle.  Waits until there is no in-flight work.  ⚠️ May not return if another
     /// thread is continuously feeding device, resulting in **unbounded waiting**.  Caller should
     /// ensure by application design that device will definitely idle before calling.
     pub fn wait_idle(&self) -> Result<(), VulkanError> {
-        unsafe { self.device.device_wait_idle()? }
+        unsafe { self.raw.device_wait_idle()? }
         Ok(())
     }
 
@@ -155,7 +149,7 @@ impl DeviceContext {
         view: vk::ImageView,
         layout: vk::ImageLayout,
     ) -> descriptors::SampledImageIdx {
-        let device = &self.device;
+        let device = &self.raw;
         let descriptors = &mut self.descriptors;
         descriptors.bind_sampled_image(device, view, layout)
     }
@@ -163,8 +157,8 @@ impl DeviceContext {
     // XXX in reality, this consumes the context, but ownership friction needs worked out.
     pub fn destroy(&self) {
         unsafe {
-            self.descriptors.destroy(&self.device);
-            self.device.destroy_device(None);
+            self.descriptors.destroy(&self.raw);
+            self.raw.destroy_device(None);
         };
     }
 
@@ -172,7 +166,7 @@ impl DeviceContext {
     /// as swapchain image acquisition.  Use timeline semaphores elsewhere.
     pub(crate) fn make_binary_semaphore(&self) -> Result<BinarySemaphore, VulkanError> {
         let semaphore_ci = vk::SemaphoreCreateInfo::default();
-        let raw = unsafe { self.device().create_semaphore(&semaphore_ci, None)? };
+        let raw = unsafe { self.raw.create_semaphore(&semaphore_ci, None)? };
         Ok(BinarySemaphore::new(raw))
     }
 
@@ -185,7 +179,7 @@ impl DeviceContext {
             vk::FenceCreateFlags::empty()
         };
         let ci = vk::FenceCreateInfo::default().flags(flags);
-        let fence = unsafe { self.device.create_fence(&ci, None)? };
+        let fence = unsafe { self.raw.create_fence(&ci, None)? };
         Ok(Fence(fence))
     }
 
@@ -195,9 +189,25 @@ impl DeviceContext {
             .semaphore_type(vk::SemaphoreType::TIMELINE)
             .initial_value(0);
         let ci = vk::SemaphoreCreateInfo::default().push_next(&mut type_ci);
-        let raw = unsafe { self.device.create_semaphore(&ci, None)? };
+        let raw = unsafe { self.raw.create_semaphore(&ci, None)? };
 
         Ok(TimelineSemaphore::new(raw))
+    }
+
+    pub fn as_raw(&self) -> &ash::Device {
+        &self.raw
+    }
+
+    pub fn into_raw(self) -> ash::Device {
+        self.raw
+    }
+}
+
+impl std::ops::Deref for Device {
+    type Target = ash::Device;
+
+    fn deref(&self) -> &Self::Target {
+        &self.raw
     }
 }
 
@@ -216,8 +226,8 @@ impl Fence {
         self.0
     }
 
-    pub fn destroy(self, device_ctx: &DeviceContext) {
-        unsafe { device_ctx.device().destroy_fence(self.0, None) }
+    pub fn destroy(self, device: &Device) {
+        unsafe { device.as_raw().destroy_fence(self.0, None) }
     }
 }
 

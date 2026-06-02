@@ -253,7 +253,7 @@ impl Queues {
     ///
     /// Returns `None` only if no graphics family on this physical device can present to the surface
     /// at all, which means you need to re-scan for present-capable devices again using the
-    /// [`Instance`] and surface before creating a new logical device [`DeviceContext`], starting
+    /// [`Instance`] and surface before creating a new logical device [`Device`], starting
     /// from scratch basically.
     // DEBT promote missing queue to error for better upstream handling on the user side.  Create
     // two error variants, one that is presentation specific so we can indicate the surface for debugging.
@@ -664,11 +664,9 @@ mod test {
 
     #[test]
     fn graphics_high_always_exact() {
-        with_context!(|device_context, instance| {
+        with_context!(|device, instance| {
             // obtaining device context implicitly created queues
-            let gfx = device_context
-                .queues
-                .graphics_offscreen(QueuePriority::High);
+            let gfx = device.queues.graphics_offscreen(QueuePriority::High);
             assert_eq!(gfx.priority, QueuePriority::High);
             assert!(gfx.actual_flags.contains(vk::QueueFlags::GRAPHICS));
             assert!(gfx.capabilities().contains(vk::QueueFlags::GRAPHICS));
@@ -680,9 +678,9 @@ mod test {
 
     #[test]
     fn transfer_is_always_low_priority() {
-        with_context!(|device_context, _instance| {
-            let compute_low = device_context.queues.compute(QueuePriority::Low);
-            let transfer = device_context.queues.transfer();
+        with_context!(|device, _instance| {
+            let compute_low = device.queues.compute(QueuePriority::Low);
+            let transfer = device.queues.transfer();
             // If compute had to be overloaded onto graphics high (degenerate case) then this test
             // has no meaning on the test runner.
             if compute_low.priority == QueuePriority::Low {
@@ -698,9 +696,9 @@ mod test {
 
     #[test]
     fn compute_low_is_always_low_priority() {
-        with_context!(|device_context, _instance| {
-            let gfx_low = device_context.queues.graphics_offscreen(QueuePriority::Low);
-            let compute_low = device_context.queues.compute(QueuePriority::Low);
+        with_context!(|device, _instance| {
+            let gfx_low = device.queues.graphics_offscreen(QueuePriority::Low);
+            let compute_low = device.queues.compute(QueuePriority::Low);
             // If graphics had to be overloaded onto graphics high (degenerate case) then this test
             // has no meaning on the test runner.
             if gfx_low.priority == QueuePriority::Low {
@@ -716,8 +714,8 @@ mod test {
 
     #[test]
     fn dedicated_transfer_when_present() {
-        with_context!(|device_context, instance| {
-            let physical = device_context.physical_device;
+        with_context!(|device, instance| {
+            let physical = device.physical_device;
             let instance = &instance.raw;
 
             let family_props =
@@ -741,7 +739,7 @@ mod test {
             println!("dedicated transfer queue: {:?}", dedicated);
 
             // Now ask the high-level API — no plan inspection, no internal fields.
-            let reported_family = device_context.queues.transfer().family();
+            let reported_family = device.queues.transfer().family();
 
             match dedicated {
                 Some(xfer_family) => {

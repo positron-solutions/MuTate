@@ -226,11 +226,7 @@ impl<QC: Capability> QueueSubmit<QC> {
         self
     }
 
-    pub fn submit(
-        mut self,
-        device_ctx: &DeviceContext,
-        fence: vk::Fence,
-    ) -> Result<(), vk::Result> {
+    pub fn submit(mut self, device: &Device, fence: vk::Fence) -> Result<(), vk::Result> {
         // Close the final (possibly only) SubmitInfo.
         self.info_spans[self.ni] = InfoSpans {
             waits: Span {
@@ -262,7 +258,7 @@ impl<QC: Capability> QueueSubmit<QC> {
         }
 
         unsafe {
-            device_ctx.device().queue_submit2(
+            device.as_raw().queue_submit2(
                 self.queue,
                 // SAFETY: [0..self.ni] written above
                 unsafe {
@@ -283,39 +279,38 @@ pub mod test {
 
     #[test]
     fn start_submission() {
-        with_context!(|device_ctx, instance| {
-            let start = device_ctx.queues.compute(QueuePriority::High).submission();
+        with_context!(|device, instance| {
+            let start = device.queues.compute(QueuePriority::High).submission();
         })
     }
 
     #[test]
     fn empty_signal() {
-        with_context!(|device_ctx, instance| {
-            let mut semaphore = device_ctx.make_timeline_semaphore().unwrap();
+        with_context!(|device, instance| {
+            let mut semaphore = device.make_timeline_semaphore().unwrap();
             let signal_intent = semaphore.next_signal();
             let wait_value = signal_intent.wait_value();
 
             // Signal and wait create an implicit submission boundary.
-            device_ctx
+            device
                 .queues
                 .compute(QueuePriority::High)
                 .submission()
                 .signal(signal_intent, vk::PipelineStageFlags2::ALL_COMMANDS)
-                .submit(device_ctx.device(), vk::Fence::null());
-            wait_value.wait(&device_ctx, 8_000_000).unwrap();
-            semaphore.destroy(&device_ctx);
+                .submit(&device, vk::Fence::null());
+            wait_value.wait(&device, 8_000_000).unwrap();
+            semaphore.destroy(&device);
         })
     }
 
     #[test]
     fn binary_semaphores() {
-        with_context!(|device_ctx, _instance| {
-            let device = device_ctx.device();
-            let queue = device_ctx.queues.graphics_offscreen(QueuePriority::High);
+        with_context!(|device, _instance| {
+            let queue = device.queues.graphics_offscreen(QueuePriority::High);
 
             // This test shape is designed to look like an acquire-render-present sequence.
-            let image_ready = device_ctx.make_binary_semaphore().unwrap();
-            let render_done = device_ctx.make_binary_semaphore().unwrap();
+            let image_ready = device.make_binary_semaphore().unwrap();
+            let render_done = device.make_binary_semaphore().unwrap();
 
             let (image_ready_signal, image_ready_wait) = image_ready.next();
             let (render_done_signal, render_done_wait) = render_done.next();
@@ -324,11 +319,11 @@ pub mod test {
             queue
                 .submission()
                 .signal_binary(image_ready_signal, vk::PipelineStageFlags2::ALL_COMMANDS)
-                .submit(device, vk::Fence::null())
+                .submit(&device, vk::Fence::null())
                 .unwrap();
 
             // The render will use a regular timeline semaphore.
-            let mut completion = device_ctx.make_timeline_semaphore().unwrap();
+            let mut completion = device.make_timeline_semaphore().unwrap();
             let intent = completion.next_signal();
             let wait_value = intent.wait_value();
 
@@ -342,11 +337,11 @@ pub mod test {
                 )
                 .signal_binary(render_done_signal, vk::PipelineStageFlags2::ALL_COMMANDS)
                 .signal(intent, vk::PipelineStageFlags2::ALL_COMMANDS)
-                .submit(device, vk::Fence::null())
+                .submit(&device, vk::Fence::null())
                 .unwrap();
 
             // We will wait on this timeline semaphore to give us something on the CPu side to wait for.
-            let mut present_done = device_ctx.make_timeline_semaphore().unwrap();
+            let mut present_done = device.make_timeline_semaphore().unwrap();
             let present_intent = present_done.next_signal();
             let present_wait = present_intent.wait_value();
 
@@ -354,17 +349,17 @@ pub mod test {
                 .submission()
                 .wait_binary(render_done_wait, vk::PipelineStageFlags2::ALL_COMMANDS)
                 .signal(present_intent, vk::PipelineStageFlags2::ALL_COMMANDS)
-                .submit(device, vk::Fence::null())
+                .submit(&device, vk::Fence::null())
                 .unwrap();
 
             // Drain the chain
-            wait_value.wait(&device_ctx, 8_000_000).unwrap();
-            present_wait.wait(&device_ctx, 8_000_000).unwrap();
+            wait_value.wait(&device, 8_000_000).unwrap();
+            present_wait.wait(&device, 8_000_000).unwrap();
 
-            image_ready.destroy(&device_ctx);
-            render_done.destroy(&device_ctx);
-            completion.destroy(&device_ctx);
-            present_done.destroy(&device_ctx);
+            image_ready.destroy(&device);
+            render_done.destroy(&device);
+            completion.destroy(&device);
+            present_done.destroy(&device);
         })
     }
 }

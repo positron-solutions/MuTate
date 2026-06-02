@@ -74,7 +74,7 @@ pub const SLOT_STORAGE_TEXEL_BUFFERS: u32 = 7;
 // This enum value doesn't map to anything we would know how to type check and is likewise
 // unsupported.
 pub const UNKNOWN: u32 = 8;
-// ROLL waiting on context support for runtime extension dependency resolution.
+// ROLL waiting on instance support for runtime extension dependency resolution.
 // pub const SLOT_ACCEL_STRUCTURES: u32      = 9;
 
 pub struct Descriptors {

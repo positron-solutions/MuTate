@@ -119,18 +119,17 @@ impl Surface {
     /// provider does not set the `current_extent` field.
     pub fn new<'a>(
         instance: &Instance,
-        device_context: &DeviceContext,
+        device: &Device,
         surface: vk::SurfaceKHR,
         extent_source: impl Into<ExtentSource<'a>>,
     ) -> Result<Self, VulkanError> {
         let extent_source = extent_source.into();
         let surface_loader = instance.surface_loader();
-        let raw_caps =
-            Self::fetch_raw_caps(&surface_loader, device_context.physical_device, surface)?;
+        let raw_caps = Self::fetch_raw_caps(&surface_loader, device.physical_device, surface)?;
         let extent = Self::resolve_extent(&raw_caps, extent_source)?;
         let caps = Self::resolve_caps(
             &surface_loader,
-            device_context.physical_device,
+            device.physical_device,
             surface,
             &raw_caps,
             extent,
@@ -149,19 +148,16 @@ impl Surface {
     /// errors such as [`SurfaceLost`](crate::VulkanError::SurfaceLost)
     pub fn update<'a>(
         &mut self,
-        device_context: &DeviceContext,
+        device: &Device,
         extent_source: impl Into<ExtentSource<'a>>,
     ) -> Result<vk::Extent2D, VulkanError> {
         let extent_source = extent_source.into();
-        let raw_caps = Self::fetch_raw_caps(
-            &self.surface_loader,
-            device_context.physical_device,
-            self.raw,
-        )?;
+        let raw_caps =
+            Self::fetch_raw_caps(&self.surface_loader, device.physical_device, self.raw)?;
         let extent = Self::resolve_extent(&raw_caps, extent_source)?;
         self.caps = Self::resolve_caps(
             &self.surface_loader,
-            device_context.physical_device,
+            device.physical_device,
             self.raw,
             &raw_caps,
             extent,

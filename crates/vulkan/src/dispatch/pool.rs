@@ -54,14 +54,14 @@ pub struct CommandPool<C: Capability, M: SubmissionModel = OneTime> {
 }
 
 impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
-    pub fn new(device_ctx: &DeviceContext, queue: &Queue<C>) -> Result<Self, VulkanError> {
+    pub fn new(device: &Device, queue: &Queue<C>) -> Result<Self, VulkanError> {
         let command_pool_ci = vk::CommandPoolCreateInfo::default()
             .flags(M::POOL_FLAGS)
             .queue_family_index(queue.family());
 
         let pool = unsafe {
-            device_ctx
-                .device()
+            device
+                .as_raw()
                 .create_command_pool(&command_pool_ci, None)?
         };
 
@@ -78,14 +78,11 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
     }
 
     // XXX build with Bon builder and provide some override gear for arguments too.
-    pub fn primary(
-        &mut self,
-        device_ctx: &DeviceContext,
-    ) -> Result<RecordingBuffer<C, M>, VulkanError> {
-        let cb = self.next_primary(device_ctx)?;
+    pub fn primary(&mut self, device: &Device) -> Result<RecordingBuffer<C, M>, VulkanError> {
+        let cb = self.next_primary(device)?;
         let begin_info = vk::CommandBufferBeginInfo::default().flags(M::BUFFER_FLAGS);
         unsafe {
-            device_ctx.device().begin_command_buffer(cb, &begin_info)?;
+            device.as_raw().begin_command_buffer(cb, &begin_info)?;
         }
         Ok(RecordingBuffer::from_raw(cb))
     }
@@ -100,7 +97,7 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
     /// rebuild as initial states.
     pub unsafe fn reset(
         &mut self,
-        device_ctx: &DeviceContext,
+        device: &Device,
         release_resources: bool,
     ) -> Result<(), VulkanError> {
         let flags = if release_resources {
@@ -108,17 +105,14 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
         } else {
             vk::CommandPoolResetFlags::empty()
         };
-        device_ctx.device().reset_command_pool(self.raw, flags)?;
+        device.as_raw().reset_command_pool(self.raw, flags)?;
         // Restore both cursors to the full length of each list
         self.primary_cursor = self.primary_handles.len();
         self.secondary_cursor = self.secondary_handles.len();
         Ok(())
     }
 
-    fn next_primary(
-        &mut self,
-        device_ctx: &DeviceContext,
-    ) -> Result<vk::CommandBuffer, VulkanError> {
+    fn next_primary(&mut self, device: &Device) -> Result<vk::CommandBuffer, VulkanError> {
         if self.primary_cursor > 0 {
             self.primary_cursor -= 1;
             Ok(self.primary_handles[self.primary_cursor])
@@ -127,16 +121,13 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
                 .command_pool(self.raw)
                 .level(vk::CommandBufferLevel::PRIMARY)
                 .command_buffer_count(1);
-            let cb = unsafe { device_ctx.device().allocate_command_buffers(&alloc_info)?[0] };
+            let cb = unsafe { device.as_raw().allocate_command_buffers(&alloc_info)?[0] };
             self.primary_handles.push(cb);
             Ok(cb)
         }
     }
 
-    fn next_secondary(
-        &mut self,
-        device_ctx: &DeviceContext,
-    ) -> Result<vk::CommandBuffer, VulkanError> {
+    fn next_secondary(&mut self, device: &Device) -> Result<vk::CommandBuffer, VulkanError> {
         if self.secondary_cursor > 0 {
             self.secondary_cursor -= 1;
             Ok(self.secondary_handles[self.secondary_cursor])
@@ -145,7 +136,7 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
                 .command_pool(self.raw)
                 .level(vk::CommandBufferLevel::SECONDARY)
                 .command_buffer_count(1);
-            let cb = unsafe { device_ctx.device().allocate_command_buffers(&alloc_info)?[0] };
+            let cb = unsafe { device.as_raw().allocate_command_buffers(&alloc_info)?[0] };
             self.secondary_handles.push(cb);
             Ok(cb)
         }
@@ -165,9 +156,9 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
         &self.raw
     }
 
-    pub fn destroy(self, device_ctx: &DeviceContext) {
+    pub fn destroy(self, device: &Device) {
         let CommandPool { raw, .. } = self;
-        unsafe { device_ctx.device().destroy_command_pool(raw, None) };
+        unsafe { device.as_raw().destroy_command_pool(raw, None) };
     }
 }
 
@@ -177,9 +168,9 @@ where
 {
     pub fn secondary(
         &mut self,
-        device_ctx: &DeviceContext,
+        device: &Device,
     ) -> Result<RecordingBuffer<Compute, M>, VulkanError> {
-        let cb = self.next_secondary(device_ctx)?;
+        let cb = self.next_secondary(device)?;
 
         // Compute secondaries are never executed inside a rendering scope,
         // so inheritance is all defaults and RENDER_PASS_CONTINUE must not
@@ -189,7 +180,7 @@ where
             .flags(M::BUFFER_FLAGS)
             .inheritance_info(&inheritance);
         unsafe {
-            device_ctx.device().begin_command_buffer(cb, &begin)?;
+            device.as_raw().begin_command_buffer(cb, &begin)?;
         }
         Ok(RecordingBuffer::from_raw(cb))
     }
@@ -197,8 +188,8 @@ where
 
 // Implementation is specific to OneTime to enable easier type inferences.
 impl<C: Capability> CommandPool<C, OneTime> {
-    pub fn transient(device_ctx: &DeviceContext, queue: &Queue<C>) -> Result<Self, VulkanError> {
-        Self::new(device_ctx, queue)
+    pub fn transient(device: &Device, queue: &Queue<C>) -> Result<Self, VulkanError> {
+        Self::new(device, queue)
     }
 }
 
@@ -222,24 +213,24 @@ pub struct PoolRing<C: Capability, const N: usize = 2, M: SubmissionModel = OneT
 }
 
 impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
-    pub fn new(device_ctx: &DeviceContext, queue: &Queue<C>) -> Result<Self, VulkanError> {
+    pub fn new(device: &Device, queue: &Queue<C>) -> Result<Self, VulkanError> {
         const { assert!(N >= 1, "PoolRing requires at least one slot") };
 
-        let device = device_ctx.device();
-        let timeline = device_ctx.make_timeline_semaphore()?;
+        let raw_device = device.as_raw();
+        let timeline = device.make_timeline_semaphore()?;
 
         let mut pools: [MaybeUninit<CommandPool<C, M>>; N] = [const { MaybeUninit::uninit() }; N];
         for i in 0..N {
-            match CommandPool::<C, M>::new(device_ctx, queue) {
+            match CommandPool::<C, M>::new(device, queue) {
                 Ok(pool) => {
                     pools[i].write(pool);
                 }
                 Err(e) => {
                     // DEBT manual destruction of partially constructed ring resources
                     for slot in &mut pools[..i] {
-                        unsafe { slot.assume_init_read() }.destroy(device_ctx);
+                        unsafe { slot.assume_init_read() }.destroy(device);
                     }
-                    unsafe { timeline.destroy(device_ctx) };
+                    unsafe { timeline.destroy(device) };
                     return Err(e);
                 }
             }
@@ -283,14 +274,13 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
     /// but without external self-pacing, the acquisition can block up to `timeout` nanoseconds.
     pub fn acquire(
         &mut self,
-        device_ctx: &DeviceContext,
+        device: &Device,
         timeout: u64,
     ) -> Result<(&mut CommandPool<C, M>, SignalIntent), VulkanError> {
-        let device = device_ctx.device();
         let slot = self.cursor;
-        self.done_values[slot].wait(device_ctx, timeout)?;
+        self.done_values[slot].wait(device, timeout)?;
         unsafe {
-            device.reset_command_pool(
+            device.as_raw().reset_command_pool(
                 *self.pools[slot].as_raw(),
                 vk::CommandPoolResetFlags::empty(),
             )?;
@@ -301,14 +291,14 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
         Ok((&mut self.pools[slot], intent))
     }
 
-    pub fn destroy(self, device_ctx: &DeviceContext) {
+    pub fn destroy(self, device: &Device) {
         let Self {
             pools, timeline, ..
         } = self;
         for pool in pools {
-            pool.destroy(device_ctx);
+            pool.destroy(device);
         }
-        timeline.destroy(device_ctx);
+        timeline.destroy(device);
     }
 }
 
@@ -320,21 +310,21 @@ mod test {
 
     #[test]
     fn pool_instantiate() {
-        with_context!(|device_ctx, instance| {
-            let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
-            let pool = CommandPool::<Graphics, OneTime>::new(&device_ctx, &queue).unwrap();
-            pool.destroy(&device_ctx);
+        with_context!(|device, instance| {
+            let queue = device.queues.graphics_offscreen(QueuePriority::Low);
+            let pool = CommandPool::<Graphics, OneTime>::new(&device, &queue).unwrap();
+            pool.destroy(&device);
         });
     }
 
     #[test]
     fn pool_buffer_create() {
-        with_context!(|device_ctx, instance| {
-            let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
-            let mut pool = CommandPool::<Compute, OneTime>::transient(&device_ctx, &queue).unwrap();
-            let primary = pool.primary(&device_ctx).unwrap();
-            let secondary = pool.secondary(&device_ctx).unwrap();
-            pool.destroy(&device_ctx);
+        with_context!(|device, instance| {
+            let queue = device.queues.graphics_offscreen(QueuePriority::Low);
+            let mut pool = CommandPool::<Compute, OneTime>::transient(&device, &queue).unwrap();
+            let primary = pool.primary(&device).unwrap();
+            let secondary = pool.secondary(&device).unwrap();
+            pool.destroy(&device);
 
             std::mem::forget(primary);
             std::mem::forget(secondary);
@@ -343,26 +333,26 @@ mod test {
 
     #[test]
     fn ring_instantiate() {
-        with_context!(|device_ctx, instance| {
-            let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
-            let ring = PoolRing::<Graphics>::new(&device_ctx, &queue).unwrap();
-            ring.destroy(&device_ctx);
+        with_context!(|device, instance| {
+            let queue = device.queues.graphics_offscreen(QueuePriority::Low);
+            let ring = PoolRing::<Graphics>::new(&device, &queue).unwrap();
+            ring.destroy(&device);
         });
     }
 
     #[test]
     fn acquire_pool() {
-        with_context!(|device_ctx, instance| {
-            let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
-            let mut ring = PoolRing::<Graphics, 2, OneTime>::new(&device_ctx, &queue).unwrap();
+        with_context!(|device, instance| {
+            let queue = device.queues.graphics_offscreen(QueuePriority::Low);
+            let mut ring = PoolRing::<Graphics, 2, OneTime>::new(&device, &queue).unwrap();
 
-            let (pool, intent) = ring.acquire(&device_ctx, 16_000_000).unwrap();
-            let cb = pool.primary(&device_ctx).unwrap();
+            let (pool, intent) = ring.acquire(&device, 16_000_000).unwrap();
+            let cb = pool.primary(&device).unwrap();
             // In real usage, signal intent travels to the queue submit along with at least the cb
             // that will finish last.
             std::mem::forget(intent);
             std::mem::forget(cb);
-            ring.destroy(&device_ctx);
+            ring.destroy(&device);
         });
     }
 }

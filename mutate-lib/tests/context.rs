@@ -8,10 +8,10 @@ use mutate_lib::vulkan;
 
 #[test]
 fn test_context_lifecycle() {
-    vulkan::with_context!(|context| {});
+    vulkan::with_context!(|device| {});
 }
 
 #[test]
-fn test_device_context_lifecycle() {
-    vulkan::with_context!(|instance, device_context| {});
+fn test_device_lifecycle() {
+    vulkan::with_context!(|instance, device| {});
 }

@@ -32,17 +32,15 @@ struct WindowContext {
 impl WindowContext {
     fn new(
         instance: &Instance,
-        device_context: &mut DeviceContext,
+        device: &mut Device,
         window: Window,
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
-        let surface = Surface::new(instance, device_context, raw_surface, &window).unwrap();
+        let surface = Surface::new(instance, device, raw_surface, &window).unwrap();
         let compute_present =
-            PresentRing::new(device_context, instance, &surface, surface.extent()).unwrap();
-        let mut renderer = HelloDraw::new(device_context);
-        renderer
-            .provision(device_context, surface.extent())
-            .unwrap();
+            PresentRing::new(device, instance, &surface, surface.extent()).unwrap();
+        let mut renderer = HelloDraw::new(device);
+        renderer.provision(device, surface.extent()).unwrap();
         Self {
             window,
             surface,
@@ -52,20 +50,20 @@ impl WindowContext {
     }
 
     /// Use the compute present ring
-    fn draw_frame(&mut self, device_context: &mut DeviceContext) {
+    fn draw_frame(&mut self, device: &mut Device) {
         // XXX the window presentation notification is a tension we would like to take away.
         self.present_ring
             .record(
-                device_context,
-                compute_present(device_context, |device_ctx, cb, acquired_image| {
-                    self.renderer.draw(device_ctx, cb, acquired_image);
+                device,
+                compute_present(device, |device, cb, acquired_image| {
+                    self.renderer.draw(device, cb, acquired_image);
                 }),
                 || self.window.pre_present_notify(),
             )
             .map_err(|e| match e {
                 utate::vulkan::VulkanError::SwapchainOutOfDate
                 | utate::vulkan::VulkanError::SwapchainSuboptimal => {
-                    self.handle_resize(device_context);
+                    self.handle_resize(device);
                 }
                 _ => {
                     eprintln!("application: draw failed {:?}", e);
@@ -75,26 +73,26 @@ impl WindowContext {
 
     // XXX make this into a try_resize method that can propagate recreation back up to the
     // application for device re-creation.
-    fn handle_resize(&mut self, device_context: &mut DeviceContext) -> Result<(), MutateError> {
+    fn handle_resize(&mut self, device: &mut Device) -> Result<(), MutateError> {
         let new_size = self
             .present_ring
-            .maybe_update_swapchain(device_context, &mut self.surface, &self.window)
+            .maybe_update_swapchain(device, &mut self.surface, &self.window)
             .unwrap();
-        self.renderer.provision(device_context, new_size)?;
+        self.renderer.provision(device, new_size)?;
         self.window.request_redraw();
         Ok(())
     }
 
-    fn destroy(self, device_context: &mut DeviceContext) {
-        self.renderer.destroy(device_context);
-        self.present_ring.destroy(device_context);
+    fn destroy(self, device: &mut Device) {
+        self.renderer.destroy(device);
+        self.present_ring.destroy(device);
         self.surface.destroy();
     }
 }
 
 /// The resumed state of the application, represented as the `Active` `AppState` variant.
 struct ActiveApp {
-    device_context: DeviceContext,
+    device: Device,
     // NOTE the hash map treatment is not minimal, instead going in the direction of multiple window
     // support.  For a single demo application a simpler field would suffice.
     windows: HashMap<WindowId, WindowContext>,
@@ -119,19 +117,16 @@ impl ActiveApp {
 
         let selected = supported[0].clone();
         println!("device: {}", selected.name);
-        let mut device_context = selected.into_logical(instance);
+        let mut device = selected.into_logical(instance);
 
         // Once we have chosen the physical device, then we can create the logical device and
         // swapchain for the window & surface.
-        let wc = WindowContext::new(instance, &mut device_context, window, raw_surface);
+        let wc = WindowContext::new(instance, &mut device, window, raw_surface);
         let window_id = wc.window.id();
         let mut windows = HashMap::new();
         windows.insert(window_id, wc);
 
-        Self {
-            device_context,
-            windows,
-        }
+        Self { device, windows }
     }
 
     fn handle_window_event(
@@ -143,13 +138,13 @@ impl ActiveApp {
         match event {
             WindowEvent::RedrawRequested => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.draw_frame(&mut self.device_context);
+                    wc.draw_frame(&mut self.device);
                     wc.window.request_redraw();
                 }
             }
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.handle_resize(&mut self.device_context).unwrap();
+                    wc.handle_resize(&mut self.device).unwrap();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -165,8 +160,8 @@ impl ActiveApp {
             }
             WindowEvent::CloseRequested => {
                 if let Some(wc) = self.windows.remove(&window_id) {
-                    unsafe { self.device_context.device.device_wait_idle().unwrap() };
-                    wc.destroy(&mut self.device_context);
+                    self.device.wait_idle().unwrap();
+                    wc.destroy(&mut self.device);
                 }
                 if self.windows.is_empty() {
                     event_loop.exit();
@@ -218,11 +213,11 @@ impl ApplicationHandler for MinimalApp {
         let AppState::Active(active) = &mut self.state else {
             return;
         };
-        active.device_context.wait_idle().unwrap();
+        active.device.wait_idle().unwrap();
         for (_, wc) in active.windows.drain() {
-            wc.destroy(&mut active.device_context);
+            wc.destroy(&mut active.device);
         }
-        active.device_context.destroy();
+        active.device.destroy();
     }
 }
 

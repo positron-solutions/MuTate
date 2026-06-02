@@ -24,7 +24,7 @@ use mutate_assets as assets;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 
 use crate::present::surface::Surface;
-use crate::context::device;
+use crate::device;
 
 pub mod prelude {
     pub use super::Instance;
@@ -464,33 +464,33 @@ impl std::ops::Deref for Instance {
 /// use mutate_vulkan::with_context;
 ///
 /// // With context only:
-/// with_context!(|context| {
-///     // `context: DeviceContext` is available here
+/// with_context!(|device| {
+///     // `device: Device` is available here
 /// });
 ///
 /// // With both context and instance:
-/// with_context!(|context, instance| {
-///     // `context: DeviceContext` is available here
+/// with_context!(|device, instance| {
+///     // `device: Device` is available here
 ///     // `instance: Instance` is available here
 /// });
 /// ```
 #[macro_export]
 macro_rules! with_context {
-    (|$context:ident| $($body:tt)*) => {{
+    (|$device:ident| $($body:tt)*) => {{
         let mut instance = $crate::instance::Instance::new_headless();
         let mut physical_device = instance.supported_devices(&[]).remove(0);
-        let mut $context = physical_device.into_logical(&instance);
+        let mut $device = physical_device.into_logical(&instance);
         let __result = (|| { $($body)* })();
-        $context.destroy();
+        $device.destroy();
         instance.destroy();
         __result
     }};
-    (|$device_context:ident, $instance:ident| $($body:tt)*) => {{
+    (|$device:ident, $instance:ident| $($body:tt)*) => {{
         let mut $instance = $crate::instance::Instance::new_headless();
         let mut physical_device = $instance.supported_devices(&[]).remove(0);
-        let mut $device_context = physical_device.into_logical(&$instance);
+        let mut $device = physical_device.into_logical(&$instance);
         let __result = (|| { $($body)* })();
-        $device_context.destroy();
+        $device.destroy();
         $instance.destroy();
         __result
     }};
@@ -567,8 +567,8 @@ impl SupportedDevice {
     }
 
     /// Instantiate the logical device context.
-    pub fn into_logical (self, instance: &Instance) -> device::DeviceContext {
-        device::DeviceContext::new(instance, self)
+    pub fn into_logical (self, instance: &Instance) -> device::Device {
+        device::Device::new(instance, self)
     }
 
 }
@@ -578,6 +578,7 @@ impl SupportedDevice {
         &self.name
     }
 
+    // XXX deref to physical
     pub fn device(&self) -> vk::PhysicalDevice {
         self.physical_device.clone()
     }
@@ -611,7 +612,7 @@ mod test {
         // if it builds, we didn't break the macro. 👍  This macro is only used in tests, so we
         // prefer to break it within the module early.
         with_context!(|instance| {});
-        with_context!(|instance, device_context| {});
+        with_context!(|instance, device| {});
     }
 
     // NEXT Headless tests.  Fake windows.  Something.  Want to check on surface support!

@@ -13,7 +13,7 @@
 use ash::vk;
 
 use crate::{
-    context::{descriptors, DeviceContext},
+    device::{descriptors, Device},
     VulkanError,
 };
 
@@ -29,13 +29,11 @@ pub struct Image {
 
 impl Image {
     pub fn new(
-        context: &DeviceContext,
+        device: &Device,
         extent: vk::Extent2D,
         format: vk::Format,
         usage: vk::ImageUsageFlags,
     ) -> Result<Self, VulkanError> {
-        let device = context.device();
-
         let image_ci = vk::ImageCreateInfo {
             image_type: vk::ImageType::TYPE_2D,
             format,
@@ -54,15 +52,15 @@ impl Image {
             ..Default::default()
         };
 
-        let image = unsafe { device.create_image(&image_ci, None)? };
+        let image = unsafe { device.as_raw().create_image(&image_ci, None)? };
 
         // DEBT memory management centralize onto the thingy.
-        let mem_req = unsafe { device.get_image_memory_requirements(image) };
+        let mem_req = unsafe { device.as_raw().get_image_memory_requirements(image) };
 
         // Ah, bind up into a memory object
         let memory_type_index = util::find_memory_type_index(
             &mem_req,
-            &context.memory_props,
+            &device.memory_props,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )
         .ok_or(VulkanError::Ash(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY))?;
@@ -74,8 +72,8 @@ impl Image {
         };
 
         // Hmmm....
-        let memory = unsafe { device.allocate_memory(&alloc_info, None)? };
-        unsafe { device.bind_image_memory(image, memory, 0)? };
+        let memory = unsafe { device.as_raw().allocate_memory(&alloc_info, None)? };
+        unsafe { device.as_raw().bind_image_memory(image, memory, 0)? };
 
         Ok(Self {
             image,
@@ -85,11 +83,10 @@ impl Image {
         })
     }
 
-    pub fn destroy(self, context: &DeviceContext) -> Result<(), VulkanError> {
-        let device = context.device();
+    pub fn destroy(self, device: &Device) -> Result<(), VulkanError> {
         unsafe {
-            device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
+            device.as_raw().destroy_image(self.image, None);
+            device.as_raw().free_memory(self.memory, None);
         }
         Ok(())
     }
@@ -97,11 +94,9 @@ impl Image {
     /// Obtain a view of the image.
     pub fn view(
         &self,
-        context: &DeviceContext,
+        device: &Device,
         subresource_range: vk::ImageSubresourceRange,
     ) -> Result<ImageView, VulkanError> {
-        let device = context.device();
-
         let view_ci = vk::ImageViewCreateInfo {
             image: self.image,
             view_type: vk::ImageViewType::TYPE_2D,
@@ -110,7 +105,7 @@ impl Image {
             ..Default::default()
         };
 
-        let view = unsafe { device.create_image_view(&view_ci, None)? };
+        let view = unsafe { device.as_raw().create_image_view(&view_ci, None)? };
 
         Ok(ImageView {
             view,
@@ -120,9 +115,9 @@ impl Image {
         })
     }
 
-    pub fn default_view(&self, context: &DeviceContext) -> Result<ImageView, VulkanError> {
+    pub fn default_view(&self, device: &Device) -> Result<ImageView, VulkanError> {
         let subresource_range = range();
-        self.view(context, subresource_range)
+        self.view(device, subresource_range)
     }
 
     /// Forwards to `transition_layout` function for regular `vk::image`.
@@ -132,7 +127,7 @@ impl Image {
         subresource_range: vk::ImageSubresourceRange,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
-        context: &DeviceContext,
+        device: &Device,
     ) {
         transition_layout(
             self.image,
@@ -140,75 +135,63 @@ impl Image {
             subresource_range,
             old_layout,
             new_layout,
-            context,
+            device,
         );
     }
 
     /// Transition from UNDEFINED → TRANSFER_DST_OPTIMAL for uploading data.
-    pub fn transition_to_transfer_dst(
-        &self,
-        cmd_buffer: vk::CommandBuffer,
-        context: &DeviceContext,
-    ) {
+    pub fn transition_to_transfer_dst(&self, cmd_buffer: vk::CommandBuffer, device: &Device) {
         self.transition_layout(
             cmd_buffer,
             range(), // full color range
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            context,
+            device,
         );
     }
 
     /// Transition from TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL for sampling in shaders.
-    pub fn transition_to_shader_read(
-        &self,
-        cmd_buffer: vk::CommandBuffer,
-        context: &DeviceContext,
-    ) {
+    pub fn transition_to_shader_read(&self, cmd_buffer: vk::CommandBuffer, device: &Device) {
         self.transition_layout(
             cmd_buffer,
             range(), // full color range
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            context,
+            device,
         );
     }
 
     /// Transition from UNDEFINED → DEPTH_STENCIL_ATTACHMENT_OPTIMAL for depth/stencil attachments.
     // XXX This one is known to be pretty incomplete but not in use yet, so fix it when you need it.
-    pub fn transition_to_depth_attachment(
-        &self,
-        cmd_buffer: vk::CommandBuffer,
-        context: &DeviceContext,
-    ) {
+    pub fn transition_to_depth_attachment(&self, cmd_buffer: vk::CommandBuffer, device: &Device) {
         self.transition_layout(
             cmd_buffer,
             range_stencil(), // full depth/stencil range
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            context,
+            device,
         );
     }
 
     /// Transition from COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR for presenting swapchain images.
-    pub fn transition_to_present(&self, cmd_buffer: vk::CommandBuffer, context: &DeviceContext) {
+    pub fn transition_to_present(&self, cmd_buffer: vk::CommandBuffer, device: &Device) {
         self.transition_layout(
             cmd_buffer,
             range(), // full color range
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::PRESENT_SRC_KHR,
-            context,
+            device,
         );
     }
 
     /// Transition from PRESENT_SRC_KHR → COLOR_ATTACHMENT_OPTIMAL for rendering to swapchain images.
-    pub fn transition_from_present(&self, cmd_buffer: vk::CommandBuffer, context: &DeviceContext) {
+    pub fn transition_from_present(&self, cmd_buffer: vk::CommandBuffer, device: &Device) {
         self.transition_layout(
             cmd_buffer,
             range(), // full color range
             vk::ImageLayout::PRESENT_SRC_KHR,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            context,
+            device,
         );
     }
 }
@@ -222,9 +205,9 @@ pub struct ImageView {
 }
 
 impl ImageView {
-    pub fn destroy(self, context: &DeviceContext) -> Result<(), VulkanError> {
+    pub fn destroy(self, device: &Device) -> Result<(), VulkanError> {
         unsafe {
-            context.device().destroy_image_view(self.view, None);
+            device.as_raw().destroy_image_view(self.view, None);
         }
         Ok(())
     }
@@ -232,14 +215,14 @@ impl ImageView {
     // XXX extremely raw.  Bludgeon if found.
     pub fn sampled(
         &self,
-        context: &mut DeviceContext,
+        device: &mut Device,
         layout: vk::ImageLayout,
     ) -> descriptors::SampledImageIdx {
         // MAYBE not so sure about the layout choice
-        let device = &context.device;
-        let descriptors = &mut context.descriptors;
-        descriptors.bind_sampled_image(device, self.view, layout)
-        // context.bind_sampled_image(self.view, layout)
+        let f = device.as_raw().clone();
+        let descriptors = &mut device.descriptors;
+        descriptors.bind_sampled_image(&f, self.view, layout)
+        // device.bind_sampled_image(self.view, layout)
     }
 }
 
@@ -269,7 +252,7 @@ pub fn transition_layout(
     subresource_range: vk::ImageSubresourceRange,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
-    context: &DeviceContext,
+    device: &Device,
 ) {
     // Infer barrier settings based on old/new layout
     let (src_stage, dst_stage, src_access, dst_access) = match (old_layout, new_layout) {
@@ -384,7 +367,7 @@ pub fn transition_layout(
     };
 
     unsafe {
-        context.device().cmd_pipeline_barrier(
+        device.as_raw().cmd_pipeline_barrier(
             *cmd_buffer,
             src_stage,
             dst_stage,

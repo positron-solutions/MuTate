@@ -30,9 +30,9 @@ pub struct HelloDraw {
 }
 
 impl HelloDraw {
-    pub fn new(context: &DeviceContext) -> Self {
+    pub fn new(device: &Device) -> Self {
         Self {
-            pipeline: ComputePipeline::<HelloPipeline>::new(context).unwrap(),
+            pipeline: ComputePipeline::<HelloPipeline>::new(device).unwrap(),
             counter: 0,
             output_buffer: None,
             output_idx: SsboIdx::INVALID,
@@ -41,21 +41,21 @@ impl HelloDraw {
 
     pub fn provision(
         &mut self,
-        context: &mut DeviceContext,
+        device: &mut Device,
         size: vk::Extent2D,
     ) -> Result<(), utate::MutateError> {
         if let Some(existing) = self.output_buffer.take() {
             unsafe {
-                existing.destroy(context)?;
-                context.descriptors.unbind_ssbo(self.output_idx);
+                existing.destroy(device)?;
+                device.descriptors.unbind_ssbo(self.output_idx);
             }
             self.output_idx = SsboIdx::INVALID;
         }
 
         let output_buffer =
-            buffer::MappedAllocation::new((size.width * size.height) as usize, context)?;
+            buffer::MappedAllocation::new((size.width * size.height) as usize, device)?;
 
-        self.output_idx = output_buffer.bound(context);
+        self.output_idx = output_buffer.bound(device);
         self.output_buffer = Some(output_buffer);
 
         Ok(())
@@ -63,17 +63,17 @@ impl HelloDraw {
 
     pub fn draw(
         &mut self,
-        context: &DeviceContext,
+        device: &Device,
         cb: &RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
     ) {
-        let device = context.device();
         let extent = acquired_image.extent;
 
+        // XXX argument order
         self.output_buffer
             .as_ref()
             .unwrap()
-            .barrier_compute_pre(&cb, context);
+            .barrier_compute_pre(&cb, device);
 
         let push = HelloConstants {
             counter: self.counter.into(),
@@ -82,7 +82,7 @@ impl HelloDraw {
             output_idx: self.output_idx,
         };
         // XXX allow pushing to wrapped buffers
-        self.pipeline.push(context, **cb, &push);
+        self.pipeline.push(device, **cb, &push);
         self.counter += 1;
 
         // This dispatch math needs to respect the compute stage's declared dimensions.  We can make
@@ -95,16 +95,16 @@ impl HelloDraw {
         let dispatch_x = (extent.width + wg_x - 1) / wg_x;
         let dispatch_y = (extent.height + wg_y - 1) / wg_y;
         self.pipeline
-            .dispatch(context, **cb, dispatch_x, dispatch_y, 1);
+            .dispatch(device, **cb, dispatch_x, dispatch_y, 1);
 
         self.output_buffer
             .as_ref()
             .unwrap()
-            .barrier_compute_post(&cb, context);
+            .barrier_compute_post(&cb, device);
 
         let region = buffer::buffer_image_copy_full(extent);
         unsafe {
-            device.cmd_copy_buffer_to_image(
+            device.as_raw().cmd_copy_buffer_to_image(
                 **cb,
                 self.output_buffer.as_ref().unwrap().buffer,
                 acquired_image.image,
@@ -114,12 +114,12 @@ impl HelloDraw {
         }
     }
 
-    pub fn destroy(self, context: &mut DeviceContext) -> Result<(), utate::MutateError> {
+    pub fn destroy(self, device: &mut Device) -> Result<(), utate::MutateError> {
         unsafe {
-            self.pipeline.destroy(context);
+            self.pipeline.destroy(device);
             if let Some(allocated) = self.output_buffer {
-                allocated.destroy(&context)?;
-                context.descriptors.unbind_ssbo(self.output_idx);
+                allocated.destroy(&device)?;
+                device.descriptors.unbind_ssbo(self.output_idx);
             }
         }
         Ok(())

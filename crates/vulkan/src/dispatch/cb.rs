@@ -152,16 +152,11 @@ unsafe impl<C: Capability + Send, M: SubmissionModel + Send> Send for Executable
 
 impl<C: Capability, M: SubmissionModel> InitialBuffer<C, M> {
     /// Begin recording.  Consumes the initial-state handle and returns a recording-state handle.
-    pub fn begin(
-        self,
-        device_context: &DeviceContext,
-    ) -> Result<RecordingBuffer<C, M>, VulkanError> {
+    pub fn begin(self, device: &Device) -> Result<RecordingBuffer<C, M>, VulkanError> {
         let raw = self.into_parts();
         let begin_info = vk::CommandBufferBeginInfo::default().flags(M::BUFFER_FLAGS);
         unsafe {
-            device_context
-                .device()
-                .begin_command_buffer(raw, &begin_info)?;
+            device.as_raw().begin_command_buffer(raw, &begin_info)?;
         }
         Ok(RecordingBuffer::from_raw(raw))
     }
@@ -172,7 +167,7 @@ impl<C: Capability, M: SubmissionModel> InitialSecondary<C, M> {
     /// all-defaults; for graphics, the caller must supply the appropriate inheritance.
     pub fn begin(
         self,
-        device_context: &DeviceContext,
+        device: &Device,
         inheritance: &vk::CommandBufferInheritanceInfo,
     ) -> Result<RecordingSecondary<C, M>, VulkanError> {
         let raw = self.into_parts();
@@ -180,22 +175,17 @@ impl<C: Capability, M: SubmissionModel> InitialSecondary<C, M> {
             .flags(M::BUFFER_FLAGS)
             .inheritance_info(inheritance);
         unsafe {
-            device_context
-                .device()
-                .begin_command_buffer(raw, &begin_info)?;
+            device.as_raw().begin_command_buffer(raw, &begin_info)?;
         }
         Ok(RecordingSecondary::from_raw(raw))
     }
 }
 
 impl<C: Capability, M: SubmissionModel> RecordingBuffer<C, M> {
-    pub fn end(
-        self,
-        device_context: &DeviceContext,
-    ) -> Result<ExecutableBuffer<C, M>, VulkanError> {
+    pub fn end(self, device: &Device) -> Result<ExecutableBuffer<C, M>, VulkanError> {
         let raw = self.into_parts();
         unsafe {
-            device_context.device().end_command_buffer(raw)?;
+            device.as_raw().end_command_buffer(raw)?;
         }
         Ok(ExecutableBuffer::from_raw(raw))
     }
@@ -207,14 +197,12 @@ impl<M: SubmissionModel> RecordingBuffer<Graphics, M> {
     /// [`RenderinBuffer::end`] to directly close the buffer as well.
     pub fn begin_rendering(
         self,
-        device_context: &DeviceContext,
+        device: &Device,
         rendering_info: &vk::RenderingInfo,
     ) -> RenderingBuffer<M> {
         let raw = self.into_parts();
         unsafe {
-            device_context
-                .device()
-                .cmd_begin_rendering(raw, rendering_info);
+            device.as_raw().cmd_begin_rendering(raw, rendering_info);
         }
         RenderingBuffer::from_raw(raw)
     }
@@ -222,23 +210,20 @@ impl<M: SubmissionModel> RecordingBuffer<Graphics, M> {
 
 impl<M: SubmissionModel> RenderingBuffer<M> {
     /// End the rendering scope.
-    pub fn end_rendering(self, device_context: &DeviceContext) -> RecordingBuffer<Graphics, M> {
+    pub fn end_rendering(self, device: &Device) -> RecordingBuffer<Graphics, M> {
         let raw = self.into_parts();
         unsafe {
-            device_context.device().cmd_end_rendering(raw);
+            device.as_raw().cmd_end_rendering(raw);
         }
         RecordingBuffer::from_raw(raw)
     }
 
     // MAYBE do finished buffers even need Capability besides for secondaries?
-    pub fn end(
-        self,
-        device_context: &DeviceContext,
-    ) -> Result<ExecutableBuffer<Graphics, M>, VulkanError> {
+    pub fn end(self, device: &Device) -> Result<ExecutableBuffer<Graphics, M>, VulkanError> {
         let raw = self.into_parts();
         unsafe {
-            device_context.device().cmd_end_rendering(raw);
-            device_context.device().end_command_buffer(raw)?;
+            device.as_raw().cmd_end_rendering(raw);
+            device.as_raw().end_command_buffer(raw)?;
         }
         Ok(ExecutableBuffer::from_raw(raw))
     }
@@ -256,11 +241,11 @@ impl<C: Capability, M: SubmissionModel + Resettable> ExecutableBuffer<C, M> {
     /// buffers are in flight anywhere.
     pub unsafe fn reset(
         self,
-        device_context: &DeviceContext,
+        device: &Device,
         flags: vk::CommandBufferResetFlags,
     ) -> Result<InitialBuffer<C, M>, VulkanError> {
         let raw = self.into_parts();
-        device_context.device().reset_command_buffer(raw, flags)?;
+        device.as_raw().reset_command_buffer(raw, flags)?;
         Ok(InitialBuffer::from_raw(raw))
     }
 }
@@ -277,11 +262,11 @@ impl<C: Capability, M: SubmissionModel + Resettable> ExecutableSecondary<C, M> {
     /// buffers are in flight anywhere.
     pub unsafe fn reset(
         self,
-        device_context: &DeviceContext,
+        device: &Device,
         flags: vk::CommandBufferResetFlags,
     ) -> Result<InitialSecondary<C, M>, VulkanError> {
         let raw = self.into_parts();
-        device_context.device().reset_command_buffer(raw, flags)?;
+        device.as_raw().reset_command_buffer(raw, flags)?;
         Ok(InitialSecondary::from_raw(raw))
     }
 }

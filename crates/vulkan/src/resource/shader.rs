@@ -10,7 +10,7 @@ use ash::vk;
 
 use mutate_assets as assets;
 
-use crate::{context::DeviceContext, VulkanError};
+use crate::internal::*;
 
 // Let me see that sla--
 //                       -aaa-
@@ -21,18 +21,19 @@ pub struct ShaderModule<'ctx> {
     pub module: vk::ShaderModule,
 }
 
-impl<'ctx> ShaderModule<'ctx> {
-    pub fn load(context: &'ctx DeviceContext, path: &'static str) -> Result<Self, VulkanError> {
+impl<'device> ShaderModule<'device> {
+    // XXX trace this up and move assets to instance or elsewhere!
+    pub fn load(device: &'device Device, path: &'static str) -> Result<Self, VulkanError> {
         // NEXT We could further type shader names to verify that hardcoded names exist.  Dynamic
         // names for source files doesn't really make sense unless the GPU has gone Skynet and is
         // emitting fresh slang code to hot swap with itself.  Static shader file names would do
         // some justice.
-        let spv = context.assets.find_shader(path).unwrap();
+        let spv = device.assets.find_shader(path).unwrap();
         let module_ci = vk::ShaderModuleCreateInfo::default().code(spv.as_slice());
-        let module = unsafe { context.device().create_shader_module(&module_ci, None)? };
+        let module = unsafe { device.as_raw().create_shader_module(&module_ci, None)? };
 
         Ok(Self {
-            device: &context.device,
+            device: &device.as_raw(),
             module,
         })
     }

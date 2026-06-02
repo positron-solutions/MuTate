@@ -166,20 +166,19 @@ impl TriangleNode {
         &self,
         cb: RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
-        context: &crate::DeviceContext,
+        device: &crate::Device,
         rgb: palette::Srgb<f32>,
         scale: f32,
         extent: &vk::Extent2D,
     ) {
-        let device = context.device();
         let pipeline = self.pipelines[0];
         unsafe {
-            device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.as_raw().cmd_bind_pipeline(*cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
         }
 
         let combined_push: [f32; 5] = [rgb.red, rgb.green, rgb.blue, 1.0, scale];
         unsafe {
-            device.cmd_push_constants(
+            device.as_raw().cmd_push_constants(
                 *cb,
                 self.pipeline_layout,
                 vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
