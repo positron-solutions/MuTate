@@ -10,12 +10,6 @@ Github.
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
-## Logs & Tracing
-
-Along with error handling in type signatures, we're starting to need some real infra for errors.
-
-Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
-
 ## Moving Spectrum Analyzer to GPU
 
 The first-pass at the CQT has a number of problems:
@@ -39,6 +33,14 @@ Each element includes two parts:
 
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
+
+## Logs & Tracing
+
+We're need some real infra for emitting error feedback.  Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
+
+### For Now
+
+`println!` and `eprintln!`.  Easy enough to text-replace later.
 
 ## Lifetime Agreement & Destructors
 
