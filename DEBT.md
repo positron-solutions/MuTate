@@ -12,7 +12,7 @@ The big pieces that are missing and expected areas of coupled design-development
 
 - Render crossfades demand granular runtime interleaving of pipelines.  This requires runtime resolution of which buffers to create or share.
 - Shared ownership of resources needs to build on top of manual GPU memory management and asynchronous creation & destruction.
-- Timeline scheduling between our several self-pacing loops, such as audio, video, and later online learning.  We need timelines to express dynamic operation interleaving.
+- Phase exclusion and sub-phase scheduling between our several self-pacing loops, such as audio, video, and later online learning.
 - Runtime render graph behaviors will depend on build time witness data that is also used at compile time.  The macros for expressing new pipelines will build on top of the types they must emit (which we are writing now).
 - Asynchronous (threaded) resource hydration & destruction will couple with notifying dependents of changes in upstream dependencies.
 
