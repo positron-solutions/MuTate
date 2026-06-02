@@ -214,6 +214,8 @@ We should be using Crane to build test artifacts and caching the dependency buid
 
 Using cold target dirs.  Fortunately most of our builds are cheap enough to not cause 45min CI times.  The PMR tool hast the heaviest dependencies right now.
 
+There's more work coming to build and distribute binaries.  That's a good time to take a look at Nix caching.
+
 ## Host-Slang Agreement
 
 The slang module and proc macros (`ComputePipeline`, `PushConstants`, etc) should be reading the reflection data and emitting const checks.
