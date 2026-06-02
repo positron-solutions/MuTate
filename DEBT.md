@@ -37,21 +37,6 @@ Along with error handling in type signatures, we're starting to need some real i
 
 Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
 
-## Buffer Item Layouts
-
-We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).  Manually align while we implement the contracts around the ergonomics.
-
-## Shader Boilerplate
-
-Shaders must declare their inputs.  Push constant ranges and types must align.  Indexes must be typed for the right kinds of descriptors etc.  It's 1:1 and should be automated.
-
-- Emit slang introspection data during build
-  + Compile to SPIR-V or MSL etc
-- Read introspection data in macros to check agreement or generate agreeing structs
-- Declaration macros and types they will express are in heavy development.
-
-It's really only once we have a collection of pipelines for a coherent technique that we can see all dependencies for a single Visual.
-
 ## Moving Spectrum Analyzer to GPU
 
 The first-pass at the CQT has a number of problems:
@@ -240,3 +225,14 @@ We should be using Crane to build test artifacts and caching the dependency buid
 ### For Now
 
 Using cold target dirs.  Fortunately most of our builds are cheap enough to not cause 45min CI times.  The PMR tool hast the heaviest dependencies right now.
+
+## Host-Slang Agreement
+
+The slang module and proc macros (`ComputePipeline`, `PushConstants`, etc) should be reading the reflection data and emitting const checks.
+
+We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).
+
+### For Now
+
+Ergonomics over contracts.  The APIs are *sufficient* to add the reflection checks.  Get `GraphicsPipeline` working first.
+
