@@ -81,13 +81,13 @@ The one thing that seems super clear is that without a single layer indirection 
 
 ## Memory Management
 
-Expectations are that memory usage will be relatively low but less predictable due to generation, transitions, and scripting.
+Where we're going, workloads will provide their resource requirements as specs (which Images, SSBOs, Uniforms need to exist) and these will be instantiated by a runtime-managed sub-allocator when they don't exist (discovered by Id etc).  These specs should give us some good, predictable high water marks for more intentional allocation strategies.
 
 - https://lib.rs/crates/gpu-allocator for obtaining GPU memory
 - https://lib.rs/crates/offset-allocator for slicing it up and handing it out
 - https://lib.rs/crates/slotmap for tracking what we handed out
 
-Where we're going, workloads will provide their resource requirements as specs (which Images, SSBOs, Uniforms need to exist) and these will be instantiated by some allocator when they don't exist (discovered by Id etc).  These specs should give us some good, predictable high water marks for more intentional allocation strategies.
+Expectations are that memory usage will be relatively low but less predictable due to generation, transitions, and scripting.
 
 ### For Now
 
@@ -95,15 +95,13 @@ We don't really have any infra for one-big-allocation or deletion & compaction. 
 
 Don't go crazy avoiding copies just yet, especially where sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.  Until we have a solution that will do better than the driver, just allocate for each image / buffer.
 
-There is a better ring buffer crate for the task graph use case.  The existing `GraphBuffer` will / should die soon.  See the `mutate-slide` crate with its `SlidingWindow` as a foundation.  Probably we have to loan out slices and manually protect those borrows from torn read with render loop pacing sync instead of using the slices or window as sync primitives themselves.
-
 ## General Image Layouts
 
 This is a pretty boring area of automation in terms of design.  Tracking or computing layouts is not hard.  We are supposed to do it.. for mobile?  Someday.  There are much more interesting things to automate that don't really depend on layouts.
 
 ### For Now
 
-The performance of `vk::ImageLayout::GENERAL` is just not bad.  It is sometimes guaranteed to be negligible and the driver is supposed to figure things out.  To keep ergonomics simple, let's lean on general where possible and then consider adding other layouts back in to be about device support & performance.
+The performance of `vk::ImageLayout::GENERAL` is just not bad.  It is sometimes guaranteed to be negligible and the driver is supposed to figure things out.  To keep ergonomics simple, let's lean on general where possible and let driver support or performance push decisions to add other layouts back in.
 
 ## Error Handling
 
@@ -144,7 +142,7 @@ The go-to pattern is use whatever is most ergonomic for development and then bac
 - Use `cfg` gates only for platforms, not for Vulkan versions.  To switch on Vulkan support, use runtime conditions.
 - Plan on using Molten on Apple.  The slang compiler can target (Metal Shader Language) but likely first pass, just rely on Molten to translate SPIR-V.  You need an Apple tool for MSL ⇒ metallibs.   If we switch to MSL though, the type agreement must use Apple-specific introspection data and modified macro logic!
 
-## Dynamic Command Buffer State Shadow
+## Dynamic Rendering State Shadow
 
 We don't really want to unset dynamic states that were set somewhere else.  The dependency might be real?  It will be.  There are cases.
 
@@ -205,7 +203,7 @@ Ergonomics over contracts.  The APIs are *sufficient* to add the reflection chec
 
 The actual type of the input buffers is **not** bytes.  We should either coerce
 all input streams to one format or handle multiple formats if we cannot coerce
-all target platform audio survers to give us a common denominator (and convert
+all target platform audio servers to give us a common denominator (and convert
 ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make
 this easy by doing it all the time with a good set of tools.
 
