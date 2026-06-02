@@ -19,7 +19,7 @@ fn dispatch_increment_read_back() {
     )]
     pub struct IncrementPipeline;
 
-    with_context!(|device_ctx, _vulkan_ctx| {
+    with_context!(|device_ctx, _instance| {
         // NEXT any test with dispatch can re-use this kind of initialization
         let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
         let mut pool = CommandPool::<Compute, OneTime>::transient(&device_ctx, &queue).unwrap();

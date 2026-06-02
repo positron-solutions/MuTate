@@ -61,7 +61,7 @@
 //! When creating new surfaces, such as if windows are moving around, if a new queue family is
 //! required, the same logical device can be used.  If no family supports the new surface, the
 //! correct workflow is to back up to scanning physical device support for a surface using the
-//! [`VkContext`].
+//! [`Instance`].
 
 // NEXT optional support for other queue families, expand options to include rare queue types like
 // video decode and sparse binding.
@@ -253,17 +253,17 @@ impl Queues {
     ///
     /// Returns `None` only if no graphics family on this physical device can present to the surface
     /// at all, which means you need to re-scan for present-capable devices again using the
-    /// [`VkContext`] and surface before creating a new logical device [`DeviceContext`], starting
+    /// [`Instance`] and surface before creating a new logical device [`DeviceContext`], starting
     /// from scratch basically.
     // DEBT promote missing queue to error for better upstream handling on the user side.  Create
     // two error variants, one that is presentation specific so we can indicate the surface for debugging.
     pub fn graphics(
         &self,
-        vk_context: &VkContext,
+        instance: &Instance,
         surface: &Surface,
         priority: QueuePriority,
     ) -> Option<Queue<Graphics>> {
-        let surface_loader = vk_context.surface_loader();
+        let surface_loader = instance.surface_loader();
         let surface = surface.as_raw();
         let candidates = match priority {
             QueuePriority::High => &self.high_graphics,
@@ -664,7 +664,7 @@ mod test {
 
     #[test]
     fn graphics_high_always_exact() {
-        with_context!(|device_context, vk_context| {
+        with_context!(|device_context, instance| {
             // obtaining device context implicitly created queues
             let gfx = device_context
                 .queues
@@ -680,7 +680,7 @@ mod test {
 
     #[test]
     fn transfer_is_always_low_priority() {
-        with_context!(|device_context, _vk_context| {
+        with_context!(|device_context, _instance| {
             let compute_low = device_context.queues.compute(QueuePriority::Low);
             let transfer = device_context.queues.transfer();
             // If compute had to be overloaded onto graphics high (degenerate case) then this test
@@ -698,7 +698,7 @@ mod test {
 
     #[test]
     fn compute_low_is_always_low_priority() {
-        with_context!(|device_context, _vk_context| {
+        with_context!(|device_context, _instance| {
             let gfx_low = device_context.queues.graphics_offscreen(QueuePriority::Low);
             let compute_low = device_context.queues.compute(QueuePriority::Low);
             // If graphics had to be overloaded onto graphics high (degenerate case) then this test
@@ -716,9 +716,9 @@ mod test {
 
     #[test]
     fn dedicated_transfer_when_present() {
-        with_context!(|device_context, vk_context| {
+        with_context!(|device_context, instance| {
             let physical = device_context.physical_device;
-            let instance = &vk_context.instance;
+            let instance = &instance.raw;
 
             let family_props =
                 unsafe { instance.get_physical_device_queue_family_properties(physical) };

@@ -118,13 +118,13 @@ impl Surface {
     /// [`Extent2D`](vk::Extent2D) as the [`ExtentSource`] to be used whenever the platform surface
     /// provider does not set the `current_extent` field.
     pub fn new<'a>(
-        vk_context: &VkContext,
+        instance: &Instance,
         device_context: &DeviceContext,
         surface: vk::SurfaceKHR,
         extent_source: impl Into<ExtentSource<'a>>,
     ) -> Result<Self, VulkanError> {
         let extent_source = extent_source.into();
-        let surface_loader = vk_context.surface_loader();
+        let surface_loader = instance.surface_loader();
         let raw_caps =
             Self::fetch_raw_caps(&surface_loader, device_context.physical_device, surface)?;
         let extent = Self::resolve_extent(&raw_caps, extent_source)?;

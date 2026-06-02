@@ -51,17 +51,17 @@ pub struct PresentRing {
 impl PresentRing {
     pub fn new(
         device_context: &DeviceContext,
-        vk_context: &VkContext,
+        instance: &Instance,
         surface: &Surface,
         extent: vk::Extent2D,
     ) -> Result<Self, VulkanError> {
-        let swapchain = Swapchain::new(device_context, vk_context, surface, extent)?;
+        let swapchain = Swapchain::new(device_context, instance, surface, extent)?;
         let queue = device_context
             .queues
-            .graphics(vk_context, surface, QueuePriority::High)
+            .graphics(instance, surface, QueuePriority::High)
             .ok_or(VulkanError::QueueNotFound)?;
         let pool_ring = PoolRing::new(device_context, &queue)?;
-        let present = pw::PresentConsumer::new(vk_context, device_context, *swapchain.as_raw())?;
+        let present = pw::PresentConsumer::new(instance, device_context, *swapchain.as_raw())?;
         Ok(Self {
             present,
             pool_ring,

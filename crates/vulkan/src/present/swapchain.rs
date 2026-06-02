@@ -107,15 +107,16 @@ pub struct Swapchain {
 impl Swapchain {
     pub fn new(
         device_context: &DeviceContext,
-        vk_context: &VkContext,
+        instance: &Instance,
         surface: &Surface,
         extent: vk::Extent2D,
     ) -> Result<Self, VulkanError> {
-        let VkContext {
-            entry, instance, ..
-        } = &vk_context;
-        let loader =
-            ash::khr::swapchain::Device::new(&vk_context.instance, &device_context.device());
+        let Instance {
+            entry,
+            raw: instance,
+            ..
+        } = &instance;
+        let loader = ash::khr::swapchain::Device::new(instance, &device_context.device());
 
         let swapchain_ci = surface.swapchain_ci();
 

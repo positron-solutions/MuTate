@@ -320,7 +320,7 @@ mod test {
 
     #[test]
     fn pool_instantiate() {
-        with_context!(|device_ctx, vk_ctx| {
+        with_context!(|device_ctx, instance| {
             let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
             let pool = CommandPool::<Graphics, OneTime>::new(&device_ctx, &queue).unwrap();
             pool.destroy(&device_ctx);
@@ -329,7 +329,7 @@ mod test {
 
     #[test]
     fn pool_buffer_create() {
-        with_context!(|device_ctx, vk_ctx| {
+        with_context!(|device_ctx, instance| {
             let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
             let mut pool = CommandPool::<Compute, OneTime>::transient(&device_ctx, &queue).unwrap();
             let primary = pool.primary(&device_ctx).unwrap();
@@ -343,7 +343,7 @@ mod test {
 
     #[test]
     fn ring_instantiate() {
-        with_context!(|device_ctx, vk_ctx| {
+        with_context!(|device_ctx, instance| {
             let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
             let ring = PoolRing::<Graphics>::new(&device_ctx, &queue).unwrap();
             ring.destroy(&device_ctx);
@@ -352,7 +352,7 @@ mod test {
 
     #[test]
     fn acquire_pool() {
-        with_context!(|device_ctx, vk_ctx| {
+        with_context!(|device_ctx, instance| {
             let queue = device_ctx.queues.graphics_offscreen(QueuePriority::Low);
             let mut ring = PoolRing::<Graphics, 2, OneTime>::new(&device_ctx, &queue).unwrap();
 

@@ -58,8 +58,8 @@
 //!
 //! ## Module Outline (The Plan)
 //!
+//! - Instance
 //! - Context
-//!   + Entry & Instance
 //!   + Devices
 //!     * Queue
 //!   + memory (just raw allocation)
@@ -85,11 +85,14 @@
 //!   + Surface
 //!   + Alternative Frontends
 //!
+//! ## Instance
+//!
+//! Entry, instance, physical device scanning, and obtaining some other loaders that are most
+//! tightly bound to the top level raw `ash::Instance`.
+//!
 //! ## Context
 //!
-//! The `Context` covers only-once or very rarely touched things.  There's one Instance.  We
-//! initialize devices and things only once-ish.  We create descriptor tables once per-device.
-//! Queue families are probed once at device creation.
+//! We create descriptor tables once per-device.  Queue families are probed once at device creation.
 //!
 //! ## Resource
 //!
@@ -136,6 +139,7 @@
 
 pub mod context;
 pub mod dispatch;
+pub mod instance;
 pub mod pipeline;
 pub mod present;
 pub mod resource;
@@ -154,10 +158,11 @@ pub mod prelude {
     // usage except where required (swapchain acquisition, presentation etc).
     pub use crate::context::device::Fence;
     pub use crate::context::queue::prelude::*;
-    pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
+    pub use crate::context::DeviceContext;
     pub use crate::descriptor_newtype;
     pub use crate::device_address_newtype;
     pub use crate::dispatch::prelude::*;
+    pub use crate::instance::prelude::*;
     pub use crate::pipeline::prelude::*;
     pub use crate::present::prelude::*;
     pub use crate::present::surface::Surface;
@@ -178,10 +183,11 @@ pub(crate) mod internal {
     pub use super::VulkanError;
     pub use crate::context::device::Fence;
     pub use crate::context::queue::prelude::*;
-    pub use crate::context::{vulkan::SupportedDevice, DeviceContext, VkContext};
+    pub use crate::context::DeviceContext;
     pub use crate::dispatch::internal::*;
+    pub use crate::instance::prelude::*;
     pub use crate::present::prelude::*;
-    pub use crate::present::swapchain::{AcquiredImage, SwapchainContext};
+    pub use crate::present::swapchain::{AcquiredImage, Swapchain};
     pub use crate::slang::prelude::*;
 
     // test harness macros

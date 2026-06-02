@@ -15,7 +15,7 @@ use crate::internal::*;
 
 use super::descriptors;
 use super::queue;
-use super::vulkan::{self, SupportedDevice};
+use crate::prelude::*;
 
 pub struct DeviceContext {
     pub physical_device: vk::PhysicalDevice,
@@ -34,10 +34,12 @@ pub struct DeviceContext {
 }
 
 impl DeviceContext {
-    pub(crate) fn new(vk_context: &vulkan::VkContext, supported_device: SupportedDevice) -> Self {
-        let vulkan::VkContext {
-            entry, instance, ..
-        } = &vk_context;
+    pub(crate) fn new(instance: &Instance, supported_device: SupportedDevice) -> Self {
+        let Instance {
+            entry,
+            raw: instance,
+            ..
+        } = &instance;
         let physical_device = supported_device.device();
         let extensions = &supported_device.extensions;
 

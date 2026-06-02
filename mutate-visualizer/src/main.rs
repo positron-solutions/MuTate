@@ -61,14 +61,14 @@ struct WindowContext {
 
 impl WindowContext {
     fn new(
-        vk_context: &VkContext,
+        instance: &Instance,
         device_context: &mut DeviceContext,
         window: winit::window::Window,
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
-        let surface = Surface::new(vk_context, device_context, raw_surface, &window).unwrap();
+        let surface = Surface::new(instance, device_context, raw_surface, &window).unwrap();
         let present_ring =
-            PresentRing::new(device_context, vk_context, &surface, surface.extent()).unwrap();
+            PresentRing::new(device_context, instance, &surface, surface.extent()).unwrap();
         let mut render_node = video::spectrum::SpectrumNode::new(device_context);
         render_node
             .provision(device_context, surface.extent())
@@ -139,14 +139,14 @@ struct ActiveApp {
 }
 
 impl ActiveApp {
-    fn new(vk_context: &VkContext, args: &Args, event_loop: &ActiveEventLoop) -> Self {
+    fn new(instance: &Instance, args: &Args, event_loop: &ActiveEventLoop) -> Self {
         let window = Window::from_args(args, event_loop);
-        let raw_surface = vk_context.surface(event_loop, &window);
+        let raw_surface = instance.surface(event_loop, &window);
 
-        let supported_devices: Vec<SupportedDevice> = vk_context
+        let supported_devices: Vec<SupportedDevice> = instance
             .supported_devices(&[])
             .into_iter()
-            .filter(|sd| sd.supports_surface(raw_surface, vk_context))
+            .filter(|sd| sd.supports_surface(raw_surface, instance))
             .collect();
         if supported_devices.is_empty() {
             panic!("ActiveApp::new: no Vulkan device supports the created surface.");
@@ -154,9 +154,9 @@ impl ActiveApp {
         // NEXT: read a preferred device from config instead of always picking index 0.
         let selected = supported_devices[0].clone();
         println!("device selected: {}", selected.name);
-        let mut device_context = selected.into_logical(vk_context);
+        let mut device_context = selected.into_logical(instance);
 
-        let wc = WindowContext::new(vk_context, &mut device_context, window, raw_surface);
+        let wc = WindowContext::new(instance, &mut device_context, window, raw_surface);
         let window_id = wc.window.id();
         let mut windows = HashMap::new();
         windows.insert(window_id, wc);
@@ -172,7 +172,7 @@ impl ActiveApp {
         event_loop: &ActiveEventLoop,
         window_id: WindowId,
         event: WindowEvent,
-        vk_context: &VkContext,
+        instance: &Instance,
         audio: &mut Audio,
     ) {
         match event {
@@ -238,7 +238,7 @@ enum AppState {
 /// delegates to the state appropriately.
 struct MutateApp {
     args: Args,
-    vk_context: VkContext,
+    instance: Instance,
     audio: Audio,
     state: AppState,
 }
@@ -248,7 +248,7 @@ impl ApplicationHandler for MutateApp {
         // Transition Dormant -> Active by creating the first window.
         // Device selection happens here once; subsequent windows reuse it.
         debug_assert!(matches!(self.state, AppState::Dormant));
-        let active = ActiveApp::new(&self.vk_context, &self.args, event_loop);
+        let active = ActiveApp::new(&self.instance, &self.args, event_loop);
         self.state = AppState::Active(active);
     }
 
@@ -265,7 +265,7 @@ impl ApplicationHandler for MutateApp {
             event_loop,
             window_id,
             event,
-            &self.vk_context,
+            &self.instance,
             &mut self.audio,
         );
     }
@@ -308,7 +308,7 @@ fn main() -> Result<(), MutateError> {
     let event_loop = EventLoop::builder().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = MutateApp {
-        vk_context: VkContext::with_display(&event_loop, &[]),
+        instance: Instance::with_display(&event_loop, &[]),
         audio: Audio::new()?,
         args,
         state: AppState::Dormant,
@@ -316,6 +316,6 @@ fn main() -> Result<(), MutateError> {
     event_loop.run_app(&mut app).unwrap();
 
     app.audio.destroy();
-    app.vk_context.destroy();
+    app.instance.destroy();
     Ok(())
 }

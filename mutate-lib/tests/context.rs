@@ -13,5 +13,5 @@ fn test_context_lifecycle() {
 
 #[test]
 fn test_device_context_lifecycle() {
-    vulkan::with_context!(|vk_context, device_context| {});
+    vulkan::with_context!(|instance, device_context| {});
 }

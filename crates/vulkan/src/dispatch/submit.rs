@@ -283,14 +283,14 @@ pub mod test {
 
     #[test]
     fn start_submission() {
-        with_context!(|device_ctx, vulkan_ctx| {
+        with_context!(|device_ctx, instance| {
             let start = device_ctx.queues.compute(QueuePriority::High).submission();
         })
     }
 
     #[test]
     fn empty_signal() {
-        with_context!(|device_ctx, vulkan_ctx| {
+        with_context!(|device_ctx, instance| {
             let mut semaphore = device_ctx.make_timeline_semaphore().unwrap();
             let signal_intent = semaphore.next_signal();
             let wait_value = signal_intent.wait_value();
@@ -309,7 +309,7 @@ pub mod test {
 
     #[test]
     fn binary_semaphores() {
-        with_context!(|device_ctx, _vulkan_ctx| {
+        with_context!(|device_ctx, _instance| {
             let device = device_ctx.device();
             let queue = device_ctx.queues.graphics_offscreen(QueuePriority::High);
 

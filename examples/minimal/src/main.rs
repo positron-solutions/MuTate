@@ -31,14 +31,14 @@ struct WindowContext {
 
 impl WindowContext {
     fn new(
-        vk_context: &VkContext,
+        instance: &Instance,
         device_context: &mut DeviceContext,
         window: Window,
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
-        let surface = Surface::new(vk_context, device_context, raw_surface, &window).unwrap();
+        let surface = Surface::new(instance, device_context, raw_surface, &window).unwrap();
         let compute_present =
-            PresentRing::new(device_context, vk_context, &surface, surface.extent()).unwrap();
+            PresentRing::new(device_context, instance, &surface, surface.extent()).unwrap();
         let mut renderer = HelloDraw::new(device_context);
         renderer
             .provision(device_context, surface.extent())
@@ -101,16 +101,16 @@ struct ActiveApp {
 }
 
 impl ActiveApp {
-    fn new(vk_context: &VkContext, event_loop: &ActiveEventLoop) -> Self {
+    fn new(instance: &Instance, event_loop: &ActiveEventLoop) -> Self {
         let window = make_window(event_loop);
-        let raw_surface = vk_context.surface(event_loop, &window);
+        let raw_surface = instance.surface(event_loop, &window);
 
         // Surfaces might only be supported on some devices.  This check ensures that we will be
         // able to use the chosen device for this window.
-        let supported: Vec<SupportedDevice> = vk_context
+        let supported: Vec<SupportedDevice> = instance
             .supported_devices(&[])
             .into_iter()
-            .filter(|sd| sd.supports_surface(raw_surface, vk_context))
+            .filter(|sd| sd.supports_surface(raw_surface, instance))
             .collect();
         assert!(
             !supported.is_empty(),
@@ -119,11 +119,11 @@ impl ActiveApp {
 
         let selected = supported[0].clone();
         println!("device: {}", selected.name);
-        let mut device_context = selected.into_logical(vk_context);
+        let mut device_context = selected.into_logical(instance);
 
         // Once we have chosen the physical device, then we can create the logical device and
         // swapchain for the window & surface.
-        let wc = WindowContext::new(vk_context, &mut device_context, window, raw_surface);
+        let wc = WindowContext::new(instance, &mut device_context, window, raw_surface);
         let window_id = wc.window.id();
         let mut windows = HashMap::new();
         windows.insert(window_id, wc);
@@ -191,15 +191,15 @@ enum AppState {
     Active(ActiveApp),
 }
 
-/// Longest lived structure, holds the instance (`VkContext`, some renaming is planned).
+/// Longest lived structure, holds the `Instance`.
 struct MinimalApp {
-    vk_context: VkContext,
+    instance: Instance,
     state: AppState,
 }
 
 impl ApplicationHandler for MinimalApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.state = AppState::Active(ActiveApp::new(&self.vk_context, event_loop));
+        self.state = AppState::Active(ActiveApp::new(&self.instance, event_loop));
     }
 
     fn window_event(
@@ -231,11 +231,11 @@ fn main() -> Result<(), utate::MutateError> {
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = MinimalApp {
-        vk_context: VkContext::with_display(&event_loop, &[]),
+        instance: Instance::with_display(&event_loop, &[]),
         state: AppState::Dormant,
     };
 
     event_loop.run_app(&mut app).unwrap();
-    app.vk_context.destroy();
+    app.instance.destroy();
     Ok(())
 }

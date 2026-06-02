@@ -30,10 +30,7 @@ use ash::{khr::present_wait::Device as PwDevice, vk};
 
 use mutate_untorn::prelude::*;
 
-use crate::{
-    context::{DeviceContext, VkContext},
-    VulkanError,
-};
+use crate::internal::*;
 
 /// Observable state for the waiter.
 #[derive(Clone, Copy)]
@@ -82,11 +79,11 @@ pub struct PresentConsumer {
 
 impl PresentConsumer {
     pub fn new(
-        vk_context: &VkContext,
+        instance: &Instance,
         device_context: &DeviceContext,
         swapchain: vk::SwapchainKHR,
     ) -> Result<Self, VulkanError> {
-        let pw_device = PwDevice::new(&vk_context.instance, &device_context.device());
+        let pw_device = PwDevice::new(&instance.raw, &device_context.device());
 
         let (waiter_writer, waiter_reader) = Untorn::new(PresentWaiterState {
             last_window: Duration::MAX,
