@@ -6,23 +6,6 @@ For more forward-looking feature
 [discussion](https://github.com/positron-solutions/MuTate/discussions), see
 Github.
 
-## High Level Challenges
-
-The big pieces that are missing and expected areas of coupled design-development.
-
-- Render crossfades demand granular runtime interleaving of pipelines.  This requires runtime resolution of which buffers to create or share.
-- Shared ownership of resources needs to build on top of manual GPU memory management and asynchronous creation & destruction.
-- Phase exclusion and sub-phase scheduling between our several self-pacing loops, such as audio, video, and later online learning.
-- Runtime render graph behaviors will depend on build time witness data that is also used at compile time.  The macros for expressing new pipelines will build on top of the types they must emit (which we are writing now).
-- Asynchronous (threaded) resource hydration & destruction will couple with notifying dependents of changes in upstream dependencies.
-
-### Dependency Order
-
-- Memory allocations can be centralized without async resource hydration or timeline.
-- Timeline architecture is already motivated by the independently driven audio and display loops.
-- Resource management absolutely depends on the prior two areas receiving some treatment.
-- Runtime render graph tasks can't really settle in until resource specs begin to stabilize.
-
 # Currently Paying Down
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
