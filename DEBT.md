@@ -206,18 +206,6 @@ this easy by doing it all the time with a good set of tools.
 
 Hardcode and mark with `// DEBT`
 
-## Presentation Capable Queue Families
-
-Detecting the need to do a queue transfer before present is unavoidably tedious.  These cases are said to be rare.  To properly support, we have to check if the command buffer and its queue family can do presentation and, if not, find a transfer capable queue and do presentation over there, meaning another command buffer pool too!
-
-```
-//! (◕‿◕)︵‿︵‿︵‿︵┻━┻
-```
-
-### For Now
-
-You know what?  We assume the first queue to present (usually graphics, usually the zeroth index) is the right one.  Any support that looks complete is an accident.  If you need weird things, try commercial support or go do some coding `(◕‿◕)ノ彡☆`
-
 ## Transfer / Staging vs UMA
 
 UMA architectures, becoming increasingly important, don't really benefit from transfer queues.  This suggests we would want an abstraction to hide the implementation so users don't need to change what they express on DMA vs UMA.
