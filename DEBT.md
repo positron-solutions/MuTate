@@ -76,16 +76,6 @@ Each element includes two parts:
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
 
-## Naming `ash::vk` vs `vulkan` Types
-
-Early on, re-use of ash type names was avoided.  It's pretty clear though now that a lot of our types are landing almost right on top of the raw ash while just reducing the interface to what we need and adding a few fields for more convenience.
-
-We should switch over some types to reflect that they mirror a very clear role in Vulkan programming.  For example, we should say `Instance` instead of `VkContext` and so on.  As long as one *root* raw pointer type is the clear thing being abstracted, we can re-use the ash name.  Ash types do interoperate and would collide, but the use of the `vk` and `ash` prefix makes the origin of types clear enough.
-
-### For Now
-
-Continue using silly names like `vulkan_ctx` and `device_ctx` and just try to standardize onto those names so that the eventual renaming of bindings is easier.
-
 ## Lifetime Agreement & Destructors
 
 Resources *must* be shared to be useful for some techniques, so single-owner RAII is too naive.  RAII can also have a lot of issues where destruction calls happen at inopportune times, bubbling the wrong threads.    Deletion queues are widely recommended.  We should at most put *tombstones* into RAII and then materialize and delete them later.
