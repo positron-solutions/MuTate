@@ -27,6 +27,16 @@ Rather than making the CQT faster on the CPU, which will mainly involve doing th
 
 The migration to Slang was going to itself require better engineering around pipeline-shader development.
 
+## From Manual Destruction to Drop
+
+In the beginning, all was done to expedite change.  An example of the longest lived things is the `Instance` and `Device`.  We need them nearly everywhere, on every thread, threaded directly or indirectly through nearly every function call.  They would be used for a lot of RAII, but then we're figuring out a root-to-leaf network on the first pass.
+
+The strategy being used to develop actual lifetime contracts is to start at leaf types, things with the **shortest lifetimes first**.  The `QueueSubmit` is one of the first types that started using lifetime contracts.  It is much easier to work out lifetime contracts from shortest lived things, which tend to live and die in a single scope.
+
+Until we reach the root, prefer manual destruction.  Manual destruction avoids a class of bugs where an RAII wrapper holds a cloned handle to enable cleanup but then outlives the wrapper for the handle.  **Not destroying things produces very clear validation errors.**  Unclear drop orders of temporaries can lurk in barely-working code, so manual destruction **is** more conservative.
+
+There are also must-consume types, for which drops are almost assuredly program bugs, and so `DropBomb` is being used until some other kind of linear type solution (ever?) exists.  Why would a user drop a command buffer that is in the middle of recording, especially if the allocation would leak even after pool reset?
+
 # Charging Interest
 
 Each element includes two parts:
@@ -41,20 +51,6 @@ We're need some real infra for emitting error feedback.  Tracing selected.  We c
 ### For Now
 
 `println!` and `eprintln!`.  Easy enough to text-replace later.
-
-## Lifetime Agreement & Destructors
-
-Resources *must* be shared to be useful for some techniques, so single-owner RAII is too naive.  RAII can also have a lot of issues where destruction calls happen at inopportune times, bubbling the wrong threads.    Deletion queues are widely recommended.  We should at most put *tombstones* into RAII and then materialize and delete them later.
-
-Another practical concern is that GPU programming is **inherently unsafe**.  We are offloading to a machine that the Rust compiler cannot reason about, one that operates in significantly different ways.  A rush to encode contracts into Rust will make many sound GPU patterns into an irritating fight with the Rust compiler.  While someday we may find the proper types and structures to make such fights go away, **they do not yet exist and will only impede us.**
-
-### For Now
-
-- Focus on lifetime alignment!  If the wrong fields are woven together, no lifetimes or shared ownership will ever be smooth!
-- Use manual destructors
-- Centralize a little bit at a time and hand out cheap vk handle clones as long as there is one clear owner that can destroy and outlives the "borrowers" (and maybe bake this contract into types once more stable).
-- Align lifetimes, but avoid borrows for things like `ash` handles that are cheaply cloned.
-- If you add lifetimes for borrows, focus on ephemeral things like builders first.
 
 ## Reactive Updates
 
@@ -134,9 +130,7 @@ Creating multiple Vulkan objects within a higher level constructor can be viewed
 
 ### For Now
 
-- Manual destruction is tolerable for simple cases.
-- We are generally building ownership contracts from leaf types up, not from root types down.  Start with short scopes, not long ones.
-- Avoid RAII in the public API.   RAII wrapped resources transitively carry their lifetime contracts even in cases where soundness is created some other way far downstream.  This dictates API shape in ways we don't want to make rigid too early.  Stick with manual destruction of high-level types and let validation catch accounting errors.
+Manual destruction is tolerable for simple cases.  See [When do Drop](#from-manual-destruction-to-drop).
 
 ## Vulkan Versions, Device & Platform Compatibility
 
