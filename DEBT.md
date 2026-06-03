@@ -10,9 +10,10 @@ Github.
 
 - [Currently Paying Down](#currently-paying-down)
   - [Moving Spectrum Analyzer to GPU](#moving-spectrum-analyzer-to-gpu)
+  - [Externally Synchronized](#externally-synchronized)
   - [From Manual Destruction to Drop](#from-manual-destruction-to-drop)
   - [Error Handling](#error-handling)
-  - [Memory Management](#memory-management)  
+  - [Memory Management](#memory-management)
   - [Reactive Updates](#reactive-updates)
   - [Fallible Resource Acquisition](#fallible-resource-acquisition)
 - [Charging Interest](#charging-interest)
@@ -121,6 +122,18 @@ Each element includes two parts:
 
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
+
+## Externally Synchronized
+
+Synchronizing Vulkan objects isn't a huge concern yet.  Queue submission only needs a `Mutex` on writes.  For one-surface applications, we're basically done with the `Instance` after `Surface` creation.  For multi-window applications, it's a little more sensitive.
+
+To avoid fine-grained locking on read paths, leaning towards phase-based exclusion.  Basically we only make windows during an exclusive phase that readers can indicate non-presence in so that neither reader nor writer block *as long as phases are aligned.*
+
+Several schemes out there to build on, probably QSBR style.  Runtime synchronization is the bigger concern that should drive that implementation.
+
+### For Now
+
+Exclude phases manually with obvious safe points, single thread, over-synchronize, or vibe code together an acceptable first pass. 🤷
 
 ## Logs & Tracing
 
