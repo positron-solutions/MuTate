@@ -133,36 +133,34 @@ impl AudioContext {
                 }
             };
 
+            // NEXT add a way to destroy a single connection.
+            // FIXME error without Termination may leak the connections.
+            let pw_connections = Box::into_raw(Box::new(Vec::<PipewireConnection>::new()));
             let _receiver = pw_receiver.attach(mainloop.loop_(), {
                 let mainloop_ptr = mainloop.as_raw_ptr();
-                // NOTE The crate is basically begging us to use the provided Rc wrapper here.  We
-                // always know the callback is outlived by the referents, but the "safe high-level"
-                // API doesn't really anticipate our style of usage (dynamic stream creation?) and
-                // so we're left with a dilemma of doing meaningless reference counting (a moral
-                // hazard) or hoping our unsafe code is sound.
-                //
-                // I could be wrong, but since we don't have some guard or way to tell the compiler
-                // where this callback may be ran, nobody will easily know.  The point is that a
-                // different memory soundness guarantee for same-thread callbacks seems necessary
-                // here.  I don't know of a way to create this guarantee or if a good tool already
-                // exists.
                 let core_ptr = core.as_raw_ptr();
                 move |message| match message {
                     Message::Connect { choice, tx, name } => {
                         let mut conn =
                             std::mem::ManuallyDrop::new(unsafe { Box::from_raw(tx.conn) });
+
+                        let conn_ptr = tx.conn;
                         match create_stream(core_ptr, &choice, &name, tx) {
                             Ok((listener, stream)) => {
-                                conn.stream.replace(stream);
-                                conn.listener.replace(listener);
+                                unsafe { &mut *pw_connections }.push(PipewireConnection {
+                                    conn: conn_ptr,
+                                    stream: Some(stream),
+                                    listener: Some(listener),
+                                });
                             }
                             Err(e) => {
                                 eprintln!("stream creation failed: {}", e);
-                                return;
+                                unsafe { drop(Box::from_raw(conn_ptr)) };
                             }
                         };
                     }
                     Message::Terminate => {
+                        unsafe { drop(Box::from_raw(pw_connections)) };
                         eprintln!("Terminating mainloop");
                         unsafe { pw::sys::pw_main_loop_quit(mainloop_ptr) };
                     }
@@ -272,9 +270,9 @@ impl AudioContext {
     }
 
     /// Run a function on the most recent choices.  If you need to wait on the first updates, use
-    /// wait_read instead.  Your provided function should complete quickly because it uses a lock
-    /// that will block the audio thread.  If you need more time, record a copy of the choices into
-    /// your calling scope.
+    /// [`with_choices_blocking`] instead.  Your provided function should complete quickly because
+    /// it uses a lock that will block the audio thread.  If you need more time, record a copy of
+    /// the choices into your calling scope.
     pub fn with_choices<F>(&self, mut f: F) -> Result<(), MutateError>
     where
         F: FnMut(&[AudioChoice]),
@@ -385,13 +383,24 @@ pub struct AudioConnection {
     // the last drop being the producer
     // and drop flags that detect the poisoning of the producer?
     dropped: std::sync::atomic::AtomicBool,
+}
 
-    #[cfg(target_os = "linux")]
-    user_data: Option<Box<StreamData>>,
-    #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+struct PipewireConnection {
+    conn: *mut AudioConnection,
     stream: Option<pw::stream::StreamBox<'static>>,
-    #[cfg(target_os = "linux")]
     listener: Option<pw::stream::StreamListener<Box<StreamData>>>,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for PipewireConnection {
+    fn drop(&mut self) {
+        // Explicit ordering: listener first (contains AudioProducer -> conn ptr),
+        // then stream, then free the allocation.
+        self.listener.take();
+        self.stream.take();
+        drop(unsafe { Box::from_raw(self.conn) });
+    }
 }
 
 impl AudioConnection {
@@ -404,10 +413,6 @@ impl AudioConnection {
             ready: std::sync::Condvar::new(),
             lock: std::sync::Mutex::new(0),
             dropped: false.into(),
-
-            user_data: None,
-            stream: None,
-            listener: None,
         }))
     }
 }
@@ -475,8 +480,7 @@ unsafe impl Send for AudioProducer {}
 
 impl AudioProducer {
     fn write(&mut self, datas: &mut [spa::buffer::Data]) -> Result<usize, MutateError> {
-        let mut conn = std::mem::ManuallyDrop::new(unsafe { Box::from_raw(self.conn) });
-        // Check if the receiver died before putting data into the ring
+        let conn = unsafe { &mut *self.conn };
         if conn.dropped.load(std::sync::atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
@@ -506,20 +510,6 @@ impl AudioProducer {
         *conn.lock.lock()? += 1;
         conn.ready.notify_all();
         Ok(written)
-    }
-}
-
-impl Drop for AudioProducer {
-    fn drop(&mut self) {
-        unsafe {
-            if (*self.conn)
-                .dropped
-                .swap(true, std::sync::atomic::Ordering::AcqRel)
-                == false
-            {
-                drop(Box::from_raw(self.conn));
-            }
-        }
     }
 }
 
