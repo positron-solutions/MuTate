@@ -460,7 +460,7 @@ impl Drop for AudioConsumer {
         unsafe {
             (*self.conn)
                 .dropped
-                .store(false, std::sync::atomic::Ordering::Release)
+                .store(true, std::sync::atomic::Ordering::Release)
         }
     }
 }
