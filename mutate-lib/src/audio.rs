@@ -1,11 +1,12 @@
 //! # Audio
 //!
-//! `AudioContext` sets up communication threads that receive mapped buffers from an audio server
-//! such as Pipewire.  It tracks available audio sources and provides with_choices and
-//! with_choices_blocking methods for displaying choices to the user.  An AudioChoice can be used to
-//! call connect, which will return an AudioConsumer.  An AudioConsumer, which is backed by a ring
-//! buffer, provides  enough synchronization information to precisely obtain sliding windows of
-//! audio data that can be used to develop whatever visual representations the user wants.
+//! [`AudioContext`] sets up communication threads that receive mapped buffers from an audio server
+//! such as Pipewire.  It tracks available audio sources and provides [`with_choices`] and
+//! [`with_choices_blocking`] methods for displaying choices to the user.  An [`AudioChoice`] can be
+//! used to call connect, which will return an [`AudioConsumer`].  An AudioConsumer, which is backed
+//! by a ring buffer, provides enough synchronization information to precisely obtain sliding
+//! windows of audio data that can be used to develop whatever visual representations the user
+//! wants.
 
 // NEXT To extend the AudioContext module for other platforms, just add cfg flags wherever
 // implementations and fields are platform specific.  Take a look at CPAL but consider using
@@ -39,37 +40,27 @@ enum Message {
 }
 
 // interior sync safe
-struct AudioChoicesInner {
+struct AudioChoices {
     ready: std::sync::Condvar,
     choices: std::sync::Mutex<Vec<AudioChoice>>,
     version: std::sync::atomic::AtomicUsize,
     initialized: std::sync::atomic::AtomicBool,
 }
 
-// Sharing an Arc.
-#[derive(Clone)]
-struct AudioChoices {
-    inner: std::sync::Arc<AudioChoicesInner>,
-}
-
 impl AudioChoices {
-    fn new() -> Self {
-        AudioChoices {
-            inner: std::sync::Arc::new(AudioChoicesInner {
-                ready: std::sync::Condvar::new(),
-                choices: std::sync::Mutex::new(Vec::new()),
-                version: std::sync::atomic::AtomicUsize::new(0),
-                initialized: std::sync::atomic::AtomicBool::new(false),
-            }),
-        }
+    fn notify(&self) {
+        self.initialized
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.ready.notify_all();
     }
 
-    fn notify(&self) {
-        // Only one writer.  We mainly care that readers see the version when awoken
-        self.inner
-            .initialized
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.inner.ready.notify_all();
+    fn new() -> Self {
+        Self {
+            ready: std::sync::Condvar::new(),
+            choices: std::sync::Mutex::new(Vec::new()),
+            version: std::sync::atomic::AtomicUsize::new(0),
+            initialized: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 }
 
@@ -85,7 +76,7 @@ impl AudioChoices {
 // Don't make anything too public on this struct!
 pub struct AudioContext {
     handle: std::thread::JoinHandle<()>,
-    choices: AudioChoices,
+    choices: &'static AudioChoices,
 
     #[cfg(target_os = "linux")]
     tx: pw::channel::Sender<Message>,
@@ -103,19 +94,13 @@ impl AudioContext {
 
     #[cfg(target_os = "linux")]
     fn initialize() -> Result<Self, MutateError> {
-        let choices = AudioChoices::new();
-        let choices_clone = choices.clone();
+        let choices: &'static AudioChoices = Box::leak(Box::new(AudioChoices::new()));
         let (pw_sender, pw_receiver) = pipewire::channel::channel();
 
         let handle = std::thread::spawn(move || {
             // Due to borrowed data and lack of try blocks in stable, Rust, seems like this is an
             // okay-ish way to know of issues in the terminal without forcing callers to fail.  At
             // least that's the goal.
-
-            let choices_done = choices_clone.clone();
-            let choices_remove = choices_clone.clone();
-            let choices_add = choices_clone;
-
             let mainloop = match MainLoopBox::new(None) {
                 Ok(mainloop) => mainloop,
                 Err(e) => {
@@ -186,7 +171,7 @@ impl AudioContext {
 
             let _done_listener = core
                 .add_listener_local()
-                .done(move |_seq, _serial| choices_done.notify())
+                .done(move |_seq, _serial| choices.notify())
                 .register();
 
             let _monitor_listener = registry
@@ -199,7 +184,7 @@ impl AudioContext {
                     if let Some(props) = &global.props {
                         if props.get("media.class").map(|c| c.starts_with("Audio/")) == Some(true) {
                             match AudioChoice::try_new(*props, global.id) {
-                                Ok(choice) => match choices_add.inner.choices.lock() {
+                                Ok(choice) => match choices.choices.lock() {
                                     Ok(mut choices) => {
                                         choices.push(choice);
                                     }
@@ -221,20 +206,18 @@ impl AudioContext {
 
             let _remove_listener = registry
                 .add_listener_local()
-                .global_remove(
-                    move |removed_id| match choices_remove.inner.choices.lock() {
-                        Ok(mut choices) => {
-                            if let Some(found) =
-                                choices.iter_mut().position(|c| c.global_id == removed_id)
-                            {
-                                choices.remove(found);
-                            }
+                .global_remove(move |removed_id| match choices.choices.lock() {
+                    Ok(mut choices) => {
+                        if let Some(found) =
+                            choices.iter_mut().position(|c| c.global_id == removed_id)
+                        {
+                            choices.remove(found);
                         }
-                        Err(e) => {
-                            eprintln!("removing audio source failed: {:?}", MutateError::from(e));
-                        }
-                    },
-                )
+                    }
+                    Err(e) => {
+                        eprintln!("removing audio source failed: {:?}", MutateError::from(e));
+                    }
+                })
                 .register();
 
             match core.sync(0) {
@@ -284,7 +267,6 @@ impl AudioContext {
         // Readers are deciding to do an update if one is available.  Missing one due to relaxed
         // ordering fine-grained incoherence is totally fine.
         self.choices
-            .inner
             .version
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -297,7 +279,7 @@ impl AudioContext {
     where
         F: FnMut(&[AudioChoice]),
     {
-        let choices = self.choices.inner.choices.lock()?;
+        let choices = self.choices.choices.lock()?;
         f(&choices);
         Ok(())
     }
@@ -309,17 +291,15 @@ impl AudioContext {
     where
         F: FnMut(&[AudioChoice]),
     {
-        let mut choices = self.choices.inner.choices.lock()?;
+        let mut choices = self.choices.choices.lock()?;
         while self
             .choices
-            .inner
             .initialized
             .load(std::sync::atomic::Ordering::Relaxed)
             == false
         {
             let (guard, result) = self
                 .choices
-                .inner
                 .ready
                 .wait_timeout(choices, std::time::Duration::from_millis(1000))?;
             if result.timed_out() {
