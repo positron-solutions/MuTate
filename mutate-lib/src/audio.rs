@@ -1,25 +1,77 @@
 //! # Audio
 //!
+//! ⚠️ This module was initially only completed far enough to get 800 samples per second dumped into
+//! a buffer.  The downstream programs didn't care, and so the shape of support was not that of a
+//! real client for pipewire.  Problems were found with the [`ringbuf`] crate's API.  The
+//! event-driven nature of pipewire and the Rust wrapper around the pipewire sys crate were
+//! discovered only mid-development.  A redesign pass will be welcome so long as this notice exists.
+//!
+//! The [`AudioContext`] is to represent a connection to the server while [`AudioConsumer`] is an
+//! open streaming connection.  See CPAL APIs for other user-facing API ideas.  We are likely more
+//! interested in timing data, media names, and routing multiple streams than many CPAL clients, so
+//! the first implementation, the pipewire implementation, is being done by hand.  Receiving smaller
+//! audio chunks is one win realized so far.
+//!
 //! [`AudioContext`] sets up communication threads that receive mapped buffers from an audio server
-//! such as Pipewire.  It tracks available audio sources and provides [`with_choices`] and
-//! [`with_choices_blocking`] methods for displaying choices to the user.  An [`AudioChoice`] can be
-//! used to call connect, which will return an [`AudioConsumer`].  An AudioConsumer, which is backed
-//! by a ring buffer, provides enough synchronization information to precisely obtain sliding
-//! windows of audio data that can be used to develop whatever visual representations the user
-//! wants.
+//! such as Pipewire.  The communication thread either polls or tracks available audio sources.
+//! [`AudioContext`] provides [`with_choices`] and [`with_choices_blocking`] methods for displaying
+//! those choices to the user.  An [`AudioChoice`] can be used to call [`connect`], which will
+//! return an [`AudioConsumer`].  An `AudioConsumer`, which is backed by a ring buffer, provides
+//! synchronization data, media names, and access to the sliding window for reads.
+//!
+//! ## Implementations
+//!
+//! We are usually interested in monitoring outgoing sound from other applications.  We need to find
+//! valid sinks and create streams linked to their monitor ports.  The exact terminology may depend
+//! on the platform, but the basic idea is to find outbound audio and tee it into our application
+//! with sufficient synchronization information to align with sounds being played as closely as
+//! possible.
+//!
+//! Use cfg gates to support future clients, likely by abstracting pipewire out first.  **Express
+//! willingness to work on your preferred client if you would like this abstraction done by someone
+//! running pipewire to test the abstraction.**
+//!
+//! ### Pipewire
+//!
+//! Pipewire exposes an event driven interface where we register listeners and filter the
+//! information we are interested in.  The way we learn about what audio streams are available is by
+//! registering a global listener, client-side filtering for our interests, and then maintaining a
+//! view by watching changes published to our global listener.
+//!
+//! Each set of global update events has a fixed sequence number for the set.  Each set will emit a
+//! done event to indicate that all messages in the set were received.  Blocking for the first set,
+//! enabling callers to receive a fully populated initial view of available streams, is the reason
+//! for the `with_choices_blocking` API.
+//!
+//! Pipewire does have some presentation data, but until Link support is expanded, tests so far read
+//! zero-values for all presentation delays on sink monitors.
+//!
+//! ### CPAL
+//!
+//! This would be a welcome addition for supporting more platforms.  **Please get in touch if you
+//! need the pipewire code moved and want someone else to move it while making sure that it keeps
+//! working.**
 
 // NEXT To extend the AudioContext module for other platforms, just add cfg flags wherever
 // implementations and fields are platform specific.  Take a look at CPAL but consider using
 // platform bindings more directly if CPAL can't give us precise timing data or control.  We might
 // want to adjust the input stream latency by talking to the audio server directly, which is not an
 // API expected to be found in CPAL.
-// NOTE remember, delay times from the server can be negative, so always use signed types, such as
-// i64 etc.
+// NEXT The ringbuf crate is not the right solution for even this job.  We need to make our sliding
+// window crate, [`slide`], capable of doing multithreaded SPSC over a window, using write-head
+// after-copy checks to detect torn reads.
+// NOTE Delay times from the server can be negative, so always use signed types for time offsets,
+// such as i64 etc.
+// NOTE The model for receiving stream data from pipewire, which might hold up when talking to other
+// audio servers, is that pipewire sends us monotonic buffer chunks without skips (via padding or
+// stream parameter change, the latter of which is not yet handled).  Due to audio playback being
+// naturally self-pacing, the monotonic chunks without skips behavior provides implicit relative
+// timing signal without use of any explicit time values.
+// NEXT Absolute presentation timing data may be obtainable, but seems to require customizing our
+// pipewire link to match the presentation timing of the sink monitor.
+// FIXME cfg gates on Linux need features instead.
 use std::sync::atomic;
 
-// The model for working with pipewire, which might hold up when talking to other audio servers, is
-// that pipewire sends us monotonic buffer chunks without skips (via padding or stream parameter
-// change, the latter of which is not yet handled).
 #[cfg(target_os = "linux")]
 use pipewire::{self as pw, main_loop::MainLoopBox, spa, stream::StreamListener};
 use ringbuf::traits::{Consumer, Observer, Producer};
@@ -37,7 +89,9 @@ enum Message {
     Terminate,
 }
 
-// interior sync safe
+/// Even-driven clients will maintain a client-side view.  Polling clients do not require
+/// maintaining a view of stream choices.
+// XXX cfg and feature gates
 struct AudioChoices {
     ready: std::sync::Condvar,
     choices: std::sync::Mutex<Vec<AudioChoice>>,
@@ -61,16 +115,13 @@ impl AudioChoices {
     }
 }
 
-/// The AudioContext indirection will be the basis of the public API for acquiring sound input. Even
-/// though only pipewire is supported so far, we are only interested in exposing and using a
-/// narrow set of capabilities that is not expected to depend at all on the host platform.
+/// `AudioContext` represents the connection to an audio server, which usually takes care of
+/// multiplexing the applications and hardware devices.  Most workflows need to look for usable
+/// audio streams before obtaining connections.  The `AudioContext` provides access to usable
+/// streams and provides connections to them.
 ///
-/// We are usually interested in monitoring outgoing sound from other applications.  We need to find
-/// valid sinks and create streams linked to their monitor ports.  The exact terminology may depend
-/// on the platform, but the basic idea is to find outbound audio and tee it into our application
-/// with sufficient synchronization information to align with sounds being played as closely as
-/// possible.
-// Don't make anything too public on this struct!
+/// ⚠️ If the context is dropped early, outstanding `AudioConsumer`s will begin returning errors as
+/// the backing resources that feed them will have been torn down.
 pub struct AudioContext {
     handle: std::thread::JoinHandle<()>,
     choices: &'static AudioChoices,
@@ -80,8 +131,7 @@ pub struct AudioContext {
 }
 
 impl AudioContext {
-    /// Creates initial platform resources.  This will create a thread handle and begin tracking
-    /// available useful sinks.
+    /// Creates initial audio server connection.
     pub fn new() -> Result<Self, MutateError> {
         // Platform binaries may use cfg flags.  For supporting different versions of the same
         // platform prefer runtime decisions.  Use features if binary weight is a concern for
@@ -297,8 +347,8 @@ impl AudioContext {
     }
 }
 
+/// Exposes a platform independent interface to available streams.
 #[derive(Clone, Debug)]
-/// Platform independent Choice to enable building cross-platform UIs
 pub struct AudioChoice {
     #[cfg(target_os = "linux")]
     object_serial: u32,
@@ -354,9 +404,8 @@ impl AudioChoice {
     }
 }
 
-/// AudioConnection is never directly handled.  It is created by calling connect.  Dropping the
-/// returned AudioConsumer will clean up the connection after the corresponding AudioProducer has an
-/// opportunity to clean up.
+/// The rendezvous point for `AudioConsumer` and `AudioProducer`.  Either side can tombstone the
+/// connection to enable the other to return errors until its side drops and enables cleanup.
 pub struct AudioConnection {
     // NEXT convert this to use frames?  Store the format somewhere?
     pub buffer: ringbuf::HeapRb<u8>,
@@ -406,9 +455,12 @@ impl AudioConnection {
     }
 }
 
-/// The Rx side of creating a connection to the audio server.  Dropping the consumer will tombstone
-/// the connection and the backing resources will be cleaned up by the audio server communication
-/// thread.
+/// The user side of a connection, obtained by calling [`connect`](AudioContext::connect) with an
+/// [`AudioChoice`].  The producer side is owned by the `AudioContext`, usually inside the audio
+/// server communication thread.
+///
+/// Dropping an `AudioConsumer` will tombstone the `AudioConnection`, enabling clean up the
+/// connection after the corresponding `AudioProducer` has an opportunity to clean up.
 pub struct AudioConsumer {
     pub conn: *mut AudioConnection,
 }
@@ -647,7 +699,7 @@ fn create_stream<'c>(
     // port and input port.
     stream.connect(
         spa::utils::Direction::Input,
-        None, // read docs.  use PW_KEY_TARGET_OBJECT.  This argument is deprectated
+        None, // read docs.  use PW_KEY_TARGET_OBJECT.  This argument is deprecated
         pw::stream::StreamFlags::MAP_BUFFERS
             | pw::stream::StreamFlags::AUTOCONNECT
             | pw::stream::StreamFlags::RT_PROCESS,
