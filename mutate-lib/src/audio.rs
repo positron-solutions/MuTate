@@ -60,6 +60,7 @@
 // NEXT The ringbuf crate is not the right solution for even this job.  We need to make our sliding
 // window crate, [`slide`], capable of doing multithreaded SPSC over a window, using write-head
 // after-copy checks to detect torn reads.
+// FIXME Swap in sys crate primitives directly in places where we are throwing away the safety anyway.
 // NOTE Delay times from the server can be negative, so always use signed types for time offsets,
 // such as i64 etc.
 // NOTE The model for receiving stream data from pipewire, which might hold up when talking to other
@@ -118,6 +119,7 @@ impl std::fmt::Display for AudioSourceKind {
 enum Message {
     /// Connect to a particular identifier
     Connect {
+        /// The name of the connection we are creating.  Displays our application correctly
         name: String,
         choice: AudioChoice,
         tx: AudioProducer,
