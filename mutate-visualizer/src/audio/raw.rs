@@ -74,8 +74,13 @@ impl RawAudioNode {
             first_choices.extend_from_slice(choices);
         };
         context.with_choices_blocking(check).unwrap();
+        let max_name_width = first_choices
+            .iter()
+            .map(|c| c.name().len())
+            .max()
+            .unwrap_or(0);
         first_choices.iter().enumerate().for_each(|(i, c)| {
-            println!("[{}] {} AudioChoice: {:?}", i, c.id(), c.name());
+            println!("[{}] {:<max_name_width$}  [{}]", i, c.name(), c.kind());
         });
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).unwrap();

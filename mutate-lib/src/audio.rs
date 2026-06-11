@@ -78,6 +78,41 @@ use ringbuf::traits::{Consumer, Observer, Producer};
 
 use crate::prelude::*;
 
+/// The kinds of audio we can listen to.  Implements `Display` for an end-user meaningful string.
+/// Match directly to implement custom UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioSourceKind {
+    /// Listen to an input source, such as a hardware microphone.
+    HardwareInput,
+    /// Listen on a monitor of all output to a sink.
+    SinkMonitor,
+    /// Listen to an application that is playing audio.
+    ApplicationStream,
+}
+
+impl AudioSourceKind {
+    /// None will
+    #[cfg(target_os = "linux")]
+    pub fn from_media_class(class: &str) -> Option<Self> {
+        match class {
+            "Audio/Source" => Some(Self::HardwareInput),
+            "Audio/Sink" => Some(Self::SinkMonitor),
+            "Stream/Output/Audio" => Some(Self::ApplicationStream),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AudioSourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::HardwareInput => "Input",
+            Self::SinkMonitor => "Output",
+            Self::ApplicationStream => "Application",
+        })
+    }
+}
+
 /// Commands for calling into the Audio thread
 enum Message {
     /// Connect to a particular identifier
@@ -219,29 +254,29 @@ impl AudioContext {
             let _monitor_listener = registry
                 .add_listener_local()
                 .global(move |global| {
+                    // NEXT this will become a big match statement in order to track a node -> ports
+                    // mapping.
                     if global.type_ != pw::types::ObjectType::Node {
                         return;
                     }
 
-                    if let Some(props) = &global.props {
-                        if props.get("media.class").map(|c| c.starts_with("Audio/")) == Some(true) {
-                            match AudioChoice::try_new(*props, global.id) {
-                                Ok(choice) => match choices.choices.lock() {
-                                    Ok(mut choices) => {
-                                        choices.push(choice);
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "adding audio source failed: {:?}",
-                                            MutateError::from(e)
-                                        );
-                                    }
-                                },
-                                Err(e) => {
-                                    eprintln!("Skipping Audio/Source: {:?}", e);
-                                }
-                            }
-                        }
+                    let Some(props) = &global.props else { return };
+                    let Some(media_class) = props.get("media.class") else {
+                        return;
+                    };
+                    let Some(kind) = AudioSourceKind::from_media_class(media_class) else {
+                        return;
+                    };
+
+                    match AudioChoice::try_new(kind, *props, global.id) {
+                        Ok(choice) => match choices.choices.lock() {
+                            Ok(mut guard) => guard.push(choice),
+                            Err(e) => eprintln!(
+                                "listing audio source failed.  skipping: {:?}",
+                                MutateError::from(e)
+                            ),
+                        },
+                        Err(e) => eprintln!("Skipping {}: {:?}", media_class, e),
                     }
                 })
                 .register();
@@ -350,13 +385,15 @@ impl AudioContext {
 /// Exposes a platform independent interface to available streams.
 #[derive(Clone, Debug)]
 pub struct AudioChoice {
+    // NOTE these fields are only accessed via getters to enable later interception by methods aware
+    // of platform variations.
+    kind: AudioSourceKind,
+    name: Option<String>,
     #[cfg(target_os = "linux")]
     object_serial: u32,
-    name: Option<String>,
-    description: Option<String>,
-    #[cfg(target_os = "linux")]
     /// Integer passed to the global registry listener.  Does not correspond perfectly to any fields
     /// of any objects.  Used to support removal of previously registered audio sources.
+    #[cfg(target_os = "linux")]
     global_id: u32,
 }
 
@@ -365,7 +402,6 @@ impl AudioChoice {
     pub fn name(&self) -> String {
         self.name
             .clone()
-            .or(self.description.clone())
             .unwrap_or_else(|| self.object_serial.to_string())
     }
 
@@ -374,9 +410,19 @@ impl AudioChoice {
         format!("{}", self.object_serial)
     }
 
+    /// Return the [`AudioSourceKind`] to differentiate nodes with the same name but different
+    /// roles.
+    pub fn kind(&self) -> AudioSourceKind {
+        self.kind
+    }
+
     // This was going to be a try_from implementation until I realized the global_id was needed to
     // support removals on Linux / pipewire.
-    fn try_new(props: &spa::utils::dict::DictRef, global_id: u32) -> Result<Self, MutateError> {
+    fn try_new(
+        kind: AudioSourceKind,
+        props: &spa::utils::dict::DictRef,
+        global_id: u32,
+    ) -> Result<Self, MutateError> {
         let object_serial: u32 = props
             .get("object.serial")
             .and_then(|s| s.parse::<u32>().ok())
@@ -385,20 +431,18 @@ impl AudioChoice {
             ))?;
 
         // The "name" here is a rather arbitrary choice.  Different choices for different devices
-        // may mean more for users.
+        // may mean more to users.
         let name = props
-            .get("device.description")
-            .or_else(|| props.get("device.nick"))
-            .or_else(|| props.get("device.name"))
-            .or_else(|| props.get("object.path"))
+            .get("node.description") // "Ryzen HD Audio Controller Analog Stereo"
+            .or_else(|| props.get("media.name")) // "Loin Girding Hymns..."
+            .or_else(|| props.get("application.name")) // "Firefox" (application when media.name isn't set)
+            .or_else(|| props.get("node.name")) // technical but always present
             .map(ToString::to_string);
 
-        let description = props.get("node.description").map(ToString::to_string);
-
         Ok(AudioChoice {
+            kind,
             object_serial,
             name,
-            description,
             global_id,
         })
     }
