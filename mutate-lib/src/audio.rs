@@ -618,7 +618,13 @@ fn create_stream<'c>(
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Music",
         *pw::keys::STREAM_CAPTURE_SINK => "true",
-        *pw::keys::NODE_LATENCY => "128/48000",
+        // NODE_LATENCY values control the size of data that pipewire will notify us to read.
+        // Latency less than the frame size (800 for 60FPS) can help steady our just-in-time goals
+        // but low values can also cause crackling.  Switching the scheduler for pipewire or other
+        // changes may help avoid this, but for now it was easier just to choose a slightly relaxed
+        // value to be on the safe side.
+        // NEXT real-time updates?
+        *pw::keys::NODE_LATENCY => "256/48000",
         // FIXME this is not yet respected 😠
         *pw::keys::TARGET_OBJECT => choice.global_id.to_string(),
     };
