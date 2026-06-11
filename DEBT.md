@@ -197,6 +197,8 @@ all target platform audio servers to give us a common denominator (and convert
 ourselves under the hood).  GPUs (and CPUs) prefer SoA and we should aim to make
 this easy by doing it all the time with a good set of tools.  **Cost is that DSP algorithms and their buffers are not format-aware or channel-aware at all, piling up missing dependent information flows.**
 
+On Linux, setting up the audio Link in the pipewire code is probably a requirement to have control over the formats or at least to have precise control.  The autoconnect feature of pipewire is likely just using our desired format (which is not negotiated!) and doing the right thing.  The pipewire module is overall just doing the minimum to get 800 samples per second.
+
 ### For Now
 
 Hardcode and mark with `// DEBT`

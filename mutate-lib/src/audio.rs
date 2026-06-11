@@ -640,8 +640,7 @@ fn create_stream<'c>(
         // value to be on the safe side.
         // NEXT real-time updates?
         *pw::keys::NODE_LATENCY => "256/48000",
-        // FIXME this is not yet respected 😠
-        *pw::keys::TARGET_OBJECT => choice.global_id.to_string(),
+        *pw::keys::TARGET_OBJECT => choice.object_serial.to_string(),
     };
 
     // 🤠 Whatever breauxseph, just let me use a pointer like a pointer!
