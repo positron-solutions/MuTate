@@ -70,6 +70,7 @@
 // NEXT Absolute presentation timing data may be obtainable, but seems to require customizing our
 // pipewire link to match the presentation timing of the sink monitor.
 // FIXME cfg gates on Linux need features instead.
+use std::cell::UnsafeCell;
 use std::sync::atomic;
 
 #[cfg(target_os = "linux")]
@@ -461,7 +462,7 @@ impl AudioChoice {
 /// connection to enable the other to return errors until its side drops and enables cleanup.
 pub struct AudioConnection {
     // NEXT convert this to use frames?  Store the format somewhere?
-    pub buffer: ringbuf::HeapRb<u8>,
+    pub buffer: UnsafeCell<ringbuf::HeapRb<u8>>,
 
     pub ready: std::sync::Condvar,
     /// The lock payload is a u64 representing the number of chunks written.
@@ -485,7 +486,7 @@ impl AudioConnection {
     fn new() -> *mut Self {
         let buffer = ringbuf::HeapRb::new(1024 * 256);
         Box::into_raw(Box::new(AudioConnection {
-            buffer,
+            buffer: UnsafeCell::new(buffer),
 
             ready: std::sync::Condvar::new(),
             lock: std::sync::Mutex::new(0),
@@ -530,16 +531,18 @@ impl AudioConsumer {
     // the ring buffer as minimally as possible.
     pub fn read(&mut self, output: &mut [u8]) -> Result<usize, MutateError> {
         let conn = unsafe { &mut (*self.conn) };
+        let buf = unsafe { &mut *conn.buffer.get() };
         if conn.dropped.load(atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
-        Ok(conn.buffer.pop_slice(output))
+        Ok(buf.pop_slice(output))
     }
 
     /// Return how many bytes are available for read
     pub fn occupied(&self) -> usize {
         let conn = unsafe { &(*self.conn) };
-        conn.buffer.occupied_len()
+        let buf = unsafe { &mut *conn.buffer.get() };
+        buf.occupied_len()
     }
 }
 
@@ -563,12 +566,13 @@ unsafe impl Send for AudioProducer {}
 impl AudioProducer {
     fn write(&mut self, datas: &mut [spa::buffer::Data]) -> Result<usize, MutateError> {
         let conn = unsafe { &mut *self.conn };
+        let buf = unsafe { &mut *conn.buffer.get() };
         if conn.dropped.load(atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
 
         let input_len = datas.iter().fold(0, |accum, d| accum + d.chunk().size()) as usize;
-        let capacity: usize = conn.buffer.capacity().into();
+        let capacity: usize = buf.capacity().into();
         if input_len > capacity {
             eprintln!(
                 "total input len {} exceeds ring capacity {}",
@@ -576,17 +580,17 @@ impl AudioProducer {
             );
             return Err(MutateError::AudioSource("ring too small".to_owned()));
         }
-        let vacant_len = conn.buffer.vacant_len();
+        let vacant_len = buf.vacant_len();
         if input_len > vacant_len {
             eprintln!("audio consumer falling behind");
-            conn.buffer.skip(input_len - vacant_len);
+            buf.skip(input_len - vacant_len);
         }
         let mut written = 0;
         datas.iter_mut().for_each(|d| {
             let offset = d.chunk().offset() as usize;
             let size = d.chunk().size() as usize;
             if let Some(input) = d.data() {
-                written += conn.buffer.push_slice(&input[offset..offset + size]);
+                written += buf.push_slice(&input[offset..offset + size]);
             }
         });
         *conn.lock.lock()? += 1;
