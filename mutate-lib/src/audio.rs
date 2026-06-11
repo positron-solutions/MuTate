@@ -159,8 +159,8 @@ impl AudioChoices {
 /// ⚠️ If the context is dropped early, outstanding `AudioConsumer`s will begin returning errors as
 /// the backing resources that feed them will have been torn down.
 pub struct AudioContext {
-    choices: &'static AudioChoices,
     handle: Option<std::thread::JoinHandle<()>>,
+    choices: *mut AudioChoices,
 
     #[cfg(target_os = "linux")]
     tx: pw::channel::Sender<Message>,
@@ -177,10 +177,13 @@ impl AudioContext {
 
     #[cfg(target_os = "linux")]
     fn initialize() -> Result<Self, MutateError> {
-        let choices: &'static AudioChoices = Box::leak(Box::new(AudioChoices::new()));
+        let choices = Box::into_raw(Box::new(AudioChoices::new()));
+        let choices_addr = choices as usize;
         let (pw_sender, pw_receiver) = pipewire::channel::channel();
-
         let handle = std::thread::spawn(move || {
+            // Safety: AudioContext::drop joins this thread before freeing choices, so &AudioChoices
+            // is valid for the thread's entire lifetime.
+            let choices: &AudioChoices = unsafe { &*(choices_addr as *mut AudioChoices) };
             // Due to borrowed data and lack of try blocks in stable, Rust, seems like this is an
             // okay-ish way to know of issues in the terminal without forcing callers to fail.  At
             // least that's the goal.
@@ -342,7 +345,9 @@ impl AudioContext {
     pub fn choices_version(&self) -> usize {
         // Readers are deciding to do an update if one is available.  Missing one due to relaxed
         // ordering fine-grained incoherence is totally fine.
-        self.choices.version.load(atomic::Ordering::Relaxed)
+        unsafe { &*self.choices }
+            .version
+            .load(atomic::Ordering::Relaxed)
     }
 
     /// Run a function on the most recent choices.  If you need to wait on the first updates, use
@@ -353,7 +358,7 @@ impl AudioContext {
     where
         F: FnMut(&[AudioChoice]),
     {
-        let choices = self.choices.choices.lock()?;
+        let choices = unsafe { &*self.choices }.choices.lock()?;
         f(&choices);
         Ok(())
     }
@@ -365,10 +370,10 @@ impl AudioContext {
     where
         F: FnMut(&[AudioChoice]),
     {
-        let mut choices = self.choices.choices.lock()?;
-        while self.choices.initialized.load(atomic::Ordering::Relaxed) == false {
-            let (guard, result) = self
-                .choices
+        let ac: &AudioChoices = unsafe { &*self.choices };
+        let mut choices = ac.choices.lock()?;
+        while ac.initialized.load(atomic::Ordering::Relaxed) == false {
+            let (guard, result) = ac
                 .ready
                 .wait_timeout(choices, std::time::Duration::from_millis(1000))?;
             if result.timed_out() {
