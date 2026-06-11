@@ -138,9 +138,6 @@ impl AudioContext {
                 let core_ptr = core.as_raw_ptr();
                 move |message| match message {
                     Message::Connect { choice, tx, name } => {
-                        let mut conn =
-                            std::mem::ManuallyDrop::new(unsafe { Box::from_raw(tx.conn) });
-
                         let conn_ptr = tx.conn;
                         match create_stream(core_ptr, &choice, &name, tx) {
                             Ok((listener, stream)) => {
@@ -389,7 +386,9 @@ impl Drop for PipewireConnection {
         // then stream, then free the allocation.
         self.listener.take();
         self.stream.take();
+        let lock = unsafe { &*self.conn }.lock.lock(); // barrier for consumer to exit wait
         drop(unsafe { Box::from_raw(self.conn) });
+        drop(lock)
     }
 }
 
