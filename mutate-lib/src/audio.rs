@@ -158,8 +158,8 @@ impl AudioChoices {
 /// ⚠️ If the context is dropped early, outstanding `AudioConsumer`s will begin returning errors as
 /// the backing resources that feed them will have been torn down.
 pub struct AudioContext {
-    handle: std::thread::JoinHandle<()>,
     choices: &'static AudioChoices,
+    handle: Option<std::thread::JoinHandle<()>>,
 
     #[cfg(target_os = "linux")]
     tx: pw::channel::Sender<Message>,
@@ -307,7 +307,7 @@ impl AudioContext {
         });
 
         Ok(AudioContext {
-            handle,
+            handle: Some(handle),
             choices,
             tx: pw_sender,
         })
@@ -377,6 +377,17 @@ impl AudioContext {
         }
         f(&choices);
         Ok(())
+    }
+}
+
+impl Drop for AudioContext {
+    fn drop(&mut self) {
+        // send Terminate first so the thread stops touching choices
+        let _ = self.tx.send(Message::Terminate);
+        if self.handle.take().unwrap().join().is_err() {
+            eprintln!("audio thread panicked");
+        }
+        unsafe { drop(Box::from_raw(self.choices)) };
     }
 }
 
