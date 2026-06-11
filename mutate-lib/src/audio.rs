@@ -20,10 +20,8 @@ use std::sync::atomic;
 // The model for working with pipewire, which might hold up when talking to other audio servers, is
 // that pipewire sends us monotonic buffer chunks without skips (via padding or stream parameter
 // change, the latter of which is not yet handled).
-use pipewire as pw;
 #[cfg(target_os = "linux")]
-use pipewire::stream::StreamListener;
-use pw::{main_loop::MainLoopBox, spa};
+use pipewire::{self as pw, main_loop::MainLoopBox, spa, stream::StreamListener};
 use ringbuf::traits::{Consumer, Observer, Producer};
 
 use crate::prelude::*;
