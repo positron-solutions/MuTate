@@ -337,13 +337,6 @@ impl AudioContext {
         Ok(AudioConsumer { conn })
     }
 
-    /// Disconnect to a stream
-    pub fn destroy(&self) -> Result<(), MutateError> {
-        self.tx
-            .send(Message::Terminate)
-            .map_err(|_e| MutateError::AudioTerminate)
-    }
-
     pub fn choices_version(&self) -> usize {
         // Readers are deciding to do an update if one is available.  Missing one due to relaxed
         // ordering fine-grained incoherence is totally fine.
