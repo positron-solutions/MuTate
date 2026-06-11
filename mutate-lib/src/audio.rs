@@ -13,9 +13,9 @@
 // platform bindings more directly if CPAL can't give us precise timing data or control.  We might
 // want to adjust the input stream latency by talking to the audio server directly, which is not an
 // API expected to be found in CPAL.
-
 // NOTE remember, delay times from the server can be negative, so always use signed types, such as
 // i64 etc.
+use std::sync::atomic;
 
 // The model for working with pipewire, which might hold up when talking to other audio servers, is
 // that pipewire sends us monotonic buffer chunks without skips (via padding or stream parameter
@@ -43,14 +43,13 @@ enum Message {
 struct AudioChoices {
     ready: std::sync::Condvar,
     choices: std::sync::Mutex<Vec<AudioChoice>>,
-    version: std::sync::atomic::AtomicUsize,
-    initialized: std::sync::atomic::AtomicBool,
+    version: atomic::AtomicUsize,
+    initialized: atomic::AtomicBool,
 }
 
 impl AudioChoices {
     fn notify(&self) {
-        self.initialized
-            .store(true, std::sync::atomic::Ordering::Release);
+        self.initialized.store(true, atomic::Ordering::Release);
         self.ready.notify_all();
     }
 
@@ -58,8 +57,8 @@ impl AudioChoices {
         Self {
             ready: std::sync::Condvar::new(),
             choices: std::sync::Mutex::new(Vec::new()),
-            version: std::sync::atomic::AtomicUsize::new(0),
-            initialized: std::sync::atomic::AtomicBool::new(false),
+            version: atomic::AtomicUsize::new(0),
+            initialized: atomic::AtomicBool::new(false),
         }
     }
 }
@@ -264,9 +263,7 @@ impl AudioContext {
     pub fn choices_version(&self) -> usize {
         // Readers are deciding to do an update if one is available.  Missing one due to relaxed
         // ordering fine-grained incoherence is totally fine.
-        self.choices
-            .version
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.choices.version.load(atomic::Ordering::Relaxed)
     }
 
     /// Run a function on the most recent choices.  If you need to wait on the first updates, use
@@ -290,12 +287,7 @@ impl AudioContext {
         F: FnMut(&[AudioChoice]),
     {
         let mut choices = self.choices.choices.lock()?;
-        while self
-            .choices
-            .initialized
-            .load(std::sync::atomic::Ordering::Relaxed)
-            == false
-        {
+        while self.choices.initialized.load(atomic::Ordering::Relaxed) == false {
             let (guard, result) = self
                 .choices
                 .ready
@@ -382,7 +374,7 @@ pub struct AudioConnection {
     // XXX instead, we want one-sided drop behavior,
     // the last drop being the producer
     // and drop flags that detect the poisoning of the producer?
-    dropped: std::sync::atomic::AtomicBool,
+    dropped: atomic::AtomicBool,
 }
 
 #[cfg(target_os = "linux")]
@@ -430,7 +422,7 @@ impl AudioConsumer {
     /// Wait for a buffer chunk to be written.
     pub fn wait(&self) -> Result<u64, MutateError> {
         let conn = unsafe { &(*self.conn) };
-        if conn.dropped.load(std::sync::atomic::Ordering::Acquire) {
+        if conn.dropped.load(atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
         let mut count = conn.lock.lock()?;
@@ -439,7 +431,7 @@ impl AudioConsumer {
             // NEXT use a timeout wait and provide a method to wait for a specific number of bytes.
             // Possibly switch to parking instead of this silly Condvar.
             count = conn.ready.wait(count)?;
-            if conn.dropped.load(Ordering::Acquire) {
+            if conn.dropped.load(atomic::Ordering::Acquire) {
                 return Err(MutateError::Dropped);
             }
         }
@@ -450,7 +442,7 @@ impl AudioConsumer {
     // the ring buffer as minimally as possible.
     pub fn read(&mut self, output: &mut [u8]) -> Result<usize, MutateError> {
         let conn = unsafe { &mut (*self.conn) };
-        if conn.dropped.load(std::sync::atomic::Ordering::Acquire) {
+        if conn.dropped.load(atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
         Ok(conn.buffer.pop_slice(output))
@@ -465,11 +457,7 @@ impl AudioConsumer {
 
 impl Drop for AudioConsumer {
     fn drop(&mut self) {
-        unsafe {
-            (*self.conn)
-                .dropped
-                .store(true, std::sync::atomic::Ordering::Release)
-        }
+        unsafe { (*self.conn).dropped.store(true, atomic::Ordering::Release) }
     }
 }
 
@@ -484,7 +472,7 @@ unsafe impl Send for AudioProducer {}
 impl AudioProducer {
     fn write(&mut self, datas: &mut [spa::buffer::Data]) -> Result<usize, MutateError> {
         let conn = unsafe { &mut *self.conn };
-        if conn.dropped.load(std::sync::atomic::Ordering::Acquire) {
+        if conn.dropped.load(atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
 
@@ -519,9 +507,7 @@ impl AudioProducer {
 impl Drop for AudioProducer {
     fn drop(&mut self) {
         unsafe {
-            (*self.conn)
-                .dropped
-                .store(true, std::sync::atomic::Ordering::Release);
+            (*self.conn).dropped.store(true, atomic::Ordering::Release);
             (*self.conn).ready.notify_all();
         }
     }
