@@ -439,6 +439,9 @@ impl AudioConsumer {
             // NEXT use a timeout wait and provide a method to wait for a specific number of bytes.
             // Possibly switch to parking instead of this silly Condvar.
             count = conn.ready.wait(count)?;
+            if conn.dropped.load(Ordering::Acquire) {
+                return Err(MutateError::Dropped);
+            }
         }
         Ok(*count)
     }
@@ -510,6 +513,17 @@ impl AudioProducer {
         *conn.lock.lock()? += 1;
         conn.ready.notify_all();
         Ok(written)
+    }
+}
+
+impl Drop for AudioProducer {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.conn)
+                .dropped
+                .store(true, std::sync::atomic::Ordering::Release);
+            (*self.conn).ready.notify_all();
+        }
     }
 }
 
