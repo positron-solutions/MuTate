@@ -227,14 +227,12 @@ impl AudioContext {
                         match create_stream(core_ptr, &choice, &name, tx) {
                             Ok((listener, stream)) => {
                                 unsafe { &mut *pw_connections }.push(PipewireConnection {
-                                    conn: conn_ptr,
                                     stream: Some(stream),
                                     listener: Some(listener),
                                 });
                             }
                             Err(e) => {
                                 eprintln!("stream creation failed: {}", e);
-                                unsafe { drop(Box::from_raw(conn_ptr)) };
                             }
                         };
                     }
@@ -467,22 +465,8 @@ pub struct AudioConnection {
 
 #[cfg(target_os = "linux")]
 struct PipewireConnection {
-    conn: *mut AudioConnection,
-    stream: Option<pw::stream::StreamBox<'static>>,
     listener: Option<pw::stream::StreamListener<Box<StreamData>>>,
-}
-
-#[cfg(target_os = "linux")]
-impl Drop for PipewireConnection {
-    fn drop(&mut self) {
-        // Explicit ordering: listener first (contains AudioProducer -> conn ptr),
-        // then stream, then free the allocation.
-        self.listener.take();
-        self.stream.take();
-        let lock = unsafe { &*self.conn }.lock.lock(); // barrier for consumer to exit wait
-        drop(unsafe { Box::from_raw(self.conn) });
-        drop(lock)
-    }
+    stream: Option<pw::stream::StreamBox<'static>>,
 }
 
 impl AudioConnection {
@@ -550,7 +534,10 @@ impl AudioConsumer {
 
 impl Drop for AudioConsumer {
     fn drop(&mut self) {
-        unsafe { (*self.conn).dropped.store(true, atomic::Ordering::Release) }
+        let was_dropped = unsafe { (*self.conn).dropped.swap(true, atomic::Ordering::AcqRel) };
+        if was_dropped {
+            unsafe { drop(Box::from_raw(self.conn)) };
+        }
     }
 }
 
@@ -599,9 +586,10 @@ impl AudioProducer {
 
 impl Drop for AudioProducer {
     fn drop(&mut self) {
-        unsafe {
-            (*self.conn).dropped.store(true, atomic::Ordering::Release);
-            (*self.conn).ready.notify_all();
+        let was_dropped = unsafe { (*self.conn).dropped.swap(true, atomic::Ordering::AcqRel) };
+        unsafe { (*self.conn).ready.notify_all() }; // wake any waiting consumer
+        if was_dropped {
+            unsafe { drop(Box::from_raw(self.conn)) };
         }
     }
 }
