@@ -71,6 +71,10 @@
 // NEXT Absolute presentation timing data may be obtainable, but seems to require customizing our
 // pipewire link to match the presentation timing of the sink monitor.
 // FIXME cfg gates on Linux need features instead.
+// NEXT media name events on the `AudioConsumer`!  We need to see the info events from pipewire.
+// Also looks like we need DBUS for seeing Spotify title changes.  If we have it, we can render
+// title changes in the middle of playback, something Milkdrop has done right for twenty years or
+// so.
 use std::cell::UnsafeCell;
 use std::sync::atomic;
 
