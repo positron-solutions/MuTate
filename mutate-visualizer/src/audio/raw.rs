@@ -147,9 +147,14 @@ impl RawAudioNode {
         self.frames += 1;
         let out = match self.state {
             SeekState::OverProduced => {
-                // XXX over produced was breaking something
                 let occupied = self.rx.occupied().min(6400);
-
+                let capacity = self.rx.capacity();
+                // XXX About to be working on this pacing in a much more intelligent manner, so this
+                // is just a doorstop for the commit to make sense.
+                if occupied > capacity / 2 {
+                    self.rx.skip(occupied / 4)
+                }
+                // pops slice
                 let read = self.rx.read(&mut self.read_buffer[0..occupied])?;
                 assert!(read % 8 == 0);
 

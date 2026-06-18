@@ -548,6 +548,20 @@ impl AudioConsumer {
         let buf = unsafe { &mut *conn.buffer.get() };
         buf.occupied_len()
     }
+
+    /// Remind the consumer how much capacity we requested.
+    pub fn capacity(&self) -> usize {
+        let conn = unsafe { &(*self.conn) };
+        let buf = unsafe { &mut *conn.buffer.get() };
+        usize::from(buf.capacity())
+    }
+
+    /// Get rid of some elements that are likely to cause producer slack underrun anyway.
+    pub fn skip(&self, count: usize) {
+        let conn = unsafe { &(*self.conn) };
+        let buf = unsafe { &mut *conn.buffer.get() };
+        buf.skip(count);
+    }
 }
 
 impl Drop for AudioConsumer {
@@ -587,7 +601,6 @@ impl AudioProducer {
         let vacant_len = buf.vacant_len();
         if input_len > vacant_len {
             eprintln!("audio consumer falling behind");
-            buf.skip(input_len - vacant_len);
         }
         let mut written = 0;
         datas.iter_mut().for_each(|d| {
