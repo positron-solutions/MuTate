@@ -4,11 +4,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/positron-solutions/MuTate/actions/workflows/ci.yml">
-    <img src="https://github.com/positron-solutions/MuTate/actions/workflows/ci.yml/badge.svg" alt="CI">
-  </a>
+  <a href="https://github.com/positron-solutions/MuTate/actions/workflows/ci.yml"><img src="https://github.com/positron-solutions/MuTate/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://discord.gg/gxptWX6aCR"><img alt="µTate Community Discord invite" src="https://img.shields.io/discord/1498766098764533891?logo=discord&logoSize=auto&label=%C2%B5Tate%20Community&color=%232fbf50&labelColor=%23333a40"></a>
 </p>
-
 <p align="center">
 µTate (MuTate) is a project to build a modern, adaptive music visualizer and music-driven neural rendering library.
 </p>
