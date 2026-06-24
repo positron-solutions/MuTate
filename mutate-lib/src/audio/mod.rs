@@ -2,9 +2,9 @@
 //!
 //! ⚠️ This module was initially only completed far enough to get 800 samples per second dumped into
 //! a buffer.  The downstream programs didn't care, and so the shape of support was not that of a
-//! real client for pipewire.  Problems were found with the [`ringbuf`] crate's API.  The
-//! event-driven nature of pipewire and the Rust wrapper around the pipewire sys crate were
-//! discovered only mid-development.  A redesign pass will be welcome so long as this notice exists.
+//! real client for pipewire.  The event-driven nature of pipewire and the Rust wrapper around the
+//! pipewire sys crate were discovered only mid-development.  A redesign pass will be welcome so
+//! long as this notice exists.
 //!
 //! The [`AudioContext`] is to represent a connection to the server while [`AudioConsumer`] is an
 //! open streaming connection.  See CPAL APIs for other user-facing API ideas.  We are likely more
@@ -57,9 +57,6 @@
 // platform bindings more directly if CPAL can't give us precise timing data or control.  We might
 // want to adjust the input stream latency by talking to the audio server directly, which is not an
 // API expected to be found in CPAL.
-// NEXT The ringbuf crate is not the right solution for even this job.  We need to make our sliding
-// window crate, [`slide`], capable of doing multithreaded SPSC over a window, using write-head
-// after-copy checks to detect torn reads.
 // FIXME Swap in sys crate primitives directly in places where we are throwing away the safety anyway.
 // NOTE Delay times from the server can be negative, so always use signed types for time offsets,
 // such as i64 etc.
