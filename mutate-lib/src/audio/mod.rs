@@ -74,6 +74,7 @@
 // so.
 use std::cell::UnsafeCell;
 use std::sync::atomic;
+use std::time::Instant;
 
 #[cfg(target_os = "linux")]
 use pipewire::{self as pw, main_loop::MainLoopBox, spa, stream::StreamListener};
@@ -467,7 +468,7 @@ pub struct AudioConnection {
 
     pub ready: std::sync::Condvar,
     /// The lock payload is a u64 representing the number of chunks written.
-    pub lock: std::sync::Mutex<u64>,
+    pub lock: std::sync::Mutex<AudioTiming>,
 
     // Tombstone for either end of the resource to finish up.
     // XXX instead, we want one-sided drop behavior,
@@ -490,9 +491,28 @@ impl AudioConnection {
             buffer: UnsafeCell::new(buffer),
 
             ready: std::sync::Condvar::new(),
-            lock: std::sync::Mutex::new(0),
+            lock: std::sync::Mutex::new(AudioTiming::new()),
             dropped: false.into(),
         }))
+    }
+}
+
+/// Data about a connection's phase, period, jitter, and time between chunks.
+#[derive(Clone, Copy)]
+pub struct AudioTiming {
+    /// Number of samples this connection has seen.
+    count: u64,
+    /// Last chunk received timing.  Decided at the beginning of the process callback and only
+    /// updated if we actually manage to write data.
+    last: Instant,
+}
+
+impl AudioTiming {
+    fn new() -> Self {
+        AudioTiming {
+            count: 0,
+            last: Instant::now(),
+        }
     }
 }
 
@@ -515,17 +535,17 @@ impl AudioConsumer {
         if conn.dropped.load(atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
-        let mut count = conn.lock.lock()?;
-        let initial = *count;
-        while *count == initial {
+        let mut timing = conn.lock.lock()?;
+        let initial = *timing;
+        while timing.count == initial.count {
             // NEXT use a timeout wait and provide a method to wait for a specific number of bytes.
             // Possibly switch to parking instead of this silly Condvar.
-            count = conn.ready.wait(count)?;
+            timing = conn.ready.wait(timing)?;
             if conn.dropped.load(atomic::Ordering::Acquire) {
                 return Err(MutateError::Dropped);
             }
         }
-        Ok(*count)
+        Ok(timing.count)
     }
 
     // The reader is doing pull-based consumption into it's own output slice, enabling us to handle
@@ -558,6 +578,12 @@ impl AudioConsumer {
         let conn = unsafe { &(*self.conn) };
         let buf = unsafe { &mut *conn.buffer.get() };
         buf.skip(count);
+    }
+
+    /// Get most recent phase data.
+    pub fn timing(&self) -> Result<AudioTiming, MutateError> {
+        let conn = unsafe { &(*self.conn) };
+        Ok(conn.lock.lock().map(|t| t.clone())?)
     }
 }
 
@@ -607,7 +633,9 @@ impl AudioProducer {
                 written += buf.push_slice(&input[offset..offset + size]);
             }
         });
-        *conn.lock.lock()? += 1;
+        let mut timing = conn.lock.lock()?;
+        timing.count += 1;
+        timing.last = Instant::now();
         conn.ready.notify_all();
         Ok(written)
     }
