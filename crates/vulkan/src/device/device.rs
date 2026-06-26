@@ -67,6 +67,7 @@ impl Device {
             .descriptor_binding_storage_image_update_after_bind(true)
             .descriptor_indexing(true)
             .draw_indirect_count(true)
+            .host_query_reset(true)
             .runtime_descriptor_array(true)
             .scalar_block_layout(true)
             .shader_float16(true)

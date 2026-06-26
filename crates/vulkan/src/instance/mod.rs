@@ -336,6 +336,7 @@ impl Instance {
             ("1.2 descriptor_binding_variable_descriptor_count",        features_1_2.descriptor_binding_variable_descriptor_count == vk::TRUE),
             ("1.2 descriptor_indexing",                                 features_1_2.descriptor_indexing == vk::TRUE),
             ("1.2 draw_indirect_count",                                 features_1_2.draw_indirect_count == vk::TRUE),
+            ("1.2 host_query_reset",                                    features_1_2.host_query_reset == vk::TRUE),
             ("1.2 runtime_descriptor_array",                            features_1_2.runtime_descriptor_array == vk::TRUE),
             ("1.2 scalar_block_layout",                                 features_1_2.scalar_block_layout == vk::TRUE),
             ("1.2 shader_float16",                                      features_1_2.shader_float16 == vk::TRUE),
@@ -355,7 +356,6 @@ impl Instance {
             ("1.3 shader_demote_to_helper_invocation",                  features_1_3.shader_demote_to_helper_invocation == vk::TRUE),
             ("1.3 synchronization2",                                    features_1_3.synchronization2 == vk::TRUE),
         ];
-
         let missing: Vec<&'static str> = checks
             .iter()
             .filter_map(|(name, present)| (!present).then_some(*name))
