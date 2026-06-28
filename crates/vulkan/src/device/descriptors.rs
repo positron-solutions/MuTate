@@ -36,8 +36,13 @@
 // blindly.
 // NEXT hand out Image descriptors on Image creation because not having descriptors would make them
 // kind of useless.
+// DEBT The synchronization of DescriptorsMut is hacky, only good enough to ignore while instead
+// working out the concurrency of the Device, which should be shared when possible (usually possible
+// unless multiple devices and displays have exclusive physical connections).  Updating descriptors
+// is internally synchronized and Sync and Send stickers were added, but no thorough work was done
+// since the API is a sand castle by the beach.
 
-use std::{collections::VecDeque, slice};
+use std::{collections::VecDeque, slice, sync::Mutex};
 
 use ash::vk;
 
@@ -69,11 +74,8 @@ pub const UNKNOWN: u32 = 8;
 // ROLL waiting on instance support for runtime extension dependency resolution.
 // pub const SLOT_ACCEL_STRUCTURES: u32      = 9;
 
-pub struct Descriptors {
-    pool: vk::DescriptorPool,
-    set: vk::DescriptorSet,
-    layout: vk::DescriptorSetLayout,
-
+/// A few lies and some interior mutability to work on liberating the device.
+struct DescriptorsMut {
     // Track the next never-used index.  This is implicitly a high-water mark for properly sizing
     // arrays.
     next_sampler: SamplerIdx,
@@ -92,10 +94,22 @@ pub struct Descriptors {
     freelist_ubos: VecDeque<UboIdx>,
     freelist_ssbos: VecDeque<SsboIdx>,
     freelist_utxbs: VecDeque<UniformTexelBufferIdx>,
-    freelist_stxbs: VecDeque<StorageTexelBufferIdx>,
     // freelist_accels: VecDeque<AccelStructIdx>,
+    freelist_stxbs: VecDeque<StorageTexelBufferIdx>,
+}
+
+pub struct Descriptors {
+    pool: vk::DescriptorPool,
+    set: vk::DescriptorSet,
+    layout: vk::DescriptorSetLayout,
+    inner: Mutex<DescriptorsMut>,
+
     default_samplers: [vk::Sampler; samplers::N_DEFAULTS],
 }
+
+// SAFETY: We're lying. This is a temporary convenience.
+unsafe impl Send for Descriptors {}
+unsafe impl Sync for Descriptors {}
 
 impl Descriptors {
     pub fn new(device: &ash::Device) -> Result<Self, VulkanError> {
@@ -227,22 +241,24 @@ impl Descriptors {
             set,
             layout,
 
-            next_sampler: SamplerIdx::new(samplers::N_DEFAULTS as u32),
-            next_sampled_image: SampledImageIdx::new(0),
-            next_storage_image: StorageImageIdx::new(0),
-            next_ubo: UboIdx::new(0),
-            next_ssbo: SsboIdx::new(0),
-            next_utxb: UniformTexelBufferIdx::new(0),
-            next_stxb: StorageTexelBufferIdx::new(0),
-            // next_accel: AccelStructIdx::new(0),
-            freelist_samplers: VecDeque::with_capacity(256),
-            freelist_sampled_images: VecDeque::with_capacity(256),
-            freelist_storage_images: VecDeque::with_capacity(256),
-            freelist_ubos: VecDeque::with_capacity(256),
-            freelist_ssbos: VecDeque::with_capacity(256),
-            freelist_utxbs: VecDeque::with_capacity(256),
-            freelist_stxbs: VecDeque::with_capacity(256),
-            // freelist_accels: VecDeque::with_capacity(256),
+            inner: Mutex::new(DescriptorsMut {
+                next_sampler: SamplerIdx::new(samplers::N_DEFAULTS as u32),
+                next_sampled_image: SampledImageIdx::new(0),
+                next_storage_image: StorageImageIdx::new(0),
+                next_ubo: UboIdx::new(0),
+                next_ssbo: SsboIdx::new(0),
+                next_utxb: UniformTexelBufferIdx::new(0),
+                next_stxb: StorageTexelBufferIdx::new(0),
+                // next_accel: AccelStructIdx::new(0),
+                freelist_samplers: VecDeque::with_capacity(256),
+                freelist_sampled_images: VecDeque::with_capacity(256),
+                freelist_storage_images: VecDeque::with_capacity(256),
+                freelist_ubos: VecDeque::with_capacity(256),
+                freelist_ssbos: VecDeque::with_capacity(256),
+                freelist_utxbs: VecDeque::with_capacity(256),
+                freelist_stxbs: VecDeque::with_capacity(256),
+                // freelist_accels: VecDeque::with_capacity(256),
+            }),
             default_samplers,
         })
     }
@@ -272,7 +288,7 @@ impl Descriptors {
     /// you need multiple layouts, you need multiple descriptors.  The returned index may be used in
     /// shaders and will later type-check against DescriptorHandles during introspection.
     pub fn bind_sampled_image(
-        &mut self,
+        &self,
         device: &ash::Device,
         view: vk::ImageView,
         layout: vk::ImageLayout,
@@ -281,11 +297,14 @@ impl Descriptors {
             .image_layout(layout)
             .image_view(view);
 
-        let index = self.freelist_sampled_images.pop_back().unwrap_or_else(|| {
-            let next = self.next_sampled_image;
-            self.next_sampled_image = SampledImageIdx::new(next.raw() + 1);
-            next
-        });
+        let index = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.freelist_sampled_images.pop_back().unwrap_or_else(|| {
+                let next = inner.next_sampled_image;
+                inner.next_sampled_image = SampledImageIdx::new(next.raw() + 1);
+                next
+            })
+        };
 
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.set)
@@ -301,7 +320,7 @@ impl Descriptors {
     }
 
     pub fn bind_ssbo(
-        &mut self,
+        &self,
         device: &ash::Device,
         buffer: vk::Buffer,
         offset: vk::DeviceSize,
@@ -312,11 +331,14 @@ impl Descriptors {
             .offset(offset)
             .range(size);
 
-        let index = self.freelist_ssbos.pop_back().unwrap_or_else(|| {
-            let next = self.next_ssbo;
-            self.next_ssbo = SsboIdx::new(next.raw() + 1);
-            next
-        });
+        let index = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.freelist_ssbos.pop_back().unwrap_or_else(|| {
+                let next = inner.next_ssbo;
+                inner.next_ssbo = SsboIdx::new(next.raw() + 1);
+                next
+            })
+        };
 
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.set)
@@ -333,24 +355,26 @@ impl Descriptors {
 
     /// Return the index for the descriptor slot to the free list.  You should not use this index
     /// again because it may belong to a new resource.
-    pub fn unbind_image(&mut self, index: SampledImageIdx) {
+    pub fn unbind_image(&self, index: SampledImageIdx) {
+        let mut inner = self.inner.lock().unwrap();
         debug_assert!(
-            index.raw() < self.next_sampled_image.raw(),
+            index.raw() < inner.next_sampled_image.raw(),
             "unbind_ssbo: index {:?} was never bound",
             index
         );
-        self.freelist_sampled_images.push_back(index);
+        inner.freelist_sampled_images.push_back(index);
     }
 
     /// Return the index for the descriptor slot to the free list.  You should not use this index
     /// again because it may belong to a new resource.
-    pub fn unbind_ssbo(&mut self, index: SsboIdx) {
+    pub fn unbind_ssbo(&self, index: SsboIdx) {
+        let mut inner = self.inner.lock().unwrap();
         debug_assert!(
-            index.raw() < self.next_ssbo.raw(),
+            index.raw() < inner.next_ssbo.raw(),
             "unbind_ssbo: index {:?} was never bound",
             index
         );
-        self.freelist_ssbos.push_back(index);
+        inner.freelist_ssbos.push_back(index);
     }
 }
 
