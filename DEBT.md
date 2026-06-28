@@ -21,6 +21,7 @@ Github.
   - [Dynamic Rendering State Shadow](#dynamic-rendering-state-shadow)
   - [Transfer / Staging vs UMA](#transfer--staging-vs-uma)
   - [Host-Slang Agreement](#host-slang-agreement)
+  - [Descriptor Set Strategy](#descriptor-set-strategy)
   - [Vulkan Versions, Device & Platform Compatibility](#vulkan-versions-device--platform-compatibility)
   - [Audio Formats](#audio-formats)
   - [General Image Layouts](#general-image-layouts)
@@ -174,6 +175,22 @@ We're going with scalar block layout.  While it's pretty flexible, it's not `rep
 ### For Now
 
 Ergonomics over contracts.  The APIs are *sufficient* to add the reflection checks.  Get `GraphicsPipeline` working first.
+
+## Descriptor Set Strategy
+
+We de-emphasize descriptors in favor of BDA, absorbing the complexity of epoch management without the indirection and rigidity of vendor support.  Images and acceleration structures exclusively use descriptors at this time.  For this reason, we need to support *some* descriptors.
+
+We want stable pipeline layouts and type-checked indexes into descriptor tables.  Descriptor tables need updates.  Updating a table that is in-use by an in-flight buffer is a no-no without `UPDATE_AFTER_BIND`, which is said to cost a lot on some hardware / drivers.  Descriptor buffers potentially shift the hazards into buffer synchronization, which is greatly preferable to having to use a ring of tables as the unit of epoch.
+
+That said, descriptor table contents are the kind of resource that is not very
+device-specific, and while the device may own some infra for managing
+descriptors, hanging the descriptor contents off of the device is probably not
+the best way.  ML and graphics workloads likely do not always want to use the
+same descriptors.  We want independent domains of contents and synchronization.
+
+### For Now
+
+Keep using the device-owned descriptor machinery.  Until we have online updates of resources, this kludge is somewhat functional.  `UPDATE_AFTER_BIND` is an acceptable cost to get away with this unsophisticated use.  As long as we're using this for ergonomics to speed work on more BDA offloading etc, it's a well-cut corner.
 
 ## Vulkan Versions, Device & Platform Compatibility
 

@@ -30,18 +30,10 @@
 //! It has a static fixed size because any kind of dynamic growth messes up the descriptor slots and
 //! forces us to think about descriptors.  Okay, glad we are experts at Vulkan now!
 
-// NEXT UPDATE_AFTER_BIND is said to have performance implications.  The workarounds are to split
-// descriptors into static and mutable sets and to migrate mutable usages into BDA and push constants
-// etc.  The weaker PARTIALLY_BOUND is sufficient if we can switch to an epoch style.  It just
-// requires keeping our own source of truth.
-// NOTE Vulkan does *not* required us to unbind descriptors.  We don't have to null slots.  Debug
-// assert cheap invariants, but memory leaks will dominate the signal for any leaks of descriptor
-// bound resources that occur.
-// FIXME duplicates pool sizes and free-lists.
-// XXX find a way to handle compaction and to avoid mass-freeing.
+// DEBT The descriptor management strategy has been marked up-in-the-air pending a design pass to
+// confirm or update the strategy taking shape.
 // ROLL until technique-dependent device feature support exists, we can't support ray tracing
 // blindly.
-// NEXT Methods to hand out and recycle indexes.
 // NEXT hand out Image descriptors on Image creation because not having descriptors would make them
 // kind of useless.
 
