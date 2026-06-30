@@ -73,12 +73,11 @@
 // NEXT see VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR for Vulkan 1.4.
 // NEXT see VK_NV_compute_occupancy_priority, Nvidia specific priority info.
 // XXX If we really need to use two different graphics queue families, most assets will already be
-// exclusive to one family.  We can either pessimistically mark them for use in all graphics queues
-// (using pQueueFamilyIndices, not CONCURRENT) or resign ourselves to re-creating them and swapping
-// them in.  The mutable assets will mostly be exclusive to a surface and render loop per window.
-// Audio input can either be duplicated or shared.  A lot of hard problems await that will not get
-// simpler until the resource runtime infrastructure exists.
-// XXX Queue usage is not yet thread safe!  forgot to implement that!
+// exclusive to one family.  We can either pessimistically mark assets for use in all graphics
+// queues (using pQueueFamilyIndices, not CONCURRENT), clone (lots of problems) or create new ones
+// that are concurrent.  The mutable assets will mostly be exclusive to a surface and render loop
+// per window.  Audio input can either be duplicated or shared.  A lot of hard problems await that
+// will not get simpler until the resource runtime infrastructure exists.
 
 use std::collections::HashMap;
 use std::marker::PhantomData;

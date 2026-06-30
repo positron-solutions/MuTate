@@ -476,9 +476,7 @@ pub struct AudioConnection {
     pub timing: TimingFilter,
 
     // Tombstone for either end of the resource to finish up.
-    // XXX instead, we want one-sided drop behavior,
-    // the last drop being the producer
-    // and drop flags that detect the poisoning of the producer?
+    // XXX poison if we can't drop while holding some lock?
     dropped: atomic::AtomicBool,
 }
 
