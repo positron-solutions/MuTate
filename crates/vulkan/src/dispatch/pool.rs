@@ -44,7 +44,7 @@ use super::SubmissionModel;
 // use just one of those abstractions.
 pub struct CommandPool<C: Capability, M: SubmissionModel = OneTime> {
     raw: vk::CommandPool,
-    queue: Queue<C>,
+    queue: vk::Queue,
     primary_handles: smallvec::SmallVec<vk::CommandBuffer, 8>,
     primary_cursor: usize,
     secondary_handles: smallvec::SmallVec<vk::CommandBuffer, 8>,
@@ -54,7 +54,7 @@ pub struct CommandPool<C: Capability, M: SubmissionModel = OneTime> {
 }
 
 impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
-    pub fn new(device: &Device, queue: &Queue<C>) -> Result<Self, VulkanError> {
+    pub fn new(device: &Device, queue: &QueueRef<C>) -> Result<Self, VulkanError> {
         let command_pool_ci = vk::CommandPoolCreateInfo::default()
             .flags(M::POOL_FLAGS)
             .queue_family_index(queue.family());
@@ -67,7 +67,7 @@ impl<C: Capability, M: SubmissionModel> CommandPool<C, M> {
 
         Ok(Self {
             raw: pool,
-            queue: queue.clone(),
+            queue: unsafe { queue.as_raw() }, // We don't use for any calls requiring external synchronization.
             primary_handles: smallvec::SmallVec::new(),
             primary_cursor: 0,
             secondary_handles: smallvec::SmallVec::new(),
@@ -188,7 +188,7 @@ where
 
 // Implementation is specific to OneTime to enable easier type inferences.
 impl<C: Capability> CommandPool<C, OneTime> {
-    pub fn transient(device: &Device, queue: &Queue<C>) -> Result<Self, VulkanError> {
+    pub fn transient(device: &Device, queue: &QueueRef<C>) -> Result<Self, VulkanError> {
         Self::new(device, queue)
     }
 }
@@ -213,7 +213,7 @@ pub struct PoolRing<C: Capability, const N: usize = 2, M: SubmissionModel = OneT
 }
 
 impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
-    pub fn new(device: &Device, queue: &Queue<C>) -> Result<Self, VulkanError> {
+    pub fn new(device: &Device, queue: &QueueRef<C>) -> Result<Self, VulkanError> {
         const { assert!(N >= 1, "PoolRing requires at least one slot") };
 
         let raw_device = device.as_raw();
@@ -311,7 +311,10 @@ mod test {
     #[test]
     fn pool_instantiate() {
         with_context!(|device, instance| {
-            let queue = device.queues.graphics_offscreen(QueuePriority::Low);
+            let queue = device
+                .queues
+                .graphics_offscreen(QueuePriority::Low)
+                .queue_ref();
             let pool = CommandPool::<Graphics, OneTime>::new(&device, &queue).unwrap();
             pool.destroy(&device);
         });
@@ -320,7 +323,10 @@ mod test {
     #[test]
     fn pool_buffer_create() {
         with_context!(|device, instance| {
-            let queue = device.queues.graphics_offscreen(QueuePriority::Low);
+            let queue = device
+                .queues
+                .graphics_offscreen(QueuePriority::Low)
+                .queue_ref();
             let mut pool = CommandPool::<Compute, OneTime>::transient(&device, &queue).unwrap();
             let primary = pool.primary(&device).unwrap();
             let secondary = pool.secondary(&device).unwrap();
@@ -334,7 +340,10 @@ mod test {
     #[test]
     fn ring_instantiate() {
         with_context!(|device, instance| {
-            let queue = device.queues.graphics_offscreen(QueuePriority::Low);
+            let queue = device
+                .queues
+                .graphics_offscreen(QueuePriority::Low)
+                .queue_ref();
             let ring = PoolRing::<Graphics>::new(&device, &queue).unwrap();
             ring.destroy(&device);
         });
@@ -343,7 +352,10 @@ mod test {
     #[test]
     fn acquire_pool() {
         with_context!(|device, instance| {
-            let queue = device.queues.graphics_offscreen(QueuePriority::Low);
+            let queue = device
+                .queues
+                .graphics_offscreen(QueuePriority::Low)
+                .queue_ref();
             let mut ring = PoolRing::<Graphics, 2, OneTime>::new(&device, &queue).unwrap();
 
             let (pool, intent) = ring.acquire(&device, 16_000_000).unwrap();

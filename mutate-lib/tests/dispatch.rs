@@ -21,7 +21,10 @@ fn dispatch_increment_read_back() {
 
     with_context!(|device, _instance| {
         // NEXT any test with dispatch can re-use this kind of initialization
-        let queue = device.queues.graphics_offscreen(QueuePriority::Low);
+        let queue = device
+            .queues
+            .graphics_offscreen(QueuePriority::Low)
+            .queue_ref();
         let mut pool = CommandPool::<Compute, OneTime>::transient(&device, &queue).unwrap();
         let cb = pool.primary(&device).unwrap();
 

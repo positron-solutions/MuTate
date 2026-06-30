@@ -44,7 +44,7 @@ pub mod prelude {
 pub struct PresentRing {
     pool_ring: PoolRing<Graphics>,
     present: pw::PresentConsumer,
-    queue: Queue<Graphics>,
+    queue: QueueRef<Graphics>,
     swapchain: Swapchain,
 }
 
@@ -56,10 +56,12 @@ impl PresentRing {
         extent: vk::Extent2D,
     ) -> Result<Self, VulkanError> {
         let swapchain = Swapchain::new(device, instance, surface, extent)?;
+        // SAFETY: Present ring must live within the backing Device lifetime.
         let queue = device
             .queues
             .graphics(instance, surface, QueuePriority::High)
-            .ok_or(VulkanError::QueueNotFound)?;
+            .ok_or(VulkanError::QueueNotFound)?
+            .queue_ref();
         let pool_ring = PoolRing::new(device, &queue)?;
         let present = pw::PresentConsumer::new(instance, device, *swapchain.as_raw())?;
         Ok(Self {
@@ -128,7 +130,7 @@ impl PresentRing {
             .push_next(&mut present_finished);
 
         self.swapchain
-            .present(unsafe { self.queue.raw() }, &present_info);
+            .present(unsafe { self.queue.as_raw() }, &present_info);
         self.present.notify_waiter();
         Ok(())
     }

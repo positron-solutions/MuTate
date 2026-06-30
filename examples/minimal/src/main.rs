@@ -92,7 +92,7 @@ impl WindowContext {
 
 /// The resumed state of the application, represented as the `Active` `AppState` variant.
 struct ActiveApp {
-    device: Device,
+    device: Box<Device>,
     // NOTE the hash map treatment is not minimal, instead going in the direction of multiple window
     // support.  For a single demo application a simpler field would suffice.
     windows: HashMap<WindowId, WindowContext>,
@@ -117,7 +117,7 @@ impl ActiveApp {
 
         let selected = supported[0].clone();
         println!("device: {}", selected.name);
-        let mut device = selected.into_logical(instance);
+        let mut device = Box::new(selected.into_logical(instance));
 
         // Once we have chosen the physical device, then we can create the logical device and
         // swapchain for the window & surface.

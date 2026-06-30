@@ -93,6 +93,7 @@ pub mod prelude {
     pub use super::Queue;
     pub use super::QueueCapability;
     pub use super::QueuePriority;
+    pub use super::QueueRef;
 
     pub use super::Compute;
     pub use super::Graphics;
@@ -225,10 +226,10 @@ impl Queues {
     /// High-priority compute uses a dedicated compute family if available.  Uses low-priority
     /// graphics otherwise.  Low-priority compute will use the low-priority graphics if there is no
     /// alternative.
-    pub fn compute(&self, priority: QueuePriority) -> Queue<Compute> {
+    pub fn compute(&self, priority: QueuePriority) -> &Queue<Compute> {
         match priority {
-            QueuePriority::High => self.high_compute,
-            QueuePriority::Low => self.low_compute,
+            QueuePriority::High => &self.high_compute,
+            QueuePriority::Low => &self.low_compute,
         }
     }
 
@@ -237,8 +238,8 @@ impl Queues {
     /// Transfer queues have no high-priority semantics, although they will use an overloaded
     /// high-priority queue in the worst case.  If at all possible, it will use a low-priority
     /// queue.
-    pub fn transfer(&self) -> Queue<Transfer> {
-        self.transfer
+    pub fn transfer(&self) -> &Queue<Transfer> {
+        &self.transfer
     }
 
     /// ## Graphics With Presentation Support
@@ -262,21 +263,18 @@ impl Queues {
         instance: &Instance,
         surface: &Surface,
         priority: QueuePriority,
-    ) -> Option<Queue<Graphics>> {
+    ) -> Option<&Queue<Graphics>> {
         let surface_loader = instance.surface_loader();
         let surface = surface.as_raw();
         let candidates = match priority {
             QueuePriority::High => &self.high_graphics,
             QueuePriority::Low => &self.low_graphics,
         };
-        candidates
-            .iter()
-            .find(|q| unsafe {
-                surface_loader
-                    .get_physical_device_surface_support(self.physical_device, q.family(), *surface)
-                    .unwrap_or(false)
-            })
-            .copied()
+        candidates.iter().find(|q| unsafe {
+            surface_loader
+                .get_physical_device_surface_support(self.physical_device, q.family(), *surface)
+                .unwrap_or(false)
+        })
     }
 
     /// ## Off-screen Graphics
@@ -284,30 +282,31 @@ impl Queues {
     /// Use **only for off-screen rendering**.  For presentation support, use [`graphics`] instead.
     /// The low priority queue returned will be in the same queue family as the high priority queue
     /// if at all possible (it's not guaranteed to always be possible).
-    pub fn graphics_offscreen(&self, priority: QueuePriority) -> Queue<Graphics> {
+    pub fn graphics_offscreen(&self, priority: QueuePriority) -> &Queue<Graphics> {
         match priority {
             // A graphics queue is guaranteed to exist, and we make a high priority graphics for all
             // possible "present" queue families.  If not choosing for a surface, just use the first
             // one, and the unwrap will never fail unless the device doesn't match spec.
-            QueuePriority::High => self.high_graphics[0],
+            QueuePriority::High => &self.high_graphics[0],
             // Our overloading strategy guarantees that there is at least one low-priority graphics,
             // but it may be an overload of another `Queue`
-            QueuePriority::Low => self.low_graphics[0],
+            QueuePriority::Low => &self.low_graphics[0],
         }
     }
 
     // NOTE queues are owned by the device.  Just drop when done.
 }
 
-#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Queue<C: Capability> {
     raw: vk::Queue,
+    submit_lock: Box<std::sync::Mutex<()>>,
     family: u32,
     priority: QueuePriority,
     /// When overloaded, queues might have more capabilities than required for a given request from
     /// the user.
     actual_flags: vk::QueueFlags,
+    /// Record of whether this queue is an exact queue or some kind of alias of another queue.
     queue_match: QueueMatch,
     #[allow(dead_code)]
     _marker: PhantomData<C>,
@@ -318,6 +317,7 @@ impl<C: Capability> Queue<C> {
         let raw = unsafe { device.get_device_queue(slot.family, slot.index) };
         Self {
             raw,
+            submit_lock: Box::new(std::sync::Mutex::new(())),
             family: slot.family,
             priority: slot.priority,
             actual_flags: slot.actual_flags,
@@ -355,32 +355,94 @@ impl<C: Capability> Queue<C> {
         self.queue_match == QueueMatch::Exact
     }
 
-    /// Returns the raw [`ash::vk::Queue`] handle for doing command buffer work manually.  You know
-    /// what you're doing or at least you are responsible.
-    pub unsafe fn raw(&self) -> vk::Queue {
+    /// Returns the raw unsynchronized [`ash::vk::Queue`] handle for doing command buffer work
+    /// manually.  You know what you're doing or at least you are responsible.  Do not use for queue
+    /// submission unless all other submitters are guaranteed inactive.
+    pub unsafe fn as_raw(&self) -> vk::Queue {
         self.raw
     }
 
-    pub fn submission(&self) -> QueueSubmit<C> {
-        QueueSubmit::new(self.raw)
+    /// Return an owned handle that can be used to create submissions and call other Vulkan
+    /// commands.
+    ///
+    /// SAFETY: Do not store `QueueRef` in any type that may outlive the `Device` that owns the `Queue`
+    /// or else the submission lock for `QueueSubmit` will be a use-after-free.
+    pub fn queue_ref(&self) -> QueueRef<C> {
+        unsafe { QueueRef::new(&self) }
     }
 
     // NOTE destroy not implemented since logical devices own their queues and we can just drop handles.
 }
 
-impl std::ops::Deref for Queue<Graphics> {
-    type Target = Queue<Compute>;
-    fn deref(&self) -> &Queue<Compute> {
-        // SAFETY: all Queue<C> differ only on phantom data
-        unsafe { &*(self as *const Queue<Graphics> as *const Queue<Compute>) }
+/// A lightweight owned handle for the device's `Queue`.  It can be used to synchronize queue
+/// submissions.  May be cloned and is `Send` and `Sync`.  Implements deref to lesser capability
+/// queue refs.  If you need to query `Queue` capabilities, do this at the point of queue selection
+/// and preserve that information along with the handle.
+#[repr(C)]
+pub struct QueueRef<C: Capability> {
+    raw: vk::Queue,
+    submit_lock: *const std::sync::Mutex<()>,
+    pub family: u32,
+    #[allow(dead_code)]
+    _marker: PhantomData<C>,
+}
+
+impl<C: Capability> QueueRef<C> {
+    /// SAFETY: `queue` must outlive the returned `QueueRef`.  See [`Queue::queue_ref`].
+    unsafe fn new(queue: &Queue<C>) -> Self {
+        Self {
+            raw: queue.raw,
+            submit_lock: queue.submit_lock.as_ref() as *const _,
+            family: queue.family,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Useful for handling new surfaces by checking if the as-is logical device already has enough
+    /// queue support.
+    pub fn family(&self) -> u32 {
+        self.family
+    }
+
+    /// Obtain the raw [`vk::Queue`] handle **without synchronization**.  This should not be used
+    /// for submission.
+    pub unsafe fn as_raw(&self) -> vk::Queue {
+        self.raw
+    }
+
+    /// Lock the queue for submission, obtaining the synchronization gaurd and handle.
+    pub unsafe fn lock_raw(
+        &self,
+    ) -> Result<(vk::Queue, std::sync::MutexGuard<'_, ()>), VulkanError> {
+        let guard = (*self.submit_lock)
+            .lock()
+            .map_err(|_| VulkanError::Poisoned)?;
+        Ok((self.raw, guard))
+    }
+
+    pub fn submission(&self) -> QueueSubmit<'_, C> {
+        QueueSubmit::new(self)
     }
 }
 
-impl std::ops::Deref for Queue<Compute> {
-    type Target = Queue<Transfer>;
-    fn deref(&self) -> &Queue<Transfer> {
+// SAFETY: Vulkan spec permits cross-thread access provided submissions are externally synchronized.
+// The Mutex around the handle and the `QueueSubmit` usage ensures that.
+unsafe impl<C: Capability> Send for QueueRef<C> {}
+unsafe impl<C: Capability> Sync for QueueRef<C> {}
+
+impl std::ops::Deref for QueueRef<Graphics> {
+    type Target = QueueRef<Compute>;
+    fn deref(&self) -> &QueueRef<Compute> {
         // SAFETY: all Queue<C> differ only on phantom data
-        unsafe { &*(self as *const Queue<Compute> as *const Queue<Transfer>) }
+        unsafe { &*(self as *const QueueRef<Graphics> as *const QueueRef<Compute>) }
+    }
+}
+
+impl std::ops::Deref for QueueRef<Compute> {
+    type Target = QueueRef<Transfer>;
+    fn deref(&self) -> &QueueRef<Transfer> {
+        // SAFETY: all Queue<C> differ only on phantom data
+        unsafe { &*(self as *const QueueRef<Compute> as *const QueueRef<Transfer>) }
     }
 }
 

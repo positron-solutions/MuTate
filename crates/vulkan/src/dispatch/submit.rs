@@ -96,9 +96,8 @@ struct InfoSpans {
     signals: Span,
 }
 
-pub struct QueueSubmit<QC: Capability> {
-    queue: vk::Queue,
-    _cap: PhantomData<QC>,
+pub struct QueueSubmit<'q, QC: Capability> {
+    queue: &'q QueueRef<QC>,
 
     // Flat arrays of pre-built Vulkan structs — these are sliced directly at submit time.
     waits: [MaybeUninit<vk::SemaphoreSubmitInfo<'static>>; MAX_OPS],
@@ -119,11 +118,10 @@ pub struct QueueSubmit<QC: Capability> {
     has_signal: bool,
 }
 
-impl<QC: Capability> QueueSubmit<QC> {
-    pub(crate) fn new(queue: vk::Queue) -> Self {
+impl<'q, QC: Capability> QueueSubmit<'q, QC> {
+    pub(crate) fn new(queue: &'q QueueRef<QC>) -> Self {
         Self {
             queue,
-            _cap: PhantomData,
             waits: std::array::from_fn(|_| MaybeUninit::uninit()),
             cmds: std::array::from_fn(|_| MaybeUninit::uninit()),
             signals: std::array::from_fn(|_| MaybeUninit::uninit()),
@@ -226,7 +224,7 @@ impl<QC: Capability> QueueSubmit<QC> {
         self
     }
 
-    pub fn submit(mut self, device: &Device, fence: vk::Fence) -> Result<(), vk::Result> {
+    pub fn submit(mut self, device: &Device, fence: vk::Fence) -> Result<(), VulkanError> {
         // Close the final (possibly only) SubmitInfo.
         self.info_spans[self.ni] = InfoSpans {
             waits: Span {
@@ -257,19 +255,20 @@ impl<QC: Capability> QueueSubmit<QC> {
             );
         }
 
-        unsafe {
+        Ok(unsafe {
+            // `lock_raw` is perhaps not the most creative name, but this is internal API surface.
+            // Can't be fucked for it.
+            let (raw, _guard) = self.queue.lock_raw()?;
             device.as_raw().queue_submit2(
-                self.queue,
+                raw,
                 // SAFETY: [0..self.ni] written above
-                unsafe {
-                    std::slice::from_raw_parts(
-                        submit_infos.as_ptr().cast::<vk::SubmitInfo2>(),
-                        self.ni,
-                    )
-                },
+                std::slice::from_raw_parts(
+                    submit_infos.as_ptr().cast::<vk::SubmitInfo2>(),
+                    self.ni,
+                ),
                 fence,
             )
-        }
+        }?)
     }
 }
 
@@ -280,7 +279,11 @@ pub mod test {
     #[test]
     fn start_submission() {
         with_context!(|device, instance| {
-            let start = device.queues.compute(QueuePriority::High).submission();
+            let start = device
+                .queues
+                .compute(QueuePriority::High)
+                .queue_ref()
+                .submission();
         })
     }
 
@@ -295,6 +298,7 @@ pub mod test {
             device
                 .queues
                 .compute(QueuePriority::High)
+                .queue_ref()
                 .submission()
                 .signal(signal_intent, vk::PipelineStageFlags2::ALL_COMMANDS)
                 .submit(&device, vk::Fence::null());
@@ -306,7 +310,10 @@ pub mod test {
     #[test]
     fn binary_semaphores() {
         with_context!(|device, _instance| {
-            let queue = device.queues.graphics_offscreen(QueuePriority::High);
+            let queue = device
+                .queues
+                .graphics_offscreen(QueuePriority::High)
+                .queue_ref();
 
             // This test shape is designed to look like an acquire-render-present sequence.
             let image_ready = device.make_binary_semaphore().unwrap();

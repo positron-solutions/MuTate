@@ -211,6 +211,9 @@ pub enum VulkanError {
     // them.
     ReplaceMe(&'static str),
 
+    #[error("thread poisoned")]
+    Poisoned,
+
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
@@ -262,6 +265,12 @@ pub enum VulkanError {
     // We inferred the minimized state from a zero inner pixel size.
     #[error("surface: window seems minimized")]
     WindowMinimized,
+}
+
+impl<T> From<std::sync::PoisonError<T>> for VulkanError {
+    fn from(_: std::sync::PoisonError<T>) -> Self {
+        VulkanError::Poisoned
+    }
 }
 
 impl From<vk::Result> for VulkanError {
