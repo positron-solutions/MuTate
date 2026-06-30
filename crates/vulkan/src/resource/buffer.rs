@@ -127,11 +127,11 @@ impl<T> MappedAllocation<T> {
     }
 
     // XXX argument order
-    pub fn bound(&self, device: &mut Device) -> descriptors::SsboIdx {
-        let descriptors = &mut device.descriptors;
+    pub fn bound(&self, device: &Device) -> descriptors::SsboIdx {
+        let descriptors = &device.descriptors;
         // XXX do this more cleaner 🤡
         let byte_size = (std::mem::size_of::<T>() * self.len) as u64;
-        descriptors.bind_ssbo(&mut device.raw, self.buffer, 0, byte_size)
+        descriptors.bind_ssbo(&device.raw, self.buffer, 0, byte_size)
     }
 
     // XXX Slang type for buffer device address

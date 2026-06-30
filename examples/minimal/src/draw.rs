@@ -41,7 +41,7 @@ impl HelloDraw {
 
     pub fn provision(
         &mut self,
-        device: &mut Device,
+        device: &Device,
         size: vk::Extent2D,
     ) -> Result<(), utate::MutateError> {
         if let Some(existing) = self.output_buffer.take() {
@@ -114,7 +114,7 @@ impl HelloDraw {
         }
     }
 
-    pub fn destroy(self, device: &mut Device) -> Result<(), utate::MutateError> {
+    pub fn destroy(self, device: &Device) -> Result<(), utate::MutateError> {
         unsafe {
             self.pipeline.destroy(device);
             if let Some(allocated) = self.output_buffer {

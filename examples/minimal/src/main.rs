@@ -32,7 +32,7 @@ struct WindowContext {
 impl WindowContext {
     fn new(
         instance: &Instance,
-        device: &mut Device,
+        device: &Device,
         window: Window,
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
@@ -50,7 +50,7 @@ impl WindowContext {
     }
 
     /// Use the compute present ring
-    fn draw_frame(&mut self, device: &mut Device) {
+    fn draw_frame(&mut self, device: &Device) {
         // XXX the window presentation notification is a tension we would like to take away.
         self.present_ring
             .record(
@@ -73,7 +73,7 @@ impl WindowContext {
 
     // XXX make this into a try_resize method that can propagate recreation back up to the
     // application for device re-creation.
-    fn handle_resize(&mut self, device: &mut Device) -> Result<(), MutateError> {
+    fn handle_resize(&mut self, device: &Device) -> Result<(), MutateError> {
         let new_size = self
             .present_ring
             .maybe_update_swapchain(device, &mut self.surface, &self.window)
@@ -83,7 +83,7 @@ impl WindowContext {
         Ok(())
     }
 
-    fn destroy(self, device: &mut Device) {
+    fn destroy(self, device: &Device) {
         self.renderer.destroy(device);
         self.present_ring.destroy(device);
         self.surface.destroy();
@@ -138,13 +138,13 @@ impl ActiveApp {
         match event {
             WindowEvent::RedrawRequested => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.draw_frame(&mut self.device);
+                    wc.draw_frame(&self.device);
                     wc.window.request_redraw();
                 }
             }
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.handle_resize(&mut self.device).unwrap();
+                    wc.handle_resize(&self.device).unwrap();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -161,7 +161,7 @@ impl ActiveApp {
             WindowEvent::CloseRequested => {
                 if let Some(wc) = self.windows.remove(&window_id) {
                     self.device.wait_idle().unwrap();
-                    wc.destroy(&mut self.device);
+                    wc.destroy(&self.device);
                 }
                 if self.windows.is_empty() {
                     event_loop.exit();
