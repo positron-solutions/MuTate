@@ -217,10 +217,18 @@ pub enum VulkanError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Attempted to acquire on a swapchain that is already marked for recreation needed.
+    #[error("vulkan: Swapchain recreation needed.")]
+    SwapchainRecreationRequired,
+
     // Errors that coerce from ash::vk results should not be constructed manually.
+    /// Presentation succeeded, but the swapchain is no longer optimal for the surface and should be
+    /// recreated.
     #[error("vulkan: Swapchain suboptimal")]
     SwapchainSuboptimal,
-    #[error("vulkan: Swapchain out of date")]
+    /// Further presentation attempts will fail and the swapchain must be recreated to begin
+    /// succeeding again.
+    #[error("vulkan: Swapchain out of date.")]
     SwapchainOutOfDate,
     #[error("vulkan: Surface lost")]
     SurfaceLost,
@@ -228,8 +236,6 @@ pub enum VulkanError {
     FullscreenExclusiveLost,
     #[error("vuklan: Device lost")]
     DeviceLost,
-    #[error("vulkan: Suboptimal swapchain")]
-    Suboptimal,
     #[error("vulkan: Out of memory (host)")]
     OutOfHostMemory,
     #[error("vulkan: Out of memory (device)")]

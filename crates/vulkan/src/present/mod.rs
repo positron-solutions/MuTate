@@ -6,17 +6,9 @@
 //! With a `CommandPool`, `Queue`, and `Swapchain`, it's not much more work to write the render
 //! phase that can be called in an application's redraw loop.  This module provides reference
 //! implementations, which provide users with a single recording command buffer and an output image.
-//! The [`PresentMode`] encapsulates some barrier and presentation boilerplate.
+//! The helper functions, `graphics_present` and `compute_present`, encapsulate some barrier and
+//! presentation boilerplate.
 
-// MAYBE Queue presentation itself is really only dependent on at least one signaled semaphore and
-// the output image. This module could grow some abstraction to avoid duplicating repetitive raw
-// ash.
-// XXX The Target traite seems likely to not materialize.  It was intended that testing abstractions
-// over a single Pool and output Image would be able to express different kinds of targets other
-// than `AcquiredImage`, but it's questionable whethere an abstraction will be helpful or just
-// ceremony with no meat in the abstraction.
-// NEXT update command buffer wrapper to support beginning and ending rendering, then use that to
-// implement GraphicsPresent
 // NEXT create kinds of targets that may only use specific layouts that are valid for the upstream
 // render target.
 
@@ -53,9 +45,8 @@ impl PresentRing {
         device: &Device,
         instance: &Instance,
         surface: &Surface,
-        extent: vk::Extent2D,
     ) -> Result<Self, VulkanError> {
-        let swapchain = Swapchain::new(device, instance, surface, extent)?;
+        let swapchain = Swapchain::new(device, instance, surface)?;
         // SAFETY: Present ring must live within the backing Device lifetime.
         let queue = device
             .queues
@@ -88,12 +79,20 @@ impl PresentRing {
         F: FnOnce(&Device, &RecordingBuffer<Graphics, OneTime>, &AcquiredImage),
         G: FnOnce(),
     {
+        // let recorded = self.present.read_last_present();
+        // if let Some(time) = recorded {
+        //     let duration = time.last_present - self.last;
+        //     self.last = time.last_present;
+        //     println!("present-to-present: {:?}", duration.as_micros());
+        // }
+        if self.swapchain.recreation_required() {
+            return Err(VulkanError::SwapchainRecreationRequired);
+        }
         let acquired_image = self.swapchain.acquire()?;
+
         let (pool, intent) = self.pool_ring.acquire(device, 1_000_000_000).unwrap();
         let cb = pool.primary(device).unwrap();
-
         record_fn(device, &cb, &acquired_image);
-
         let recorded = cb.end(device).unwrap();
         self.queue
             .submission()
@@ -109,6 +108,11 @@ impl PresentRing {
             .signal(intent, vk::PipelineStageFlags2::ALL_COMMANDS)
             .submit(device, vk::Fence::null())
             .unwrap();
+        // MAYBE this little line only exists for the sole purpose of enabling `pre_present_notify`
+        // on the winit `Window`, which is said to be only for Wayland.  Calling it from a threaded
+        // render loop may call back into the main thread of the application on some platforms.  The
+        // code may need a feature flag, but to be honest, it probably accomplishes exactly nothing
+        // on Wayland after we add VRR and FRR phase tracking.
         post_draw_fn();
 
         if let Some(_last) = self.present.read_last_present() {}
@@ -122,17 +126,36 @@ impl PresentRing {
         }
         let mut present_finished = vk::SwapchainPresentFenceInfoEXT::default()
             .fences(std::slice::from_ref(&acquired_image.present_finished));
+        let swapchain = self.swapchain.as_raw().clone();
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(slice::from_ref(&present_ready))
-            .swapchains(slice::from_ref(self.swapchain.as_raw()))
+            .swapchains(slice::from_ref(&swapchain))
             .image_indices(slice::from_ref(&acquired_image.swapchain_image_index))
             .push_next(&mut present_id)
             .push_next(&mut present_finished);
 
-        self.swapchain
-            .present(unsafe { self.queue.as_raw() }, &present_info);
+        // ROLL VK_KHR_present_wait will enable "display this no sooner than X".
+        // For FRR, we just need to hit the deadline.  For VRR and using a user-configured maximum
+        // frame rate, aligning the call to present with our chosen cadence is the correct knob.
+        let present_result = self.swapchain.present(
+            unsafe { self.queue.as_raw() },
+            acquired_image.sync_index,
+            &present_info,
+        );
         self.present.notify_waiter();
-        Ok(())
+        return match present_result {
+            Ok(()) => Ok(()),
+            Err(VulkanError::SwapchainOutOfDate) => {
+                // XXX We cannot properly update the swapchain without notifying other parts of the
+                // application that the swapchain has been resized.  We can notify caller of failure
+                // and let them skip acquisition until the event propertly comes through.
+                Err(VulkanError::SwapchainRecreationRequired)
+            }
+            Err(e) => {
+                eprintln!("presentation: unknown error: {:?}", e);
+                Err(VulkanError::ReplaceMe("idk man.  it's broke"))
+            }
+        };
     }
 
     pub fn maybe_update_swapchain<'a>(
@@ -143,13 +166,25 @@ impl PresentRing {
     ) -> Result<vk::Extent2D, VulkanError> {
         // XXX Check if surface actually needs recreation!
         let new_size = surface.update(device, extent_source)?;
-        self.swapchain.drain_present(device)?;
+        // DEBT Up to 100ms drain on the pool is enough to allow in-flight CBs to retire and allow
+        // naive asset re-provision.  If we had our asset system a bit more mature, this would be
+        // unnecessary.
+        self.pool_ring.drain(device, 100_000_000)?;
         self.swapchain.recreate(device, surface);
         self.present
             .notify_swapchain_recreation(*self.swapchain.as_raw());
         Ok(new_size)
     }
 
+    /// Wait on the swapchain.  `timeout` is nanoseconds.  See `Swapchain` drain for return value
+    /// semantics.
+    // DEBT resources deletion queue to lazily get rid of things.  These drains are propagating all
+    // over the place.
+    pub fn drain(self, device: &Device) -> Result<bool, VulkanError> {
+        self.swapchain.drain(device, 1_000_000_000)
+    }
+
+    /// Caller must drain before destroying.
     pub fn destroy(self, device: &Device) {
         let Self {
             swapchain,

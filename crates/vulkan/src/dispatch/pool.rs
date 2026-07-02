@@ -291,6 +291,20 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
         Ok((&mut self.pools[slot], intent))
     }
 
+    /// Wait for all command buffers in flight to be retired on the device.  Uses the highest
+    /// timeline semaphore value for all pools.  If a pool has been acquired but will not yet
+    /// signal, this method **will deadlock and you will trip and fall on your way home, so
+    /// don't call this unless the pool you acquired has attached its signal semaphore to the final
+    /// command buffer that will finish.**
+    pub fn drain(&self, device: &Device, timeout: u64) -> Result<u64, VulkanError> {
+        let latest = self
+            .done_values
+            .iter()
+            .max_by_key(|w| w.value())
+            .expect("PoolRing always has N >= 1 slots"); // XXX this can be expressed as type contract
+        Ok(latest.wait(device, timeout)?)
+    }
+
     pub fn destroy(self, device: &Device) {
         let Self {
             pools, timeline, ..

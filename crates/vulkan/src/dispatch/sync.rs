@@ -164,11 +164,19 @@ impl WaitValue {
     }
 
     /// Block the calling thread until this value has been signaled.
-    pub fn wait(&self, device: &Device, timeout: u64) -> Result<(), vk::Result> {
+    pub fn wait(&self, device: &Device, timeout: u64) -> Result<u64, vk::Result> {
         let wait_info = vk::SemaphoreWaitInfo::default()
             .semaphores(std::slice::from_ref(&self.semaphore))
             .values(std::slice::from_ref(&self.value));
-        unsafe { device.as_raw().wait_semaphores(&wait_info, timeout) }
+        unsafe {
+            device.as_raw().wait_semaphores(&wait_info, timeout);
+        }
+        Ok(self.value)
+    }
+
+    // XXX Just being lazy.  Support sorting and comparison.
+    pub(crate) fn value(&self) -> u64 {
+        self.value
     }
 }
 

@@ -143,9 +143,9 @@ impl Surface {
 
     /// Re-query the surface capabilities
     ///
-    /// Call this on resize events or after a
+    /// Call this on resize events, [`SwapchainOutOfDate`]() or after a
     /// [`SwapchainSuboptimal`](crate::VulkanError::SwapchainSuboptimal) error.  After more serious
-    /// errors such as [`SurfaceLost`](crate::VulkanError::SurfaceLost)
+    /// errors such as [`SurfaceLost`](crate::VulkanError::SurfaceLost),
     pub fn update<'a>(
         &mut self,
         device: &Device,
@@ -293,12 +293,13 @@ impl Surface {
             surface_loader.get_physical_device_surface_present_modes(physical_device, surface)?
         };
         // Present mode choices are related to VRR vs FRR.  Since we intentionally delay rendering
-        // to be nearer to the latch (to reduce power draw and to be closer to reduce audio lag), we
-        // prefer modes where only the most recent frame can be presented.
+        // to be nearer to the latch (to reduce power draw, pipeline efficiently, and to reduce
+        // latency), FIFO is actually the most correct and we support the other modes primarily to
+        // satisfy downstreams that demand them.
         let present_mode = [
-            vk::PresentModeKHR::MAILBOX,
-            vk::PresentModeKHR::FIFO_RELAXED,
             vk::PresentModeKHR::FIFO,
+            vk::PresentModeKHR::FIFO_RELAXED,
+            vk::PresentModeKHR::MAILBOX,
         ]
         .iter()
         .copied()
@@ -323,13 +324,15 @@ impl Surface {
         // XXX Make an actual decision
         let pre_transform = raw_caps.current_transform;
 
+        // Always selects four.  See swapchain for more details on always selecting four images.
+        // Long story short, pipelining without bubbles demands a minimum of four images at the edge
+        // case where render times are slow enough that we are forced to drop frames or slow down
+        // VRR presentation.  We can work with two or three.
         let swapchain_image_count = {
             let mode_minimum = match present_mode {
-                vk::PresentModeKHR::MAILBOX => 3,
-                _ => 2,
+                vk::PresentModeKHR::MAILBOX => 4,
+                _ => 4,
             };
-            // Even if the compositor is happy to use two images, we need at least three to avoid
-            // lapping the semaaphores that synchronize them.
             let desired = mode_minimum.max(raw_caps.min_image_count);
             if raw_caps.max_image_count == 0 {
                 desired
@@ -406,6 +409,7 @@ impl Surface {
         self.raw
     }
 
+    // XXX Lifetime must remain within Intstance, which is easiest to maintain, but document.
     pub fn destroy(&self) {
         unsafe {
             self.surface_loader.destroy_surface(self.raw, None);

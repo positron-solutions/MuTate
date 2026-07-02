@@ -89,9 +89,13 @@ Where we're going, workloads will provide their resource requirements as specs (
 - https://lib.rs/crates/offset-allocator for slicing it up and handing it out
 - https://lib.rs/crates/slotmap for tracking what we handed out
 
+A related problem is that in-flight resources that need re-provision must defer destruction or memory reclaim until after all in-flight usages drain.  That requires knowing which resources were used in which epochs, which can be controlled / decided mostly from command pools and a little bit from the swapchain sync primitives.
+
 Expectations are that memory usage will be relatively low but less predictable due to generation, transitions, and scripting.
 
 ### For Now
+
+Drain CBs and swapchains or even just `device_wait_idle`.  This loses frames, but until we have proper epoch tracking over everything in flight, or something simpler such as a wait-four-frames heuristic, this is the best we can do.  (Wait four frames and pack everything into a deletion / reclaim queue!)
 
 We don't really have any infra for one-big-allocation or deletion & compaction.  Specs will just hydrate kind of dumbly at first while we nail the ergonomics.
 
