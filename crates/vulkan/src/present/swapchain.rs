@@ -345,6 +345,51 @@ impl Swapchain {
         Ok(())
     }
 
+    /// Get the next swapchain image.  Errors may indicate need to request recreation.
+    pub fn acquire(&mut self) -> Result<AcquiredImage, VulkanError> {
+        // XXX add pre-check methods for the client side
+        if self.recreation_required {
+            return Err(VulkanError::SwapchainRecreationRequired);
+        }
+
+        let sync_index = self.sync.next_slot();
+        let image_available = self.sync.image_available[sync_index];
+        let present_ready = self.sync.present_ready[sync_index];
+        let present_finished = self.sync.present_finished[sync_index];
+
+        let (swapchain_image_index, _) = unsafe {
+            self.loader
+                .acquire_next_image(
+                    self.raw,
+                    32_000_000, // 32ms
+                    image_available.as_raw(),
+                    vk::Fence::null(),
+                )
+                .inspect_err(|e| {
+                    #[cfg(debug_assertions)]
+                    eprintln!("warning: swapchain acquisition failed: {:?}", e);
+
+                    // XXX this recreation required has not been studied closely and may not be
+                    // coherent with other recreation_required flagging.
+                    self.recreation_required = true;
+                })?
+        };
+
+        let image = self.images[swapchain_image_index as usize];
+        let image_view = self.image_views[swapchain_image_index as usize];
+
+        Ok(AcquiredImage {
+            image_available: image_available.wait(),
+            present_ready: present_ready.signal(),
+            present_finished,
+            image,
+            image_view,
+            extent: self.extent,
+            swapchain_image_index,
+            sync_index,
+        })
+    }
+
     // MAYBE this method is where AcquiredImage comes back to the swapchain, and there is something
     // oddly smelling about handing this back to the swapchain for present.  While the swapchain
     // does need to be informed if presentation fails, whatever is driving presentation is more
@@ -423,51 +468,6 @@ impl Swapchain {
 
     pub fn recreation_required(&self) -> bool {
         self.recreation_required
-    }
-
-    /// Get the next swapchain image.  Errors may indicate need to request recreation.
-    pub fn acquire(&mut self) -> Result<AcquiredImage, VulkanError> {
-        // XXX add pre-check methods for the client side
-        if self.recreation_required {
-            return Err(VulkanError::SwapchainRecreationRequired);
-        }
-
-        let sync_index = self.sync.next_slot();
-        let image_available = self.sync.image_available[sync_index];
-        let present_ready = self.sync.present_ready[sync_index];
-        let present_finished = self.sync.present_finished[sync_index];
-
-        let (swapchain_image_index, _) = unsafe {
-            self.loader
-                .acquire_next_image(
-                    self.raw,
-                    32_000_000, // 32ms
-                    image_available.as_raw(),
-                    vk::Fence::null(),
-                )
-                .inspect_err(|e| {
-                    #[cfg(debug_assertions)]
-                    eprintln!("warning: swapchain acquisition failed: {:?}", e);
-
-                    // XXX this recreation required has not been studied closely and may not be
-                    // coherent with other recreation_required flagging.
-                    self.recreation_required = true;
-                })?
-        };
-
-        let image = self.images[swapchain_image_index as usize];
-        let image_view = self.image_views[swapchain_image_index as usize];
-
-        Ok(AcquiredImage {
-            image_available: image_available.wait(),
-            present_ready: present_ready.signal(),
-            present_finished,
-            image,
-            image_view,
-            extent: self.extent,
-            swapchain_image_index,
-            sync_index,
-        })
     }
 
     pub fn as_raw(&self) -> &vk::SwapchainKHR {
