@@ -17,9 +17,46 @@
 //! - [`Swapchain`] wraps up swapchain herding 🐈‍⬛.  Centralizes decisions about when to attempt
 //!   the next render & presentation.
 
-// NEXT this module has not actually lived up to why it was being implemented.  Instead, we have
+// ROLL this module has not actually lived up to why it was being implemented.  Instead, we have
 // arrived at the same conclusions that we really want VK_EXT_present_timing.  See
 // https://www.khronos.org/blog/vk-ext-present-timing-the-journey-to-state-of-the-art-frame-pacing-in-vulkan
+// NEXT The necessary shape of this module (and surroundings) has taken shape.  We need to provide
+// timing information so that `AcquiredImage` can carry along scheduling data.  We need several
+// sources of primary signal:
+//
+// - Render finished calibrated timestamps (proxy for when a present call *could* take effect)
+// - Queue present called timing (measured by presenter)
+// - Present wait wake-up time (measured now)
+//
+// Calibrated timestamps will set during recording and read off of a ring in this thread, which has
+// implicit visibility into when those timestamps are visible.
+//
+// With this data in hand, we have the following decision tree:
+//
+// - VRR vs FRR is decided by covariance with queue present time.
+// - Once VRR is known, we only need to know our render time and jitter to do just-in-time rendering
+//   and we align our present calls to a chosen phase, eating the constant latency to the display.
+//   If we top the VRR max rate, we will see divergence to pseudo FRR and both scheduling senses
+//   will achieve the exact same results.  If that's above the user's  chosen max rate, we just
+//   throttle by delaying present calls and aligning rendering to be done in time.
+// - For FRR, we're interested in two additional variables, the hidden latch phase. We don't
+//   necessarilly need to find it exactly, but we want to at least try to avoid it.
+//
+// Additional signal for FRR can be obtained by probing.  If we probe by delaying the phase, we
+// will cause graphical jitter when presents start drifting into the latch timings, meaning some
+// frames refresh on time while some do not.  This phase-jumping behavior is pretty undesirable.
+// Instead, if we finish present N on time, we can copy it to present N+1 (a fresh swapchain acquire
+// that will present the exact same output!).  When present N+1 starts missing the latch, we observe
+// present N on the water and we can infer the latch location.
+//
+// Probing is the last step for FRR phase locking and optional.
+//
+// The VRR vs FRR decision is a simple filter decision.  When our present timings affect the
+// observed present phase off of a fixed timing grid, we can decide VRR.  This decision needs to be
+// updated because, when switching to fullsceen, compositors may give us control of the VRR timing,
+// resulting in a jump between FRR and VRR at runtime.  The decision to switch models is an IMM
+// (Interacting Multiple Models) style filter.  The filter always tries to lock onto FRR and VRR,
+// but only the best model decides the timing output.
 
 use std::{
     thread,
