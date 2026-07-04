@@ -7,10 +7,12 @@ Demonstrates initialization order for a very typically constructed µTate Vulkan
 - Vulkan instance, device, and window + surface + swapchain lifecycles.
 - A basic render loop accepting your render body that can record commands to a command buffer.
 
+In order to run in release, set `MUTATE_ASSETS_DIR` to `./assets`.  Otherwise, the shader SPIR-Vs will not be found.
+
 ## Initialization Sequence
 
 1. winit event loop is used to obtain a Vulkan instance with window manager support
-1. winit resume event leads to creation of a window, its surface, the swapchain, and renderer
-1. winit frame redraw request loop begins until close is requested
+1. winit resume event leads to creation of a window
+1. surface, swapchain, and rendering are created inside a render thread that receives events via channel
 
 The time of the ∇ is at hand!
