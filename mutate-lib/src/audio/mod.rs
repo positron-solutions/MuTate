@@ -72,6 +72,8 @@
 // Also looks like we need DBUS for seeing Spotify title changes.  If we have it, we can render
 // title changes in the middle of playback, something Milkdrop has done right for twenty years or
 // so.
+pub mod timing;
+
 use std::cell::UnsafeCell;
 use std::sync::atomic;
 use std::time::Instant;
@@ -470,10 +472,10 @@ pub struct AudioConnection {
     // XXX We may lock something else and present the AudioTiming as an untorn type (until double
     // buffering support is good).
     /// The lock payload is a u64 representing the number of chunks written.
-    pub lock: std::sync::Mutex<AudioTiming>,
+    pub lock: std::sync::Mutex<timing::AudioTiming>,
     /// An online timing data accumulator to estimate phase and jitter to assist in accurate video
     /// tracking of audio.
-    pub timing: TimingFilter,
+    pub timing: timing::TimingFilter,
 
     // Tombstone for either end of the resource to finish up.
     // XXX poison if we can't drop while holding some lock?
@@ -486,124 +488,6 @@ struct PipewireConnection {
     stream: Option<pw::stream::StreamBox<'static>>,
 }
 
-const NOMINAL_PERIOD_NS: f64 = 512.0 / 48000.0 * 1e9;
-const Q_DELTA: f64 = 1.0; // ns², period error diffusion per callback
-
-/// Integrates successive audio chunk timings to predict phase alignment of deadlines downstream.
-/// The implementation is a very basic Kalman filter using the
-pub struct TimingFilter {
-    /// The epoch for counting cycles.  Cycles never go backwards in time, so we just set the epoch
-    /// to begin when we create the filter.
-    t0: Instant,
-    /// Cycle count.  This can jump to account for missing chunks and always presumes that new
-    /// chunks arrive strictly in order.
-    k: u64,
-    // NEXT this single-filter setup will be changed to a particle style where new particles are
-    // spawned when the existing filter seems to go crazy.  If the new particle log-prob and
-    // innovation drop below the old particle, we switch to the new particles.  Each particle will
-    // need to be able to keep a short history of log probs.  When the Bayes ratio becomes
-    // overwhelming, we switch particles and lock the new timing.
-    /// Server's phase offset
-    phase_offset: f64,
-    /// Amount of drift
-    period_error: f64,
-    /// R, a scalar due to the simple nature of the audio problem.
-    observation_covariance: f64,
-    /// P, the error matrix, which is symmetric 2x2, so we can store instead as (0,0), (0,1), and
-    /// (1,1) instead.
-    error_covariance: [f64; 3],
-
-    /// History of server chunk callback timing and chunk size.  Only process calls that receive
-    /// data will push data.
-    // XXX discontinuities are a particle spawn signal.
-    // NEXT Pipewire can send us different chunk sizes, and supporting this requires changing the
-    // physical model for state update.
-    measurements: ringbuf::LocalRb<ringbuf::storage::Heap<(Instant, usize)>>,
-    /// Ring buffer of innovations for Mehra adaptive R estimation.
-    innovations: ringbuf::LocalRb<ringbuf::storage::Heap<f64>>,
-}
-
-impl TimingFilter {
-    fn new() -> Self {
-        Self {
-            t0: Instant::now(),
-            k: 0,
-            phase_offset: 0.0,
-            period_error: 0.0,
-
-            // Start with large diagonal — diffuse prior.
-            // p00: phase uncertainty ±T/2, p11: drift uncertainty ±100ns/callback
-            observation_covariance: (40_000.0f64).powi(2), // 40µs jitter prior in ns²
-            error_covariance: [
-                (NOMINAL_PERIOD_NS / 2.0).powi(2), // p00
-                0.0,                               // p01
-                (100.0f64).powi(2),                // p11
-            ],
-            measurements: ringbuf::LocalRb::<ringbuf::storage::Heap<(Instant, usize)>>::new(32),
-            innovations: ringbuf::LocalRb::new(32),
-        }
-    }
-
-    fn update(&mut self, timing: Instant, written: usize) {
-        self.measurements.push_overwrite((timing, written));
-
-        let [p00, p01, p11] = self.error_covariance;
-
-        self.k += 1;
-        let r = (timing - self.t0).as_nanos() as f64 - self.k as f64 * NOMINAL_PERIOD_NS;
-        let mu_pred = self.phase_offset + self.period_error;
-        let delta_pred = self.period_error;
-
-        // Prediction step
-        let p00_pred = p00 + 2.0 * p01 + p11;
-        let p01_pred = p01 + p11;
-        let p11_pred = p11 + Q_DELTA;
-
-        // Measure innovation
-        let nu = r - mu_pred;
-        let s = p00_pred + self.observation_covariance;
-
-        self.innovations.push_overwrite(nu);
-        let n = self.innovations.occupied_len() as f64;
-        let innovation_variance = self.innovations.iter().map(|v| v * v).sum::<f64>() / n;
-        self.observation_covariance = (innovation_variance - p00_pred).max(0.0);
-
-        // Kalman gain
-        let k0 = p00_pred / s;
-        let k1 = p01_pred / s;
-
-        // State updates including measurements
-        self.phase_offset = mu_pred + k0 * nu;
-        self.period_error = delta_pred + k1 * nu;
-
-        // Covariance update
-        self.error_covariance = [
-            (1.0 - k0) * p00_pred,
-            (1.0 - k0) * p01_pred,
-            p11_pred - k1 * p01_pred,
-        ];
-    }
-}
-
-/// Data about a connection's phase, period, jitter, and time between chunks.
-#[derive(Clone, Copy)]
-pub struct AudioTiming {
-    /// Number of samples this connection has seen.
-    count: u64,
-    /// Last chunk received timing.  Decided at the beginning of the process callback and only
-    /// updated if we actually manage to write data.
-    last: Instant,
-}
-
-impl AudioTiming {
-    fn new() -> Self {
-        AudioTiming {
-            count: 0,
-            last: Instant::now(),
-        }
-    }
-}
-
 impl AudioConnection {
     #[cfg(target_os = "linux")]
     fn new() -> *mut Self {
@@ -612,8 +496,8 @@ impl AudioConnection {
             buffer: UnsafeCell::new(buffer),
 
             ready: std::sync::Condvar::new(),
-            lock: std::sync::Mutex::new(AudioTiming::new()),
-            timing: TimingFilter::new(),
+            lock: std::sync::Mutex::new(timing::AudioTiming::new()),
+            timing: timing::TimingFilter::new(),
             // XXX make sure we can't accidentally ask a dropped object for timing data
             dropped: false.into(),
         }))
@@ -685,7 +569,7 @@ impl AudioConsumer {
     }
 
     /// Get most recent phase data.
-    pub fn timing(&self) -> Result<AudioTiming, MutateError> {
+    pub fn timing(&self) -> Result<timing::AudioTiming, MutateError> {
         let conn = unsafe { &(*self.conn) };
         Ok(conn.lock.lock().map(|t| t.clone())?)
     }
@@ -742,12 +626,9 @@ impl AudioProducer {
             }
         });
 
-        let mut timing = &mut conn.timing;
-        // XXX return the snapshot from each update and use that to write the
-        timing.update(arrived, written);
-
-        // XXX update timing and write AudioTiming to the consumer-readable field.
+        let snapshot = conn.timing.observe(arrived, written);
         let mut audio_timing = conn.lock.lock()?;
+        *audio_timing = snapshot;
         audio_timing.count += 1;
         audio_timing.last = arrived;
 
@@ -856,11 +737,11 @@ fn create_stream<'c>(
             );
         })
         .process(|stream, user_data| {
-            let timing = Instant::now();
+            let arrived = Instant::now();
             match stream.dequeue_buffer() {
                 Some(mut buffer) => {
                     let datas = buffer.datas_mut(); // drop implicitly dequeues
-                    match user_data.tx.write(datas, timing) {
+                    match user_data.tx.write(datas, arrived) {
                         Ok(_written) => {}
                         Err(e) => {
                             eprintln!("Stream write error: {:?}", e)
