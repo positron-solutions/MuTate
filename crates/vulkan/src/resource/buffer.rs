@@ -75,7 +75,7 @@ impl<T> MappedAllocation<T> {
             len: size,
             memory,
             size_bytes: mem_req.size,
-            memory_type_index: 0,
+            memory_type_index,
         })
     }
 
