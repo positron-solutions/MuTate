@@ -4,8 +4,15 @@
 //! # Buffer
 //!
 //! The `MappedAllocation` is just a first pass at wrapping up a persistently mapped Vulkan buffer
-//! that we will flush to the GPU on every frame.  This module should grow to provide a decent
-//! baseline of SSBO techniques.
+//! that we will flush to the device periodically.
+
+// FIXME guarantee initialization.
+// DEBT sub-allocation / resource runtime
+// MAYBE backing pools and buffer capabilities can drive type divergence, which we would handle with
+// generics.  The number of dimensions and motivations for these changes are not too clear.  ReBAR
+// support is likely just increasing.  Write-combined vs write-back and device local are clear areas
+// where hardware and usage patterns may have consequences.  These decisions may be runtime and not
+// affect types or the types may be necessary and runtime implements fallback.
 
 use std::ptr::NonNull;
 
@@ -16,20 +23,15 @@ use crate::{
     util, VulkanError,
 };
 
-// DEBT memory management
 pub struct MappedAllocation<T> {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub ptr: NonNull<T>,
     pub len: usize,
-
-    // MAYBE Some kind of loaned subviews would be nice instead of supporting ranges by allowing
-    // sizes to be passed in.
     pub size_bytes: vk::DeviceSize,
     pub memory_type_index: u32,
 }
 
-// DEBT memory allocation.
 impl<T> MappedAllocation<T> {
     pub fn new(size: usize, device: &Device) -> Result<Self, VulkanError> {
         let buffer_info = vk::BufferCreateInfo {
