@@ -67,7 +67,7 @@ impl WindowContext {
         raw_surface: vk::SurfaceKHR,
     ) -> Self {
         let surface = Surface::new(instance, device, raw_surface, &window).unwrap();
-        let present_ring = PresentRing::new(device, instance, &surface, surface.extent()).unwrap();
+        let present_ring = PresentRing::new(device, instance, &surface).unwrap();
         let mut render_node = video::spectrum::SpectrumNode::new(device);
         render_node.provision(device, surface.extent()).unwrap();
         Self {
