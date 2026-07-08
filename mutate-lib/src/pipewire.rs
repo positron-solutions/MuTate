@@ -201,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 // Underfed, either we can pad with "empty" data or wait for new data.  Let's wait.
-                match rx.wait() {
+                match rx.wait(std::time::Duration::from_micros(10_000)) {
                     Ok(_) => {
                         // eprintln!("waited ⏰");
                     }

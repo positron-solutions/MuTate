@@ -518,19 +518,26 @@ unsafe impl Send for AudioConsumer {}
 
 impl AudioConsumer {
     /// Wait for a buffer chunk to be written.
-    pub fn wait(&self) -> Result<u64, MutateError> {
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<u64, MutateError> {
         let conn = unsafe { &(*self.conn) };
         if conn.dropped.load(atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
         }
         let mut timing = conn.lock.lock()?;
         let initial = *timing;
+        let deadline = std::time::Instant::now() + timeout;
         while timing.count == initial.count {
-            // NEXT use a timeout wait and provide a method to wait for a specific number of bytes.
-            // Possibly switch to parking instead of this silly Condvar.
-            timing = conn.ready.wait(timing)?;
+            let remaining = match deadline.checked_duration_since(std::time::Instant::now()) {
+                Some(r) => r,
+                None => return Err(MutateError::Timeout("no audio chunk within timeout")),
+            };
+            let (guard, result) = conn.ready.wait_timeout(timing, remaining)?;
+            timing = guard;
             if conn.dropped.load(atomic::Ordering::Acquire) {
                 return Err(MutateError::Dropped);
+            }
+            if result.timed_out() {
+                return Err(MutateError::Timeout("no audio chunk within timeout"));
             }
         }
         Ok(timing.count)
