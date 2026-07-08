@@ -150,6 +150,12 @@ impl Instance {
         let platform_exts = ash_window::enumerate_required_extensions(display_handle)
             .expect("ash_window: unknown platform");
 
+        // DEBT logging & configuration so we can toggle this at runtime
+        // platform_exts.iter().for_each(|&e| {
+        //     let name = unsafe { CStr::from_ptr(e) };
+        //     println!("required extension: {name:?}");
+        // });
+
         // NOTE this merge into a Vec is fine for now, but if anyone wants to switch to iterator and
         // collect later at the raw ash call, that would be fine.  Didn't do it since nobody will
         // likely use it that way.

@@ -86,11 +86,11 @@ impl RawAudioNode {
         std::io::stdin().read_line(&mut input).unwrap();
 
         // FIXME handle invalid choices.
-        // FIXME enforce the choice on the pipewire side (pipewire seems do do whatever it wants)
         let choice_idx = input.trim().parse().unwrap();
         let choice = first_choices.remove(choice_idx);
 
         // Connect to stream and hold onto the consumer.
+        // XXX change to &str
         let rx = context.connect(&choice, "mutate".to_owned()).unwrap();
 
         Ok(Self {

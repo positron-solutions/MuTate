@@ -20,7 +20,6 @@ pub struct Device {
     pub physical_device: vk::PhysicalDevice,
     pub raw: ash::Device,
     pub queues: queue::Queues,
-    // NEXT work on abstracting this to memory decisions.
     pub memory_props: vk::PhysicalDeviceMemoryProperties,
     /// Descriptor table and runtime management of its entries.
     pub descriptors: descriptors::Descriptors,
