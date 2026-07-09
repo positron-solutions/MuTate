@@ -21,6 +21,7 @@ pub struct Device {
     pub raw: ash::Device,
     pub queues: queue::Queues,
     pub memory_props: vk::PhysicalDeviceMemoryProperties,
+    pub non_coherent_atom_size: vk::DeviceSize,
     /// Descriptor table and runtime management of its entries.
     pub descriptors: descriptors::Descriptors,
 
@@ -121,11 +122,18 @@ impl Device {
 
         let memory_props =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let non_coherent_atom_size = unsafe {
+            instance
+                .get_physical_device_properties(physical_device)
+                .limits
+                .non_coherent_atom_size
+        };
 
         Self {
             physical_device,
             raw,
             memory_props,
+            non_coherent_atom_size,
             queues,
             descriptors,
 
@@ -192,6 +200,10 @@ impl Device {
         let raw = unsafe { self.raw.create_semaphore(&ci, None)? };
 
         Ok(TimelineSemaphore::new(raw))
+    }
+
+    pub fn non_coherent_atom_size(&self) -> vk::DeviceSize {
+        self.non_coherent_atom_size
     }
 
     pub fn as_raw(&self) -> &ash::Device {
