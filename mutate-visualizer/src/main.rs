@@ -9,8 +9,6 @@
 //! - [`MutateApp`] owns the longest lived resources such as the Vulkan context and audio input
 //!   stream.
 
-mod audio;
-mod graph;
 mod video;
 mod window;
 
@@ -29,14 +27,7 @@ use winit::{
 
 use mutate_lib::{self as utate, prelude::*};
 
-use graph::node;
 use window::WindowExt;
-
-// NEXT on-device audio processing is immenent.
-// NEXT break up the "graph" module or at least make it less misleading.
-// FIXME extent threading through swapchain is a *mess*.  It's a simple piece of data.  The renderer
-// can basically trust swapchain image sizes (that's the physical memory we are writing to) and
-// these other cues should be treated as hints about the current swapchain still being valid.
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -56,7 +47,7 @@ struct WindowContext {
     // device can be shared per window that the device supports.  Rare device-per-window cases, if
     // they still exist, would require only one audio downstream per device and then that data can
     // be reused for all windows.
-    render_node: video::spectrum::SpectrumNode,
+    renderer: video::pulse::HelloDraw,
 }
 
 impl WindowContext {
@@ -68,33 +59,25 @@ impl WindowContext {
     ) -> Self {
         let surface = Surface::new(instance, device, raw_surface, &window).unwrap();
         let present_ring = PresentRing::new(device, instance, &surface).unwrap();
-        let mut render_node = video::spectrum::SpectrumNode::new(device);
-        render_node.provision(device, surface.extent()).unwrap();
+        let mut renderer = video::pulse::HelloDraw::new(device);
+        renderer.provision(device, surface.extent()).unwrap();
         Self {
             window,
             surface,
             present_ring,
-            render_node,
+            renderer,
         }
     }
 
-    fn draw_frame(&mut self, audio: &mut Audio, device: &mut Device) {
-        // NEXT: audio is consumed once per draw_frame call; in a multi-window
-        // setup this would double-consume.  Hoist the audio pump above the
-        // per-window loop in ActiveApp when that becomes necessary.
-        let raw_state = audio.raw.consume().unwrap();
-        let raw_out = audio.raw.produce().unwrap();
-        audio.cqt.consume(&raw_out);
-        if raw_state == node::SeekState::UnderProduced {
-            let raw_out = audio.raw.produce().unwrap();
-            audio.cqt.consume(&raw_out);
-        }
-        let cqt = audio.cqt.produce();
+    fn draw_frame(&mut self, device: &mut Device) {
+        // XXX pull in updated audio
+        // XXX allow reclaim of retired audio
+        // XXX draw with up-to-date audio
         self.present_ring
             .record(
                 device,
                 compute_present(device, |device, cb, acquired_image| {
-                    self.render_node.draw(device, cb, acquired_image, cqt);
+                    self.renderer.draw(device, cb, acquired_image);
                 }),
                 || self.window.pre_present_notify(),
             )
@@ -114,14 +97,14 @@ impl WindowContext {
             .present_ring
             .maybe_update_swapchain(device, &mut self.surface, &self.window)
             .unwrap();
-        self.render_node.provision(device, new_size)?;
+        self.renderer.provision(device, new_size)?;
         self.window.request_redraw();
         Ok(())
     }
 
     /// Consumes self; call only after the device queue is idle for this window.
     fn destroy(self, device: &mut Device) {
-        self.render_node.destroy(device);
+        self.renderer.destroy(device);
         self.present_ring.destroy(device);
         self.surface.destroy();
     }
@@ -167,13 +150,12 @@ impl ActiveApp {
         window_id: WindowId,
         event: WindowEvent,
         instance: &Instance,
-        audio: &mut Audio,
     ) {
         match event {
             // MAYBE do they get before matching the variant?
             WindowEvent::RedrawRequested => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.draw_frame(audio, &mut self.device);
+                    wc.draw_frame(&mut self.device);
                     wc.window.request_redraw();
                 }
             }
@@ -233,7 +215,6 @@ enum AppState {
 struct MutateApp {
     args: Args,
     instance: Instance,
-    audio: Audio,
     state: AppState,
 }
 
@@ -255,13 +236,7 @@ impl ApplicationHandler for MutateApp {
         let AppState::Active(active) = &mut self.state else {
             return;
         };
-        active.handle_window_event(
-            event_loop,
-            window_id,
-            event,
-            &self.instance,
-            &mut self.audio,
-        );
+        active.handle_window_event(event_loop, window_id, event, &self.instance);
     }
 
     // handles all exit paths
@@ -277,39 +252,16 @@ impl ApplicationHandler for MutateApp {
     }
 }
 
-/// Process-scoped audio pipeline.  Only one audio upstream is necessary for the whole application.
-/// Downstream consumers can use the data without additional support.
-struct Audio {
-    raw: audio::raw::RawAudioNode,
-    cqt: audio::cqt::CqtNode, // NEXT on-GPU audio and ditch this at last
-}
-
-impl Audio {
-    fn new() -> Result<Self, MutateError> {
-        Ok(Self {
-            raw: audio::raw::RawAudioNode::new()?,
-            cqt: audio::cqt::CqtNode::new(600, 48000, 60.0),
-        })
-    }
-
-    fn destroy(self) {
-        self.raw.destroy();
-    }
-}
-
 fn main() -> Result<(), MutateError> {
     let args = Args::parse();
     let event_loop = EventLoop::builder().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = MutateApp {
         instance: Instance::with_display(&event_loop, &[]),
-        audio: Audio::new()?,
         args,
         state: AppState::Dormant,
     };
     event_loop.run_app(&mut app).unwrap();
-
-    app.audio.destroy();
     app.instance.destroy();
     Ok(())
 }

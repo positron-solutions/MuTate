@@ -5,5 +5,5 @@
 //!
 //! Drawing and presentation go here.
 
-pub mod spectrum;
+pub mod pulse;
 pub mod triangle;
