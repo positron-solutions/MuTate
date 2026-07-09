@@ -165,6 +165,7 @@ pub mod prelude {
     pub use crate::pipeline::prelude::*;
     pub use crate::present::prelude::*;
     pub use crate::present::surface::Surface;
+    pub use crate::resource::buffer::{MappedAllocation, MappedWriteView};
     pub use crate::slang::prelude::*;
     pub use crate::slang_newtype;
 

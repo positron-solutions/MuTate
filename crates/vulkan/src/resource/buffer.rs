@@ -194,6 +194,20 @@ impl<T> MappedAllocation<T> {
             );
         }
     }
+
+    /// Lend a flush-capable write view for moving into a writer thread.
+    ///
+    /// Clones a raw device handle into the view. Caller must join that thread
+    /// before calling `destroy`.
+    pub fn write_view(&self, device: &Device) -> MappedWriteView<T> {
+        MappedWriteView {
+            device: device.as_raw().clone(),
+            memory: self.memory,
+            ptr: self.ptr,
+            len: self.len,
+            size_bytes: self.size_bytes,
+        }
+    }
 }
 
 pub fn buffer_image_copy_full(extent: vk::Extent2D) -> vk::BufferImageCopy {
@@ -213,5 +227,69 @@ pub fn buffer_image_copy_full(extent: vk::Extent2D) -> vk::BufferImageCopy {
             height: extent.height,
             depth: 1,
         },
+    }
+}
+
+/// Share write support for a buffer into a thread without moving responsibility for freeing.
+pub struct MappedWriteView<T> {
+    device: ash::Device,
+    memory: vk::DeviceMemory,
+    ptr: NonNull<T>,
+    len: usize,
+    size_bytes: vk::DeviceSize,
+}
+
+unsafe impl<T: Send> Send for MappedWriteView<T> {}
+
+impl<T> MappedWriteView<T> {
+    /// # Safety
+    /// Caller ensures this view (and its thread) is dropped before the owning
+    /// `MappedAllocation` is destroyed, and that owner-side code does not write
+    /// the same region concurrently.
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+
+    /// Make host writes device-visible. Flushes the whole mapped range.
+    pub fn flush(&self) -> Result<(), VulkanError> {
+        let range = vk::MappedMemoryRange {
+            memory: self.memory,
+            offset: 0,
+            size: self.size_bytes,
+            ..Default::default()
+        };
+        unsafe {
+            self.device.flush_mapped_memory_ranges(&[range])?;
+        }
+        Ok(())
+    }
+
+    /// Flush a precomputed byte range. The caller (typically a layout that
+    /// aligned its offsets to `nonCoherentAtomSize` at init) guarantees that
+    /// `offset` and `size` satisfy Vulkan's atom-alignment rules — either both
+    /// are atom multiples, or `offset + size == size_bytes`.
+    ///
+    /// The debug alignment check lives here rather than in the buffer so the
+    /// invariant is asserted at the point of use.
+    pub fn flush_range(
+        &self,
+        offset: vk::DeviceSize,
+        size: vk::DeviceSize,
+    ) -> Result<(), VulkanError> {
+        debug_assert!(
+            offset + size <= self.size_bytes,
+            "flush_range out of bounds: {offset}+{size} > {}",
+            self.size_bytes
+        );
+        let range = vk::MappedMemoryRange {
+            memory: self.memory,
+            offset,
+            size,
+            ..Default::default()
+        };
+        unsafe {
+            self.device.flush_mapped_memory_ranges(&[range])?;
+        }
+        Ok(())
     }
 }
