@@ -154,6 +154,10 @@
     },
     "root": {
       "inputs": {
+        "fenix": [
+          "pins",
+          "fenix"
+        ],
         "nixpkgs": [
           "pins",
           "nixpkgs"

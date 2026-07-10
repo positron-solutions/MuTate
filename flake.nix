@@ -4,15 +4,31 @@
 {
   inputs = {
     pins.url = "git+https://github.com/positron-solutions/pins.git";
+    fenix.follows = "pins/fenix";
     nixpkgs.follows = "pins/nixpkgs";
     nixpkgs-unstable.follows = "pins/nixpkgs-unstable";
   };
 
-  outputs = { self, nixpkgs, nixpkgs-unstable, ... }:
+  outputs = { self, fenix, nixpkgs, nixpkgs-unstable, ... }:
     let
       system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; };
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ fenix.overlays.default ];
+      };
       pkgs-unstable = import nixpkgs-unstable { inherit system; };
+
+      rustToolchain = with pkgs.fenix; combine [
+        stable.rust-src
+        stable.rustc
+        stable.cargo
+        stable.rustfmt
+      ];
+      rustDeps = [
+         rustToolchain
+         pkgs.lld
+         pkgs.clang
+      ];
 
       vulkanEnv = ''
           export VK_LAYER_PATH=${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d
@@ -54,7 +70,7 @@
       x11Shell = pkgs.mkShell {
         buildInputs = with pkgs; [
           pkg-config
-        ] ++ pipewireDeps ++ x11Deps ++ vulkanDeps;
+        ] ++ pipewireDeps ++ x11Deps ++ vulkanDeps ++ rustDeps;
 
         # Make sure dynamic linker can find libX11 at runtime
         shellHook = ''
@@ -69,6 +85,8 @@
 
           export LIBCLANG_PATH=${pkgs.llvmPackages.libclang.lib}/lib
         '';
+
+        RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
       };
 
       waylandDeps = with pkgs; [
@@ -81,7 +99,7 @@
       waylandShell = pkgs.mkShell {
         buildInputs = with pkgs; [
           pkg-config
-        ] ++ pipewireDeps ++ waylandDeps ++ vulkanDeps;
+        ] ++ pipewireDeps ++ waylandDeps ++ vulkanDeps ++ rustDeps;
 
         # Make sure dynamic linker can find libX11 at runtime
         shellHook = ''
@@ -97,6 +115,8 @@
 
           export LIBCLANG_PATH=${pkgs.llvmPackages.libclang.lib}/lib
         '';
+
+        RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
       };
 
       # Headless shell for CI: no display system, lavapipe software ICD for Vulkan.
@@ -105,7 +125,7 @@
         buildInputs = with pkgs; [
           pkg-config
           mesa.drivers
-        ] ++ pipewireDeps ++ vulkanDeps;
+        ] ++ pipewireDeps ++ vulkanDeps ++ rustDeps;
 
         shellHook = ''
           ${vulkanEnv}
@@ -118,6 +138,8 @@
 
           export LIBCLANG_PATH=${pkgs.llvmPackages.libclang.lib}/lib
         '';
+
+        RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
       };
     in {
       devShells = {
