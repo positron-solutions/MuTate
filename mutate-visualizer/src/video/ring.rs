@@ -1,38 +1,40 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! # Pulse
+//! # Ring
 //!
-//! Stub for the upcoming three-channel thing.  Just a copy of hello draw to get the visualizer
-//! rearrangement done.
+//! Dump the raw audio ring buffer onto the screen
 
 use ash::vk;
 use mutate_lib::{self as utate, prelude::*};
 use utate::vulkan::resource::{buffer, image};
 
 #[compute_pipeline(
-    compute = stage!("pulse/compute", Compute, c"main"),
-    push = push!(HelloConstants {
+    compute = stage!("ring/compute", Compute, c"main"),
+    push = push!(RawRingPushConstants {
+        pub left_channel: DeviceAddress,
+        pub right_channel: DeviceAddress,
+        pub capacity: UInt,
         pub counter: UInt,
         pub window_width: Float,
         pub window_height: Float,
         pub output_idx: SsboIdx,
     }),
 )]
-pub struct HelloPipeline;
+pub struct RawRingPipeline;
 
-pub struct HelloDraw {
-    pipeline: ComputePipeline<HelloPipeline>,
+pub struct RawRingDraw {
+    pipeline: ComputePipeline<RawRingPipeline>,
     counter: u32,
 
     output_buffer: Option<buffer::MappedAllocation<rgb::Rgba<u8>>>,
     output_idx: SsboIdx,
 }
 
-impl HelloDraw {
+impl RawRingDraw {
     pub fn new(device: &Device) -> Self {
         Self {
-            pipeline: ComputePipeline::<HelloPipeline>::new(device).unwrap(),
+            pipeline: ComputePipeline::<RawRingPipeline>::new(device).unwrap(),
             counter: 0,
             output_buffer: None,
             output_idx: SsboIdx::INVALID,
@@ -66,16 +68,22 @@ impl HelloDraw {
         device: &Device,
         cb: &RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
+        left_channel: vk::DeviceAddress,
+        right_channel: vk::DeviceAddress,
+        capacity: u32,
     ) {
         let extent = acquired_image.extent;
 
-        // XXX argument order
+        // XXX argument order (reverse cb & device)
         self.output_buffer
             .as_ref()
             .unwrap()
             .barrier_compute_pre(&cb, device);
 
-        let push = HelloConstants {
+        let push = RawRingPushConstants {
+            left_channel: DeviceAddress::from(left_channel),
+            right_channel: DeviceAddress::from(right_channel),
+            capacity: capacity.into(),
             counter: self.counter.into(),
             window_width: (extent.width as f32).into(),
             window_height: (extent.height as f32).into(),

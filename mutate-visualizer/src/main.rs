@@ -9,6 +9,7 @@
 //! - [`MutateApp`] owns the longest lived resources such as the Vulkan context and audio input
 //!   stream.
 
+mod audio;
 mod video;
 mod window;
 
@@ -47,7 +48,7 @@ struct WindowContext {
     // device can be shared per window that the device supports.  Rare device-per-window cases, if
     // they still exist, would require only one audio downstream per device and then that data can
     // be reused for all windows.
-    renderer: video::pulse::HelloDraw,
+    renderer: video::ring::RawRingDraw,
 }
 
 impl WindowContext {
@@ -59,7 +60,7 @@ impl WindowContext {
     ) -> Self {
         let surface = Surface::new(instance, device, raw_surface, &window).unwrap();
         let present_ring = PresentRing::new(device, instance, &surface).unwrap();
-        let mut renderer = video::pulse::HelloDraw::new(device);
+        let mut renderer = video::ring::RawRingDraw::new(device);
         renderer.provision(device, surface.extent()).unwrap();
         Self {
             window,
@@ -69,15 +70,28 @@ impl WindowContext {
         }
     }
 
-    fn draw_frame(&mut self, device: &mut Device) {
-        // XXX pull in updated audio
-        // XXX allow reclaim of retired audio
-        // XXX draw with up-to-date audio
+    fn draw_frame(&mut self, device: &mut Device, audio: &mut audio::Audio) {
+        // black hole the data to check the ring tracking
+        audio
+            .consumer
+            .advance_read(audio.consumer.occupied_len().unwrap_or(0))
+            .unwrap();
+        let channels = unsafe { audio.consumer.channels().unwrap() };
+        let left_channel = channels[0];
+        let right_channel = channels[1];
+        let capacity = audio.consumer.capacity();
         self.present_ring
             .record(
                 device,
                 compute_present(device, |device, cb, acquired_image| {
-                    self.renderer.draw(device, cb, acquired_image);
+                    self.renderer.draw(
+                        device,
+                        cb,
+                        acquired_image,
+                        left_channel,
+                        right_channel,
+                        capacity,
+                    );
                 }),
                 || self.window.pre_present_notify(),
             )
@@ -114,12 +128,17 @@ impl WindowContext {
 // NEXT allow devices to vary at runtime and use different devices per window or different devices
 // for different roles.
 struct ActiveApp {
+    audio: audio::Audio,
     device: Device,
     windows: HashMap<WindowId, WindowContext>,
 }
 
 impl ActiveApp {
-    fn new(instance: &Instance, args: &Args, event_loop: &ActiveEventLoop) -> Self {
+    fn new(
+        instance: &Instance,
+        args: &Args,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<Self, MutateError> {
         let window = Window::from_args(args, event_loop);
         let raw_surface = instance.surface(event_loop, &window);
 
@@ -135,13 +154,18 @@ impl ActiveApp {
         let selected = supported_devices[0].clone();
         println!("device selected: {}", selected.name);
         let mut device = selected.into_logical(instance);
+        let audio = audio::Audio::new(&device)?;
 
         let wc = WindowContext::new(instance, &mut device, window, raw_surface);
         let window_id = wc.window.id();
         let mut windows = HashMap::new();
         windows.insert(window_id, wc);
 
-        Self { device, windows }
+        Ok(Self {
+            audio,
+            device,
+            windows,
+        })
     }
 
     fn handle_window_event(
@@ -155,7 +179,7 @@ impl ActiveApp {
             // MAYBE do they get before matching the variant?
             WindowEvent::RedrawRequested => {
                 if let Some(wc) = self.windows.get_mut(&window_id) {
-                    wc.draw_frame(&mut self.device);
+                    wc.draw_frame(&mut self.device, &mut self.audio);
                     wc.window.request_redraw();
                 }
             }
@@ -223,7 +247,7 @@ impl ApplicationHandler for MutateApp {
         // Transition Dormant -> Active by creating the first window.
         // Device selection happens here once; subsequent windows reuse it.
         debug_assert!(matches!(self.state, AppState::Dormant));
-        let active = ActiveApp::new(&self.instance, &self.args, event_loop);
+        let active = ActiveApp::new(&self.instance, &self.args, event_loop).unwrap();
         self.state = AppState::Active(active);
     }
 
@@ -244,10 +268,11 @@ impl ApplicationHandler for MutateApp {
         let AppState::Active(active) = &mut self.state else {
             return;
         };
-        unsafe { active.device.wait_idle().unwrap() };
+        active.device.wait_idle().unwrap();
         for (_, wc) in active.windows.drain() {
             wc.destroy(&mut active.device);
         }
+        active.audio.destroy(&mut active.device);
         active.device.destroy();
     }
 }

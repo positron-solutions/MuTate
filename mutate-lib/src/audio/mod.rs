@@ -72,6 +72,8 @@
 // Also looks like we need DBUS for seeing Spotify title changes.  If we have it, we can render
 // title changes in the middle of playback, something Milkdrop has done right for twenty years or
 // so.
+#[cfg(feature = "vulkan")]
+pub mod import;
 pub mod timing;
 
 use std::cell::UnsafeCell;
@@ -324,21 +326,32 @@ impl AudioContext {
     }
 
     /// Connect to a stream
-    pub fn connect(
-        &self,
-        choice: &AudioChoice,
-        name: String,
-    ) -> Result<AudioConsumer, MutateError> {
+    pub fn connect(&self, choice: &AudioChoice, name: &str) -> Result<AudioConsumer, MutateError> {
         let conn = AudioConnection::new();
         let msg = Message::Connect {
             choice: choice.clone(),
             tx: AudioProducer { conn: conn.clone() },
-            name,
+            name: name.to_owned(),
         };
         self.tx
             .send(msg)
             .map_err(|_e| MutateError::AudioConnect("connection creation failed"))?;
         Ok(AudioConsumer { conn })
+    }
+
+    /// Connect a stream and import it into a device-side ring.
+    ///
+    /// `CHANNELS` is the planar channel count laid out on the device; `sample_count`
+    /// is the per-channel ring length in samples. Both are fixed at call time.
+    #[cfg(feature = "vulkan")]
+    pub fn import_to_device<const CHANNELS: usize>(
+        &self,
+        device: &Device,
+        choice: &AudioChoice,
+        sample_count: u32,
+        name: &str,
+    ) -> Result<import::Consumer<CHANNELS>, MutateError> {
+        import::Consumer::new(self, device, choice, sample_count, name)
     }
 
     pub fn choices_version(&self) -> usize {

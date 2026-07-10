@@ -5,5 +5,5 @@
 //!
 //! Drawing and presentation go here.
 
-pub mod pulse;
+pub mod ring;
 pub mod triangle;
