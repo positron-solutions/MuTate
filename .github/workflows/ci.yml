@@ -15,8 +15,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v13
       - name: Load Shell
-        run: nix develop .#ciShell
-
+        run: nix develop .#ciShell --command rustc --version --verbose
   test:
     needs: setup
     runs-on: ubuntu-latest
