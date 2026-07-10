@@ -658,6 +658,7 @@ impl Drop for AudioProducer {
 struct StreamData {
     format: spa::param::audio::AudioInfoRaw,
     tx: AudioProducer,
+    dead: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -699,6 +700,7 @@ fn create_stream<'c>(
     let data = Box::new(StreamData {
         format: Default::default(), // XXX format is not exposed to receiver
         tx,
+        dead: false,
     });
 
     // This is the minimum
@@ -744,15 +746,19 @@ fn create_stream<'c>(
             );
         })
         .process(|stream, user_data| {
+            if user_data.dead {
+                return;
+            }
             let arrived = Instant::now();
             match stream.dequeue_buffer() {
                 Some(mut buffer) => {
                     let datas = buffer.datas_mut(); // drop implicitly dequeues
                     match user_data.tx.write(datas, arrived) {
                         Ok(_written) => {}
-                        Err(e) => {
-                            eprintln!("Stream write error: {:?}", e)
-                        }
+                        // XXX Drop dance might be more clean if we had an explicit disconnect
+                        // message and send it somewhere in the drop glue.
+                        Err(MutateError::Dropped) => user_data.dead = true,
+                        Err(e) => eprintln!("Stream write error: {:?}", e),
                     };
                 }
                 None => {
