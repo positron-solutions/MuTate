@@ -89,3 +89,9 @@ These are not project specific, but maintainer tendencies on mature projects (th
 ## PrizeForge, User-Lead Funding
 
 All contributors may be selected for paying out PrizeForge awards.  The aim is for users of PrizeForge to decide who gets paid and what features are important.  PrizeForge keeps decision power with the backers, not the project maintainers, so **don't ask us for backer money.  We don't control any.**  We are building discussion tools for PrizeForge to enable much more effective support and communication between backers and contributors, so eventually you can talk there.
+
+## The Name
+
+µ is the [micro sign](https://www.compart.com/en/unicode/U+00B5).  Unicode point is `U+00B5` or `181`.  It may also be typed with `Alt + 0181` on Windows or `Option + M` on MacOS.  When in a hurry, "MuTate" or "uTate" are acceptable.  Packaging had been leaning towards `mutate` prefix, but a new [organization](https://github.com/utate-community) was created with `utate` in anticipation of migrating to `utate` or `µTate` everywhere.
+
+When spoken, "µTate" must be pronounced /ˈmjuːteɪt/ or "MYOO-tayt" to indicate vigorous mogging of all other visualization programs.   \ˌmīk-ˈrō-ˌtāt\ or "Mike Rotate" must not be used because it sounds too similar with "Developers! developers! developers!" or a very small cuttlefish named Tate.  When greeting other µTate contributors, they must be addressed as /ˈmjuːteɪtərz/ or "Myoo Taters" but not too hickishly, such as \ˈmyü-ˌtā-dərz\.
