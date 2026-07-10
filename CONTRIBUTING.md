@@ -14,7 +14,7 @@ Design considerations have been landing in the Github [discussions](https://gith
 
 See the [DEBT.md](./DEBT.md) for a maintained list of places we are trading a little temporary convenience & certainty for a bit more pain in the future.  It also records recommendations to reduce that pain until we ~~declare technical bankruptcy~~ pay off the debt.
 
-## Layout
+## Workspace Layout
 
 - `./crates/assets/` Build-time support for build scripts.  Runs `slangc` to emit SPIR-V and reflection data.  Runtime support for loading assets.
 - `./crates/vulkan/` Vulkan is a buffet.  Our Vulkan crate is a plate from the buffet, a coherent set of features given a much reduced API that abstracts over a Vulkan subset to present a fully functional but much more ergonomic interface.
@@ -31,6 +31,21 @@ See the [DEBT.md](./DEBT.md) for a maintained list of places we are trading a li
 - `./crates/slide/` - We use sliding windows.  Ring buffers typically have partially filled semantics, which means downstream has to deal with incomplete windows and potentially buffer the window themselves. This crate will likely mature and be spun out.
 
 - `./crates/untorn/` - A triple buffering (seqlock first pass implementation) solution to effectively give us atomic structs with completely synchronous semantics over shared mutable memory.  There are times where we just don't want the ceremony of locking.  This crate will likely also mature and be spun out.
+
+## Typed Comments
+
+As an ad-hoc local management tool and a way to communicate at a high level about modules with each other, module level regular comments often follow the doc comments.  The all-caps token enables judging the nature of a comment without reading it.
+
+- `XXX` - This probably should not have shipped, but if it did, it means the code is actually only working on the happy paths.  Something is very wrong.  Mostly synonymous with `FIXME`.  Most often found inline, near the problem.
+- `NEXT` - The next thing(s) that may be worked on.  Writing this relieves the author from implementing features and behaviors that seem **obvious from the point where they left off**.
+- `LIES` - The code semantically appears to be doing something but in fact is not or is doing something else.  The semantics may need fixing or we may be hacking around something or achieving some side effect.
+- `DEBT` - Very specifically there is something that is intentionally being done consistent with a trade-off documented in [DEBT.md](./DEBT.md).
+- `ROLL` - We're waiting on something that is at least partially out of our control, an when this is unblocked, we will **roll off** the old ways and into a new era.
+- `NOTE` - Just an observation, something to help get oriented with the mental model or the long term goals.  Not relevant to users, only contributors.
+
+Most modules begin with doc comments and then have several typed comments.  Typed comments, especially `NEXT` tend to go out of date and become scattered.  Before working on a module, do attempt to retire or refine comments and place the changes into a "line noise" commit along with other superficial changes.
+
+**Searching these comments is a good way to find things to work on.** 👽
 
 ## AI Use Policy
 
@@ -63,6 +78,13 @@ These are not project specific, but maintainer tendencies on mature projects (th
 ## Style
 
 - All raw `ash` handles **must** be used behind either the `ash::` or `vk::` (`ash::vk::`) prefix.  Only µTate types should be used without prefix.  This makes raw types very easy to see in implementation code.
+- Imports are recommended to use a single prefix for out-of-crate dependencies.  Example: `vk::DeviceAddress` instead of just `DeviceAddress`.
+- Imports are sorted and divided as:
+
+  + `std`
+  + External dependencies
+  + Workspace dependencies
+  + Crate dependencies
 
 ## PrizeForge, User-Lead Funding
 
