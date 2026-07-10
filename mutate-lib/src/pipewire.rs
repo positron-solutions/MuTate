@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let choice_idx = input.trim().parse().unwrap();
     let choice = first_choices.remove(choice_idx);
 
-    let mut rx = context.connect(&choice, "mutate-test".to_owned()).unwrap();
+    let mut rx = context.connect(&choice, "mutate-test").unwrap();
 
     let running = Arc::new(atomic::AtomicBool::new(true));
 
