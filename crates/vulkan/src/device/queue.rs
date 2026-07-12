@@ -81,6 +81,7 @@
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::sync::{Mutex, MutexGuard};
 
 use ash::vk;
 use smallvec::SmallVec;
@@ -198,25 +199,49 @@ pub struct Queues {
     high_compute: Queue<Compute>,
     low_compute: Queue<Compute>,
     transfer: Queue<Transfer>,
+
+    /// Aliased physical queues can share backing locks to externally synchronize over all users of
+    /// each queue.
+    submit_locks: Box<[Mutex<()>]>,
 }
 
 impl Queues {
     pub fn new(device: &ash::Device, plan: QueuePlan) -> Self {
+        // One lock per physical queue. Distinct (family, index) pairs get their own
+        // slot; aliases resolve to the same index and therefore the same lock.
+        let mut keys: Vec<(u32, u32)> = plan
+            .high_graphics
+            .iter()
+            .chain(plan.low_graphics.iter())
+            .chain([&plan.high_compute, &plan.low_compute, &plan.transfer])
+            .map(|slot| (slot.family, slot.index))
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+
+        let submit_locks: Box<[Mutex<()>]> = keys.iter().map(|_| Mutex::new(())).collect();
+
+        let lock_for = |slot: &SlotAssignment| -> *const Mutex<()> {
+            let i = keys.binary_search(&(slot.family, slot.index)).unwrap();
+            &submit_locks[i] as *const _
+        };
+
         Queues {
             physical_device: plan.physical_device,
             high_graphics: plan
                 .high_graphics
                 .iter()
-                .map(|&slot| Queue::new(device, slot))
+                .map(|&slot| Queue::new(device, slot, lock_for(&slot)))
                 .collect(),
             low_graphics: plan
                 .low_graphics
                 .iter()
-                .map(|&slot| Queue::new(device, slot))
+                .map(|&slot| Queue::new(device, slot, lock_for(&slot)))
                 .collect(),
-            high_compute: Queue::new(device, plan.high_compute),
-            low_compute: Queue::new(device, plan.low_compute),
-            transfer: Queue::new(device, plan.transfer),
+            high_compute: Queue::new(device, plan.high_compute, lock_for(&plan.high_compute)),
+            low_compute: Queue::new(device, plan.low_compute, lock_for(&plan.low_compute)),
+            transfer: Queue::new(device, plan.transfer, lock_for(&plan.transfer)),
+            submit_locks,
         }
     }
 
@@ -299,7 +324,7 @@ impl Queues {
 #[repr(C)]
 pub struct Queue<C: Capability> {
     raw: vk::Queue,
-    submit_lock: Box<std::sync::Mutex<()>>,
+    submit_lock: *const std::sync::Mutex<()>,
     family: u32,
     priority: QueuePriority,
     /// When overloaded, queues might have more capabilities than required for a given request from
@@ -312,11 +337,15 @@ pub struct Queue<C: Capability> {
 }
 
 impl<C: Capability> Queue<C> {
-    fn new(device: &ash::Device, slot: SlotAssignment) -> Self {
+    fn new(
+        device: &ash::Device,
+        slot: SlotAssignment,
+        submit_lock: *const std::sync::Mutex<()>,
+    ) -> Self {
         let raw = unsafe { device.get_device_queue(slot.family, slot.index) };
         Self {
             raw,
-            submit_lock: Box::new(std::sync::Mutex::new(())),
+            submit_lock,
             family: slot.family,
             priority: slot.priority,
             actual_flags: slot.actual_flags,
@@ -373,6 +402,10 @@ impl<C: Capability> Queue<C> {
     // NOTE destroy not implemented since logical devices own their queues and we can just drop handles.
 }
 
+// Mirrors the same assertion already made for QueueRef.  Sound as long as Queues outlives Queue.
+unsafe impl<C: Capability> Send for Queue<C> {}
+unsafe impl<C: Capability> Sync for Queue<C> {}
+
 /// A lightweight owned handle for the device's `Queue`.  It can be used to synchronize queue
 /// submissions.  May be cloned and is `Send` and `Sync`.  Implements deref to lesser capability
 /// queue refs.  If you need to query `Queue` capabilities, do this at the point of queue selection
@@ -380,7 +413,7 @@ impl<C: Capability> Queue<C> {
 #[repr(C)]
 pub struct QueueRef<C: Capability> {
     raw: vk::Queue,
-    submit_lock: *const std::sync::Mutex<()>,
+    submit_lock: *const Mutex<()>,
     pub family: u32,
     #[allow(dead_code)]
     _marker: PhantomData<C>,
@@ -391,7 +424,7 @@ impl<C: Capability> QueueRef<C> {
     unsafe fn new(queue: &Queue<C>) -> Self {
         Self {
             raw: queue.raw,
-            submit_lock: queue.submit_lock.as_ref() as *const _,
+            submit_lock: queue.submit_lock,
             family: queue.family,
             _marker: PhantomData,
         }
@@ -410,9 +443,7 @@ impl<C: Capability> QueueRef<C> {
     }
 
     /// Lock the queue for submission, obtaining the synchronization gaurd and handle.
-    pub unsafe fn lock_raw(
-        &self,
-    ) -> Result<(vk::Queue, std::sync::MutexGuard<'_, ()>), VulkanError> {
+    pub unsafe fn lock_raw(&self) -> Result<(vk::Queue, MutexGuard<'_, ()>), VulkanError> {
         let guard = (*self.submit_lock)
             .lock()
             .map_err(|_| VulkanError::Poisoned)?;
@@ -505,7 +536,8 @@ fn raw_spare(family: u32, index: u32, flags: vk::QueueFlags) -> RawSlot {
 struct FamilyInfo {
     index: u32,
     flags: vk::QueueFlags,
-    count: u32, // number of queues the family exposes
+    count: u32,                // number of queues the family exposes
+    timestamp_valid_bits: u32, // 0 means this family cannot write timestamps
 }
 
 /// Collected view of the physical device's queue families, bucketed by minimum capability.
@@ -533,6 +565,7 @@ impl FamilyCandidates {
                 index: i,
                 flags: p.queue_flags,
                 count: p.queue_count,
+                timestamp_valid_bits: p.timestamp_valid_bits,
             };
 
             if p.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
