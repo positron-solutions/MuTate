@@ -88,6 +88,10 @@
 //! sub-ranges, sparse ranges, and sum ranges over tuple types are some possible directions to
 //! expand support, but if nobody finds the time to do it, it probably isn't very useful.
 
+// NEXT we really need more convenient access for various associated constants.  Several traits need
+// to be in scope to check layout range, size, alignment etc.  Debugging the slang and push constant
+// support needs to be smoother.
+
 use std::marker::PhantomData;
 
 use crate::internal::*;

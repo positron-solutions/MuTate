@@ -30,3 +30,4 @@ trybuild_pass!(empty);
 trybuild_pass!(minimal);
 trybuild_pass!(split);
 trybuild_pass!(shared);
+trybuild_pass!(ring);

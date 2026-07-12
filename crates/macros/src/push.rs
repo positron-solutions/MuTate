@@ -263,16 +263,12 @@ fn emit_push_impls(
     let ranges: Vec<TokenStream> = if field_infos.is_empty() {
         vec![] // zero-range layout — perfectly legal, nothing to compute
     } else if all_unannotated {
-        let n = field_infos.len();
+        // DEBT see blame.  Last changes were not deeply analyzed.
         vec![quote! {
             #root::ash::vk::PushConstantRange {
                 stage_flags: #root::ash::vk::ShaderStageFlags::ALL,
                 offset: 0,
-                size: #root::field_end(
-                    &#gpu_ty::FIELD_NODE,
-                    #n - 1,
-                    #root::Scalar::DATA_LAYOUT,
-                ) as u32,
+                size: #gpu_ty::SIZE as u32,
             }
         }]
     } else {
