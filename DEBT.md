@@ -52,6 +52,16 @@ The migration to Slang was going to itself require better engineering around pip
 
 **All of the machine learning and graphics work depends on having a healthy spectrogram buffer on the device, and we don't have that yet.**
 
+## Externally Synchronized
+
+We can't use [some Vulkan resources](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-threadingbehavior) concurrently with some other usages.  This isn't a huge concern yet.  Queues only needs a `Mutex` on submissions.  Audio and video processing data on the device on two different clocks is an early example where we must do the external sync.
+
+We are aiming to re-use more sync operations with course granularity, leaning on phase alignment to create larger, shared synchronization domains to drain deferred operations owned by each thread.
+
+### For Now
+
+Synchronize internal mutability where trivial (see descriptors).  Use whatever hand-hacked wait-free doesn't crash too frequently.  Use safe points and just document them.  Along the way, **focus on the synchronization domains so we can figure out which views of which data need to exist, which operations can and should be deferred, which operations must not be concurrent.**
+
 ## From Manual Destruction to Drop
 
 **This concern leaks into a lot of signatures all over user code.**  In the beginning, all was done to expedite change.  An example of the longest lived things is the `Instance` and `Device`.  We need them nearly everywhere, on every thread, threaded directly or indirectly through nearly every function call.  They would be used for a lot of RAII, but then we're figuring out a root-to-leaf network on the first pass.
@@ -128,19 +138,13 @@ Each element includes two parts:
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
 
-## Externally Synchronized
 
-We can't use [some Vulkan resources](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-threadingbehavior) concurrently with some other usages.  This isn't a huge concern yet.  Queues only needs a `Mutex` on submissions.  Audio and video processing data on the device on two different clocks is an early example where we must do the external sync.
 
-We are aiming to re-use more sync operations with course granularity, leaning on phase alignment to create larger synchronization domains with deferred operations that can be owned in each thread.
 
-### For Now
 
-Synchronize internal mutability where trivial (see descriptors).  Use whatever hand-hacked wait-free doesn't crash too frequently.  Use safe points and just document them.  Along the way, **focus on the synchronization domains so we can figure out which views of which data need to exist, which operations can and should be deferred, which operations must not be concurrent.**
 
 ### For Now
 
-Exclude phases manually with obvious safe points, single thread, over-synchronize, or vibe code together an acceptable first pass. 🤷
 
 ## Logs & Tracing
 
