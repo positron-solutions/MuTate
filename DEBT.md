@@ -103,15 +103,15 @@ Don't go crazy avoiding copies just yet, especially where sizes are in low kilob
 
 ## Reactive Updates
 
-Dependents should be notified reactively (or enabling them to poll) when their dependencies change configuration.  They may then choose to kick off asynchronous resource updates.
+Dependents should be notified reactively (or enabling them to poll) when their dependencies change configuration.  Parameters with push behaviors may kick of yet more updates, and the whole cascade may trigger a lot of resource updates.
 
-Without reactive updates, we have to manually provision and re-provision buffers and images.  This **absolutely will not scale into shared ownership or memory region aliasing.**
-
-The first instance problem coming up is to resize a screen-dimension-sensitive visual when the screen size changes.  The resize information comes from the presentation target, and these changes must reach dependents.
+The first instance problem coming up is to resize a screen-dimension-sensitive visual when the screen size changes.  The resize information comes from the presentation target, and these changes must reach dependents, which may cascade into further dependents.
 
 ### For Now
 
-We just need things like new extents to reach dependents.  We can likely afford to just recreate resources on the fly.  Try to prepare for pointer swaps.  In general, code that can tolerate pointer swaps makes it easier to just swap in updated resources from a new ring while draining an old ring.
+Without reactive updates, we have to manually provision and re-provision buffers and images.  This **absolutely will not scale into shared ownership or memory region aliasing.**
+
+We just need things like new extents to reach dependents.  We can likely afford to just recreate resources on the fly.  Try to prepare for pointer swaps.  In general, code that can tolerate pointer swaps makes it easier to just swap in updated resources from a new ring while draining an old ring or its slots.
 
 ## Fallible Resource Acquisition
 
@@ -130,11 +130,13 @@ Each element includes two parts:
 
 ## Externally Synchronized
 
-Synchronizing Vulkan objects isn't a huge concern yet.  Queue submission only needs a `Mutex` on writes.  For one-surface applications, we're basically done with the `Instance` after `Surface` creation.  For multi-window applications, it's a little more sensitive.
+We can't use [some Vulkan resources](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-threadingbehavior) concurrently with some other usages.  This isn't a huge concern yet.  Queues only needs a `Mutex` on submissions.  Audio and video processing data on the device on two different clocks is an early example where we must do the external sync.
 
-To avoid fine-grained locking on read paths, leaning towards phase-based exclusion.  Basically we only make windows during an exclusive phase that readers can indicate non-presence in so that neither reader nor writer block *as long as phases are aligned.*
+We are aiming to re-use more sync operations with course granularity, leaning on phase alignment to create larger synchronization domains with deferred operations that can be owned in each thread.
 
-Several schemes out there to build on, probably QSBR style.  Runtime synchronization is the bigger concern that should drive that implementation.
+### For Now
+
+Synchronize internal mutability where trivial (see descriptors).  Use whatever hand-hacked wait-free doesn't crash too frequently.  Use safe points and just document them.  Along the way, **focus on the synchronization domains so we can figure out which views of which data need to exist, which operations can and should be deferred, which operations must not be concurrent.**
 
 ### For Now
 
