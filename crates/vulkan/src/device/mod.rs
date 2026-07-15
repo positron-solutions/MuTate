@@ -1,7 +1,7 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! # Context
+//! # Logical Device
 
 pub mod descriptors;
 pub mod device;

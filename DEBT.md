@@ -17,6 +17,7 @@ Github.
   - [Reactive Updates](#reactive-updates)
   - [Fallible Resource Acquisition](#fallible-resource-acquisition)
 - [Charging Interest](#charging-interest)
+  - [Pipewire Mis-Indirection](#pipewire-mis-indirection)
   - [Logs & Tracing](#logs--tracing)
   - [Dynamic Rendering State Shadow](#dynamic-rendering-state-shadow)
   - [Transfer / Staging vs UMA](#transfer--staging-vs-uma)
@@ -138,13 +139,19 @@ Each element includes two parts:
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
 
+## Pipewire Mis-Indirection
 
+Long term, we need more than audio data ingested onto the device, so the direct pipewire integration will live for complex pro-audio/video uses cases.  CPAL can reduce some audio pain but is not intended to completely do the job of pipewire.
 
+The way pipewire works, using callbacks and an owned `user_data` field, is about as good as it gets with respect to latency.  Our current solution is not really designed for this.  Ideally, we do take ownership of the pipewire data as fast as possible in order to allow pipewire to reclaim the buffers.  From there, we want to dispatch to externally owned callbacks where the owner can again take ownership of new data and use a thread or just execute on the pipewire thread.
 
+The most complex motivating cases will involve multiple unmixed channels, such as for live performance.  The downstream mix on the device will always involve independent clocks, and so will need phase-aware time-based tracking (and presentation data!) to do correctly.
 
+Stream ownership will eventually be shared, and connection handles will only be smart enough to talk to the shared owner, alleviating the drop responsibility and allowing multiple downstreams from a single physical upstream.
 
 ### For Now
 
+Consider the `AudioConsumer` abstraction ripe to be rebuilt for shared ownership by multiple downstreams.  The latency etc is not really that bad at all, microseconds with a good scheduler.  The independent clocks mean that the video tracking is not really sensitive to this minor latency.  **Do whatever must be done to support what you want to work, but don't be shy about bludgeoning the existing code and interfaces.**.
 
 ## Logs & Tracing
 

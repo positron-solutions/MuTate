@@ -3,7 +3,7 @@
 
 //! # Audio
 //!
-//! Select a device.  Set up stream from server to device.
+//! Select a device.  Set up stream from server to device.  Run a callback on each audio tick.
 
 use mutate_lib::{self as utate, audio, prelude::*, vulkan::prelude::*};
 
@@ -34,7 +34,7 @@ impl Audio {
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).unwrap();
 
-        // FIXME handle invalid choices.
+        // FIXME handle invalid input choices.
         let choice_idx = input.trim().parse().unwrap();
         let choice = first_choices.remove(choice_idx);
 

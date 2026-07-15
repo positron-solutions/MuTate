@@ -2,9 +2,7 @@
 //!
 //! ⚠️ This module was initially only completed far enough to get 800 samples per second dumped into
 //! a buffer.  The downstream programs didn't care, and so the shape of support was not that of a
-//! real client for pipewire.  The event-driven nature of pipewire and the Rust wrapper around the
-//! pipewire sys crate were discovered only mid-development.  A redesign pass will be welcome so
-//! long as this notice exists.
+//! real client for pipewire.  Instead the user data needs to become smarte
 //!
 //! The [`AudioContext`] is to represent a connection to the server while [`AudioConsumer`] is an
 //! open streaming connection.  See CPAL APIs for other user-facing API ideas.  We are likely more
@@ -72,6 +70,8 @@
 // Also looks like we need DBUS for seeing Spotify title changes.  If we have it, we can render
 // title changes in the middle of playback, something Milkdrop has done right for twenty years or
 // so.
+// DEBT Pipewire Indirection
+
 #[cfg(feature = "vulkan")]
 pub mod import;
 pub mod timing;
@@ -135,7 +135,6 @@ enum Message {
 
 /// Even-driven clients will maintain a client-side view.  Polling clients do not require
 /// maintaining a view of stream choices.
-// XXX cfg and feature gates
 struct AudioChoices {
     ready: std::sync::Condvar,
     choices: std::sync::Mutex<Vec<AudioChoice>>,

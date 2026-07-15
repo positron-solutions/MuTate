@@ -20,9 +20,15 @@
 //!
 //! **Key Vulkan subset choices:**
 //!
-//!   + Bindless descriptor arrays
+//!   + Bindless & Buffer Device Address ☃
 //!   + Dynamic rendering
-//!   + Scalar block layouts preferred
+//!   + Scalar block layouts ⛄
+//!   + GPU Driven (planned)
+//!
+//! - ☃ Images and other assets that **must** use descriptors continue to do so via a pre-configured
+//!   descriptor table.  Other usages are being scaled back.
+//! - ⛄ Scalar block is preferred, but some std430 scaffolding exists and would support std140 if
+//!   anyone still must use it.
 //!
 //! ### Runtime Support
 //!
@@ -151,13 +157,16 @@ use ash::vk;
 
 pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
 
+// NEXT to any saints who want to work on the prelude structure, we need a third module (ie "core")
+// to export in both prelude and internal.  This will allow prelude to be additive and for internal
+// to pull in core without pulling in facade-ish things.
 pub mod prelude {
     pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
 
     pub use super::VulkanError;
+    pub use crate::descriptor_newtype;
     // NEXT move fences out of prelude and de-emphasize in favor of consistent timeline semaphore
     // usage except where required (swapchain acquisition, presentation etc).
-    pub use crate::descriptor_newtype;
     pub use crate::device::prelude::*;
     pub use crate::device_address_newtype;
     pub use crate::dispatch::prelude::*;

@@ -3,9 +3,9 @@
 
 //! # Device
 //!
-//! Fully initialized logical devices have a lot of associated things.  We know their queues, memory
-//! capability, and we have set up their descriptor tables.  The [`Device`] pulls all of these
-//! behaviors together.
+//! Each fully initialized logical device has associated queues, memory capability, and descriptor
+//! tables.  The [`Device`] pulls all of these behaviors together.  [`Device`] derefs to the raw
+//! [`ash::vk::device`] for direct use in ash APIs.
 
 use std::ffi::{c_void, CStr};
 

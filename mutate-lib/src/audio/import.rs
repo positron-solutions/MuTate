@@ -94,6 +94,11 @@
 // is a bit more complex for the consumer, more complexity than it's worth on this pass.
 // NEXT consumer hazard tracking and slack rotation-reclaim support on producer so that
 // discontinuities are swallowed faster and without being presented to the consumer.
+// DEBT pipewire mis-indirection.  We may still need one set of hooks outside pipewire because our
+// model is to put one callback in pipewire.  After the main connection takes ownership of the
+// pipewire chunks, we want to run a callback to write to the GPU ring.  Multiple downstreams can
+// dispatch on that as soon as it's written, either notifying a thread owned by the downstream or
+// just doing the dispatch synchronously.
 
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
