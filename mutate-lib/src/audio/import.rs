@@ -202,15 +202,14 @@ impl<const CHANNELS: usize> Consumer<CHANNELS> {
             closed: AtomicBool::new(false),
         });
 
-        let non_coherent_atom_size = device.non_coherent_atom_size();
+        let non_coherent_atom_size = device.memory.non_coherent_atom_size;
         let channel_bytes = sample_count as u64 * 4;
         // rounded up for atom flush size
         let channel_stride = channel_bytes.next_multiple_of(non_coherent_atom_size as u64);
         let size = channel_stride as usize * CHANNELS;
         let channel_offsets: [u32; CHANNELS] =
             std::array::from_fn(|i| (channel_stride * i as u64) as u32);
-        // FIXME reverse device-size argument order in buffer module
-        let mut buffer: MappedAllocation<u8> = MappedAllocation::new(size, device)?;
+        let mut buffer: MappedAllocation<u8> = MappedAllocation::new(device, size)?;
         let base_address = buffer.device_address(device)?;
 
         // f32 0.0 is all-zero bytes, so this write is safe.

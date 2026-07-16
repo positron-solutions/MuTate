@@ -3,21 +3,41 @@
 
 //! # Image
 //!
-//! The `Image` and `ImageView` gather up related Vulkan functionality.  Nobody does everything that
-//! the spec allows, so duplication emerges.   Attempt to generalize the functionality and
-//! boilerplate down to a sub-language that does everything we need.
+//! ⚠️ This module was just a stub to get going.
 //!
-//! This treatment does not use any kind of RAII.  You have validation layers and other Vulkan
-//! debugging tools to spot lifecycle issues.
+//! What we want is support for an [`ImageSpec`] that can be used to populate the arguments of
+//! dependents.  My shader uses an image?  A spec tells the runtime how to initialize that image and
+//! the handle is provided so that recording can push constants / write control headers or however
+//! else the shader reads the image.  Does the image normally get fed by an upstream workload?  Spin
+//! up that workload and only give us pointers to images that will be ready at render time.  Is the
+//! image just a temporary output used somewhere downstream?  Are we the upstream workload?  That's
+//! how the upstream and downstream tie together.  They found each other via runtime resolved spec.
+//!
+//! In the meantime, we need enough manual functionality to write provisioning and teardown methods
+//! and to get usage handles into command recorders.  Provide borrowing views that can be shared
+//! where necessary.  Those will morph into runtime-supplied handles that the user doesn't care
+//! about.
+//!
+//! Not everything in the Vulkan spec is modern.  Add support as needed.  Add ergonomics where
+//! certain decisions have collapsed to subsets.  Provide escape hatches so that the subsets are not
+//! restrictive.
+//!
+//! Image granularity and dedicated allocations are some validity concerns / optimizations that will
+//! tangle with sub-allocation behavior.  Be sure, a lot of very smart people have battled
+//! extensively to get image packing and usages optimal in the extreme cases.
 
-use ash::vk;
+// DEBT see decision on general layout.  Others have reported that we might not really be able to do
+// ourselves many favors (or not ones worth the tradeoffs) using explicit layouts on modern desktop
+// cards.
+// NOTE It took a lot of self control not to go down the rabbit hole of figuring out what this
+// module needs to look like in 2026.  Good luck!
+// MAYBE the vk::ImageCreateInfo already supports lots of knobs and is a builder.  Maybe some trait
+// extensions for reduced API surface would be appropriate.
+// XXX The barrier stuff is likely only useful to get a vague idea of the problems being solved.
+// Full re-write for sure.
+// DEBT sub-allocation support
 
-use crate::{
-    device::{descriptors, Device},
-    VulkanError,
-};
-
-use crate::util;
+use crate::internal::*;
 
 /// The memory and dimensions for an allocated Vulkan Image.
 pub struct Image {
@@ -34,6 +54,7 @@ impl Image {
         format: vk::Format,
         usage: vk::ImageUsageFlags,
     ) -> Result<Self, VulkanError> {
+        // NEXT image_ci needs the high-level AsRef + direct treatment.
         let image_ci = vk::ImageCreateInfo {
             image_type: vk::ImageType::TYPE_2D,
             format,
@@ -52,18 +73,15 @@ impl Image {
             ..Default::default()
         };
 
-        let image = unsafe { device.as_raw().create_image(&image_ci, None)? };
+        // XXX basically do the same thing that we did for buffers.  However, the valid memory types
+        // are likely more constrained.
+        let image = unsafe { device.create_image(&image_ci, None)? };
 
-        // DEBT memory management centralize onto the thingy.
-        let mem_req = unsafe { device.as_raw().get_image_memory_requirements(image) };
+        let mem_req = unsafe { device.get_image_memory_requirements(image) };
 
         // Ah, bind up into a memory object
-        let memory_type_index = util::find_memory_type_index(
-            &mem_req,
-            &device.memory_props,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )
-        .ok_or(VulkanError::Ash(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY))?;
+        // XXX use device.memory for this allocation as well.
+        let memory_type_index = 0;
 
         let alloc_info = vk::MemoryAllocateInfo {
             allocation_size: mem_req.size,
@@ -71,9 +89,9 @@ impl Image {
             ..Default::default()
         };
 
-        // Hmmm....
-        let memory = unsafe { device.as_raw().allocate_memory(&alloc_info, None)? };
-        unsafe { device.as_raw().bind_image_memory(image, memory, 0)? };
+        // XXX Can we
+        let memory = unsafe { device.allocate_memory(&alloc_info, None)? };
+        unsafe { device.bind_image_memory(image, memory, 0)? };
 
         Ok(Self {
             image,
@@ -213,11 +231,7 @@ impl ImageView {
     }
 
     // XXX extremely raw.  Bludgeon if found.
-    pub fn sampled(
-        &self,
-        device: &mut Device,
-        layout: vk::ImageLayout,
-    ) -> descriptors::SampledImageIdx {
+    pub fn sampled(&self, device: &mut Device, layout: vk::ImageLayout) -> SampledImageIdx {
         // MAYBE not so sure about the layout choice
         let f = device.as_raw().clone();
         let descriptors = &mut device.descriptors;
@@ -254,6 +268,8 @@ pub fn transition_layout(
     new_layout: vk::ImageLayout,
     device: &Device,
 ) {
+    // XXX This is likely bullshit.  Barrier work is garbage so far.  Needs ransacking and a design
+    // pass.
     // Infer barrier settings based on old/new layout
     let (src_stage, dst_stage, src_access, dst_access) = match (old_layout, new_layout) {
         (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (

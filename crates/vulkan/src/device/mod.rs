@@ -5,6 +5,7 @@
 
 pub mod descriptors;
 pub mod device;
+pub mod memory;
 pub mod queue;
 
 pub use device::Device;
@@ -12,5 +13,6 @@ pub use device::Device;
 pub mod prelude {
     pub use super::device::Device;
     pub use super::device::Fence;
+    pub use super::memory::core::*;
     pub use super::queue::prelude::*;
 }

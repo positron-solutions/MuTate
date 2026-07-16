@@ -151,7 +151,6 @@ pub mod pipeline;
 pub mod present;
 pub mod resource;
 pub mod slang;
-pub mod util;
 
 use ash::vk;
 
@@ -230,6 +229,12 @@ pub enum VulkanError {
     /// Attempted to acquire on a swapchain that is already marked for recreation needed.
     #[error("vulkan: Swapchain recreation needed.")]
     SwapchainRecreationRequired,
+
+    /// No memory could satisfy the request.
+    #[error("vulkan: Memory request could not be satisfied.")]
+    AllocationFailed {
+        request: device::memory::MemoryTypeRequest,
+    },
 
     // Errors that coerce from ash::vk results should not be constructed manually.
     /// Presentation succeeded, but the swapchain is no longer optimal for the surface and should be

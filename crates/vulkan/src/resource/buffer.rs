@@ -5,37 +5,52 @@
 //!
 //! The `MappedAllocation` is just a first pass at wrapping up a persistently mapped Vulkan buffer
 //! that we will flush to the device periodically.
+//!
+//! Early on, it's going to look like the APIs are intended for manual use.  Long-term, we want
+//! pipelines to specify `BufferSpec` dependencies and let the run time provide views of memory that
+//! satisfies those specs.  There's... just no runtime yet to speak of 🤡.
 
-// FIXME guarantee initialization.
-// DEBT sub-allocation / resource runtime
-// MAYBE backing pools and buffer capabilities can drive type divergence, which we would handle with
-// generics.  The number of dimensions and motivations for these changes are not too clear.  ReBAR
-// support is likely just increasing.  Write-combined vs write-back and device local are clear areas
-// where hardware and usage patterns may have consequences.  These decisions may be runtime and not
-// affect types or the types may be necessary and runtime implements fallback.
+// NEXT With or without sub-allocation, some buffers need to not support certain interfaces.  Why
+// would I attempt to write a non-host visible from the host?  Why would I attempt to read back from
+// a buffer that I didn't try to bind to a cached allocation?
+// NEXT the T in a buffer is going to take some work.  We can either attach or detach headers for
+// control data, and that changes T.  First class treatment of headers is likely unnecessary /
+// overly rigid.  The trade-off is now the user needs two buffers or the type-agreement has to check
+// (Header, [T]).  Checking tuples is not against the law, but then the pointer de-reference needs
+// on slang needs to understand this.  De-reference is where some investigative development is
+// needed.  Or...here me out.  The header will usually contain a pointer to &T because the alignment
+// of T will likely not match the flush atoms or some other requirement in some cases.
+// DEBT sub-allocation / resource runtime. 💸
+// NEXT hang buffer & image creation methods off of the device.memory.  Limit buffer & image module
+// scope to handling post-allocation.
 
 use std::ptr::NonNull;
 
-use ash::vk;
+use crate::internal::*;
 
-use crate::{
-    device::{descriptors, Device},
-    util, VulkanError,
-};
-
+/// Very interim.  We will separate buffer from allocation and future `MappedBuffer` will build on
+/// top of `MappedSubAllocation`, itself on top of a **real** `MappedAllocation` or some
+/// runtime-only info that never gets let out of the basement for users to see.
 pub struct MappedAllocation<T> {
+    /// A buffer.
     pub buffer: vk::Buffer,
+    /// The allocation (which totally shouldn't be part of this type)
     pub memory: vk::DeviceMemory,
+    /// Mapped buffers support host writes.
     pub ptr: NonNull<T>,
+    /// Number of `T` elements.
     pub len: usize,
-    pub size_bytes: vk::DeviceSize,
-    pub memory_type_index: u32,
+    /// Actual size of the buffer depends on size, alignment, usage.
+    pub size: vk::DeviceSize,
 }
 
 impl<T> MappedAllocation<T> {
-    pub fn new(size: usize, device: &Device) -> Result<Self, VulkanError> {
+    /// `len` is the number of `T` this buffer will hold.
+    pub fn new(device: &Device, len: usize) -> Result<Self, VulkanError> {
+        // NEXT these are pretty temporito.  See the abstract choices in the memory module.  That's
+        // basically how we want to do this.
         let buffer_info = vk::BufferCreateInfo {
-            size: (std::mem::size_of::<T>() * size) as u64,
+            size: (std::mem::size_of::<T>() * len) as u64,
             usage: vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::TRANSFER_SRC
@@ -43,48 +58,25 @@ impl<T> MappedAllocation<T> {
             sharing_mode: vk::SharingMode::EXCLUSIVE,
             ..Default::default()
         };
-        let buffer = unsafe { device.as_raw().create_buffer(&buffer_info, None).unwrap() };
-        let mem_req = unsafe { device.as_raw().get_buffer_memory_requirements(buffer) };
-        let memory_type_index = util::find_memory_type_index(
-            &mem_req,
-            &device.memory_props,
-            vk::MemoryPropertyFlags::HOST_VISIBLE,
-        )
-        .ok_or(VulkanError::Ash(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY))?;
-
-        let mut flags =
-            vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
-        let alloc_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(mem_req.size)
-            .memory_type_index(memory_type_index)
-            .push_next(&mut flags);
-        let memory = unsafe { device.as_raw().allocate_memory(&alloc_info, None)? };
-        unsafe {
-            device.as_raw().bind_buffer_memory(buffer, memory, 0)?;
-        }
-
+        let (buffer, memory, size) = device
+            .memory
+            .allocate_buffer(&buffer_info, MemoryUse::HostMapped)?;
         let raw_ptr = unsafe {
             device
                 .as_raw()
-                .map_memory(memory, 0, mem_req.size, vk::MemoryMapFlags::empty())?
+                .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?
         };
-
         let ptr = NonNull::new(raw_ptr as *mut T).unwrap();
-
         Ok(Self {
             buffer,
             ptr,
-            len: size,
+            len,
             memory,
-            size_bytes: mem_req.size,
-            memory_type_index,
+            size,
         })
     }
 
-    // DEBT memory management.  We just need to devolve the allocation into a memento that can be
-    // recycled or destroyed asynchronously.
     pub fn destroy(&self, device: &Device) -> Result<(), VulkanError> {
-        let device = device.as_raw();
         unsafe {
             device.unmap_memory(self.memory);
             device.free_memory(self.memory, None);
@@ -103,11 +95,11 @@ impl<T> MappedAllocation<T> {
         let flush_range = vk::MappedMemoryRange {
             memory: self.memory,
             offset: 0,
-            size: self.size_bytes,
+            size: self.size,
             ..Default::default()
         };
         unsafe {
-            device.as_raw().flush_mapped_memory_ranges(&[flush_range])?;
+            device.flush_mapped_memory_ranges(&[flush_range])?;
         }
         Ok(())
     }
@@ -117,21 +109,18 @@ impl<T> MappedAllocation<T> {
         let invalidate_range = vk::MappedMemoryRange {
             memory: self.memory,
             offset: 0,
-            size: self.size_bytes,
+            size: self.size,
             ..Default::default()
         };
         unsafe {
-            device
-                .as_raw()
-                .invalidate_mapped_memory_ranges(&[invalidate_range])?;
+            device.invalidate_mapped_memory_ranges(&[invalidate_range])?;
         }
         Ok(())
     }
 
-    // XXX argument order
-    pub fn bound(&self, device: &Device) -> descriptors::SsboIdx {
+    pub fn bound(&self, device: &Device) -> SsboIdx {
         let descriptors = &device.descriptors;
-        // XXX do this more cleaner 🤡
+        // XXX WTF is this?  No srsly what happened here?  Kill something with fire.
         let byte_size = (std::mem::size_of::<T>() * self.len) as u64;
         descriptors.bind_ssbo(&device.raw, self.buffer, 0, byte_size)
     }
@@ -139,7 +128,7 @@ impl<T> MappedAllocation<T> {
     // XXX Slang type for buffer device address
     pub fn device_address(&self, device: &Device) -> Result<vk::DeviceAddress, VulkanError> {
         let info = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
-        Ok(unsafe { device.as_raw().get_buffer_device_address(&info) })
+        Ok(unsafe { device.get_buffer_device_address(&info) })
     }
 
     /// After-compute shader barrier.  Use after some compute shader writes to a buffer.
@@ -156,7 +145,7 @@ impl<T> MappedAllocation<T> {
         };
 
         unsafe {
-            device.as_raw().cmd_pipeline_barrier(
+            device.cmd_pipeline_barrier(
                 *cb,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::TRANSFER,
@@ -170,6 +159,7 @@ impl<T> MappedAllocation<T> {
 
     /// Pre-compute shader barrier.
     /// Use after host writes + flush, before a compute shader reads/writes the buffer.
+    // XXX these barrier "simplifications" are utter garbage
     pub fn barrier_compute_pre(&self, cb: &vk::CommandBuffer, device: &Device) {
         let buffer_barrier = vk::BufferMemoryBarrier {
             src_access_mask: vk::AccessFlags::HOST_WRITE,
@@ -183,7 +173,7 @@ impl<T> MappedAllocation<T> {
         };
 
         unsafe {
-            device.as_raw().cmd_pipeline_barrier(
+            device.cmd_pipeline_barrier(
                 *cb,
                 vk::PipelineStageFlags::HOST,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -205,7 +195,7 @@ impl<T> MappedAllocation<T> {
             memory: self.memory,
             ptr: self.ptr,
             len: self.len,
-            size_bytes: self.size_bytes,
+            size: self.size,
         }
     }
 }
@@ -236,7 +226,7 @@ pub struct MappedWriteView<T> {
     memory: vk::DeviceMemory,
     ptr: NonNull<T>,
     len: usize,
-    size_bytes: vk::DeviceSize,
+    size: vk::DeviceSize,
 }
 
 unsafe impl<T: Send> Send for MappedWriteView<T> {}
@@ -255,7 +245,7 @@ impl<T> MappedWriteView<T> {
         let range = vk::MappedMemoryRange {
             memory: self.memory,
             offset: 0,
-            size: self.size_bytes,
+            size: self.size,
             ..Default::default()
         };
         unsafe {
@@ -277,9 +267,9 @@ impl<T> MappedWriteView<T> {
         size: vk::DeviceSize,
     ) -> Result<(), VulkanError> {
         debug_assert!(
-            offset + size <= self.size_bytes,
+            offset + size <= self.size,
             "flush_range out of bounds: {offset}+{size} > {}",
-            self.size_bytes
+            self.size
         );
         let range = vk::MappedMemoryRange {
             memory: self.memory,
@@ -289,6 +279,48 @@ impl<T> MappedWriteView<T> {
         };
         unsafe {
             self.device.flush_mapped_memory_ranges(&[range])?;
+        }
+        Ok(())
+    }
+}
+
+/// A companion to the still half-baked `MappedAllocation`.  Intended for device memory.  Does not
+/// support any flushes etc because the backing allocation likely cannot do that.  `T` might be back
+/// but just winging to discover where the grass meets the sky.
+pub struct DeviceBuffer {
+    /// A buffer.
+    pub buffer: vk::Buffer,
+    /// The allocation (which totally shouldn't be part of this type)
+    pub memory: vk::DeviceMemory,
+    /// Actual size of the buffer depends on size, alignment, usage.
+    pub size: vk::DeviceSize,
+}
+
+impl DeviceBuffer {
+    pub fn new(device: &Device, size: u64) -> Result<Self, VulkanError> {
+        let buffer_info = vk::BufferCreateInfo {
+            size,
+            usage: vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::TRANSFER_SRC
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            ..Default::default()
+        };
+        let (buffer, memory, size) = device
+            .memory
+            .allocate_buffer(&buffer_info, MemoryUse::DeviceLocal)?;
+        Ok(Self {
+            buffer,
+            memory,
+            size,
+        })
+    }
+
+    pub fn destroy(&self, device: &Device) -> Result<(), VulkanError> {
+        unsafe {
+            device.free_memory(self.memory, None);
+            device.destroy_buffer(self.buffer, None);
         }
         Ok(())
     }
