@@ -231,7 +231,7 @@ pub enum VulkanError {
     SwapchainRecreationRequired,
 
     /// No memory could satisfy the request.
-    #[error("vulkan: Memory request could not be satisfied.")]
+    #[error("vulkan: Memory request could not be satisfied: {request:?}.")]
     AllocationFailed {
         request: device::memory::MemoryTypeRequest,
     },

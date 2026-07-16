@@ -50,6 +50,11 @@
 
 // NEXT hand out allocations
 // NEXT reclaim allocations
+// NOTE staging + transfer is an operation that can be abstracted over by a runtime as part of an
+// optionally two-step provision.  Explicit BAR is reported, but mainly so that applications
+// expecting it don't fall over.
+
+pub mod bar;
 
 use crate::internal::*;
 
@@ -68,7 +73,9 @@ const FORBIDDEN: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::from_raw(
 );
 
 pub struct Memory {
+    device_type: vk::PhysicalDeviceType,
     pub memory_props: vk::PhysicalDeviceMemoryProperties,
+    pub(crate) bar_window: u32,
     pub non_coherent_atom_size: vk::DeviceSize,
     // Owned handle just to prevent needing the handle from the owning Device wrapper.  Not super
     // expensive.  Safe to just drop.
@@ -81,8 +88,13 @@ impl Memory {
         physical_device: &vk::PhysicalDevice,
         logical_device: &ash::Device,
     ) -> Self {
+        let mut props2 = vk::PhysicalDeviceProperties2::default();
+        unsafe { instance.get_physical_device_properties2(*physical_device, &mut props2) };
+        let device_type = props2.properties.device_type;
         let memory_props =
             unsafe { instance.get_physical_device_memory_properties(*physical_device) };
+        let bar_window = bar::detect_bar(&memory_props);
+
         // Likely we need more info later, but keep the memory query results here.
         let non_coherent_atom_size = unsafe {
             instance
@@ -92,22 +104,28 @@ impl Memory {
         };
 
         Self {
+            device_type,
             memory_props,
             non_coherent_atom_size,
+            bar_window,
             device: logical_device.clone(),
         }
     }
 
-    /// Ranked candidates for `request`, skipping any type in `exclude` mask that were already
-    /// tried.  Initialize your exclude mask with those that should never be used.
+    /// Ranked candidates for `request`, skipping types in `tried` and any the request's
+    /// [`bar::BarPolicy`] fences off on this device.  Pass only types already attempted; the
+    /// device-specific exclusion is folded in here so callers can't omit it.
+    ///
+    /// The returned iterator snapshots its inputs, so a caller may set bits in its own `tried`
+    /// mask while draining it; the change takes effect on the next call, not this one.
     fn memory_types(
         &self,
         mem_req: &vk::MemoryRequirements,
         request: &MemoryTypeRequest,
-        exclude: u32,
-    ) -> impl Iterator<Item = u32> {
-        let legal = mem_req.memory_type_bits & !exclude;
-        let mut scored: Vec<((u32, u32), u32)> = Vec::new();
+        tried: u32,
+    ) -> impl Iterator<Item = (u32, vk::MemoryPropertyFlags)> {
+        let legal = mem_req.memory_type_bits & !tried & !request.excluded(self.bar_window);
+        let mut scored: Vec<((u32, u32), u32, vk::MemoryPropertyFlags)> = Vec::new();
         for i in 0..self.memory_props.memory_type_count {
             if legal & (1 << i) == 0 {
                 continue;
@@ -118,10 +136,10 @@ impl Memory {
             }
             let missing = (request.preferred & !props).as_raw().count_ones();
             let unwanted = (request.avoided & props).as_raw().count_ones();
-            scored.push(((missing, unwanted), i));
+            scored.push(((missing, unwanted), i, props));
         }
-        scored.sort_by_key(|&(cost, _)| cost);
-        scored.into_iter().map(|(_, i)| i)
+        scored.sort_by_key(|&(cost, _, _)| cost);
+        scored.into_iter().map(|(_, i, props)| (i, props))
     }
 
     /// Interim allocation method for a buffer.  Sub-allocation not ready yet.
@@ -145,8 +163,9 @@ impl Memory {
         }
         let mut tried: u32 = 0;
         for request in requests {
-            for index in self.memory_types(&requirements, request, tried) {
+            for (index, _props) in self.memory_types(&requirements, request, tried) {
                 let alloc_info = alloc_info.memory_type_index(index);
+                tried |= 1 << index;
                 match unsafe { self.device.allocate_memory(&alloc_info, None) } {
                     Ok(memory) => {
                         unsafe {
@@ -187,7 +206,7 @@ impl Memory {
         let alloc_info = vk::MemoryAllocateInfo::default().allocation_size(requirements.size);
         let mut tried: u32 = 0;
         for request in requests {
-            for index in self.memory_types(&requirements, request, tried) {
+            for (index, _props) in self.memory_types(&requirements, request, tried) {
                 tried |= 1 << index;
                 let alloc_info = alloc_info.memory_type_index(index);
                 match unsafe { self.device.allocate_memory(&alloc_info, None) } {
@@ -213,6 +232,18 @@ impl Memory {
             request: requests[0],
         })
     }
+
+    #[cfg(test)]
+    pub fn describe_type(&self, index: u32) -> String {
+        let ty = self.memory_props.memory_types[index as usize];
+        let heap = self.memory_props.memory_heaps[ty.heap_index as usize];
+        let mib = heap.size / (1024 * 1024);
+        let device_heap = heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL);
+        format!(
+            "type {index:2} -> heap {} ({mib} MiB) {:?}",
+            ty.heap_index, ty.property_flags,
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +254,19 @@ pub struct MemoryTypeRequest {
     pub preferred: vk::MemoryPropertyFlags,
     /// Soft push. Types are ranked by how many of these they carry.
     pub avoided: vk::MemoryPropertyFlags,
+    /// Hard constraint, device-dependent.  Resolved against this device's carve-out.
+    pub bar_policy: bar::BarPolicy,
+}
+
+impl MemoryTypeRequest {
+    /// Types this request must never touch, given `bar_window` from [`bar::detect_bar`].
+    /// Zero whenever the device has no scarce carve-out.
+    pub(crate) fn excluded(&self, bar_window: u32) -> u32 {
+        match self.bar_policy {
+            bar::BarPolicy::Claim => 0,
+            bar::BarPolicy::Yield => bar_window,
+        }
+    }
 }
 
 impl AsRef<[MemoryTypeRequest]> for MemoryTypeRequest {
@@ -232,17 +276,31 @@ impl AsRef<[MemoryTypeRequest]> for MemoryTypeRequest {
 }
 
 /// Presets for [`MemoryTypeRequest`].  Call [`requests`] to obtain the requests.
+// NOTE Later typed allocations must reflect these semantics, exposing only the necessary APIs and
+// not allowing pathologically slow or what could be impossible usages of wrong kinds of
+// allocations.  The memory may collapse to fewer or different heaps on some devices, but the same
+// semantics work without drawbacks while making use of distinct heaps when available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryUse {
-    /// Only written or read by the device or a transfer from staging.
+    /// Only ever written or read by the device or as a destination for transfer from staging.
+    /// Treat as device read-write.
     DeviceLocal,
-    /// Optimal for writes, usually ReBAR or UMA.
-    HostMapped,
-    /// Optimal for host reads of shader published state updates.
+    /// usually ReBAR on discrete.  May be BAR or another heap on UMA, avoiding cached.  Optimal for
+    /// small writes, pushed by host to device memory.  Treat as host write-only / device read-only.
+    Upload,
+    /// Cached for host read.  On both discrete and UMA, residency is sysmem.  Discrete devices will
+    /// write via PCIe.  Optimal for shaders publishing updates to the host.  Treat as device
+    /// write-only / host read-only.
     Readback,
-    /// Optimal for uploading images that need a layout transition or larger transfers using DMA /
-    /// UMA shortcuts.
-    Staging,
+    /// Device-visible sysmem.  Primarily used as a transfer source.  Optimal for uploading images
+    /// that need a layout transition or scratch space for larger transfers.  Device reads via PCIe
+    /// (usually on DMA queue) or UMA.  Host reads are full speed, but treat as host write-only,
+    /// device read-only.
+    Transfer,
+    /// Only ever transiently used by the device.  An explicit heap on tilers.  Usages on non-tiling
+    /// devices enable opportunistic optimizations.
+    Lazy,
+    // NEXT protected.  No DRM yet for AE AYE matey! 🏴‍☠️
 }
 
 impl MemoryUse {
@@ -253,12 +311,19 @@ impl MemoryUse {
     // XXX NoTypeSatisfies is made up right now.  Allocation is not yet attempted for each request
     // and this is just vapor ware.
     pub const fn requests(self) -> &'static [MemoryTypeRequest] {
+        use bar::BarPolicy::{Claim, Yield};
         use vk::MemoryPropertyFlags as F;
-        const fn req(required: F, preferred: F, avoided: F) -> MemoryTypeRequest {
+        const fn req(
+            required: F,
+            preferred: F,
+            avoided: F,
+            bar_policy: bar::BarPolicy,
+        ) -> MemoryTypeRequest {
             MemoryTypeRequest {
                 required,
                 preferred,
                 avoided,
+                bar_policy,
             }
         }
         const fn or(a: F, b: F) -> F {
@@ -266,24 +331,26 @@ impl MemoryUse {
         }
 
         const DEVICE_LOCAL: &[MemoryTypeRequest] = &[
-            // Pure VRAM; keep off the (possibly 256 MiB) BAR window.
-            req(F::DEVICE_LOCAL, F::empty(), F::HOST_VISIBLE),
-            // VRAM exhausted or masked out: take anything in the mask,
-            // steering off the heap that just failed.
-            req(F::empty(), F::empty(), F::DEVICE_LOCAL),
+            // Pure VRAM only.  No fallback: if this fails, the device is out of VRAM and
+            // the caller needs to know, not to be silently demoted into the BAR window or
+            // across PCIe into sysmem.
+            req(F::DEVICE_LOCAL, F::empty(), F::HOST_VISIBLE, Yield),
         ];
-        const HOST_MAPPED: &[MemoryTypeRequest] = &[
-            // ReBAR / UMA: write straight into device memory.
+        // Residency-first: land in device memory and map it.  Rung 1 is BAR/ReBAR/UMA.
+        // Rung 2 is sysmem, which is *not* the same deal -- the device now reads over
+        // PCIe and the caller probably wanted to stage.  See NOTE below.
+        const UPLOAD: &[MemoryTypeRequest] = &[
             req(
                 or(F::DEVICE_LOCAL, F::HOST_VISIBLE),
                 F::HOST_COHERENT,
                 F::HOST_CACHED,
+                Claim,
             ),
-            // No BAR type, or BAR heap exhausted: write-combined sysmem.
             req(
                 F::HOST_VISIBLE,
                 F::HOST_COHERENT,
                 or(F::DEVICE_LOCAL, F::HOST_CACHED),
+                Yield,
             ),
         ];
         const READBACK: &[MemoryTypeRequest] = &[
@@ -292,28 +359,39 @@ impl MemoryUse {
                 or(F::HOST_VISIBLE, F::HOST_CACHED),
                 F::HOST_COHERENT,
                 F::DEVICE_LOCAL,
+                Yield,
             ),
             // No cached type (rare): reads will crawl, but they'll complete.
-            req(
-                F::HOST_VISIBLE,
-                or(F::HOST_CACHED, F::HOST_COHERENT),
-                F::DEVICE_LOCAL,
-            ),
+            req(F::HOST_VISIBLE, F::HOST_COHERENT, F::DEVICE_LOCAL, Yield),
         ];
-        const STAGING: &[MemoryTypeRequest] = &[
+        const TRANSFER: &[MemoryTypeRequest] = &[
             // One entry: the ideal staging type *is* the guaranteed type.
             req(
                 F::HOST_VISIBLE,
                 F::HOST_COHERENT,
                 or(F::DEVICE_LOCAL, F::HOST_CACHED),
+                Yield,
             ),
+        ];
+        const LAZY: &[MemoryTypeRequest] = &[
+            // Tilers expose a real transient heap.  Everyone else falls to rung 2 and
+            // gets ordinary device memory, which is what LAZILY_ALLOCATED degrades to
+            // by spec.
+            req(
+                or(F::DEVICE_LOCAL, F::LAZILY_ALLOCATED),
+                F::empty(),
+                F::HOST_VISIBLE,
+                Yield,
+            ),
+            req(F::DEVICE_LOCAL, F::empty(), F::HOST_VISIBLE, Yield),
         ];
 
         match self {
             MemoryUse::DeviceLocal => DEVICE_LOCAL,
-            MemoryUse::HostMapped => HOST_MAPPED,
+            MemoryUse::Upload => UPLOAD,
             MemoryUse::Readback => READBACK,
-            MemoryUse::Staging => STAGING,
+            MemoryUse::Transfer => TRANSFER,
+            MemoryUse::Lazy => LAZY,
         }
     }
 }
@@ -328,9 +406,54 @@ impl AsRef<[MemoryTypeRequest]> for MemoryUse {
 mod test {
     use super::*;
 
+    const ALL_USES: [MemoryUse; 5] = [
+        MemoryUse::DeviceLocal,
+        MemoryUse::Upload,
+        MemoryUse::Transfer,
+        MemoryUse::Readback,
+        MemoryUse::Lazy,
+    ];
+
+    /// Unconstrained requirements: exercises selection, not a resource's type mask.
+    const ANY: vk::MemoryRequirements = vk::MemoryRequirements {
+        size: 1,
+        alignment: 1,
+        memory_type_bits: !0,
+    };
+
+    #[test]
     pub fn resolve_all_domains() {
         with_context!(|device, instance| {
-            // XXX we need to go ahead and test the memory resolution for each `MemoryUse` gives us valid indexes.
+            let memory = &device.memory;
+
+            println!("\n=== memory types present ===");
+            for i in 0..memory.memory_props.memory_type_count {
+                println!("  {}", memory.describe_type(i));
+            }
+
+            println!("\n=== preset resolution ===");
+            for use_ in ALL_USES {
+                println!("{use_:?}");
+
+                let mut tried: u32 = 0;
+                for (n, request) in use_.requests().iter().enumerate() {
+                    println!(
+                        "  request {n}: required: {:?} | preferred: {:?} | avoided: {:?} | bar: {:?}",
+                        request.required, request.preferred, request.avoided, request.bar_policy,
+                    );
+                    let mut empty = true;
+                    for (rank, (index, _)) in memory.memory_types(&ANY, request, tried).enumerate()
+                    {
+                        empty = false;
+                        tried |= 1 << index;
+                        let marker = if rank == 0 { "->" } else { "  " };
+                        println!("    {marker} {}", memory.describe_type(index));
+                    }
+                    if empty {
+                        println!("    (no candidates)");
+                    }
+                }
+            }
         })
     }
 }
