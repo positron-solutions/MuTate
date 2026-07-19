@@ -343,14 +343,19 @@ impl AudioContext {
     /// `CHANNELS` is the planar channel count laid out on the device; `sample_count`
     /// is the per-channel ring length in samples. Both are fixed at call time.
     #[cfg(feature = "vulkan")]
-    pub fn import_to_device<const CHANNELS: usize>(
+    pub fn import_to_device<const CHANNELS: usize, S>(
         &self,
         device: &Device,
         choice: &AudioChoice,
         sample_count: u32,
         name: &str,
-    ) -> Result<import::Consumer<CHANNELS>, MutateError> {
-        import::Consumer::new(self, device, choice, sample_count, name)
+        import_sink: S,
+    ) -> Result<import::Consumer<CHANNELS>, MutateError>
+    where
+        S: import::ImportSink<CHANNELS>,
+    {
+        let rx = self.connect(choice, name)?;
+        import::Consumer::new(device, rx, sample_count, import_sink)
     }
 
     pub fn choices_version(&self) -> usize {
