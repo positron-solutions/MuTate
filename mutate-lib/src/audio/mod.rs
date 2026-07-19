@@ -530,7 +530,10 @@ unsafe impl Send for AudioConsumer {}
 
 impl AudioConsumer {
     /// Wait for a buffer chunk to be written.
-    pub fn wait(&self, timeout: std::time::Duration) -> Result<u64, MutateError> {
+    // MAYBE return value become kind of meaningless.  If the device import and host side
+    // implementations are untangled, this method could provide access to chunks instead of having
+    // the consumer rely on the ring synchronization.
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<(), MutateError> {
         let conn = unsafe { &(*self.conn) };
         if conn.dropped.load(atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
@@ -538,7 +541,7 @@ impl AudioConsumer {
         let mut timing = conn.lock.lock()?;
         let initial = *timing;
         let deadline = std::time::Instant::now() + timeout;
-        while timing.count == initial.count {
+        while timing.next == initial.next {
             let remaining = match deadline.checked_duration_since(std::time::Instant::now()) {
                 Some(r) => r,
                 None => return Err(MutateError::Timeout("no audio chunk within timeout")),
@@ -552,7 +555,7 @@ impl AudioConsumer {
                 return Err(MutateError::Timeout("no audio chunk within timeout"));
             }
         }
-        Ok(timing.count)
+        Ok(())
     }
 
     // The reader is doing pull-based consumption into it's own output slice, enabling us to handle
@@ -645,11 +648,11 @@ impl AudioProducer {
             }
         });
 
+        // Update the timing data
+        // XXX this synchronization story seems silly for the device import callback
         let snapshot = conn.timing.observe(arrived, written);
         let mut audio_timing = conn.lock.lock()?;
         *audio_timing = snapshot;
-        audio_timing.count += 1;
-        audio_timing.last = arrived;
 
         conn.ready.notify_all();
         Ok(written)
