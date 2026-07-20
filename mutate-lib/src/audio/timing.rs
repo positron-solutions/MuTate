@@ -43,12 +43,15 @@
 // keep a short history of log probs.  When the Bayes ratio becomes overwhelming, we switch
 // particles and lock the new timing.
 // DEBT Audio rates
+// NEXT audio servers can send us different chunk sizes, and supporting this requires changing the
+// physical model for state update.  See blame.
 
 use std::time::{Duration, Instant};
 
 use ringbuf::traits::{Consumer, Observer, RingBuffer}; // Producer,
 
 // ♻️ this period also shows up in requesting the pipewire latency
+const PERIOD_BYTES: usize = 512 * 4 * 2;
 const PERIOD_SAMPLES: f64 = 512.0;
 const PERIOD_NS: f64 = PERIOD_SAMPLES * 1e9 / 48000.0;
 const Q_DELTA: f64 = 1.0; // ns², period error diffusion per callback
@@ -100,12 +103,12 @@ pub(crate) struct TimingFilter {
     /// projection is therefore computed exactly once per chunk instead of twice.
     prediction: Estimate,
 
-    /// History of server chunk callback timing and chunk size.  Only process calls that receive
-    /// data will push data.
     // XXX discontinuities are a particle spawn signal.
-    // NEXT Pipewire can send us different chunk sizes, and supporting this requires changing the
-    // physical model for state update.
-    measurements: ringbuf::LocalRb<ringbuf::storage::Heap<(Instant, usize)>>,
+    /// History of server chunk callback arrival times.  Only process calls that receive data will
+    /// push measurements.
+    // NEXT Pipewire can send different chunk sizes; supporting that means restoring a per-chunk
+    // sample count here and scaling the physical model per callback instead of by PERIOD_SAMPLES.
+    measurements: ringbuf::LocalRb<ringbuf::storage::Heap<Instant>>,
     /// Ring buffer of innovations for Mehra adaptive R estimation.
     innovations: ringbuf::LocalRb<ringbuf::storage::Heap<f64>>,
 }
@@ -122,13 +125,16 @@ impl TimingFilter {
                 covariance: [PHASE_PRIOR_NS.powi(2), 0.0, DRIFT_PRIOR_NS.powi(2)],
             }
             .project(),
-            measurements: ringbuf::LocalRb::<ringbuf::storage::Heap<(Instant, usize)>>::new(32),
+            measurements: ringbuf::LocalRb::<ringbuf::storage::Heap<Instant>>::new(32),
             innovations: ringbuf::LocalRb::new(32),
         }
     }
 
+    /// `arrived` is the instant recorded at the start of the process callback in pipewire.
+    /// `written` is bytes written only used for a debug assert.
     pub(crate) fn observe(&mut self, arrived: Instant, written: usize) -> AudioTiming {
-        self.measurements.push_overwrite((arrived, written));
+        debug_assert_eq!(written, PERIOD_BYTES);
+        self.measurements.push_overwrite(arrived);
         let r = signed_delta_ns(arrived, self.reference);
 
         // Prior for this cycle: the projection stored at the end of the previous observe.
