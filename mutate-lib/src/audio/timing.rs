@@ -49,6 +49,13 @@ const PHASE_PRIOR_NS: f64 = PERIOD_NS / 2.0; // diffuse phase prior std (±T/2)
 const DRIFT_PRIOR_NS: f64 = 1000.0; // drift prior std, ns/callback
 const R_PRIOR_NS: f64 = 40_000.0; // 40µs jitter prior in ns
 
+// Re-seat gate: a squared-Mahalanobis miss this large means the prior can't explain the arrival —
+// an underrun, pause/resume, or discontinuity. `nis` divides by `s`, which already folds in `p00`,
+// so a relaxed (high-covariance) filter needs a *larger* raw miss to trip the gate. That's the
+// reset-resistance: once phase starts locking and `p00` shrinks, the gate tightens; right after a
+// re-seat `p00` is huge and the gate is deliberately hard to re-trip.
+const RESEAT_NIS: f64 = 25.0; // about 5σ
+
 // NOTE The phase offset μ is collapsed out of this type: `reference` absorbs the correction every
 // cycle, so the stored phase is a structural zero and `reference` *is* the phase.  Regime changes
 // don't reintroduce it — a re-seat writes the new phase straight into `reference` and blows the
@@ -118,11 +125,34 @@ impl TimingFilter {
         }
     }
 
+    /// Re-seat the phase onto a fresh measurement after a discontinuity. The observed arrival
+    /// *becomes* the phase (reference), covariance blows back out to the diffuse prior, drift is
+    /// dropped (a discontinuity carries no trustworthy drift), and the innovation window is purged
+    /// so dead-regime residuals can't poison Mehra R. This is the same shape as steady-state
+    /// re-seating — write `reference`, don't persist a correction — just at regime-change scale.
+    fn relatch(&mut self, arrived: Instant) -> AudioTiming {
+        self.reference = arrived + Duration::from_nanos(PERIOD_NS as u64);
+        self.observation_covariance = R_PRIOR_NS * R_PRIOR_NS;
+        self.prediction = Estimate {
+            period_error: 0.0,
+            covariance: [PHASE_PRIOR_NS.powi(2), 0.0, DRIFT_PRIOR_NS.powi(2)],
+        }
+        .project();
+        self.innovations.clear();
+
+        let variance = self.prediction.covariance[0] + self.observation_covariance;
+        AudioTiming {
+            next: self.reference,
+            variance,
+            period_ns: PERIOD_NS,
+            period_samples: PERIOD_SAMPLES,
+        }
+    }
+
     /// `arrived` is the instant recorded at the start of the process callback in pipewire.
     /// `written` is bytes written only used for a debug assert.
     pub(crate) fn observe(&mut self, arrived: Instant, written: usize) -> AudioTiming {
         debug_assert_eq!(written, PERIOD_BYTES);
-        self.measurements.push_overwrite(arrived);
         let r = signed_delta_ns(arrived, self.reference);
 
         // Prior for this cycle: the projection stored at the end of the previous observe.
@@ -137,6 +167,29 @@ impl TimingFilter {
         let nu = r;
         let s = p00 + self.observation_covariance;
 
+        // Re-seat gate. `nis` is the squared Mahalanobis distance of this raw (unwrapped) miss
+        // under the prior. `s` carries `p00`, so confidence *is* the gate: only a certain filter
+        // (small `s`) turns a large miss into a large `nis` and re-seats; an uncertain filter
+        // (large `s` — freshly started or freshly relatched) sees the same miss as modest and stays
+        // in the linear regime, letting Kalman/Mehra pull it in. So a confident filter that sees
+        // the stream jump a full period declares a discontinuity and relatches, while an unsure
+        // filter never does — the anti-thrash property, with no wrap logic and no `T/2` fold point.
+        //
+        // Consequence, accepted by design: in a locked filter a genuine single-cycle slip is
+        // indistinguishable from a discontinuity, and both re-seat. In this domain a confident
+        // cycle-slip *is* a discontinuity — the stream moved — and the relatch is cheap (diffuse
+        // variance out), so a false re-seat costs one relaxed cycle, never corruption.
+        //
+        // Gated *before* any state mutation so a bad cycle leaves no trace in the innovation window
+        // or covariance. Right after a relatch `s` is diffuse, so the gate is hard to re-trip for a
+        // few cycles — the same confidence mechanism, now buying reset-resistance for free.
+        if nu * nu / s > RESEAT_NIS {
+            self.measurements.push_overwrite(arrived);
+            return self.relatch(arrived);
+        }
+
+        // XXX why are we recording these timings?
+        self.measurements.push_overwrite(arrived);
         // Mehra adaptive R from the innovation window.
         self.innovations.push_overwrite(nu);
         let n = self.innovations.occupied_len() as f64;
