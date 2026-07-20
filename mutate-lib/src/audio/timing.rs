@@ -43,6 +43,35 @@ use std::time::{Duration, Instant};
 
 use ringbuf::traits::{Consumer, Observer, RingBuffer}; // Producer,
 
+/// Published to consumers.  Includes right information for consumers to slew their tracking on the
+/// input stream with the desired protection from underruns.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioTiming {
+    /// Process time of the next mean prediction.  Using shape and scale parameters of the
+    /// uncertainty distribution, consumers can use this to predict how much tracking leeway will
+    /// provide a desired probability of underrun.
+    pub next: Instant,
+    /// The uncertainty around the next prediction in ns².  This folds up both process uncertainty
+    /// and our uncertainty about the true phase.  If uncertainty is high, the consumer should track
+    /// behind farther.
+    pub variance: f64,
+    /// Duration of each phase in nanoseconds.
+    pub period_ns: f64,
+    /// Data samples per period.  Use this to estimate the data velocity in time.
+    pub period_samples: f64,
+}
+
+impl AudioTiming {
+    pub(crate) fn new() -> Self {
+        AudioTiming {
+            next: Instant::now() + Duration::from_nanos(PERIOD_NS as u64),
+            variance: PHASE_PRIOR_NS.powi(2) + DRIFT_PRIOR_NS.powi(2) + R_PRIOR_NS.powi(2),
+            period_ns: PERIOD_NS,
+            period_samples: PERIOD_SAMPLES,
+        }
+    }
+}
+
 // ♻️ this period also shows up in requesting the pipewire latency
 const PERIOD_BYTES: usize = 512 * 4 * 2;
 const PERIOD_SAMPLES: f64 = 512.0;
@@ -239,34 +268,6 @@ impl TimingFilter {
         //     Duration::from_nanos(variance.sqrt().round() as u64),
         // );
         out
-    }
-}
-
-/// Data about a connection's phase, period, jitter, and time between chunks.
-#[derive(Clone, Copy, Debug)]
-pub struct AudioTiming {
-    /// Process time of the next mean prediction.  Using shape and scale parameters of the
-    /// uncertainty distribution, consumers can use this to predict how much tracking leeway will
-    /// provide a desired probability of underrun.
-    pub next: Instant,
-    /// The uncertainty around the next prediction in ns².  This folds up both process uncertainty
-    /// and our uncertainty about the true phase.  If uncertainty is high, the consumer should track
-    /// behind farther.
-    pub variance: f64,
-    /// Duration of each phase in nanoseconds.
-    pub period_ns: f64,
-    /// Data samples per period.  Use this to estimate the data velocity in time.
-    pub period_samples: f64,
-}
-
-impl AudioTiming {
-    pub(crate) fn new() -> Self {
-        AudioTiming {
-            next: Instant::now() + Duration::from_nanos(PERIOD_NS as u64),
-            variance: PHASE_PRIOR_NS.powi(2) + DRIFT_PRIOR_NS.powi(2) + R_PRIOR_NS.powi(2),
-            period_ns: PERIOD_NS,
-            period_samples: PERIOD_SAMPLES,
-        }
     }
 }
 
