@@ -34,6 +34,11 @@
 // accurate and precise than the old filter.  The old filter starts off looking relatively accurate,
 // but after several predictions, the new filters will will have tightened up their covariance
 // matrix closer to the true phase and they will be much more reliable than the old filter.
+// NEXT this single-filter setup will be changed to a particle style where new particles are spawned
+// when the existing filter seems to go crazy.  If the new particle log-prob and innovation drop
+// below the old particle, we switch to the new particles.  Each particle will need to be able to
+// keep a short history of log probs.  When the Bayes ratio becomes overwhelming, we switch
+// particles and lock the new timing.
 // DEBT Audio rates
 
 use std::time::{Duration, Instant};
@@ -49,6 +54,30 @@ const PHASE_PRIOR_NS: f64 = PERIOD_NS / 2.0; // diffuse phase prior std (±T/2)
 const DRIFT_PRIOR_NS: f64 = 1000.0; // drift prior std, ns/callback
 const R_PRIOR_NS: f64 = 40_000.0; // 40µs jitter prior in ns
 
+#[derive(Clone, Copy)]
+struct Estimate {
+    /// μ - phase offset, ns.
+    phase_offset: f64,
+    /// δ - period error / drift, ns per callback.
+    period_error: f64,
+    /// P - the error matrix, which is symmetric 2x2, so we can store instead as (0,0), (0,1), and
+    /// (1,1) instead.
+    covariance: [f64; 3],
+}
+
+impl Estimate {
+    /// Project one cycle forward under the constant-drift model.  F = [[1, 1], [0, 1]], so
+    /// μ⁻ = μ + δ and δ⁻ = δ; the covariance telescopes and gains Q on the drift term.
+    fn project(self) -> Self {
+        let [p00, p01, p11] = self.covariance;
+        Self {
+            phase_offset: self.phase_offset + self.period_error,
+            period_error: self.period_error,
+            covariance: [p00 + 2.0 * p01 + p11, p01 + p11, p11 + Q_DELTA],
+        }
+    }
+}
+
 /// Integrates successive audio chunk timings to predict phase alignment of deadlines downstream.
 /// The implementation is a very basic Kalman filter using the
 pub(crate) struct TimingFilter {
@@ -58,20 +87,13 @@ pub(crate) struct TimingFilter {
     /// Cycle count.  This can jump to account for missing chunks and always presumes that new
     /// chunks arrive strictly in order.
     k: u64,
-    // NEXT this single-filter setup will be changed to a particle style where new particles are
-    // spawned when the existing filter seems to go crazy.  If the new particle log-prob and
-    // innovation drop below the old particle, we switch to the new particles.  Each particle will
-    // need to be able to keep a short history of log probs.  When the Bayes ratio becomes
-    // overwhelming, we switch particles and lock the new timing.
-    /// Server's phase offset
-    phase_offset: f64,
-    /// Amount of drift
-    period_error: f64,
     /// R, a scalar due to the simple nature of the audio problem.
     observation_covariance: f64,
-    /// P, the error matrix, which is symmetric 2x2, so we can store instead as (0,0), (0,1), and
-    /// (1,1) instead.
-    error_covariance: [f64; 3],
+    /// The Kalman *prior*: the one-step projection for the cycle the next chunk will fall in.
+    /// Produced once per `observe` from the freshly updated posterior, handed to the consumer as
+    /// that call's `AudioTiming`, and reused verbatim as the prior on the next `observe`.  The
+    /// projection is therefore computed exactly once per chunk instead of twice.
+    prediction: Estimate,
 
     /// History of server chunk callback timing and chunk size.  Only process calls that receive
     /// data will push data.
@@ -88,11 +110,15 @@ impl TimingFilter {
         Self {
             t0: Instant::now(),
             k: 0,
-            phase_offset: 0.0,
-            period_error: 0.0,
             observation_covariance: R_PRIOR_NS.powi(2),
-            // [p00, p01, p11]
-            error_covariance: [PHASE_PRIOR_NS.powi(2), 0.0, DRIFT_PRIOR_NS.powi(2)],
+            // Seed the prior by projecting the diffuse initial estimate one step, exactly as the
+            // first observe() used to do at its top.
+            prediction: Estimate {
+                phase_offset: 0.0,
+                period_error: 0.0,
+                covariance: [PHASE_PRIOR_NS.powi(2), 0.0, DRIFT_PRIOR_NS.powi(2)],
+            }
+            .project(),
             measurements: ringbuf::LocalRb::<ringbuf::storage::Heap<(Instant, usize)>>::new(32),
             innovations: ringbuf::LocalRb::new(32),
         }
@@ -101,62 +127,81 @@ impl TimingFilter {
     pub(crate) fn observe(&mut self, arrived: Instant, written: usize) -> AudioTiming {
         self.measurements.push_overwrite((arrived, written));
 
-        let [p00, p01, p11] = self.error_covariance;
-
         self.k += 1;
         let r = (arrived - self.t0).as_nanos() as f64 - self.k as f64 * PERIOD_NS;
-        let mu_pred = self.phase_offset + self.period_error;
-        let delta_pred = self.period_error;
 
-        // Prediction step
-        let p00_pred = p00 + 2.0 * p01 + p11;
-        let p01_pred = p01 + p11;
-        let p11_pred = p11 + Q_DELTA;
+        // Prior for this cycle: the projection stored at the end of the previous observe.
+        let prior = self.prediction;
+        let [p00, p01, p11] = prior.covariance;
 
-        // Measure innovation
-        let nu = r - mu_pred;
-        let s = p00_pred + self.observation_covariance;
+        // Innovation against the prior.
+        let nu = r - prior.phase_offset;
+        let s = p00 + self.observation_covariance;
 
+        // Mehra adaptive R from the innovation window.
         self.innovations.push_overwrite(nu);
         let n = self.innovations.occupied_len() as f64;
-        let innovation_variance = self.innovations.iter().map(|v| v * v).sum::<f64>() / n;
-        // XXX can this become unstable or collapse to zero?
-        self.observation_covariance = (innovation_variance - p00_pred).max(0.0);
 
-        // Kalman gain
-        let k0 = p00_pred / s;
-        let k1 = p01_pred / s;
+        // C₀ must be the innovation variance about its mean. E[ν²] folds in phase bias
+        // ν̄², and a lagging filter has ν̄ ≠ 0 — that bias² would inflate R, shrink the
+        // gain, deepen the lag, inflate R again. Centering makes R invariant to bias, so
+        // tracking error can no longer masquerade as observation noise.
+        let mean = self.innovations.iter().sum::<f64>() / n;
+        let innovation_variance = self
+            .innovations
+            .iter()
+            .map(|v| (v - mean) * (v - mean))
+            .sum::<f64>()
+            / n;
 
-        // State updates including measurements
-        self.phase_offset = mu_pred + k0 * nu;
-        self.period_error = delta_pred + k1 * nu;
+        // Mehra needs a populated window, and R must stay in a band where the gain can
+        // neither die (blow-up) nor vanish (collapse-to-zero). Bounds are the stability
+        // floor until the particle scheme lands.
+        const R_MIN: f64 = R_PRIOR_NS * R_PRIOR_NS * 0.01;
+        const R_MAX: f64 = R_PRIOR_NS * R_PRIOR_NS * 100.0;
+        let nis = nu * nu / s;
+        self.observation_covariance = if n < 8.0 || nis > 9.0 {
+            R_PRIOR_NS * R_PRIOR_NS
+        } else {
+            (innovation_variance - p00).clamp(R_MIN, R_MAX)
+        };
 
-        // Covariance update
-        self.error_covariance = [
-            (1.0 - k0) * p00_pred,
-            (1.0 - k0) * p01_pred,
-            p11_pred - k1 * p01_pred,
-        ];
+        // Kalman gain (uses the pre-update R via `s`).
+        let k0 = p00 / s;
+        let k1 = p01 / s;
 
-        // NEXT we need to shift the prediction into state so that we can send the next prediction
-        // to the user and then re-use that prediction when updating state on the next chunk.
-        // Duplicate the prediction step, now from the *posterior*, to fill the outgoing
-        // timing.  Deliberately not cached — the next observe() recomputes the identical
-        // projection at its top from this same state.
-        let [q00, q01, q11] = self.error_covariance;
-        let mu_next = self.phase_offset + self.period_error;
-        let p00_next = q00 + 2.0 * q01 + q11;
-        let variance = p00_next + self.observation_covariance;
+        // Posterior for this cycle.
+        let posterior = Estimate {
+            phase_offset: prior.phase_offset + k0 * nu,
+            period_error: prior.period_error + k1 * nu,
+            covariance: [(1.0 - k0) * p00, (1.0 - k0) * p01, p11 - k1 * p01],
+        };
 
+        // Project once.  This single result is both the prior for the next observe and this
+        // call's outgoing timing — no second projection anywhere.
+        self.prediction = posterior.project();
+
+        let variance = self.prediction.covariance[0] + self.observation_covariance;
         // Absolute arrival predicted for cycle k+1, anchored to the same t0 grid as r.
-        let next_ns = ((self.k + 1) as f64 * PERIOD_NS + mu_next).max(0.0).round() as u64;
+        let next_ns = ((self.k + 1) as f64 * PERIOD_NS + self.prediction.phase_offset)
+            .max(0.0)
+            .round() as u64;
 
-        AudioTiming {
+        let out = AudioTiming {
             next: self.t0 + Duration::from_nanos(next_ns),
             variance,
             period_ns: PERIOD_NS,
             period_samples: PERIOD_SAMPLES,
-        }
+        };
+        let step_ns = PERIOD_NS + self.prediction.period_error;
+
+        // DEBT tracing!!!
+        // println!(
+        //     "step={:?} stddev={:?}",
+        //     Duration::from_nanos(step_ns.max(0.0).round() as u64),
+        //     Duration::from_nanos(variance.sqrt().round() as u64),
+        // );
+        out
     }
 }
 
