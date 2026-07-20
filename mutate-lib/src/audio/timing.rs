@@ -54,10 +54,12 @@ const PHASE_PRIOR_NS: f64 = PERIOD_NS / 2.0; // diffuse phase prior std (±T/2)
 const DRIFT_PRIOR_NS: f64 = 1000.0; // drift prior std, ns/callback
 const R_PRIOR_NS: f64 = 40_000.0; // 40µs jitter prior in ns
 
+// NOTE The phase offset μ is collapsed out of this type: `reference` absorbs the correction every
+// cycle, so the stored phase is a structural zero and `reference` *is* the phase.  Regime changes
+// don't reintroduce it — a re-seat writes the new phase straight into `reference` and blows the
+// covariance back out, so a persisted phase field is never needed.
 #[derive(Clone, Copy)]
 struct Estimate {
-    /// μ - phase offset, ns.
-    phase_offset: f64,
     /// δ - period error / drift, ns per callback.
     period_error: f64,
     /// P - the error matrix, which is symmetric 2x2, so we can store instead as (0,0), (0,1), and
@@ -66,12 +68,15 @@ struct Estimate {
 }
 
 impl Estimate {
-    /// Project one cycle forward under the constant-drift model.  F = [[1, 1], [0, 1]], so
-    /// μ⁻ = μ + δ and δ⁻ = δ; the covariance telescopes and gains Q on the drift term.
+    /// Project one cycle forward under the constant-drift model.  F = [[1, 1], [0, 1]]; δ⁻ = δ and
+    /// the covariance telescopes and gains Q on the drift term.
+    // NOTE The phase row of F (μ⁻ = μ + δ) is applied at the re-seat in `observe`, where the
+    // projected correction `k0*nu + period_error` is folded into `reference` directly.  The phase
+    // never lives here because it never persists across cycles — steady state re-seats a small
+    // correction, a regime change re-seats a large one, and neither needs a stored phase row.
     fn project(self) -> Self {
         let [p00, p01, p11] = self.covariance;
         Self {
-            phase_offset: self.phase_offset + self.period_error,
             period_error: self.period_error,
             covariance: [p00 + 2.0 * p01 + p11, p01 + p11, p11 + Q_DELTA],
         }
@@ -81,12 +86,9 @@ impl Estimate {
 /// Integrates successive audio chunk timings to predict phase alignment of deadlines downstream.
 /// The implementation is a very basic Kalman filter using the
 pub(crate) struct TimingFilter {
-    /// The epoch for counting cycles.  Cycles never go backwards in time, so we just set the epoch
-    /// to begin when we create the filter.
-    t0: Instant,
-    /// Cycle count.  This can jump to account for missing chunks and always presumes that new
-    /// chunks arrive strictly in order.
-    k: u64,
+    /// Predicted arrival instance for the next chunk.  Advanced by one step each `observe`, folded
+    /// toward each measurement by the Kalman correction.
+    reference: Instant,
     /// R, a scalar due to the simple nature of the audio problem.
     observation_covariance: f64,
     /// The Kalman *prior*: the one-step projection for the cycle the next chunk will fall in.
@@ -108,13 +110,11 @@ pub(crate) struct TimingFilter {
 impl TimingFilter {
     pub(crate) fn new() -> Self {
         Self {
-            t0: Instant::now(),
-            k: 0,
+            reference: Instant::now() + Duration::from_nanos(PERIOD_NS as u64),
             observation_covariance: R_PRIOR_NS.powi(2),
             // Seed the prior by projecting the diffuse initial estimate one step, exactly as the
             // first observe() used to do at its top.
             prediction: Estimate {
-                phase_offset: 0.0,
                 period_error: 0.0,
                 covariance: [PHASE_PRIOR_NS.powi(2), 0.0, DRIFT_PRIOR_NS.powi(2)],
             }
@@ -126,16 +126,18 @@ impl TimingFilter {
 
     pub(crate) fn observe(&mut self, arrived: Instant, written: usize) -> AudioTiming {
         self.measurements.push_overwrite((arrived, written));
-
-        self.k += 1;
-        let r = (arrived - self.t0).as_nanos() as f64 - self.k as f64 * PERIOD_NS;
+        let r = signed_delta_ns(arrived, self.reference);
 
         // Prior for this cycle: the projection stored at the end of the previous observe.
         let prior = self.prediction;
         let [p00, p01, p11] = prior.covariance;
 
-        // Innovation against the prior.
-        let nu = r - prior.phase_offset;
+        // Innovation against the prior.  The stored phase is a structural zero (the correction is
+        // re-seated into `reference` each cycle), so the innovation is the raw offset from the
+        // reference — wrapped into (-T/2, +T/2] so a wrong-cycle prediction reads as the small
+        // residual it really is.  A miss too large to wrap is handled upstream by the re-seat gate,
+        // never here.
+        let nu = r;
         let s = p00 + self.observation_covariance;
 
         // Mehra adaptive R from the innovation window.
@@ -159,6 +161,10 @@ impl TimingFilter {
         // floor until the particle scheme lands.
         const R_MIN: f64 = R_PRIOR_NS * R_PRIOR_NS * 0.01;
         const R_MAX: f64 = R_PRIOR_NS * R_PRIOR_NS * 100.0;
+
+        // Pre-gate vestige: `nis > 9.0` was the *implicit* outlier guard before the re-seat gate
+        // existed.  Now it only freezes Mehra R adaptation on a bad cycle; the outlier role moved
+        // upstream to the gate.  Goes away once the gate fully owns anomaly handling.
         let nis = nu * nu / s;
         self.observation_covariance = if n < 8.0 || nis > 9.0 {
             R_PRIOR_NS * R_PRIOR_NS
@@ -170,9 +176,14 @@ impl TimingFilter {
         let k0 = p00 / s;
         let k1 = p01 / s;
 
+        // Posterior phase correction for this cycle.  Born from this innovation, consumed at the
+        // re-seat below, never stored — which is why it's a local and not an `Estimate` field.  The
+        // gate's reset branch is the same shape at larger scale: a re-seat of `reference`, not a
+        // persisted correction — so it lives in `relatch`, not here.
+        let phase_correction = k0 * nu;
+
         // Posterior for this cycle.
         let posterior = Estimate {
-            phase_offset: prior.phase_offset + k0 * nu,
             period_error: prior.period_error + k1 * nu,
             covariance: [(1.0 - k0) * p00, (1.0 - k0) * p01, p11 - k1 * p01],
         };
@@ -182,25 +193,30 @@ impl TimingFilter {
         self.prediction = posterior.project();
 
         let variance = self.prediction.covariance[0] + self.observation_covariance;
-        // Absolute arrival predicted for cycle k+1, anchored to the same t0 grid as r.
-        let next_ns = ((self.k + 1) as f64 * PERIOD_NS + self.prediction.phase_offset)
-            .max(0.0)
-            .round() as u64;
+
+        // Advance the running reference one step under the current drift model, then absorb the
+        // fresh phase correction.  Re-seating the correction into the reference is what keeps the
+        // state near zero and removes any fixed anchor: `reference` *is* the predicted arrival.
+        // The projected phase advance μ⁻ = μ + δ is reconstructed here from the local correction
+        // plus drift, since `project()` no longer carries the phase row.
+        let step = PERIOD_NS + self.prediction.period_error + phase_correction;
+        self.reference = add_signed_ns(self.reference, step);
 
         let out = AudioTiming {
-            next: self.t0 + Duration::from_nanos(next_ns),
+            next: self.reference,
             variance,
             period_ns: PERIOD_NS,
             period_samples: PERIOD_SAMPLES,
         };
-        let step_ns = PERIOD_NS + self.prediction.period_error;
 
         // DEBT tracing!!!
-        // println!(
-        //     "step={:?} stddev={:?}",
-        //     Duration::from_nanos(step_ns.max(0.0).round() as u64),
-        //     Duration::from_nanos(variance.sqrt().round() as u64),
-        // );
+        // `reference` is the predicted next arrival; measure the lead from this chunk's arrival.
+        // Signed: a late chunk can leave the next prediction already behind us.
+        let until_next_us = signed_delta_ns(self.reference, arrived) / 1000.0;
+        println!(
+            "until_next={until_next_us:+.0}µs stddev={:?}",
+            Duration::from_nanos(variance.sqrt().round() as u64),
+        );
         out
     }
 }
@@ -230,5 +246,28 @@ impl AudioTiming {
             period_ns: PERIOD_NS,
             period_samples: PERIOD_SAMPLES,
         }
+    }
+}
+
+// Signed nanosecond delta between two Instants, underflow-safe (Instant subtraction panics on
+// negative).  Sign is load-bearing: a late chunk yields a negative lead in the trace, and the
+// re-seat gate keys off the magnitude of the signed miss.
+// XXX this is probably some sloppy bullshit, but will be dealt with by reconciling the overall type
+// graph.
+fn signed_delta_ns(a: Instant, b: Instant) -> f64 {
+    if a >= b {
+        (a - b).as_nanos() as f64
+    } else {
+        -((b - a).as_nanos() as f64)
+    }
+}
+
+// XXX type graph
+fn add_signed_ns(t: Instant, ns: f64) -> Instant {
+    let ns = ns.round();
+    if ns >= 0.0 {
+        t + Duration::from_nanos(ns as u64)
+    } else {
+        t - Duration::from_nanos((-ns) as u64)
     }
 }
