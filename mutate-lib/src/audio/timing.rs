@@ -31,17 +31,6 @@
 // NEXT testing should include cases with big discontinuities, sudden bursts of noise, and
 // multimodal timing distributions that will stress the Gaussian approximation (and prove the
 // improvement of a follow-on scenting or particle solution).
-// NEXT whenever playback stalls or jumps, we would prefer to generate several new particles to
-// attempt to lock onto the new phase faster than the old filter can loosen up.  The new particles
-// should be selected whenever the Bayes ratio suggests that their estimations are more likely
-// accurate and precise than the old filter.  The old filter starts off looking relatively accurate,
-// but after several predictions, the new filters will will have tightened up their covariance
-// matrix closer to the true phase and they will be much more reliable than the old filter.
-// NEXT this single-filter setup will be changed to a particle style where new particles are spawned
-// when the existing filter seems to go crazy.  If the new particle log-prob and innovation drop
-// below the old particle, we switch to the new particles.  Each particle will need to be able to
-// keep a short history of log probs.  When the Bayes ratio becomes overwhelming, we switch
-// particles and lock the new timing.
 // DEBT Audio rates
 // NEXT audio servers can send us different chunk sizes, and supporting this requires changing the
 // physical model for state update.  See blame.
@@ -103,7 +92,6 @@ pub(crate) struct TimingFilter {
     /// projection is therefore computed exactly once per chunk instead of twice.
     prediction: Estimate,
 
-    // XXX discontinuities are a particle spawn signal.
     /// History of server chunk callback arrival times.  Only process calls that receive data will
     /// push measurements.
     // NEXT Pipewire can send different chunk sizes; supporting that means restoring a per-chunk
