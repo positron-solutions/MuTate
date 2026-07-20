@@ -28,6 +28,9 @@
 // module produces a pretty stable phase grid, meaning outliers quickly revert to near normally
 // distributed without upsetting the filter's phase estimate.  P99 is about 300micros.  Other
 // platforms may bite us more.
+// NEXT testing should include cases with big discontinuities, sudden bursts of noise, and
+// multimodal timing distributions that will stress the Gaussian approximation (and prove the
+// improvement of a follow-on scenting or particle solution).
 // NEXT whenever playback stalls or jumps, we would prefer to generate several new particles to
 // attempt to lock onto the new phase faster than the old filter can loosen up.  The new particles
 // should be selected whenever the Bayes ratio suggests that their estimations are more likely
