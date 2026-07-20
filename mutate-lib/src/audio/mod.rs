@@ -807,6 +807,11 @@ fn create_stream<'c>(
             // spa::param::audio::AudioFormat::F32P
             spa::param::audio::AudioFormat::F32LE
         ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::AudioChannels,
+            Int,
+            2
+        ),
     };
 
     let mut buf = Vec::new();
