@@ -52,8 +52,8 @@ const PERIOD_SAMPLES: f64 = 512.0;
 const PERIOD_NS: f64 = PERIOD_SAMPLES * 1e9 / 48000.0;
 
 const PHASE_PRIOR_NS: f64 = PERIOD_NS / 2.0; // diffuse phase prior std (±T/2)
-const DRIFT_PRIOR_NS: f64 = 1000.0; // drift prior std, ns/callback
-const R_PRIOR_NS: f64 = 40_000.0; // 40µs jitter prior in ns
+const DRIFT_PRIOR_NS: f64 = 10_000.0; // drift prior std, 10µs/callback
+const R_PRIOR_NS: f64 = 1_000_000.0; // 1ms jitter prior in ns
 
 /// Timing snapshot published to consumers.  Includes enough information for consumers to slew their
 /// tracking on the input stream with the desired protection from underruns.
@@ -124,14 +124,14 @@ impl AudioTiming {
     }
 }
 
-const R_MIN: f64 = R_PRIOR_NS * R_PRIOR_NS * 0.01;
+const R_MIN: f64 = R_PRIOR_NS * R_PRIOR_NS * 0.01; // floor at 100µs stddev
 const R_MAX: f64 = R_PRIOR_NS * R_PRIOR_NS * 100.0;
 const Q_DELTA: f64 = 1.0; // ns², period error diffusion per callback
 
 // Re-seat gate threshold on squared Mahalanobis distance (~5σ). Larger miss is interpreted as
 // underrun / pause / discontinuity).  Because NIS divides by s (which folds in p00), the gate
 // self-tightens as phase locks and loosens right after a re-seat.
-const RESEAT_NIS: f64 = 25.0; // about 5σ
+const RESEAT_NIS: f64 = 36.0; // about 6σ
 const MEHRA_TRUST_NIS: f64 = 9.0; // ~3σ: admit to R-estimation window
 
 /// Kalman prior.  Estimates are published for consumers, and we re-use them on each observation, so
@@ -243,13 +243,17 @@ impl TimingFilter {
         // discontinuity and completely re-latch rather than presuming a tick appeared or
         // disappeared.
         if nu * nu / s > RESEAT_NIS {
+            // println!("innovation gate triggered!");
             return self.relatch(arrived);
         }
 
-        // Mehra adaptive R from the innovation window. Only innovations inside the 3σ trust band
-        // admit to the window; 3σ–5σ residuals are folded into phase/ drift below but excluded here
-        // so one fat sample can't set the noise floor for the next window-length cycles.
-        let nis = nu * nu / s;
+        // Trust-band decision against the same floored scale the gate uses, not the tight
+        // pre-update s.  After a regime change s is stale-tight, which inflates nis and freezes R
+        // for the whole transition — the filter then carries stale variance for a full window
+        // length.  Ensuring the noise scale can't collapse below tolerance lets a sustained shift
+        // admit to the window promptly instead of being read as a run of outliers.
+        let trust_s = s.max(R_PRIOR_NS * R_PRIOR_NS);
+        let nis = nu * nu / trust_s;
         if nis <= MEHRA_TRUST_NIS {
             self.innovations.push_overwrite(nu);
         }
@@ -314,8 +318,11 @@ impl TimingFilter {
         // `reference` is the predicted next arrival.  `Arrived` can be noisy.
         // let until_next_micros = signed_delta_ns(self.reference, arrived) / 1000.0;
         // println!(
-        //     "until_next={until_next_micros:+.0}µs stddev={:?}",
-        //     Duration::from_nanos(variance.sqrt().round() as u64),
+        //     "R={:.2}µs nu={:+.0}µs until_next={until_next_micros:+.0}µs iv={:.0}µs gate={:.2} ",
+        //     self.observation_covariance.sqrt() / 1000.0,
+        //     nu / 1000.0,
+        //     innovation_variance.sqrt() / 1000.0,
+        //     nu * nu / s.max(R_PRIOR_NS * R_PRIOR_NS),
         // );
         out
     }
@@ -490,13 +497,15 @@ mod tests {
         let mut seed = 0x1234_5678_9ABC_DEF0;
         let start = Instant::now() + Duration::from_nanos(PERIOD_NS as u64);
 
-        // High-noise region: ~120µs jitter.  Long enough to fill the 32-wide innovation window
-        // several times so R settles to the noise floor rather than the prior.
-        let high = drive_noisy(&mut filter, start, &mut seed, 120_000.0, 400);
+        // High-noise region: ~900µs jitter, near the 1ms tolerance ceiling but inside the reseat
+        // gate.  Long enough to fill the 32-wide innovation window several times so R settles to
+        // the observed noise rather than the prior.
+        let high = drive_noisy(&mut filter, start, &mut seed, 900_000.0, 400);
         let high_clock = start + Duration::from_nanos((PERIOD_NS as u64) * 401);
 
-        // Low-noise region: ~12µs jitter, same dwell.  R should collapse toward the smaller floor.
-        let low = drive_noisy(&mut filter, high_clock, &mut seed, 12_000.0, 400);
+        // Low-noise region: ~90µs jitter, same dwell — a well-scheduled system.  R should collapse
+        // roughly 10× toward the smaller floor.
+        let low = drive_noisy(&mut filter, high_clock, &mut seed, 90_000.0, 400);
 
         println!(
             "high.variance={:.3e} (stddev {:.0}ns), low.variance={:.3e} (stddev {:.0}ns)",
