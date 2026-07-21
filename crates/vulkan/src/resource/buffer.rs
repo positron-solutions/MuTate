@@ -60,7 +60,7 @@ impl<T> MappedAllocation<T> {
         };
         let (buffer, memory, size) = device
             .memory
-            .allocate_buffer(&buffer_info, MemoryUse::HostMapped)?;
+            .allocate_buffer(&buffer_info, MemoryUse::Upload)?;
         let raw_ptr = unsafe {
             device
                 .as_raw()
