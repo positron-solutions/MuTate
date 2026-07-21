@@ -655,7 +655,7 @@ impl AudioProducer {
 
         // Update the timing data
         // XXX this synchronization story seems silly for the device import callback
-        let snapshot = conn.timing.observe(arrived, written);
+        let snapshot = conn.timing.observe(arrived, written as u64);
         let mut audio_timing = conn.lock.lock()?;
         *audio_timing = snapshot;
 

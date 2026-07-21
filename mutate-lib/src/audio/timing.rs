@@ -86,6 +86,7 @@ pub struct AudioTiming {
     /// Samples written for this timing snapshot.  The writer may diverge near chunk delivery, but
     /// this timing data will still provide an accurate prediction for how many samples are
     /// virtually received at any moment in time.
+    pub written: u64,
     /// Duration of each phase in nanoseconds.
     pub period_ns: f64,
     /// Data samples per period.  Used to estimate the data velocity in time.
@@ -97,8 +98,9 @@ pub struct AudioTiming {
 
 impl AudioTiming {
     pub(crate) fn new() -> Self {
-        AudioTiming {
+        Self {
             next: Instant::now() + Duration::from_nanos(PERIOD_NS as u64),
+            written: 0,
             period_ns: PERIOD_NS,
             period_samples: PERIOD_SAMPLES,
             variance: PHASE_PRIOR_NS.powi(2) + DRIFT_PRIOR_NS.powi(2) + R_PRIOR_NS.powi(2),
@@ -142,6 +144,8 @@ impl Estimate {
 /// Integrates successive audio chunk timings to provide phase estimations necessary for downstreams
 /// to slew their read reads.
 pub(crate) struct TimingFilter {
+    /// Number of samples written.  Used to align expected writes with timing snapshots.
+    written: u64,
     /// Predicted arrival instance for the next chunk.  Advanced by one step each `observe`, folded
     /// toward each measurement by the Kalman correction.
     reference: Instant,
@@ -157,6 +161,7 @@ pub(crate) struct TimingFilter {
 impl TimingFilter {
     pub(crate) fn new() -> Self {
         Self {
+            written: 0,
             reference: Instant::now() + Duration::from_nanos(PERIOD_NS as u64),
             observation_covariance: R_PRIOR_NS.powi(2),
             // XXX should we combine the seed logic?
@@ -190,6 +195,7 @@ impl TimingFilter {
 
         let variance = self.prediction.covariance[0] + self.observation_covariance;
         AudioTiming {
+            written: self.written,
             next: self.reference,
             variance,
             period_ns: PERIOD_NS,
@@ -199,8 +205,9 @@ impl TimingFilter {
 
     /// `arrived` is the instant recorded at the start of the process callback in pipewire.
     /// `written` is bytes written only used for a debug assert.
-    pub(crate) fn observe(&mut self, arrived: Instant, written: usize) -> AudioTiming {
+    pub(crate) fn observe(&mut self, arrived: Instant, written: u64) -> AudioTiming {
         debug_assert_eq!(written, PERIOD_BYTES);
+        self.written += written / (4 * 2);
         // Unpack previous cycle's projection.
         let prior = self.prediction;
         let [p00, p01, p11] = prior.covariance;
@@ -280,6 +287,7 @@ impl TimingFilter {
         self.reference = add_signed_ns(self.reference, step);
 
         let out = AudioTiming {
+            written: self.written,
             next: self.reference,
             variance,
             period_ns: PERIOD_NS,
