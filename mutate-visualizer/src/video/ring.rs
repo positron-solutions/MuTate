@@ -6,7 +6,15 @@
 //! Dump the raw audio ring buffer onto the screen
 
 use ash::vk;
-use mutate_lib::{self as utate, prelude::*};
+use mutate_lib::{
+    self as utate,
+    prelude::*,
+    vulkan::{
+        pipeline::layout::LayoutSpec,
+        slang::{GpuType, Pack},
+        __::Stage,
+    },
+};
 use utate::vulkan::resource::{buffer, image};
 
 #[compute_pipeline(
