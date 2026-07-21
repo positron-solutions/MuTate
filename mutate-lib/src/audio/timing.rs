@@ -107,6 +107,22 @@ impl AudioTiming {
         }
     }
 
+    /// Returns the maximum smooth advance for the consumer.  `on_time` is the probability that
+    /// jitter will not result in underrun.  Use values such as 0.999 for a three nines on-time
+    /// rate.  The consumer should understand their own linearized read rate and slew their reads
+    /// towards the read goal.
+    pub fn virtual_read_goal(&self, read_instant: Instant, on_time: f64) -> u64 {
+        let sample_velocity = self.period_samples / self.period_ns;
+        let lead_ns = signed_delta_ns(read_instant, self.next);
+        let head_delta = lead_ns * sample_velocity;
+        // NOTE here's where the normal approximation and on_time tolerance convert to extra buffer
+        // time.  If the normal distribution is swapped out, it must be swapped out here too.
+        let offset_samples =
+            self.period_samples + z_one_sided(on_time) * self.variance.sqrt() * sample_velocity;
+        let adjust = (head_delta - offset_samples).floor();
+        self.written.saturating_add_signed(adjust as i64)
+    }
+}
 
 const R_MIN: f64 = R_PRIOR_NS * R_PRIOR_NS * 0.01;
 const R_MAX: f64 = R_PRIOR_NS * R_PRIOR_NS * 100.0;
@@ -325,5 +341,196 @@ fn add_signed_ns(t: Instant, ns: f64) -> Instant {
         t + Duration::from_nanos(ns as u64)
     } else {
         t - Duration::from_nanos((-ns) as u64)
+    }
+}
+
+/// One-sided normal quantile: z such that Φ(z) = p. Producer lateness is one-tailed, so this is
+/// the number of stddevs of margin for an `p` probability the data has arrived.
+// XXX Pure 🤖.  Would prefer to lean on a crate implementation since we don't care enough to check
+// this.  While thinking about it, the lack of a clean inverse CDF is why the normal distribution is
+// only a good choice when it is a true account of the uncertainty.  For timing data, it's not.  All
+// my homies hate the normal distribution.
+fn z_one_sided(p: f64) -> f64 {
+    // Acklam's rational approximation to the inverse normal CDF.
+    const A: [f64; 6] = [
+        -3.969683028665376e+01,
+        2.209460984245205e+02,
+        -2.759285104469687e+02,
+        1.383577518672690e+02,
+        -3.066479806614716e+01,
+        2.506628277459239e+00,
+    ];
+    const B: [f64; 5] = [
+        -5.447609879822406e+01,
+        1.615858368580409e+02,
+        -1.556989798598866e+02,
+        6.680131188771972e+01,
+        -1.328068155288572e+01,
+    ];
+    const C: [f64; 6] = [
+        -7.784894002430293e-03,
+        -3.223964580411365e-01,
+        -2.400758277161838e+00,
+        -2.549732539343734e+00,
+        4.374664141464968e+00,
+        2.938163982698783e+00,
+    ];
+    const D: [f64; 4] = [
+        7.784695709041462e-03,
+        3.224671290700398e-01,
+        2.445134137142996e+00,
+        3.754408661907416e+00,
+    ];
+    let p = p.clamp(1e-9, 1.0 - 1e-9);
+    let pl = 0.02425;
+    if p < pl {
+        let q = (-2.0 * p.ln()).sqrt();
+        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    } else if p <= 1.0 - pl {
+        let q = p - 0.5;
+        let r = q * q;
+        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+    } else {
+        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variance_converges_across_discontinuity() {
+        // This tests contains several accounting and sanity checks.  It contains a discontinuity in
+        // order to trigger re-latch and verify that we still get a clean grid estimation after the
+        // discontinuity (no filter explosions etc).
+        fn drive(
+            filter: &mut TimingFilter,
+            clock: Instant,
+            written: u64,
+            remaining: u64,
+        ) -> (AudioTiming, Instant, u64) {
+            let timing = filter.observe(clock, PERIOD_BYTES);
+            let next = clock + Duration::from_nanos(PERIOD_NS as u64);
+            if remaining == 0 {
+                (timing, next, written + PERIOD_BYTES)
+            } else {
+                drive(filter, next, written + PERIOD_BYTES, remaining - 1)
+            }
+        }
+
+        let mut filter = TimingFilter::new();
+        let start = Instant::now() + Duration::from_nanos(PERIOD_NS as u64);
+
+        let (before, resume_clock, written) = drive(&mut filter, start, 0, 200);
+        let (settled, discontinuity_clock, written) = drive(&mut filter, resume_clock, written, 20);
+
+        let jumped = discontinuity_clock + Duration::from_nanos((PERIOD_NS * 50.0) as u64);
+        let relatched = filter.observe(jumped, PERIOD_BYTES);
+        let written = written + PERIOD_BYTES; // count the discontinuity observe, test-side
+        let recover_clock = jumped + Duration::from_nanos(PERIOD_NS as u64);
+
+        let (after, final_clock, total_written) = drive(&mut filter, recover_clock, written, 200);
+
+        assert_eq!(after.written, total_written / (4 * 2));
+        assert!(settled.variance < before.variance);
+        assert!(relatched.variance > settled.variance);
+        assert!(after.variance < relatched.variance);
+
+        let goal = after.virtual_read_goal(final_clock, 0.999);
+        let stddev_samples = after.variance.sqrt() * (PERIOD_SAMPLES / PERIOD_NS);
+        let slack = (z_one_sided(0.999) * stddev_samples).ceil() as u64 + PERIOD_SAMPLES as u64;
+
+        println!("goal: {}, slack: {}", goal, slack);
+        assert!(goal + slack >= total_written / (4 * 2));
+        assert!(goal <= total_written / (4 * 2));
+    }
+
+    #[test]
+    fn variance_latches_tighter_under_lower_noise() {
+        // Deterministic sub-gate jitter for noise-response tests.  splitmix64-ish; we only need
+        // reproducible, zero-mean-ish perturbations, not statistical quality.
+        fn jitter_ns(seed: &mut u64, amplitude_ns: f64) -> f64 {
+            *seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = *seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            // map to [-1, 1)
+            let unit = (z >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0;
+            unit * amplitude_ns
+        }
+
+        // Drive on-grid arrivals perturbed by bounded, zero-centered jitter.  Each step advances
+        // the nominal clock by exactly PERIOD_NS; the jitter is applied only to the *arrival*
+        // instant handed to observe(), never accumulated into the grid, so the filter sees pure
+        // measurement noise and no drift.  Amplitudes stay inside the reseat gate so this exercises
+        // Mehra R-adaptation, not the discontinuity path.
+        fn drive_noisy(
+            filter: &mut TimingFilter,
+            mut clock: Instant,
+            seed: &mut u64,
+            amplitude_ns: f64,
+            steps: u64,
+        ) -> AudioTiming {
+            let mut last = filter.observe(clock, PERIOD_BYTES);
+            for _ in 0..steps {
+                clock += Duration::from_nanos(PERIOD_NS as u64);
+                let arrived = add_signed_ns(clock, jitter_ns(seed, amplitude_ns));
+                last = filter.observe(arrived, PERIOD_BYTES);
+            }
+            last
+        }
+
+        let mut filter = TimingFilter::new();
+        let mut seed = 0x1234_5678_9ABC_DEF0;
+        let start = Instant::now() + Duration::from_nanos(PERIOD_NS as u64);
+
+        // High-noise region: ~120µs jitter.  Long enough to fill the 32-wide innovation window
+        // several times so R settles to the noise floor rather than the prior.
+        let high = drive_noisy(&mut filter, start, &mut seed, 120_000.0, 400);
+        let high_clock = start + Duration::from_nanos((PERIOD_NS as u64) * 401);
+
+        // Low-noise region: ~12µs jitter, same dwell.  R should collapse toward the smaller floor.
+        let low = drive_noisy(&mut filter, high_clock, &mut seed, 12_000.0, 400);
+
+        println!(
+            "high.variance={:.3e} (stddev {:.0}ns), low.variance={:.3e} (stddev {:.0}ns)",
+            high.variance,
+            high.variance.sqrt(),
+            low.variance,
+            low.variance.sqrt(),
+        );
+
+        // The core claim: the published uncertainty band tracks input noise.  When jitter drops
+        // 10×, the filter must re-latch to a materially tighter variance.
+        assert!(
+            low.variance < high.variance,
+            "low-noise variance {:.3e} should be below high-noise {:.3e}",
+            low.variance,
+            high.variance,
+        );
+
+        // The consumer-facing slack must track the same pattern.  virtual_read_goal holds back
+        // z·σ·velocity samples below the write head; evaluating each region's goal at its own
+        // `next` instant zeroes the lead term (head_delta ≈ 0), leaving the offset as pure
+        // variance-driven margin.  Louder input → larger held-back slack.
+        let on_time = 0.999;
+        let velocity = PERIOD_SAMPLES / PERIOD_NS;
+
+        let high_slack = high.written - high.virtual_read_goal(high.next, on_time);
+        let low_slack = low.written - low.virtual_read_goal(low.next, on_time);
+
+        println!("high_slack={high_slack} samples, low_slack={low_slack} samples");
+
+        // Same ordering as the variance itself: tighter latch ⇒ smaller protective margin.
+        assert!(
+            low_slack < high_slack,
+            "low-noise slack {low_slack} should be below high-noise {high_slack}",
+        );
     }
 }
