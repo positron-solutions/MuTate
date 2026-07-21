@@ -12,17 +12,20 @@
 //! ## Motivation
 //!
 //! Treating incoming discrete data as a virtual continuous input stream enables all upstreams and
-//! downstreams to track as if following smooth processes.  Knowledge of the phase and jitter of new
-//! data is necessary to decide how closely downstreams can follow the linear interpretation while
-//! still avoiding underruns when chunks are late
+//! downstreams to track as if following smooth processes **even if they tick on independent
+//! clocks**.  Knowledge of the phase and jitter of new data is necessary to decide how closely
+//! downstreams can follow the linear interpretation while still avoiding underruns when chunks are
+//! late.
 //!
 //! Audio server period is usually a fixed quantity set by the quantum size and sample rate.  An
 //! estimation of audio server phase completes the picture and enables frontends to tightly track
-//! the incoming audio.  Instinct expects video to precede the audio, so reading with a phase-aware
-//! helps achieve the desired happens-before relationship.
+//! the incoming audio.  Instinct expects video to precede the audio, so reading in a phase-aware
+//! manner helps achieve the desired happens-before relationship.
 
 // NOTE This module really deserves some standardization if a crate doesn't already do this.  The
 // ring-to-ring time alignment, phase tracking, and buffering goal math will all see a lot of use.
+// Expect advantages such as flexibility for read-write heads and less coercion (and bugs) by the
+// consumers.  Combined variance strategies may also develop.
 // NOTE Stability!  Stability!  Stability!  These estimators MUST not diverge under any input
 // conditions or else the program may go nuts during a live show while the operators are reluctant
 // to restart the program.  If the instability re-occurs on startup because of some particular
@@ -41,45 +44,68 @@
 
 use std::time::{Duration, Instant};
 
-use ringbuf::traits::{Consumer, Observer, RingBuffer}; // Producer,
-
-/// Published to consumers.  Includes right information for consumers to slew their tracking on the
-/// input stream with the desired protection from underruns.
-#[derive(Clone, Copy, Debug)]
-pub struct AudioTiming {
-    /// Process time of the next mean prediction.  Using shape and scale parameters of the
-    /// uncertainty distribution, consumers can use this to predict how much tracking leeway will
-    /// provide a desired probability of underrun.
-    pub next: Instant,
-    /// The uncertainty around the next prediction in ns².  This folds up both process uncertainty
-    /// and our uncertainty about the true phase.  If uncertainty is high, the consumer should track
-    /// behind farther.
-    pub variance: f64,
-    /// Duration of each phase in nanoseconds.
-    pub period_ns: f64,
-    /// Data samples per period.  Use this to estimate the data velocity in time.
-    pub period_samples: f64,
-}
-
-impl AudioTiming {
-    pub(crate) fn new() -> Self {
-        AudioTiming {
-            next: Instant::now() + Duration::from_nanos(PERIOD_NS as u64),
-            variance: PHASE_PRIOR_NS.powi(2) + DRIFT_PRIOR_NS.powi(2) + R_PRIOR_NS.powi(2),
-            period_ns: PERIOD_NS,
-            period_samples: PERIOD_SAMPLES,
-        }
-    }
-}
+use ringbuf::traits::{Consumer, Observer, RingBuffer};
 
 // ♻️ this period also shows up in requesting the pipewire latency
-const PERIOD_BYTES: usize = 512 * 4 * 2;
+const PERIOD_BYTES: u64 = 512 * 4 * 2;
 const PERIOD_SAMPLES: f64 = 512.0;
 const PERIOD_NS: f64 = PERIOD_SAMPLES * 1e9 / 48000.0;
 
 const PHASE_PRIOR_NS: f64 = PERIOD_NS / 2.0; // diffuse phase prior std (±T/2)
 const DRIFT_PRIOR_NS: f64 = 1000.0; // drift prior std, ns/callback
 const R_PRIOR_NS: f64 = 40_000.0; // 40µs jitter prior in ns
+
+/// Timing snapshot published to consumers.  Includes enough information for consumers to slew their
+/// tracking on the input stream with the desired protection from underruns.
+///
+/// Use by first obtaining the expected write head less safety margin at some moment in time when
+/// read should be configured.
+///
+/// ```ignore
+/// let now = Instant::now();
+/// let goal_now = timing.virtual_read_goal(now); // write head + virtually received - safety margin
+/// ```
+///
+/// Now just interpret `goal_now` back to the physical ring being read:
+///
+/// - The goal will usually be ahead by one read quantum size.  The consumer should slew towards
+///   this relationship.  Slew according to the underrun or producer blocking risk.
+/// - If the goal is ahead of what the ring physically holds, an underrun is in progress and you should choose a fallback
+///   advance method such as half of the remaining data.
+/// - If the data has lapped the goal, a burst is in progress and you should drop approximately half
+///   of the stored data to unblock the producer and begin reading again.
+///
+/// Tune these decisions to the physical buffer this timing data describes and the pipeline depth of
+/// your consumers.
+// XXX very little of this needs to be public...
+#[derive(Clone, Copy, Debug)]
+pub struct AudioTiming {
+    /// Process time of the next mean prediction.  Used to anchor the clock grid and its predictions
+    /// for this snapshot.
+    pub next: Instant,
+    /// Samples written for this timing snapshot.  The writer may diverge near chunk delivery, but
+    /// this timing data will still provide an accurate prediction for how many samples are
+    /// virtually received at any moment in time.
+    /// Duration of each phase in nanoseconds.
+    pub period_ns: f64,
+    /// Data samples per period.  Used to estimate the data velocity in time.
+    pub period_samples: f64,
+    /// Combined uncertainty in the next tick, including process, measurement, and state
+    /// uncertainty.
+    pub variance: f64,
+}
+
+impl AudioTiming {
+    pub(crate) fn new() -> Self {
+        AudioTiming {
+            next: Instant::now() + Duration::from_nanos(PERIOD_NS as u64),
+            period_ns: PERIOD_NS,
+            period_samples: PERIOD_SAMPLES,
+            variance: PHASE_PRIOR_NS.powi(2) + DRIFT_PRIOR_NS.powi(2) + R_PRIOR_NS.powi(2),
+        }
+    }
+
+
 const R_MIN: f64 = R_PRIOR_NS * R_PRIOR_NS * 0.01;
 const R_MAX: f64 = R_PRIOR_NS * R_PRIOR_NS * 100.0;
 const Q_DELTA: f64 = 1.0; // ns², period error diffusion per callback
