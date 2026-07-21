@@ -56,9 +56,9 @@ impl WindowContext {
         instance: &Instance,
         device: &mut Device,
         window: winit::window::Window,
-        raw_surface: vk::SurfaceKHR,
+        surface: Surface,
     ) -> Self {
-        let surface = Surface::new(instance, device, raw_surface, &window).unwrap();
+        // XXX create the present ring and clone the queue to audio farther upstream?
         let present_ring = PresentRing::new(device, instance, &surface).unwrap();
         let mut renderer = video::ring::RawRingDraw::new(device);
         renderer.provision(device, surface.extent()).unwrap();
@@ -72,10 +72,6 @@ impl WindowContext {
 
     fn draw_frame(&mut self, device: &mut Device, audio: &mut audio::Audio) {
         // black hole the data to check the ring tracking
-        audio
-            .consumer
-            .advance_read(audio.consumer.occupied_len().unwrap_or(0))
-            .unwrap();
         let channels = unsafe { audio.consumer.channels().unwrap() };
         let left_channel = channels[0];
         let right_channel = channels[1];
@@ -154,9 +150,14 @@ impl ActiveApp {
         let selected = supported_devices[0].clone();
         println!("device selected: {}", selected.name);
         let mut device = selected.into_logical(instance);
-        let audio = audio::Audio::new(&device)?;
-
-        let wc = WindowContext::new(instance, &mut device, window, raw_surface);
+        let surface = Surface::new(instance, &device, raw_surface, &window)?;
+        let queue = &device
+            .queues
+            .graphics(instance, &surface, QueuePriority::High)
+            // XXX shouldn't this already be an error?
+            .ok_or(utate::vulkan::VulkanError::QueueNotFound)?;
+        let audio = audio::Audio::new(&device, &queue.queue_ref())?;
+        let wc = WindowContext::new(instance, &mut device, window, surface);
         let window_id = wc.window.id();
         let mut windows = HashMap::new();
         windows.insert(window_id, wc);
