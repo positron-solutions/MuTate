@@ -105,6 +105,10 @@ use crate::audio::{timing::AudioTiming, AudioChoice, AudioConsumer, AudioContext
 use crate::vulkan::prelude::*;
 use crate::MutateError;
 
+pub(crate) mod core {
+    pub use super::{ChannelRegion, Consumer, DeviceRingView, DeviceSpan};
+}
+
 /// When dispatching a shader, provide the base address as a buffer and read `len` samples.
 /// Physical index straddles will be returned as two spans, and dispatching twice is appropriate.
 /// Barrier insertion is **not** needed because flushed ranges are guaranteed safe for read until

@@ -156,10 +156,16 @@ use ash::vk;
 
 pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
 
-// NEXT to any saints who want to work on the prelude structure, we need a third module (ie "core")
-// to export in both prelude and internal.  This will allow prelude to be additive and for internal
-// to pull in core without pulling in facade-ish things.
+// NEXT to any saints who want to work on the prelude structure, just keep following this pattern.
+// We use a crate-visible module, core, to export in both prelude and internal.  This allows prelude
+// to be additive and for internal to pull in core without pulling in facade-ish things.
+pub(crate) mod core {
+    pub use crate::resource::core::*;
+}
+
 pub mod prelude {
+    pub use super::core::*;
+
     pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
 
     pub use super::VulkanError;
@@ -173,7 +179,6 @@ pub mod prelude {
     pub use crate::pipeline::prelude::*;
     pub use crate::present::prelude::*;
     pub use crate::present::surface::Surface;
-    pub use crate::resource::buffer::{MappedAllocation, MappedWriteView};
     pub use crate::slang::prelude::*;
     pub use crate::slang_newtype;
 
@@ -183,6 +188,8 @@ pub mod prelude {
 
 // Use as a private prelude.  Convenience without public immodesty 😦.
 pub(crate) mod internal {
+    pub use super::core::*;
+
     pub use std::ffi::CStr;
 
     pub use ash::vk;

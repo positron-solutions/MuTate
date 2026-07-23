@@ -28,6 +28,12 @@ use std::ptr::NonNull;
 
 use crate::internal::*;
 
+pub(crate) mod core {
+    pub use super::DeviceBuffer;
+    pub use super::MappedAllocation;
+    pub use super::MappedWriteView;
+}
+
 /// Very interim.  We will separate buffer from allocation and future `MappedBuffer` will build on
 /// top of `MappedSubAllocation`, itself on top of a **real** `MappedAllocation` or some
 /// runtime-only info that never gets let out of the basement for users to see.

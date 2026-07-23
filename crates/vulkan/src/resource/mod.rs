@@ -14,5 +14,9 @@ pub mod image;
 pub mod shader;
 pub mod ubo;
 
+pub(crate) mod core {
+    pub use super::buffer::core::*;
+}
+
 #[cfg(test)]
 mod test {}

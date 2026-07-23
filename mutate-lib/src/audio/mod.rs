@@ -86,6 +86,12 @@ use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
 
 use crate::prelude::*;
 
+pub(crate) mod core {
+    pub use super::import::core::*;
+    pub use super::AudioChoice;
+    pub use super::AudioConsumer;
+}
+
 /// The kinds of audio we can listen to.  Implements `Display` for an end-user meaningful string.
 /// Match directly to implement custom UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
