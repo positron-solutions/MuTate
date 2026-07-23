@@ -1,0 +1,167 @@
+{
+    "parameters": [
+        {
+            "name": "RmsConstants",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "fields": [
+                        {
+                            "name": "left_head",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "FloatBuffer"
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "right_head",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "FloatBuffer"
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "count_head",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "left_tail",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "FloatBuffer"
+                            },
+                            "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "right_tail",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "FloatBuffer"
+                            },
+                            "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "count_tail",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "output",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "PackedBuffer"
+                            },
+                            "binding": {"kind": "uniform", "offset": 48, "size": 8, "elementStride": 0}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "fields": [
+                            {
+                                "name": "left_head",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "FloatBuffer"
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "right_head",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "FloatBuffer"
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "count_head",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "left_tail",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "FloatBuffer"
+                                },
+                                "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "right_tail",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "FloatBuffer"
+                                },
+                                "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "count_tail",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "output",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "PackedBuffer"
+                                },
+                                "binding": {"kind": "uniform", "offset": 48, "size": 8, "elementStride": 0}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 56, "elementStride": 0}
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "main",
+            "stage": "compute",
+            "parameters": [
+                {
+                    "name": "tid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                }
+            ],
+            "threadGroupSize": [1, 1, 1],
+            "bindings": [
+                {
+                    "name": "RmsConstants",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        }
+    ],
+    "bindlessSpaceIndex": 0
+}

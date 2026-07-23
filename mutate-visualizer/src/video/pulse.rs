@@ -1,41 +1,34 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! # Ring
+//! # Pulse
 //!
-//! Dump the raw audio ring buffer onto the screen
+//! Draw the intensity of the music.  Full-screen color.  Make no mistakes.
 
 use ash::vk;
-// XXX IMPORTS
 use mutate_lib::{self as utate, prelude::*, vulkan::resource::buffer};
 
 #[compute_pipeline(
-    compute = stage!("ring/compute", Compute, c"main"),
-    push = push!(RawRingPushConstants {
-        pub left_channel: DeviceAddress,
-        pub right_channel: DeviceAddress,
-        pub capacity: UInt,
-        pub counter: UInt,
-        pub window_width: Float,
-        pub window_height: Float,
+    compute = stage!("pulse/pulse", Compute, c"main"),
+    push = push!(PulsePushConstants {
+        pub window_width: UInt,
+        pub window_height: UInt,
+        pub audio_output: DeviceAddress,
         pub output_idx: SsboIdx,
     }),
 )]
-pub struct RawRingPipeline;
+pub struct PulsePipeline;
 
-pub struct RawRingDraw {
-    pipeline: ComputePipeline<RawRingPipeline>,
-    counter: u32,
-
+pub struct PulseDraw {
+    pipeline: ComputePipeline<PulsePipeline>,
     output_buffer: Option<MappedAllocation<rgb::Rgba<u8>>>,
     output_idx: SsboIdx,
 }
 
-impl RawRingDraw {
+impl PulseDraw {
     pub fn new(device: &Device) -> Self {
         Self {
-            pipeline: ComputePipeline::<RawRingPipeline>::new(device).unwrap(),
-            counter: 0,
+            pipeline: ComputePipeline::<PulsePipeline>::new(device).unwrap(),
             output_buffer: None,
             output_idx: SsboIdx::INVALID,
         }
@@ -67,9 +60,7 @@ impl RawRingDraw {
         device: &Device,
         cb: &RecordingBuffer<Graphics, OneTime>,
         acquired_image: &AcquiredImage,
-        left_channel: vk::DeviceAddress,
-        right_channel: vk::DeviceAddress,
-        capacity: u32,
+        audio_output: vk::DeviceAddress,
     ) {
         let extent = acquired_image.extent;
 
@@ -79,18 +70,14 @@ impl RawRingDraw {
             .unwrap()
             .barrier_compute_pre(&cb, device);
 
-        let push = RawRingPushConstants {
-            left_channel: DeviceAddress::from(left_channel),
-            right_channel: DeviceAddress::from(right_channel),
-            capacity: capacity.into(),
-            counter: self.counter.into(),
-            window_width: (extent.width as f32).into(),
-            window_height: (extent.height as f32).into(),
+        let push = PulsePushConstants {
+            window_width: extent.width.into(),
+            window_height: extent.height.into(),
+            audio_output: audio_output.into(),
             output_idx: self.output_idx,
         };
         // XXX allow pushing to wrapped buffers
         self.pipeline.push(device, **cb, &push);
-        self.counter += 1;
 
         // This dispatch math needs to respect the compute stage's declared dimensions.  We can make
         // that adjustable with specialization constants during the pipeline compilation.  This math

@@ -182,10 +182,10 @@ impl<C: Capability, M: SubmissionModel> InitialSecondary<C, M> {
 }
 
 impl<C: Capability, M: SubmissionModel> RecordingBuffer<C, M> {
-    pub fn end(self, device: &Device) -> Result<ExecutableBuffer<C, M>, VulkanError> {
+    pub fn end(self, device: &ash::Device) -> Result<ExecutableBuffer<C, M>, VulkanError> {
         let raw = self.into_parts();
         unsafe {
-            device.as_raw().end_command_buffer(raw)?;
+            device.end_command_buffer(raw)?;
         }
         Ok(ExecutableBuffer::from_raw(raw))
     }

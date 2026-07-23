@@ -20,9 +20,15 @@
 //!
 //! **Key Vulkan subset choices:**
 //!
-//!   + Bindless descriptor arrays
+//!   + Bindless & Buffer Device Address ☃
 //!   + Dynamic rendering
-//!   + Scalar block layouts preferred
+//!   + Scalar block layouts ⛄
+//!   + GPU Driven (planned)
+//!
+//! - ☃ Images and other assets that **must** use descriptors continue to do so via a pre-configured
+//!   descriptor table.  Other usages are being scaled back.
+//! - ⛄ Scalar block is preferred, but some std430 scaffolding exists and would support std140 if
+//!   anyone still must use it.
 //!
 //! ### Runtime Support
 //!
@@ -145,19 +151,27 @@ pub mod pipeline;
 pub mod present;
 pub mod resource;
 pub mod slang;
-pub mod util;
 
 use ash::vk;
 
 pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
 
+// NEXT to any saints who want to work on the prelude structure, just keep following this pattern.
+// We use a crate-visible module, core, to export in both prelude and internal.  This allows prelude
+// to be additive and for internal to pull in core without pulling in facade-ish things.
+pub(crate) mod core {
+    pub use crate::resource::core::*;
+}
+
 pub mod prelude {
+    pub use super::core::*;
+
     pub use mutate_macros::{compute_pipeline, graphics_pipeline, stage, GpuType, Push};
 
     pub use super::VulkanError;
+    pub use crate::descriptor_newtype;
     // NEXT move fences out of prelude and de-emphasize in favor of consistent timeline semaphore
     // usage except where required (swapchain acquisition, presentation etc).
-    pub use crate::descriptor_newtype;
     pub use crate::device::prelude::*;
     pub use crate::device_address_newtype;
     pub use crate::dispatch::prelude::*;
@@ -165,7 +179,6 @@ pub mod prelude {
     pub use crate::pipeline::prelude::*;
     pub use crate::present::prelude::*;
     pub use crate::present::surface::Surface;
-    pub use crate::resource::buffer::{MappedAllocation, MappedWriteView};
     pub use crate::slang::prelude::*;
     pub use crate::slang_newtype;
 
@@ -175,6 +188,8 @@ pub mod prelude {
 
 // Use as a private prelude.  Convenience without public immodesty 😦.
 pub(crate) mod internal {
+    pub use super::core::*;
+
     pub use std::ffi::CStr;
 
     pub use ash::vk;
@@ -221,6 +236,12 @@ pub enum VulkanError {
     /// Attempted to acquire on a swapchain that is already marked for recreation needed.
     #[error("vulkan: Swapchain recreation needed.")]
     SwapchainRecreationRequired,
+
+    /// No memory could satisfy the request.
+    #[error("vulkan: Memory request could not be satisfied: {request:?}.")]
+    AllocationFailed {
+        request: device::memory::MemoryTypeRequest,
+    },
 
     // Errors that coerce from ash::vk results should not be constructed manually.
     /// Presentation succeeded, but the swapchain is no longer optimal for the surface and should be

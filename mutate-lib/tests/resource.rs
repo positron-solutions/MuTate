@@ -25,7 +25,7 @@ fn image_lifecycle() {
 fn buffer_lifecycle() {
     use vulkan::resource::buffer;
     vulkan::with_context!(|device| {
-        let buffer = buffer::MappedAllocation::<u8>::new(1, &device).unwrap();
+        let buffer = buffer::MappedAllocation::<u8>::new(&device, 1).unwrap();
         buffer.destroy(&device).unwrap();
     })
 }
@@ -34,7 +34,7 @@ fn buffer_lifecycle() {
 fn buffer_bind() {
     use vulkan::resource::buffer;
     vulkan::with_context!(|device| {
-        let buffer = buffer::MappedAllocation::<u8>::new(1, &device).unwrap();
+        let buffer = buffer::MappedAllocation::<u8>::new(&device, 1).unwrap();
         let index = buffer.bound(&mut device);
         println!("buffer bound to descriptor slot: {:?}", index);
         buffer.destroy(&device).unwrap();
@@ -45,7 +45,7 @@ fn buffer_bind() {
 fn buffer_device_address() {
     use vulkan::resource::buffer;
     vulkan::with_context!(|device| {
-        let buffer = buffer::MappedAllocation::<u8>::new(1, &device).unwrap();
+        let buffer = buffer::MappedAllocation::<u8>::new(&device, 1).unwrap();
         let device_address = buffer.device_address(&device);
         buffer.destroy(&device).unwrap();
     })
@@ -56,7 +56,7 @@ fn buffer_device_address() {
 fn buffer_readback() {
     use vulkan::resource::buffer;
     vulkan::with_context!(|device| {
-        let mut buffer = buffer::MappedAllocation::<u8>::new(1, &device).unwrap();
+        let mut buffer = buffer::MappedAllocation::<u8>::new(&device, 1).unwrap();
         buffer.as_mut_slice()[0] = 255;
         buffer.flush(&device).unwrap();
 

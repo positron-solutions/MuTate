@@ -2,9 +2,7 @@
 //!
 //! ⚠️ This module was initially only completed far enough to get 800 samples per second dumped into
 //! a buffer.  The downstream programs didn't care, and so the shape of support was not that of a
-//! real client for pipewire.  The event-driven nature of pipewire and the Rust wrapper around the
-//! pipewire sys crate were discovered only mid-development.  A redesign pass will be welcome so
-//! long as this notice exists.
+//! real client for pipewire.  Instead the user data needs to become smarte
 //!
 //! The [`AudioContext`] is to represent a connection to the server while [`AudioConsumer`] is an
 //! open streaming connection.  See CPAL APIs for other user-facing API ideas.  We are likely more
@@ -72,6 +70,8 @@
 // Also looks like we need DBUS for seeing Spotify title changes.  If we have it, we can render
 // title changes in the middle of playback, something Milkdrop has done right for twenty years or
 // so.
+// DEBT Pipewire Indirection
+
 #[cfg(feature = "vulkan")]
 pub mod import;
 pub mod timing;
@@ -85,6 +85,12 @@ use pipewire::{self as pw, main_loop::MainLoopBox, spa, stream::StreamListener};
 use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
 
 use crate::prelude::*;
+
+pub(crate) mod core {
+    pub use super::import::core::*;
+    pub use super::AudioChoice;
+    pub use super::AudioConsumer;
+}
 
 /// The kinds of audio we can listen to.  Implements `Display` for an end-user meaningful string.
 /// Match directly to implement custom UI.
@@ -135,7 +141,6 @@ enum Message {
 
 /// Even-driven clients will maintain a client-side view.  Polling clients do not require
 /// maintaining a view of stream choices.
-// XXX cfg and feature gates
 struct AudioChoices {
     ready: std::sync::Condvar,
     choices: std::sync::Mutex<Vec<AudioChoice>>,
@@ -344,14 +349,19 @@ impl AudioContext {
     /// `CHANNELS` is the planar channel count laid out on the device; `sample_count`
     /// is the per-channel ring length in samples. Both are fixed at call time.
     #[cfg(feature = "vulkan")]
-    pub fn import_to_device<const CHANNELS: usize>(
+    pub fn import_to_device<const CHANNELS: usize, S>(
         &self,
         device: &Device,
         choice: &AudioChoice,
         sample_count: u32,
         name: &str,
-    ) -> Result<import::Consumer<CHANNELS>, MutateError> {
-        import::Consumer::new(self, device, choice, sample_count, name)
+        import_sink: S,
+    ) -> Result<import::Consumer<CHANNELS>, MutateError>
+    where
+        S: import::ImportSink<CHANNELS>,
+    {
+        let rx = self.connect(choice, name)?;
+        import::Consumer::new(device, rx, sample_count, import_sink)
     }
 
     pub fn choices_version(&self) -> usize {
@@ -531,7 +541,10 @@ unsafe impl Send for AudioConsumer {}
 
 impl AudioConsumer {
     /// Wait for a buffer chunk to be written.
-    pub fn wait(&self, timeout: std::time::Duration) -> Result<u64, MutateError> {
+    // MAYBE return value become kind of meaningless.  If the device import and host side
+    // implementations are untangled, this method could provide access to chunks instead of having
+    // the consumer rely on the ring synchronization.
+    pub fn wait(&self, timeout: std::time::Duration) -> Result<(), MutateError> {
         let conn = unsafe { &(*self.conn) };
         if conn.dropped.load(atomic::Ordering::Acquire) {
             return Err(MutateError::Dropped);
@@ -539,7 +552,7 @@ impl AudioConsumer {
         let mut timing = conn.lock.lock()?;
         let initial = *timing;
         let deadline = std::time::Instant::now() + timeout;
-        while timing.count == initial.count {
+        while timing.next == initial.next {
             let remaining = match deadline.checked_duration_since(std::time::Instant::now()) {
                 Some(r) => r,
                 None => return Err(MutateError::Timeout("no audio chunk within timeout")),
@@ -553,7 +566,7 @@ impl AudioConsumer {
                 return Err(MutateError::Timeout("no audio chunk within timeout"));
             }
         }
-        Ok(timing.count)
+        Ok(())
     }
 
     // The reader is doing pull-based consumption into it's own output slice, enabling us to handle
@@ -646,11 +659,11 @@ impl AudioProducer {
             }
         });
 
-        let snapshot = conn.timing.observe(arrived, written);
+        // Update the timing data
+        // XXX this synchronization story seems silly for the device import callback
+        let snapshot = conn.timing.observe(arrived, written as u64);
         let mut audio_timing = conn.lock.lock()?;
         *audio_timing = snapshot;
-        audio_timing.count += 1;
-        audio_timing.last = arrived;
 
         conn.ready.notify_all();
         Ok(written)
@@ -799,6 +812,11 @@ fn create_stream<'c>(
             Id,
             // spa::param::audio::AudioFormat::F32P
             spa::param::audio::AudioFormat::F32LE
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::AudioChannels,
+            Int,
+            2
         ),
     };
 

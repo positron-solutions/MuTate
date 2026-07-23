@@ -28,7 +28,7 @@ fn dispatch_increment_read_back() {
         let mut pool = CommandPool::<Compute, OneTime>::transient(&device, &queue).unwrap();
         let cb = pool.primary(&device).unwrap();
 
-        let mut output_buffer = buffer::MappedAllocation::<u32>::new(1, &device).unwrap();
+        let mut output_buffer = buffer::MappedAllocation::<u32>::new(&device, 1).unwrap();
         output_buffer.as_mut_slice()[0] = 41;
         output_buffer.flush(&device).unwrap();
         let output_idx: SsboIdx = output_buffer.bound(&mut device);
@@ -55,7 +55,7 @@ fn dispatch_increment_read_back() {
         let dependency_info =
             vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&memory_barrier));
         unsafe {
-            device.as_raw().cmd_pipeline_barrier2(*cb, &dependency_info);
+            device.cmd_pipeline_barrier2(*cb, &dependency_info);
         }
 
         // Synchronize and submit

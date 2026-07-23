@@ -410,6 +410,7 @@ unsafe impl<C: Capability> Sync for Queue<C> {}
 /// submissions.  May be cloned and is `Send` and `Sync`.  Implements deref to lesser capability
 /// queue refs.  If you need to query `Queue` capabilities, do this at the point of queue selection
 /// and preserve that information along with the handle.
+#[derive(Clone)]
 #[repr(C)]
 pub struct QueueRef<C: Capability> {
     raw: vk::Queue,

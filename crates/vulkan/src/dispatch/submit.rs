@@ -224,7 +224,7 @@ impl<'q, QC: Capability> QueueSubmit<'q, QC> {
         self
     }
 
-    pub fn submit(mut self, device: &Device, fence: vk::Fence) -> Result<(), VulkanError> {
+    pub fn submit(mut self, device: &ash::Device, fence: vk::Fence) -> Result<(), VulkanError> {
         // Close the final (possibly only) SubmitInfo.
         self.info_spans[self.ni] = InfoSpans {
             waits: Span {
@@ -255,11 +255,11 @@ impl<'q, QC: Capability> QueueSubmit<'q, QC> {
             );
         }
 
-        Ok(unsafe {
-            // `lock_raw` is perhaps not the most creative name, but this is internal API surface.
-            // Can't be fucked for it.
-            let (raw, _guard) = self.queue.lock_raw()?;
-            device.as_raw().queue_submit2(
+        // `lock_raw` is perhaps not the most creative name, but this is internal API surface.
+        // Can't be fucked for it.
+        let (raw, _guard) = unsafe { self.queue.lock_raw()? };
+        unsafe {
+            device.queue_submit2(
                 raw,
                 // SAFETY: [0..self.ni] written above
                 std::slice::from_raw_parts(
@@ -267,8 +267,9 @@ impl<'q, QC: Capability> QueueSubmit<'q, QC> {
                     self.ni,
                 ),
                 fence,
-            )
-        }?)
+            )?
+        };
+        Ok(())
     }
 }
 

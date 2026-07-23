@@ -53,7 +53,7 @@ impl HelloDraw {
         }
 
         let output_buffer =
-            buffer::MappedAllocation::new((size.width * size.height) as usize, device)?;
+            buffer::MappedAllocation::new(device, (size.width * size.height) as usize)?;
 
         self.output_idx = output_buffer.bound(device);
         self.output_buffer = Some(output_buffer);

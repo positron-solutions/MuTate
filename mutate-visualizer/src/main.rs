@@ -47,8 +47,10 @@ struct WindowContext {
     // NEXT As the render architecture gets more sophisticated, a lot of the spectrum work on the
     // device can be shared per window that the device supports.  Rare device-per-window cases, if
     // they still exist, would require only one audio downstream per device and then that data can
-    // be reused for all windows.
-    renderer: video::ring::RawRingDraw,
+    // be reused for all windows.  Resource runtime can express per-device work via dependencies,
+    // and that's why declarative state reconciliation is the way.
+    renderer: video::pulse::PulseDraw,
+    audio_output: vk::DeviceAddress,
 }
 
 impl WindowContext {
@@ -56,42 +58,32 @@ impl WindowContext {
         instance: &Instance,
         device: &mut Device,
         window: winit::window::Window,
-        raw_surface: vk::SurfaceKHR,
+        surface: Surface,
+        audio_output: vk::DeviceAddress,
     ) -> Self {
-        let surface = Surface::new(instance, device, raw_surface, &window).unwrap();
+        // XXX create the present ring and clone the queue to audio farther upstream?
         let present_ring = PresentRing::new(device, instance, &surface).unwrap();
-        let mut renderer = video::ring::RawRingDraw::new(device);
+        let mut renderer = video::pulse::PulseDraw::new(device);
         renderer.provision(device, surface.extent()).unwrap();
         Self {
             window,
             surface,
             present_ring,
             renderer,
+            audio_output,
         }
     }
 
     fn draw_frame(&mut self, device: &mut Device, audio: &mut audio::Audio) {
-        // black hole the data to check the ring tracking
-        audio
-            .consumer
-            .advance_read(audio.consumer.occupied_len().unwrap_or(0))
-            .unwrap();
-        let channels = unsafe { audio.consumer.channels().unwrap() };
-        let left_channel = channels[0];
-        let right_channel = channels[1];
-        let capacity = audio.consumer.capacity();
+        // NEXT Always pass all arguments that all visuals might need.  This would be an interim to
+        // supporting multiple visuals, itself a prelude to argument injection and visual
+        // composition.
         self.present_ring
             .record(
                 device,
                 compute_present(device, |device, cb, acquired_image| {
-                    self.renderer.draw(
-                        device,
-                        cb,
-                        acquired_image,
-                        left_channel,
-                        right_channel,
-                        capacity,
-                    );
+                    self.renderer
+                        .draw(device, cb, acquired_image, self.audio_output);
                 }),
                 || self.window.pre_present_notify(),
             )
@@ -154,9 +146,15 @@ impl ActiveApp {
         let selected = supported_devices[0].clone();
         println!("device selected: {}", selected.name);
         let mut device = selected.into_logical(instance);
-        let audio = audio::Audio::new(&device)?;
-
-        let wc = WindowContext::new(instance, &mut device, window, raw_surface);
+        let surface = Surface::new(instance, &device, raw_surface, &window)?;
+        let queue = &device
+            .queues
+            .graphics(instance, &surface, QueuePriority::High)
+            // XXX shouldn't this already be an error?
+            .ok_or(utate::vulkan::VulkanError::QueueNotFound)?;
+        let audio = audio::Audio::new(&device, &queue.queue_ref())?;
+        let audio_output = audio.output_address.clone();
+        let wc = WindowContext::new(instance, &mut device, window, surface, audio_output);
         let window_id = wc.window.id();
         let mut windows = HashMap::new();
         windows.insert(window_id, wc);
@@ -265,14 +263,16 @@ impl ApplicationHandler for MutateApp {
 
     // handles all exit paths
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        let AppState::Active(active) = &mut self.state else {
+        let AppState::Active(mut active) = std::mem::replace(&mut self.state, AppState::Dormant)
+        else {
             return;
         };
+        // DEBT Deletion queue 🥵
+        active.audio.destroy(&mut active.device);
         active.device.wait_idle().unwrap();
         for (_, wc) in active.windows.drain() {
             wc.destroy(&mut active.device);
         }
-        active.audio.destroy(&mut active.device);
         active.device.destroy();
     }
 }
