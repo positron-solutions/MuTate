@@ -330,4 +330,10 @@ impl DeviceBuffer {
         }
         Ok(())
     }
+
+    // NEXT generic over buffer type!
+    pub fn device_address(&self, device: &Device) -> Result<vk::DeviceAddress, VulkanError> {
+        let info = vk::BufferDeviceAddressInfo::default().buffer(self.buffer);
+        Ok(unsafe { device.get_buffer_device_address(&info) })
+    }
 }
