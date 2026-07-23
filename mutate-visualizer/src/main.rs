@@ -269,11 +269,12 @@ impl ApplicationHandler for MutateApp {
         let AppState::Active(active) = &mut self.state else {
             return;
         };
+        // DEBT Deletion queue 🥵
+        active.audio.destroy(&mut active.device);
         active.device.wait_idle().unwrap();
         for (_, wc) in active.windows.drain() {
             wc.destroy(&mut active.device);
         }
-        active.audio.destroy(&mut active.device);
         active.device.destroy();
     }
 }
