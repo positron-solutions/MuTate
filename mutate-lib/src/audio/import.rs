@@ -264,14 +264,14 @@ impl<const CHANNELS: usize> DeviceRingView<CHANNELS> {
 /// the on-device rings.  Implemented for `Send + 'static` closures.
 pub trait ImportSink<const CHANNELS: usize>: Send + 'static {
     /// Return samples the caller is done with; the writer folds that into the read head.
-    fn process(&mut self, view: &DeviceRingView<CHANNELS>) -> u32;
+    fn process(&mut self, view: &DeviceRingView<CHANNELS>) -> Result<u32, MutateError>;
 }
 
 impl<F, const CHANNELS: usize> ImportSink<CHANNELS> for F
 where
-    F: FnMut(&DeviceRingView<CHANNELS>) -> u32 + Send + 'static,
+    F: FnMut(&DeviceRingView<CHANNELS>) -> Result<u32, MutateError> + Send + 'static,
 {
-    fn process(&mut self, view: &DeviceRingView<CHANNELS>) -> u32 {
+    fn process(&mut self, view: &DeviceRingView<CHANNELS>) -> Result<u32, MutateError> {
         self(view)
     }
 }
@@ -439,7 +439,14 @@ impl<const CHANNELS: usize> Consumer<CHANNELS> {
                             read_head,
                             write_head,
                         };
-                        let retired = import_sink.process(&device_ring_view) as u64;
+                        let retired = match import_sink.process(&device_ring_view) {
+                            Ok(retired) => retired as u64,
+
+                            Err(e) => {
+                                println!("Audio import process callback failed: {:?}", e);
+                                return Err(e);
+                            }
+                        };
                         // A sink that retires more than it was shown is a contract violation.
                         // Clamping keeps the invariant rather than trusting the return blindly.
                         debug_assert!(retired <= write_head - read_head, "sink over-retired");
