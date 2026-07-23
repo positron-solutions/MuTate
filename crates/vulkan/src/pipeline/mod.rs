@@ -225,3 +225,10 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
         self.layout.destroy(device);
     }
 }
+
+impl<S: ComputePipelineSpec> std::ops::Deref for ComputePipeline<S> {
+    type Target = vk::Pipeline;
+    fn deref(&self) -> &Self::Target {
+        &self.pipeline
+    }
+}
