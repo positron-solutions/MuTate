@@ -73,8 +73,8 @@ impl TimelineSemaphore {
         self.semaphore
     }
 
-    pub fn destroy(self, device: &Device) {
-        unsafe { device.as_raw().destroy_semaphore(self.into_raw(), None) };
+    pub fn destroy(self, device: &ash::Device) {
+        unsafe { device.destroy_semaphore(self.into_raw(), None) };
     }
 }
 
@@ -164,12 +164,12 @@ impl WaitValue {
     }
 
     /// Block the calling thread until this value has been signaled.
-    pub fn wait(&self, device: &Device, timeout: u64) -> Result<u64, vk::Result> {
+    pub fn wait(&self, device: &ash::Device, timeout: u64) -> Result<u64, vk::Result> {
         let wait_info = vk::SemaphoreWaitInfo::default()
             .semaphores(std::slice::from_ref(&self.semaphore))
             .values(std::slice::from_ref(&self.value));
         unsafe {
-            device.as_raw().wait_semaphores(&wait_info, timeout);
+            device.wait_semaphores(&wait_info, timeout);
         }
         Ok(self.value)
     }

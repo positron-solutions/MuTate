@@ -55,7 +55,7 @@ fn dispatch_increment_read_back() {
         let dependency_info =
             vk::DependencyInfo::default().memory_barriers(std::slice::from_ref(&memory_barrier));
         unsafe {
-            device.as_raw().cmd_pipeline_barrier2(*cb, &dependency_info);
+            device.cmd_pipeline_barrier2(*cb, &dependency_info);
         }
 
         // Synchronize and submit

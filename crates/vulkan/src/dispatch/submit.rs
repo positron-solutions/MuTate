@@ -224,7 +224,7 @@ impl<'q, QC: Capability> QueueSubmit<'q, QC> {
         self
     }
 
-    pub fn submit(mut self, device: &Device, fence: vk::Fence) -> Result<(), VulkanError> {
+    pub fn submit(mut self, device: &ash::Device, fence: vk::Fence) -> Result<(), VulkanError> {
         // Close the final (possibly only) SubmitInfo.
         self.info_spans[self.ni] = InfoSpans {
             waits: Span {

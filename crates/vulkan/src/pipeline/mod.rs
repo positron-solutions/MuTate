@@ -189,7 +189,7 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
 
     // XXX typed recording slot
     // XXX possibly keep a device borrow on recording slots?
-    pub fn push(&self, device: &Device, cb: vk::CommandBuffer, data: &S::Push) {
+    pub fn push(&self, device: &ash::Device, cb: vk::CommandBuffer, data: &S::Push) {
         self.layout.push(device, cb, data);
     }
 
@@ -201,8 +201,11 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
     // expressions to ensure perfect geometry by type contract.
     pub fn dispatch(&self, device: &Device, cb: vk::CommandBuffer, x: u32, y: u32, z: u32) {
         unsafe {
-            // NEXT persist the ID or hash in a CB state shadow and no-op this re-bind when already identical.
-            device.as_raw().cmd_bind_descriptor_sets(
+            // NEXT persist the ID or hash in a CB state shadow and no-op this re-bind when already
+            // identical.
+            // FIXME split out the descriptor binding requisites into some view thing so that we can
+            // send the necessary gear cross-thread.  Binding here precludes multithreaded usage.
+            device.cmd_bind_descriptor_sets(
                 cb,
                 vk::PipelineBindPoint::COMPUTE,
                 self.layout.as_raw(),
@@ -210,10 +213,8 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
                 &[device.descriptors.set()],
                 &[],
             );
-            device
-                .as_raw()
-                .cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-            device.as_raw().cmd_dispatch(cb, x, y, z);
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_dispatch(cb, x, y, z);
         }
     }
 
