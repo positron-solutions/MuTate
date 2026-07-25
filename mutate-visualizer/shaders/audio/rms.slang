@@ -9,35 +9,6 @@ struct PackedBuffer {
     uint texels[];
 };
 
-// A three-component peak filter:
-//
-// - Immediate decay hunts for peaks
-// - Primary hold-decay filters immediate decay between local peaks
-// - Output hold-decay only decays toward primary after a longer filter delay
-//
-// All three are reset whenever exceeded.  If output hold-decay is chasing decay
-// of the primary, its progress is re-interpreted on every turn, and it updates
-// to a new smooth location on the curve.
-//
-// The desired output is a gain_normalization.  It is the first field of the
-// output structure so that it's easy to de-reference.  Downstreams read the
-// gain_normalization and multiply the input, achieving a relatively constant
-// dynamic range of 0 to -70dB.
-//
-// NEXT pop filtering to prevent micro-peaks from causing 4s holds.  As the
-// filter complexity grows, dynamic machine learning will be a better
-// investment of effort 😉.
-// struct PeakFilter {
-//     float: output_hold_remaining;
-//     float: output_db;
-//     float: output_decay_start_db; // starting point of decay
-//     float: primary_hold_remaining;
-//     float: primary_db;
-//     float: primary_decay_start_db;
-//     float: immediate_db;
-//     float: immediate_decay_start_db;
-// };
-
 [[vk::push_constant]]
 cbuffer RmsConstants {
     FloatBuffer* left_head;
@@ -47,11 +18,6 @@ cbuffer RmsConstants {
     FloatBuffer* right_tail;
     uint count_tail;
     PackedBuffer* output;
-
-    /// The host provides tick durations for our clock.  These are not anchored
-    /// and allow reasonable re-timing.
-    // float delta_t;
-    // PeakFilter* peak_filter;
 };
 
 [numthreads(1, 1, 1)]
