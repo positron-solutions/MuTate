@@ -106,7 +106,7 @@ use crate::vulkan::prelude::*;
 use crate::MutateError;
 
 pub(crate) mod core {
-    pub use super::{ChannelRegion, Consumer, DeviceRingView, DeviceSpan};
+    pub use super::{AudioImport, ChannelRegion, DeviceRingView, DeviceSpan};
 }
 
 /// When dispatching a shader, provide the base address as a buffer and read `len` samples.
@@ -283,7 +283,7 @@ where
 /// The owned side a device import stream.  Data import to the GPU is handled by an owned a reader
 /// thread.  This type gathers up ownership and provides an interface to the published control data
 /// for host-side and setting up device-side reads.
-pub struct Consumer<const CHANNELS: usize> {
+pub struct AudioImport<const CHANNELS: usize> {
     /// Just a persistent bag of bytes being used for ad-hoc sub-allocations. (DEBT).
     buffer: MappedAllocation<u8>,
     /// Reader thread.
@@ -294,7 +294,7 @@ pub struct Consumer<const CHANNELS: usize> {
     control: Arc<Control>,
 }
 
-impl<const CHANNELS: usize> Consumer<CHANNELS> {
+impl<const CHANNELS: usize> AudioImport<CHANNELS> {
     /// `sample_count` is the length of each channel's ring buffer in samples.  More buffer means
     /// less potential for bursts leading to discontinuities.
     pub(crate) fn new<S: ImportSink<CHANNELS>>(
@@ -302,7 +302,7 @@ impl<const CHANNELS: usize> Consumer<CHANNELS> {
         mut rx: AudioConsumer,
         sample_count: u32,
         mut import_sink: S,
-    ) -> Result<Consumer<CHANNELS>, MutateError> {
+    ) -> Result<AudioImport<CHANNELS>, MutateError> {
         let control = Arc::new(Control {
             write_head: AtomicU64::new(0),
             read_head: AtomicU64::new(0),
@@ -470,7 +470,7 @@ impl<const CHANNELS: usize> Consumer<CHANNELS> {
             }
             Ok(())
         }));
-        Ok(Consumer {
+        Ok(AudioImport {
             buffer,
             read_thread_handle,
             ring_layout,

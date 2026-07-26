@@ -4,17 +4,6 @@
 //!
 //! Select a device.  Set up stream from server to device.  Run a callback on each audio tick.
 
-use ash::vk;
-use mutate_lib::{
-    self as utate,
-    audio::{
-        self,
-        import::{ChannelRegion, Consumer, DeviceSpan},
-        AudioContext,
-    },
-    prelude::*,
-};
-
 // NEXT Slang texel types
 // NEXT Extend vk::Device for things that don't require Device.  Then &Device grows those methods
 // via Deref.
@@ -39,6 +28,11 @@ use mutate_lib::{
 )]
 struct RmsComputePipeline;
 
+pub mod rms;
+
+use ash::vk;
+use mutate_lib::{self as utate, audio, prelude::*};
+
 pub struct CallbackResources {
     /// How far have we read into the data so far?
     consume_head: u64,
@@ -49,7 +43,7 @@ pub struct CallbackResources {
 pub struct Audio {
     context: AudioContext,
     resources: *mut CallbackResources,
-    pub consumer: Consumer<2>,
+    pub audio_import: AudioImport<2>,
     pub output: DeviceBuffer,
     pub output_address: vk::DeviceAddress,
 }
@@ -162,10 +156,10 @@ impl Audio {
             // Returns all of the data to allow it all to be reclaimed
             Ok(state.occupied_len())
         };
-        let consumer = context.import_to_device(device, &choice, 6400, "µTate", on_flush)?;
+        let audio_import = context.import_to_device(device, &choice, 6400, "µTate", on_flush)?;
         Ok(Self {
             context,
-            consumer,
+            audio_import,
             resources,
             output,
             output_address,
@@ -177,7 +171,7 @@ impl Audio {
             context,
             output,
             resources,
-            mut consumer,
+            audio_import: mut consumer,
             output_address,
         } = self;
         consumer.destroy(device)?;

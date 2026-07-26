@@ -90,6 +90,7 @@ pub(crate) mod core {
     pub use super::import::core::*;
     pub use super::AudioChoice;
     pub use super::AudioConsumer;
+    pub use super::AudioContext;
 }
 
 /// The kinds of audio we can listen to.  Implements `Display` for an end-user meaningful string.
@@ -356,12 +357,12 @@ impl AudioContext {
         sample_count: u32,
         name: &str,
         import_sink: S,
-    ) -> Result<import::Consumer<CHANNELS>, MutateError>
+    ) -> Result<import::AudioImport<CHANNELS>, MutateError>
     where
         S: import::ImportSink<CHANNELS>,
     {
         let rx = self.connect(choice, name)?;
-        import::Consumer::new(device, rx, sample_count, import_sink)
+        import::AudioImport::new(device, rx, sample_count, import_sink)
     }
 
     pub fn choices_version(&self) -> usize {
