@@ -26,16 +26,33 @@ pub struct RmsComputePipeline;
 
 pub struct Rms {
     pub pipeline: ComputePipeline<RmsComputePipeline>,
+    pub constants: RmsConstants,
+    pub output: DeviceBuffer,
+    pub output_address: DeviceAddress,
 }
 
 impl Rms {
     pub fn new(device: &Device) -> Result<Self, MutateError> {
+        let output = utate::vulkan::resource::buffer::DeviceBuffer::new(device, 4)?;
+        let output_address = output.device_address(device)?;
         Ok(Rms {
             pipeline: ComputePipeline::<RmsComputePipeline>::new(device)?,
+            constants: RmsConstants {
+                left_head: DeviceAddress::NULL,
+                right_head: DeviceAddress::NULL,
+                count_head: 0.into(),
+                left_tail: DeviceAddress::NULL,
+                right_tail: DeviceAddress::NULL,
+                count_tail: 0.into(),
+                output: output_address.clone().into(),
+            },
+            output,
+            output_address: output_address.into(),
         })
     }
 
     pub fn destroy(self, device: &Device) {
         self.pipeline.destroy(device);
+        self.output.destroy(device);
     }
 }

@@ -21,9 +21,6 @@
 
 pub mod rms;
 
-
-pub mod rms;
-
 use ash::vk;
 use mutate_lib::{self as utate, audio, prelude::*};
 
@@ -39,7 +36,6 @@ pub struct Audio {
     context: AudioContext,
     resources: *mut CallbackResources,
     pub audio_import: AudioImport<2>,
-    pub output: DeviceBuffer,
     pub output_address: vk::DeviceAddress,
 }
 
@@ -79,26 +75,14 @@ impl Audio {
 
         // Four bytes to tell the world!  Note, this refreshes so fast that downstreams will not be
         // able to track it, leading to aliasing.
-        let output = utate::vulkan::resource::buffer::DeviceBuffer::new(device, 4)?;
-        let output_address = output.device_address(device)?;
         let rms = rms::Rms::new(device)?;
+        let output_address = rms.output.device_address(device)?;
         let resources = Box::into_raw(Box::new(CallbackResources {
             consume_head: 0,
             pool_ring: PoolRing::new(device, &callback_queue)?,
             rms,
         }));
         let addr = resources as usize;
-
-        // XXX head_offset and head_count?  Ah counting heads!!!!
-        let mut constants = rms::RmsConstants {
-            left_head: DeviceAddress::NULL,
-            right_head: DeviceAddress::NULL,
-            count_head: 0.into(),
-            left_tail: DeviceAddress::NULL,
-            right_tail: DeviceAddress::NULL,
-            count_tail: 0.into(),
-            output: output_address.clone().into(),
-        };
         let on_flush = move |state: &utate::audio::import::DeviceRingView<2>| {
             let device = &callback_device;
             let timing = state.timing;
@@ -124,6 +108,8 @@ impl Audio {
 
             let mut l_spans = left.spans();
             let mut r_spans = right.spans();
+
+            let constants = &mut res.rms.constants;
 
             let (lh, rh, nh) = seed(l_spans.next(), r_spans.next());
             constants.left_head = lh;
@@ -160,7 +146,6 @@ impl Audio {
             context,
             audio_import,
             resources,
-            output,
             output_address,
         })
     }
@@ -168,7 +153,6 @@ impl Audio {
     pub fn destroy(mut self, device: &Device) -> Result<(), MutateError> {
         let Audio {
             context,
-            output,
             resources,
             audio_import: mut consumer,
             output_address,
@@ -179,7 +163,6 @@ impl Audio {
         resources.pool_ring.drain(device, 1_000_000_000)?;
         resources.pool_ring.destroy(device);
         resources.rms.destroy(device);
-        output.destroy(device);
         // context has no vulkan resources and may just drop.
         Ok(())
     }
