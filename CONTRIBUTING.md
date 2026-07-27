@@ -1,3 +1,20 @@
+# Contributing
+
+- [Onboarding](#onboarding)
+  - [Discussions](#discussions)
+  - [Debt](#debt)
+  - [Workspace Layout](#workspace-layout)
+    - [For Publishing](#for-publishing)
+    - [Future Spin-Out Crates](#future-spin-out-crates)
+- [Ways We Work](#ways-we-work)
+  - [Typed Comments](#typed-comments)
+  - [AI Use Policy](#ai-use-policy)
+  - [A Word on Rigor](#a-word-on-rigor)
+  - [Pull Request Recommendations](#pull-request-recommendations)
+  - [Code Style & Conventions](#code-style--conventions)
+  - [PrizeForge, User-Lead Funding](#prizeforge-user-lead-funding)
+  - [The Name](#the-name)
+
 # Onboarding
 
 - `cargo run` will run the visualizer.
@@ -38,10 +55,11 @@ As an ad-hoc local management tool and a way to communicate at a high level abou
 
 - `XXX` - This probably should not have shipped, but if it did, it means the code is actually only working on the happy paths.  Something is very wrong.  Mostly synonymous with `FIXME`.  Most often found inline, near the problem.
 - `NEXT` - The next thing(s) that may be worked on.  Writing this relieves the author from implementing features and behaviors that seem **obvious from the point where they left off**.
-- `LIES` - The code semantically appears to be doing something but in fact is not or is doing something else.  The semantics may need fixing or we may be hacking around something or achieving some side effect.
+- `LIES` - The code semantically appears to be doing something but in fact is not doing that thing or is doing something else entirely.  The semantics may need fixing or we may be hacking around something or achieving some side effect.
 - `DEBT` - Very specifically there is something that is intentionally being done consistent with a trade-off documented in [DEBT.md](./DEBT.md).
 - `ROLL` - We're waiting on something that is at least partially out of our control, an when this is unblocked, we will **roll off** the old ways and into a new era.
 - `NOTE` - Just an observation, something to help get oriented with the mental model or the long term goals.  Not relevant to users, only contributors.
+- `MAYBE` - A genuine ponderance.  We should be on the lookout for a problem that is brewing or an opportunity that isn't quite clear.  The uncertainty is too great for commitment, but the impact and likelihood are enough to warrant a reminder.
 
 Most modules begin with doc comments and then have several typed comments.  Typed comments, especially `NEXT` tend to go out of date and become scattered.  Before working on a module, do attempt to retire or refine comments and place the changes into a "line noise" commit along with other superficial changes.
 
@@ -74,8 +92,9 @@ These are not project specific, but maintainer tendencies on mature projects (th
 
 - Always attempt to separate structural from behavioral code.  If you rearrange hunks, try to commit those changes separately so that behavior is very easy to see.
 - Small commits are preferred, especially those so tiny that each change is self-evident.
+- Use commit titles like `crate::module;` or just `crate;` if the title makes the module obvious.  Detours into fixing comments can be rolled into `line noise` commits.
 
-## Style
+## Code Style & Conventions
 
 - All raw `ash` handles **must** be used behind either the `ash::` or `vk::` (`ash::vk::`) prefix.  Only µTate types should be used without prefix.  This makes raw types very easy to see in implementation code.
 - Imports are recommended to use a single prefix for out-of-crate dependencies.  Example: `vk::DeviceAddress` instead of just `DeviceAddress`.

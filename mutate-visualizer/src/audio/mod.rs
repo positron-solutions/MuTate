@@ -4,6 +4,10 @@
 //!
 //! Select a device.  Set up stream from server to device.  Run a callback on each audio tick.
 
+// DEBT Reactive updates.  Keep modularizing audio pipelines for downstreams.  Dispatching a bunch
+// of IIRs and other audio processing will parallelize easily and the output addresses can just be
+// exposed to video
+// pipelines without dynamic resolution for now.
 // NEXT Slang texel types
 // NEXT Extend vk::Device for things that don't require Device.  Then &Device grows those methods
 // via Deref.
@@ -12,7 +16,8 @@
 // example might trigger resource recreation.  The resource change notifications then need to be
 // sent to the thread and finally pulled by.. the caller during the callback.
 // NEXT automatically promote u32 -> UInt32 and newtypes thereof
-// XXX DeviceAddress and vk::DeviceAddress are too duplicated.
+// XXX DeviceAddress and vk::DeviceAddress are too redundant.
+// XXX Sporadic races in destruction
 
 pub mod rms;
 
@@ -24,6 +29,7 @@ use mutate_lib::{self as utate, audio, prelude::*};
 
 pub struct CallbackResources {
     /// How far have we read into the data so far?
+    // NOTE unbuffered, same clock
     consume_head: u64,
     pool_ring: PoolRing<Graphics, 2>,
     rms: rms::Rms,
@@ -82,6 +88,7 @@ impl Audio {
             rms,
         }));
         let addr = resources as usize;
+
         // XXX head_offset and head_count?  Ah counting heads!!!!
         let mut constants = rms::RmsConstants {
             left_head: DeviceAddress::NULL,
@@ -106,6 +113,8 @@ impl Audio {
 
             let [left, right] = state.regions_since(res.consume_head);
 
+            // XXX the DeviceRingView doesn't seem very settled.  This is way too much knowledge of
+            // the spans required to perform the read.
             // Zero-length spans are safe: the shader loops `k < count`.
             let mut seed = |l: Option<DeviceSpan>, r: Option<DeviceSpan>| {
                 let (l, r) = (l.unwrap_or(EMPTY_SPAN), r.unwrap_or(EMPTY_SPAN));

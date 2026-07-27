@@ -120,6 +120,8 @@ The first instance problem coming up is to resize a screen-dimension-sensitive v
 
 ### For Now
 
+Expose all possible outputs to all readers on one structure.  Let the readers decide which output addresses to actually consume.  It's not dynamic and not accessible for ML, but it gets us one signature for everyone.  Dependency will be manual, and loops will be possible.
+
 Without reactive updates, we have to manually provision and re-provision buffers and images.  This **absolutely will not scale into shared ownership or memory region aliasing.**
 
 We just need things like new extents to reach dependents.  We can likely afford to just recreate resources on the fly.  Try to prepare for pointer swaps.  In general, code that can tolerate pointer swaps makes it easier to just swap in updated resources from a new ring while draining an old ring or its slots.
