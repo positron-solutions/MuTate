@@ -14,19 +14,8 @@
 // NEXT automatically promote u32 -> UInt32 and newtypes thereof
 // XXX DeviceAddress and vk::DeviceAddress are too duplicated.
 
-#[compute_pipeline(
-    compute = stage!("audio/rms", Compute, c"main"),
-    push = push!(RmsConstants {
-        pub left_head: DeviceAddress,
-        pub right_head: DeviceAddress,
-        pub count_head: UInt,
-        pub left_tail: DeviceAddress,
-        pub right_tail: DeviceAddress,
-        pub count_tail: UInt,
-        pub output: DeviceAddress,
-    }),
-)]
-struct RmsComputePipeline;
+pub mod rms;
+
 
 pub mod rms;
 
@@ -37,7 +26,7 @@ pub struct CallbackResources {
     /// How far have we read into the data so far?
     consume_head: u64,
     pool_ring: PoolRing<Graphics, 2>,
-    pipeline: ComputePipeline<RmsComputePipeline>,
+    rms: rms::Rms,
 }
 
 pub struct Audio {
@@ -86,14 +75,15 @@ impl Audio {
         // able to track it, leading to aliasing.
         let output = utate::vulkan::resource::buffer::DeviceBuffer::new(device, 4)?;
         let output_address = output.device_address(device)?;
+        let rms = rms::Rms::new(device)?;
         let resources = Box::into_raw(Box::new(CallbackResources {
             consume_head: 0,
             pool_ring: PoolRing::new(device, &callback_queue)?,
-            pipeline: ComputePipeline::<RmsComputePipeline>::new(device)?,
+            rms,
         }));
         let addr = resources as usize;
         // XXX head_offset and head_count?  Ah counting heads!!!!
-        let mut constants = RmsConstants {
+        let mut constants = rms::RmsConstants {
             left_head: DeviceAddress::NULL,
             right_head: DeviceAddress::NULL,
             count_head: 0.into(),
@@ -138,10 +128,10 @@ impl Audio {
 
             // println!("regions since: {:?}", &regions);
 
-            res.pipeline.push(device, *cb, &constants);
+            res.rms.pipeline.push(device, *cb, &constants);
             // ROLL manual dispatch due to problem in the dispatch thread-safety.
             unsafe {
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, *res.pipeline);
+                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, *res.rms.pipeline);
                 device.cmd_dispatch(*cb, 1, 1, 1);
             }
 
@@ -179,7 +169,7 @@ impl Audio {
         // If you're getting validation issues, check that sinks (video) are being killed first.
         resources.pool_ring.drain(device, 1_000_000_000)?;
         resources.pool_ring.destroy(device);
-        resources.pipeline.destroy(device);
+        resources.rms.destroy(device);
         output.destroy(device);
         // context has no vulkan resources and may just drop.
         Ok(())
