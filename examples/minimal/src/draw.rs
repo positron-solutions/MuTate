@@ -25,7 +25,7 @@ pub struct HelloDraw {
     pipeline: ComputePipeline<HelloPipeline>,
     counter: u32,
 
-    output_buffer: Option<buffer::MappedAllocation<rgb::Rgba<u8>>>,
+    output_buffer: Option<buffer::MappedAllocation<rgb::Bgra<u8>>>,
     output_idx: SsboIdx,
 }
 
