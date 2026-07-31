@@ -206,6 +206,9 @@ impl<T> MappedAllocation<T> {
     }
 }
 
+/// The pointer to memory is only used via unsafe interfaces.
+unsafe impl<T: Send> Send for MappedAllocation<T> {}
+
 pub fn buffer_image_copy_full(extent: vk::Extent2D) -> vk::BufferImageCopy {
     vk::BufferImageCopy {
         buffer_offset: 0,
