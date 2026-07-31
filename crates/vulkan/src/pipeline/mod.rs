@@ -187,7 +187,8 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
         })
     }
 
-    // XXX typed recording slot
+    // XXX typed recording slot?  Cannot use a transfer command buffer.
+    // XXX Be sure to change this to &vk::CommandBuffer at least
     // XXX possibly keep a device borrow on recording slots?
     pub fn push(&self, device: &ash::Device, cb: vk::CommandBuffer, data: &S::Push) {
         self.layout.push(device, cb, data);

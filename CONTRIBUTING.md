@@ -12,6 +12,7 @@
   - [A Word on Rigor](#a-word-on-rigor)
   - [Pull Request Recommendations](#pull-request-recommendations)
   - [Code Style & Conventions](#code-style--conventions)
+  - [Timing Model](#timing-model)
   - [PrizeForge, User-Lead Funding](#prizeforge-user-lead-funding)
   - [The Name](#the-name)
 
@@ -104,6 +105,29 @@ These are not project specific, but maintainer tendencies on mature projects (th
   + External dependencies
   + Workspace dependencies
   + Crate dependencies
+
+## Timing Model
+
+Tracking and slewing in data-time is one of the technically trickier aspects of µTate.  Audio server and display refresh tick on **different clocks**.  Therefore, we are not only frequently handling data rate adaptations, but also the dissimilarly scaled ticks on unaligned grids.
+
+**key design choices**:
+
+- Track a **virtual** write head that is the continuous interpretation of the discretely chunked stream.
+- Maintain local offsets from the virtual write head, which is located nearby in time, instead of global index relations.
+
+With local offset tracking, we discard knowledge of the absolute index drift and instead focus on local data re-sampling scale accuracy.  Globally we are re-sampling inaccurately.  Locally, the ratio of input to output is quite accurate and the error self-corrects rather than accumulates.
+
+Maintaining a local time anchor erases underruns, jitter, and drift from history.  Tracking and slewing is about maintaining the correct distance behind the input, and relative time does exactly that and does not require consistency with absolute time epochs, only deltas on ticks and relative read-write head positions.
+
+- External clocks ticks are filtered to uncover the hidden phase.  The estimated phase grid of input sources are then published for all downstream consumers.
+- Discrete ticks are interpreted as a continuous data flows which may be safely tracked one tick length behind the continuous approximation to account for phase-related underruns.
+- The next prediction step is used to re-anchor the time grid on each tick.  Local states apply this shift-of-reference and all calculations are relative to the read head.
+- Read goals are computed from phase duration and jitter as a buffer length measured in time, configured to avoid underrun with a desired success rate.
+- Different data rates mean that output grid zeroes do not align, and a sub-datum phase component is stored to track the relative grid offset.
+- The buffer length has the grid phase delay subtracted because any reader is already `grid delay` behind in continuously interpreted input-time.
+- Only whole datums are exposed to consumers.  Partial datum support would require overwriting stale partial outputs, and when cascaded through arbitrary downstream application, the provenance is lost unless tracked (provenance tracking schemes may succeed).
+- To appropriately feed high-speed displays and stretched output, buffers intended for downstream consumption should emit data at 240Hz or above.
+- Interpolation occurs by transitioning from the old output datum to the new output datum *over one datum of time*, fairly weighing each datum while applying FIR filtering at the point of consumption.
 
 ## PrizeForge, User-Lead Funding
 

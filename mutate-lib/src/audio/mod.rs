@@ -2,7 +2,7 @@
 //!
 //! ⚠️ This module was initially only completed far enough to get 800 samples per second dumped into
 //! a buffer.  The downstream programs didn't care, and so the shape of support was not that of a
-//! real client for pipewire.  Instead the user data needs to become smarte
+//! real client for pipewire.
 //!
 //! The [`AudioContext`] is to represent a connection to the server while [`AudioConsumer`] is an
 //! open streaming connection.  See CPAL APIs for other user-facing API ideas.  We are likely more
@@ -87,6 +87,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, RingBuffer};
 use crate::prelude::*;
 
 pub(crate) mod core {
+    #[cfg(feature = "vulkan")]
     pub use super::import::core::*;
     pub use super::AudioChoice;
     pub use super::AudioConsumer;

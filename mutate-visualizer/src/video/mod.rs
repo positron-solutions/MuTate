@@ -8,3 +8,4 @@
 pub mod pulse;
 pub mod ring;
 pub mod triangle;
+pub mod verticlysm;

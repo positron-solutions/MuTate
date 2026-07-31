@@ -1,0 +1,175 @@
+// Copyright 2026 The MuTate Contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+// Vertaclysm
+//
+// DFT bins mapped across the x-axis of the screen with a slight vertical twist.
+//
+// The input ring, is an image ring.  The rows of the input are the number of
+// DFT bins.  The columns of the ring are time.  The data is stored column
+// major.  We map the rows onto the x-axis.  The time slice controls the columns
+// that we will integrate.  The time slice end points are defined with index +
+// phase.
+//
+// The host has converted logical index to physical index already, and the
+// logical width of the input is a PoT value for easy wrapping math.  Each time
+// step in the output is considered to start exactly at the index with phase =
+// 0.0 and ends when phase = 1.0, when the index will increment.  Bins like-wise
+// start at 0.0 and end at width for x-axis re-sampling.
+//
+// Because the bins map onto the x-axis, we first find the magnitude of each bin
+// integrated over the time slice.  These magnitudes can be used across many
+// rows.
+//
+// The rest of the routine writes outputs over `LANE_ROWS` rows, re-using the
+// magnitudes over a number of rows.  The outputs draw vertical gradient lines
+// along the column of the screen, from a start y to an end y.
+//
+// Both left and right channels draw as a vertical gradient.  Left is blue and
+// makes a gradient from top to bottom.  Right is green and makes a gradient
+// from bottom to top.  The gradient math starts at the magnitude and drops by
+// 1.0 per screen.  A magnitude of 0.6 will become zero when the gradient is 0.6
+// screens from the edge.  A magnitude of 1.0 will be 0.5 in the middle of the
+// screen.  A magnitude of 0.1 is 0.0 at 0.1 screens from the edge.
+
+// NEXT look at snapping the bin edges during interpolation to avoid
+// pathological slivers of bins when bins and pixels align almost exactly.
+
+[[vk::push_constant]]
+cbuffer VerticlasmConstants {
+    // Input buffers
+    float* left_channel;
+    float* right_channel;
+    // Output
+    uint* output;
+
+    uint window_width;
+    uint window_height;
+
+    // Column length == bin count of the DFT
+    uint input_height;
+    // Ring buffer width.  Always PoT for easy wrap.
+    uint input_width;
+    // The input ring is a representation of recent processed audio.  Columns of
+    // the ring are time slices over bins.  Rows are a single bin over time.  We
+    // will integrate a time slice for each frame.  The time slice has been
+    // converted on the host to physical indexes that may land between input
+    // indexes.  The host tracks index using integer index with partial index
+    // stored in a companion float.  The resulting range is along the columns of
+    // the column-major input ring.  Rows represent bins, so a slice of a row is
+    // a time slice of a bin.
+
+    // Physical column of the slice start, pre-masked by the host.
+    // Invariant: beg_col < input_width
+    uint  beg_col;
+    // Phase within beg_col.  Invariant: [0.0, 1.0)
+    float beg_phase;
+    // Length of the time slice in columns.  Always positive; wrap is implicit
+    // in the masked walk, never in this value.
+    // Invariant: (0.0, float(input_width)]
+    float span;
+
+    // NEXT a gain correction on the left and right channel will be applied to
+    // each input using the identical indexing.
+    // float* gains;
+
+
+};
+
+// How many rows will each lane write the outputs for?  Looking up the left &
+// right magnitude can be re-used across the height of the window, but to
+// parallelize, we use one magnitude calculation for 128 output writes.
+static const uint LANE_ROWS = 128;
+
+// Warps operate on 32 pixel wide, LANE_ROWS tall areas of the output image.
+// The magnitude calculation is re-used by each lane for LANE_ROWS rows.
+[numthreads(32, 1, 1)]
+void main(uint3 tid : SV_DispatchThreadID) {
+    // Bounds check masks off lanes that would draw outside of the available area.
+    if ((tid.x >= window_width) || (tid.y * LANE_ROWS >= window_height))
+        return;
+
+    // Calculate magnitude.  We will re-sample the bins that land within this
+    // screen x and integrate the same bin slice over the time slice to obtain
+    // the magnitude.  Remember, bins are rows and columns are time.
+    float acc_l = 0.0;
+    float acc_r = 0.0;
+
+    // Time axis: columns of the ring.  `col_beg`/`col_count` are relative to
+    // the slice start, so they never wrap; only the address does.
+    let col_mask  = input_width - 1; // Works via PoT invariant from the host.
+    let col_phase = beg_phase;
+    let col_first = beg_col & col_mask;
+    let col_count = uint(ceil(col_phase + span)); // host ensures <= input_width
+
+    // Bin axis: rows of the ring, re-sampled onto screen x.
+    let bins_per_px = float(input_height) / float(window_width);
+    let bin_beg   = float(tid.x) * bins_per_px;
+    let bin_end   = (float(tid.x) + 1.0) * bins_per_px;
+    let bin_first = uint(floor(bin_beg));
+    let bin_count = uint(ceil(bin_end)) - bin_first;
+
+    // Time is the outer loop because bins are contiguous along columns in the
+    // input ring.
+    for (uint c = 0; c < col_count; ++c) {
+        // Overlap of column `c` with [col_phase, col_phase + span), in
+        // relative space.  Relative, so this arithmetic never sees the seam.
+        let col_lo = max(float(c),       col_phase);
+        let col_hi = min(float(c) + 1.0, col_phase + span);
+        let col_weight = max(col_hi - col_lo, 0.0);
+
+        // Only the address wraps.
+        let phys_col = (col_first + c) & col_mask;
+        let col_base = phys_col * input_height;
+
+        float col_acc_l = 0.0;
+        float col_acc_r = 0.0;
+        for (uint b = 0; b < bin_count; ++b) {
+            let bin = bin_first + b;
+            let bin_lo = max(float(bin),       bin_beg);
+            let bin_hi = min(float(bin) + 1.0, bin_end);
+            let bin_weight = max(bin_hi - bin_lo, 0.0);
+
+            let sample_l = float(left_channel [col_base + bin]);
+            let sample_r = float(right_channel[col_base + bin]);
+            col_acc_l += bin_weight * sample_l * sample_l;
+            col_acc_r += bin_weight * sample_r * sample_r;
+        }
+
+        acc_l += col_weight * col_acc_l;
+        acc_r += col_weight * col_acc_r;
+    }
+
+    // We integrated over a columns * bins area.  Normalize to area.
+    let inv_area = 1.0 / max(span * bins_per_px, 1e-6);
+
+    // XXX Raw window sums are not in DB and there is no dynamic range yet!.
+    // let mag_l = acc_l * inv_area;
+    // let mag_r = acc_r * inv_area;
+
+    static const float DEBUG_GAIN = 0.001;
+    let mag_l = sqrt(acc_l * inv_area) * DEBUG_GAIN;
+    let mag_r = sqrt(acc_r * inv_area) * DEBUG_GAIN;
+
+    // Iterate over Y for LANE_ROWS output rows, writing BGRA.
+    let row_height  = 1.0 / float(window_height);  // one row in screen units
+    let y_beg = float(tid.y * LANE_ROWS) * row_height;
+
+    float grad_l = mag_l - y_beg;               // blue, top -> bottom
+    float grad_r = mag_r - (1.0 - y_beg);       // green, bottom -> top
+
+    uint y = tid.y * LANE_ROWS;           // note: `tix.y` typo in the source
+    let y_end = min(y + LANE_ROWS, window_height);
+    while (y < y_end) {
+        output[y * window_width + tid.x] = pack_bgra(grad_l, grad_r, 0.0, 1.0);
+        grad_l -= row_height;
+        grad_r += row_height;
+        ++y;
+    }
+}
+
+uint pack_bgra(float b, float g, float r, float a) {
+    let c = saturate(float4(b, g, r, a));
+    let q = uint4(round(c * 255.0));
+    return (q.w << 24) | (q.z << 16) | (q.y << 8) | q.x;
+}

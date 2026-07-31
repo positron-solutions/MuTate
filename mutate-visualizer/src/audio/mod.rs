@@ -6,8 +6,7 @@
 
 // DEBT Reactive updates.  Keep modularizing audio pipelines for downstreams.  Dispatching a bunch
 // of IIRs and other audio processing will parallelize easily and the output addresses can just be
-// exposed to video
-// pipelines without dynamic resolution for now.
+// exposed to video pipelines without dynamic resolution for now.
 // NEXT Slang texel types
 // NEXT Extend vk::Device for things that don't require Device.  Then &Device grows those methods
 // via Deref.
@@ -18,25 +17,48 @@
 // NEXT automatically promote u32 -> UInt32 and newtypes thereof
 // XXX DeviceAddress and vk::DeviceAddress are too redundant.
 // XXX Sporadic races in destruction
+// NOTE Like the visualizer, support for a dynamic set of audio pipelines is necessary.  Lacking
+// that, the RMS pipeline was fully removed to add the DFT.  See blame.  We would like support for
+// mixtures of pipelines, and the resource runtime will need to orchestrate this.
 
+pub mod dft;
 pub mod rms;
+
+use std::sync::{Arc, Mutex};
 
 use ash::vk;
 use mutate_lib::{self as utate, audio, prelude::*};
+
+use crate::audio::dft::DftDispatch;
 
 pub struct CallbackResources {
     /// How far have we read into the data so far?
     // NOTE unbuffered, same clock
     consume_head: u64,
     pool_ring: PoolRing<Graphics, 2>,
-    rms: rms::Rms,
+    dft: dft::Dft,
+    outputs: Arc<Mutex<Option<AudioOutputs>>>,
+}
+
+/// Until some kind of reactive parameter design is done, cram outputs onto this struct so that each
+/// visualization has a common interface.  The resource spec system's upcoming role is to inject
+/// parameters onto an input structure for the command recorder to pull.
+#[derive(Clone, Debug)]
+pub struct AudioOutputs {
+    pub dft: dft::DftOutput,
+    // Dynamic range gain factor location (on device)
+    // Timing data for downstream buffered tracking
 }
 
 pub struct Audio {
     context: AudioContext,
     resources: *mut CallbackResources,
     pub audio_import: AudioImport<2>,
-    pub output_address: vk::DeviceAddress,
+    // NOTE suppose we already have the resources runtime ready.  The Option goes away because this
+    // is a dependency for the downstream renderer.  They don't want to care if the upstream is
+    // running.  No input, don't call them.  The Arc goes away because the runtime owns the values.
+    // The Mutex goes away because we only see one epoch per frontend call.
+    pub outputs: Arc<Mutex<Option<AudioOutputs>>>,
 }
 
 const EMPTY_SPAN: DeviceSpan = DeviceSpan { base: 0, len: 0 };
@@ -69,21 +91,33 @@ impl Audio {
         // FIXME handle invalid input choices.
         let choice_idx = input.trim().parse().unwrap();
         let choice = first_choices.remove(choice_idx);
+        let rx = context.connect(&choice, "µTate")?;
 
+        // Allocate the ring so that callback and later the DeviceImport
+        let (buffer, ring_layout) = AudioImport::<2>::allocate(device, 4096)?;
+
+        // MAYBE IIRC Untorn is right type here.  Consumer only wants the latest value and ticks
+        // independently, so best-effort on-time delivery is fine.  In any case, it's a short lock
+        // to read for now.  Option is only because the RingLayout is currently only known after the
+        // import begins.  Memory addresses needed by both upstream and downstream need to be
+        // decided / resolvable.
+        let outputs = Arc::new(Mutex::new(None));
         let callback_queue = queue.clone();
         let callback_device = device.as_raw().clone();
+        let callback_outputs = outputs.clone();
 
-        // Four bytes to tell the world!  Note, this refreshes so fast that downstreams will not be
-        // able to track it, leading to aliasing.
-        let rms = rms::Rms::new(device)?;
-        let output_address = rms.output.device_address(device)?;
+        let dft = dft::Dft::new(device, ring_layout)?;
         let resources = Box::into_raw(Box::new(CallbackResources {
             consume_head: 0,
             pool_ring: PoolRing::new(device, &callback_queue)?,
-            rms,
+            dft,
+            outputs: outputs.clone(),
         }));
+
+        // Pass resources address into the callback.  Ownership and cleanup remain with us.
         let addr = resources as usize;
         let on_flush = move |state: &utate::audio::import::DeviceRingView<2>| {
+            let outputs = &callback_outputs;
             let device = &callback_device;
             let timing = state.timing;
             let res = unsafe { &mut *(addr as *mut CallbackResources) };
@@ -91,62 +125,41 @@ impl Audio {
             let (pool, intent) = res.pool_ring.acquire(device, 0)?;
             let cb = pool.primary(device)?;
 
-            // XXX we're not interpreting timing data here at all.
             let regions = state.regions_since(res.consume_head);
             let layout = state.ring_layout;
-
-            let [left, right] = state.regions_since(res.consume_head);
-
-            // XXX the DeviceRingView doesn't seem very settled.  This is way too much knowledge of
-            // the spans required to perform the read.
-            // Zero-length spans are safe: the shader loops `k < count`.
-            let mut seed = |l: Option<DeviceSpan>, r: Option<DeviceSpan>| {
-                let (l, r) = (l.unwrap_or(EMPTY_SPAN), r.unwrap_or(EMPTY_SPAN));
-                debug_assert_eq!(l.len, r.len, "channels desynced");
-                (l.base.into(), r.base.into(), l.len.into())
-            };
-
-            let mut l_spans = left.spans();
-            let mut r_spans = right.spans();
-
-            let constants = &mut res.rms.constants;
-
-            let (lh, rh, nh) = seed(l_spans.next(), r_spans.next());
-            constants.left_head = lh;
-            constants.right_head = rh;
-            constants.count_head = nh;
-
-            let (lt, rt, nt) = seed(l_spans.next(), r_spans.next());
-            constants.left_tail = lt;
-            constants.right_tail = rt;
-            constants.count_tail = nt;
-
-            // println!("regions since: {:?}", &regions);
-
-            res.rms.pipeline.push(device, *cb, &constants);
-            // ROLL manual dispatch due to problem in the dispatch thread-safety.
-            unsafe {
-                device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::COMPUTE, *res.rms.pipeline);
-                device.cmd_dispatch(*cb, 1, 1, 1);
-            }
-
+            let DftDispatch {
+                consumed,
+                ready,
+                output,
+            } = res.dft.dispatch(device, &cb, state)?;
+            let previous = ready.predecessor();
             let done = cb.end(device)?;
             callback_queue
                 .submission()
                 .execute(done)
+                .wait(previous, vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .signal(ready, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .signal(intent, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .submit(&callback_device, vk::Fence::null())?;
+
+            // All data has been sent down the pipe.
             res.consume_head = state.write_head;
 
+            *outputs.lock().unwrap() = Some(AudioOutputs { dft: output });
+
             // Returns all of the data to allow it all to be reclaimed
-            Ok(state.occupied_len())
+            Ok(consumed)
         };
-        let audio_import = context.import_to_device(device, &choice, 6400, "µTate", on_flush)?;
+
+        // Create the import, which fires the callback.
+        let audio_import =
+            AudioImport::with_allocation(device, rx, (buffer, ring_layout), on_flush)?;
+
         Ok(Self {
             context,
             audio_import,
             resources,
-            output_address,
+            outputs,
         })
     }
 
@@ -155,14 +168,15 @@ impl Audio {
             context,
             resources,
             audio_import: mut consumer,
-            output_address,
+            outputs,
         } = self;
+        // Destroy the audio stream first so it will stop calling our callback.
         consumer.destroy(device)?;
         let resources = unsafe { Box::from_raw(resources) };
         // If you're getting validation issues, check that sinks (video) are being killed first.
         resources.pool_ring.drain(device, 1_000_000_000)?;
         resources.pool_ring.destroy(device);
-        resources.rms.destroy(device);
+        resources.dft.destroy(device);
         // context has no vulkan resources and may just drop.
         Ok(())
     }

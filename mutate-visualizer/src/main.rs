@@ -13,7 +13,10 @@ mod audio;
 mod video;
 mod window;
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use ash::vk;
 use clap::Parser;
@@ -49,8 +52,8 @@ struct WindowContext {
     // they still exist, would require only one audio downstream per device and then that data can
     // be reused for all windows.  Resource runtime can express per-device work via dependencies,
     // and that's why declarative state reconciliation is the way.
-    renderer: video::pulse::PulseDraw,
-    audio_output: vk::DeviceAddress,
+    renderer: video::verticlysm::Verticlysm,
+    audio_outputs: Arc<Mutex<Option<audio::AudioOutputs>>>,
 }
 
 impl WindowContext {
@@ -59,35 +62,41 @@ impl WindowContext {
         device: &mut Device,
         window: winit::window::Window,
         surface: Surface,
-        audio_output: vk::DeviceAddress,
+        audio_outputs: Arc<Mutex<Option<audio::AudioOutputs>>>,
     ) -> Self {
         // XXX create the present ring and clone the queue to audio farther upstream?
         let present_ring = PresentRing::new(device, instance, &surface).unwrap();
-        let mut renderer = video::pulse::PulseDraw::new(device);
+        let mut renderer = video::verticlysm::Verticlysm::new(device);
         renderer.provision(device, surface.extent()).unwrap();
         Self {
             window,
             surface,
             present_ring,
             renderer,
-            audio_output,
+            audio_outputs,
         }
     }
 
     fn draw_frame(&mut self, device: &mut Device, audio: &mut audio::Audio) {
-        // NEXT Always pass all arguments that all visuals might need.  This would be an interim to
-        // supporting multiple visuals, itself a prelude to argument injection and visual
-        // composition.
-        self.present_ring
-            .record(
+        // NOTE AudioInputs is an interim common interface.  Runtime argument injection will handle
+        // this kind of conditional rendering in the future.
+        let result = {
+            let guard = self.audio_outputs.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(audio_outputs) = guard.as_ref() else {
+                return;
+            };
+            self.present_ring.record(
                 device,
                 compute_present(device, |device, cb, acquired_image| {
                     self.renderer
-                        .draw(device, cb, acquired_image, self.audio_output);
+                        .draw(device, cb, acquired_image, audio_outputs);
                 }),
                 || self.window.pre_present_notify(),
             )
-            .map_err(|e| match e {
+        }; // guard dropped here, self.audio_outputs borrow released
+
+        if let Err(e) = result {
+            match e {
                 utate::vulkan::VulkanError::SwapchainOutOfDate
                 | utate::vulkan::VulkanError::SwapchainSuboptimal => {
                     self.handle_resize(device);
@@ -95,7 +104,8 @@ impl WindowContext {
                 _ => {
                     eprintln!("application: draw failed {:?}", e);
                 }
-            });
+            }
+        }
     }
 
     fn handle_resize(&mut self, device: &mut Device) -> Result<(), MutateError> {
@@ -153,8 +163,8 @@ impl ActiveApp {
             // XXX shouldn't this already be an error?
             .ok_or(utate::vulkan::VulkanError::QueueNotFound)?;
         let audio = audio::Audio::new(&device, &queue.queue_ref())?;
-        let audio_output = audio.output_address.clone();
-        let wc = WindowContext::new(instance, &mut device, window, surface, audio_output);
+        let audio_outputs = audio.outputs.clone();
+        let wc = WindowContext::new(instance, &mut device, window, surface, audio_outputs);
         let window_id = wc.window.id();
         let mut windows = HashMap::new();
         windows.insert(window_id, wc);

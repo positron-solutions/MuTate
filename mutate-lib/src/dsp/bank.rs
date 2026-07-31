@@ -12,6 +12,7 @@
 
 use super::iso226;
 
+#[derive(Debug)]
 pub struct Bin {
     /// Minimum frequency
     pub min: f64,
@@ -37,7 +38,8 @@ impl Bin {
 }
 
 /// Return a list of bin spacings.  We use logarithmic spacing because it matches music and pretty
-/// closely matches human senses of tones.
+/// closely matches human senses of tones.  `min` and `max` are frequencies in Hz.  Count is the
+/// number of bins.
 pub fn bins(min: f64, max: f64, count: usize) -> Vec<Bin> {
     assert!(max > min);
     assert!(count > 1);

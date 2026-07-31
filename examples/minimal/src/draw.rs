@@ -14,6 +14,7 @@ use utate::vulkan::resource::{buffer, image};
     compute = stage!("hello/compute", Compute, c"main"),
     push = push!(HelloConstants {
         pub counter: UInt,
+        // XXX this works.. but should it?  Shader accepts a float2 behind a uint counter
         pub window_width: Float,
         pub window_height: Float,
         pub output_idx: SsboIdx,

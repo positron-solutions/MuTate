@@ -64,7 +64,6 @@ impl PulseDraw {
     ) {
         let extent = acquired_image.extent;
 
-        // XXX argument order (reverse cb & device)
         self.output_buffer
             .as_ref()
             .unwrap()
@@ -76,7 +75,6 @@ impl PulseDraw {
             audio_output: audio_output.into(),
             output_idx: self.output_idx,
         };
-        // XXX allow pushing to wrapped buffers
         self.pipeline.push(device, **cb, &push);
 
         // This dispatch math needs to respect the compute stage's declared dimensions.  We can make

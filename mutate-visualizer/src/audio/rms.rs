@@ -4,6 +4,8 @@
 //!
 //! Expose RMS of the input as an output buffer.
 
+// NEXT work on how we expose intended outputs for downstreams.  The output address is the key value
+// of interest.  Need a way to declare that in the upcoming resources interfaces.
 // NEXT A-weight and interpolate outputs into a 240Hz output ring.  Single output is inappropriate
 // for consumers.  This module was only built up just enough to be sure some things were working.
 
@@ -33,6 +35,8 @@ pub struct Rms {
 
 impl Rms {
     pub fn new(device: &Device) -> Result<Self, MutateError> {
+        // Four bytes to tell the world!  Note, this refreshes so fast that downstreams will not be
+        // able to track it, leading to aliasing.
         let output = utate::vulkan::resource::buffer::DeviceBuffer::new(device, 4)?;
         let output_address = output.device_address(device)?;
         Ok(Rms {
