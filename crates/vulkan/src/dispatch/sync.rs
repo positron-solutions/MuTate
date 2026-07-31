@@ -145,7 +145,7 @@ unsafe impl Send for SignalIntent {}
 
 /// A value that will be signaled (the `SignalIntent` was created and will not be dropped).  It is
 /// valid to wait on a single value at multiple points, so `SignalValue` can be cloned.
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct WaitValue {
     semaphore: vk::Semaphore,
     value: u64,
