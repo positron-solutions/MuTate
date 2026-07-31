@@ -20,8 +20,8 @@ pub struct Bin {
     pub max: f64,
     /// Center frequency
     pub center: f64,
-    /// iso226 gain correction summand (dB).  Add this to the bin measured dB for an
-    /// iso-loud perceptually corrected dB.
+    /// Linear amplitude factor (>= 1.0) to pre-multiply into this bin's window weights so the
+    /// measured magnitude comes out perceptually flat on the 70 phon curve.
     pub iso226_gain: f64,
 }
 
@@ -83,7 +83,7 @@ pub fn bins(min: f64, max: f64, count: usize) -> Vec<Bin> {
                 min: freq(i0),
                 center,
                 max: freq(i0 + 2),
-                iso226_gain: iso226::iso226_gain(center).unwrap(),
+                iso226_gain: iso226::iso226_window_gain(center),
             }
         })
         .collect()
