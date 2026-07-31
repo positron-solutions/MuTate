@@ -295,20 +295,18 @@ pub struct AudioImport<const CHANNELS: usize> {
 }
 
 impl<const CHANNELS: usize> AudioImport<CHANNELS> {
+    /// Allocate the ring backing store and derive its geometry, without starting import.
+    ///
+    /// Split out from construction so a caller can build an [`ImportSink`] that already knows the
+    /// `RingLayout` (device addresses, channel offsets, capacity) before the reader thread — and
+    /// therefore the first callback — exists.  Hand the result to [`Self::with_allocation`].
+    ///
     /// `sample_count` is the length of each channel's ring buffer in samples.  More buffer means
     /// less potential for bursts leading to discontinuities.
-    pub(crate) fn new<S: ImportSink<CHANNELS>>(
+    pub fn allocate(
         device: &Device,
-        mut rx: AudioConsumer,
         sample_count: u32,
-        mut import_sink: S,
-    ) -> Result<AudioImport<CHANNELS>, MutateError> {
-        let control = Arc::new(Control {
-            write_head: AtomicU64::new(0),
-            read_head: AtomicU64::new(0),
-            closed: AtomicBool::new(false),
-        });
-
+    ) -> Result<(MappedAllocation<u8>, RingLayout<CHANNELS>), MutateError> {
         let non_coherent_atom_size = device.memory.non_coherent_atom_size;
         let channel_bytes = sample_count as u64 * 4;
         // rounded up for atom flush size
@@ -319,16 +317,67 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
         let mut buffer: MappedAllocation<u8> = MappedAllocation::new(device, size)?;
         let base_address = buffer.device_address(device)?;
 
-        let ring_layout = RingLayout {
-            base_address,
-            channel_offsets,
-            sample_count,
-        };
-
         // f32 0.0 is all-zero bytes, so this write is safe.
         buffer.as_mut_slice().fill(0u8);
         buffer.flush(device)?;
 
+        Ok((
+            buffer,
+            RingLayout {
+                base_address,
+                channel_offsets,
+                sample_count,
+            },
+        ))
+    }
+
+    /// `sample_count` is the length of each channel's ring buffer in samples.  More buffer means
+    /// less potential for bursts leading to discontinuities.
+    ///
+    /// Use [`Self::allocate`] + [`Self::with_allocation`] when the sink needs the layout up front.
+    pub(crate) fn new<S: ImportSink<CHANNELS>>(
+        device: &Device,
+        rx: AudioConsumer,
+        sample_count: u32,
+        import_sink: S,
+    ) -> Result<AudioImport<CHANNELS>, MutateError> {
+        let (buffer, ring_layout) = Self::allocate(device, sample_count)?;
+        Self::new_inner(device, rx, buffer, ring_layout, import_sink)
+    }
+
+    /// Start import over an allocation obtained from [`Self::allocate`].  The `RingLayout` must be
+    /// the one returned alongside that buffer; pairing a layout with a different allocation is
+    /// undefined behavior on the device side.
+    pub fn with_allocation<S: ImportSink<CHANNELS>>(
+        device: &Device,
+        rx: AudioConsumer,
+        allocation: (MappedAllocation<u8>, RingLayout<CHANNELS>),
+        import_sink: S,
+    ) -> Result<AudioImport<CHANNELS>, MutateError> {
+        let (buffer, ring_layout) = allocation;
+        Self::new_inner(device, rx, buffer, ring_layout, import_sink)
+    }
+
+    fn new_inner<S: ImportSink<CHANNELS>>(
+        device: &Device,
+        mut rx: AudioConsumer,
+        mut buffer: MappedAllocation<u8>,
+        ring_layout: RingLayout<CHANNELS>,
+        mut import_sink: S,
+    ) -> Result<AudioImport<CHANNELS>, MutateError> {
+        let control = Arc::new(Control {
+            write_head: AtomicU64::new(0),
+            read_head: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+        });
+
+        // Re-derive what the writer loop needs from the layout it was allocated against.
+        let non_coherent_atom_size = device.memory.non_coherent_atom_size;
+        let sample_count = ring_layout.sample_count;
+        let channel_offsets = ring_layout.channel_offsets;
+        // rounded up for atom flush size; must match `allocate`
+        let channel_stride =
+            (sample_count as u64 * 4).next_multiple_of(non_coherent_atom_size as u64);
         // Owned write view for the thread.
         // NOTE in a perfect world, we would figure out the mutability or mark unsafe.  Until that
         // world exists, this just works.
