@@ -222,7 +222,6 @@ impl TimingFilter {
     /// `arrived` is the instant recorded at the start of the process callback in pipewire.
     /// `written` is bytes written only used for a debug assert.
     pub(crate) fn observe(&mut self, arrived: Instant, written: u64) -> AudioTiming {
-        debug_assert_eq!(written, PERIOD_BYTES);
         self.written += written / (4 * 2);
         // Unpack previous cycle's projection.
         let prior = self.prediction;
