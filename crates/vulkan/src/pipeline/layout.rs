@@ -32,7 +32,7 @@ impl<S: LayoutSpec> Layout<S> {
             .push_constant_ranges(S::RANGES)
             .set_layouts(device.descriptors.layout());
         Ok(Self {
-            raw: unsafe { device.as_raw().create_pipeline_layout(&layout_ci, None)? },
+            raw: unsafe { device.create_pipeline_layout(&layout_ci, None)? },
             _spec: PhantomData,
         })
     }
@@ -43,7 +43,7 @@ impl<S: LayoutSpec> Layout<S> {
 
     // DEBT Lifetime Agreement & Destructor.
     pub fn destroy(self, device: &Device) {
-        unsafe { device.as_raw().destroy_pipeline_layout(self.raw, None) }
+        unsafe { device.destroy_pipeline_layout(self.raw, None) }
     }
 
     /// Push all bytes of the PushConstants

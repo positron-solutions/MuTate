@@ -40,10 +40,8 @@ impl PulseDraw {
         size: vk::Extent2D,
     ) -> Result<(), utate::MutateError> {
         if let Some(existing) = self.output_buffer.take() {
-            unsafe {
-                existing.destroy(device)?;
-                device.descriptors.unbind_ssbo(self.output_idx);
-            }
+            existing.destroy(device)?;
+            device.descriptors.unbind_ssbo(self.output_idx);
             self.output_idx = SsboIdx::INVALID;
         }
 
@@ -96,7 +94,7 @@ impl PulseDraw {
 
         let region = buffer::buffer_image_copy_full(extent);
         unsafe {
-            device.as_raw().cmd_copy_buffer_to_image(
+            device.cmd_copy_buffer_to_image(
                 **cb,
                 self.output_buffer.as_ref().unwrap().buffer,
                 acquired_image.image,

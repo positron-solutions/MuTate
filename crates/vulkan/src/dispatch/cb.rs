@@ -156,7 +156,7 @@ impl<C: Capability, M: SubmissionModel> InitialBuffer<C, M> {
         let raw = self.into_parts();
         let begin_info = vk::CommandBufferBeginInfo::default().flags(M::BUFFER_FLAGS);
         unsafe {
-            device.as_raw().begin_command_buffer(raw, &begin_info)?;
+            device.begin_command_buffer(raw, &begin_info)?;
         }
         Ok(RecordingBuffer::from_raw(raw))
     }
@@ -175,7 +175,7 @@ impl<C: Capability, M: SubmissionModel> InitialSecondary<C, M> {
             .flags(M::BUFFER_FLAGS)
             .inheritance_info(inheritance);
         unsafe {
-            device.as_raw().begin_command_buffer(raw, &begin_info)?;
+            device.begin_command_buffer(raw, &begin_info)?;
         }
         Ok(RecordingSecondary::from_raw(raw))
     }
@@ -202,7 +202,7 @@ impl<M: SubmissionModel> RecordingBuffer<Graphics, M> {
     ) -> RenderingBuffer<M> {
         let raw = self.into_parts();
         unsafe {
-            device.as_raw().cmd_begin_rendering(raw, rendering_info);
+            device.cmd_begin_rendering(raw, rendering_info);
         }
         RenderingBuffer::from_raw(raw)
     }
@@ -213,7 +213,7 @@ impl<M: SubmissionModel> RenderingBuffer<M> {
     pub fn end_rendering(self, device: &Device) -> RecordingBuffer<Graphics, M> {
         let raw = self.into_parts();
         unsafe {
-            device.as_raw().cmd_end_rendering(raw);
+            device.cmd_end_rendering(raw);
         }
         RecordingBuffer::from_raw(raw)
     }
@@ -222,8 +222,8 @@ impl<M: SubmissionModel> RenderingBuffer<M> {
     pub fn end(self, device: &Device) -> Result<ExecutableBuffer<Graphics, M>, VulkanError> {
         let raw = self.into_parts();
         unsafe {
-            device.as_raw().cmd_end_rendering(raw);
-            device.as_raw().end_command_buffer(raw)?;
+            device.cmd_end_rendering(raw);
+            device.end_command_buffer(raw)?;
         }
         Ok(ExecutableBuffer::from_raw(raw))
     }
@@ -245,7 +245,7 @@ impl<C: Capability, M: SubmissionModel + Resettable> ExecutableBuffer<C, M> {
         flags: vk::CommandBufferResetFlags,
     ) -> Result<InitialBuffer<C, M>, VulkanError> {
         let raw = self.into_parts();
-        device.as_raw().reset_command_buffer(raw, flags)?;
+        device.reset_command_buffer(raw, flags)?;
         Ok(InitialBuffer::from_raw(raw))
     }
 }
@@ -266,7 +266,7 @@ impl<C: Capability, M: SubmissionModel + Resettable> ExecutableSecondary<C, M> {
         flags: vk::CommandBufferResetFlags,
     ) -> Result<InitialSecondary<C, M>, VulkanError> {
         let raw = self.into_parts();
-        device.as_raw().reset_command_buffer(raw, flags)?;
+        device.reset_command_buffer(raw, flags)?;
         Ok(InitialSecondary::from_raw(raw))
     }
 }

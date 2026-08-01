@@ -173,12 +173,12 @@ impl TriangleNode {
     ) {
         let pipeline = self.pipelines[0];
         unsafe {
-            device.as_raw().cmd_bind_pipeline(*cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_bind_pipeline(*cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
         }
 
         let combined_push: [f32; 5] = [rgb.red, rgb.green, rgb.blue, 1.0, scale];
         unsafe {
-            device.as_raw().cmd_push_constants(
+            device.cmd_push_constants(
                 *cb,
                 self.pipeline_layout,
                 vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,

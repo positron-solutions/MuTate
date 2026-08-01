@@ -103,8 +103,8 @@ impl Image {
 
     pub fn destroy(self, device: &Device) -> Result<(), VulkanError> {
         unsafe {
-            device.as_raw().destroy_image(self.image, None);
-            device.as_raw().free_memory(self.memory, None);
+            device.destroy_image(self.image, None);
+            device.free_memory(self.memory, None);
         }
         Ok(())
     }
@@ -123,7 +123,7 @@ impl Image {
             ..Default::default()
         };
 
-        let view = unsafe { device.as_raw().create_image_view(&view_ci, None)? };
+        let view = unsafe { device.create_image_view(&view_ci, None)? };
 
         Ok(ImageView {
             view,
@@ -225,7 +225,7 @@ pub struct ImageView {
 impl ImageView {
     pub fn destroy(self, device: &Device) -> Result<(), VulkanError> {
         unsafe {
-            device.as_raw().destroy_image_view(self.view, None);
+            device.destroy_image_view(self.view, None);
         }
         Ok(())
     }
@@ -383,7 +383,7 @@ pub fn transition_layout(
     };
 
     unsafe {
-        device.as_raw().cmd_pipeline_barrier(
+        device.cmd_pipeline_barrier(
             *cmd_buffer,
             src_stage,
             dst_stage,

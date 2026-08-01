@@ -137,7 +137,7 @@ impl Verticlysm {
 
         let region = buffer::buffer_image_copy_full(extent);
         unsafe {
-            device.as_raw().cmd_copy_buffer_to_image(
+            device.cmd_copy_buffer_to_image(
                 **cb,
                 self.output.as_ref().unwrap().buffer,
                 acquired_image.image,

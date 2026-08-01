@@ -120,7 +120,7 @@ impl SignalIntent {
             let wait_info = vk::SemaphoreWaitInfo::default()
                 .semaphores(std::slice::from_ref(&self.semaphore))
                 .values(std::slice::from_ref(&previous));
-            unsafe { device.as_raw().wait_semaphores(&wait_info, timeout) }?;
+            unsafe { device.wait_semaphores(&wait_info, timeout) }?;
         }
 
         // Signal the value for this intent.
@@ -128,7 +128,7 @@ impl SignalIntent {
             .semaphore(self.semaphore)
             .value(self.value);
 
-        unsafe { device.as_raw().signal_semaphore(&signal_info) }?;
+        unsafe { device.signal_semaphore(&signal_info) }?;
         Ok(self.value)
     }
 
@@ -233,7 +233,7 @@ impl BinarySemaphore {
     }
 
     pub fn destroy(self, device: &Device) {
-        unsafe { device.as_raw().destroy_semaphore(self.semaphore, None) };
+        unsafe { device.destroy_semaphore(self.semaphore, None) };
     }
 }
 

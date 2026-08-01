@@ -221,7 +221,7 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
 
     pub fn destroy(self, device: &Device) {
         unsafe {
-            device.as_raw().destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline(self.pipeline, None);
         }
         self.layout.destroy(device);
     }
