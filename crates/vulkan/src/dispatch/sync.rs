@@ -132,6 +132,15 @@ impl SignalIntent {
         Ok(self.value)
     }
 
+    /// Obtain a `WaitValue` for the previous intent.  Useful when the original signal intent has
+    /// already been dropped.
+    pub fn predecessor(&self) -> WaitValue {
+        WaitValue {
+            semaphore: self.semaphore,
+            value: self.value - 1,
+        }
+    }
+
     /// Produce a `WaitValue` for this intent.
     pub fn wait_value(&self) -> WaitValue {
         WaitValue {
