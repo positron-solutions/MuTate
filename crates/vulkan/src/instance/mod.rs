@@ -201,12 +201,32 @@ impl Instance {
 
         let app_info =
             vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
-        let validation_layers = [
-            // #[cfg(debug_assertions)]
-            // NOTE Leaving this on all the time because there are still issues in `--release`
-            // builds and we need to default to leaving it on via the dev shells or something.
-            c"VK_LAYER_KHRONOS_validation".as_ptr()
+
+        const REQUESTED_LAYERS: &[&core::ffi::CStr] = &[
+            #[cfg(debug_assertions)]
+            c"VK_LAYER_KHRONOS_validation",
         ];
+
+        let available_layers = unsafe {
+            entry
+                .enumerate_instance_layer_properties()
+                .expect("Failed to enumerate instance layers")
+        };
+
+        let mut layer_buf = [core::ptr::null(); REQUESTED_LAYERS.len()];
+        let mut layer_len = 0usize;
+
+        for &want in REQUESTED_LAYERS {
+            if available_layers
+                .iter()
+                .any(|p| p.layer_name_as_c_str().is_ok_and(|have| have == want)) {
+                    layer_buf[layer_len] = want.as_ptr();
+                    layer_len += 1;
+                } else {
+                    eprintln!("warning: layer {want:?} requested but not available; skipping");
+                }
+        }
+        let selected_layers = &layer_buf[..layer_len];
 
         let ext_ptrs: Vec<*const i8> = required_exts.iter().copied()
             .chain(INSTANCE_EXTENSIONS_CORE.iter().map(|s| s.as_ptr()))
@@ -215,7 +235,7 @@ impl Instance {
         let instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
             .enabled_extension_names(&ext_ptrs)
-            .enabled_layer_names(&validation_layers);
+            .enabled_layer_names(selected_layers);
         let instance = unsafe { entry.create_instance(&instance_ci, None).unwrap() };
         Self {
             entry,
