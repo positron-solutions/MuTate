@@ -196,7 +196,7 @@ impl<C: Capability> CommandPool<C, OneTime> {
 /// intended to complete before the next acquisition is attempted.
 ///
 /// The default submission model is [`OneTime`].  Buffers in the pool are used once per epoch
-pub struct PoolRing<C: Capability, const N: usize = 2, M: SubmissionModel = OneTime> {
+pub struct PoolRing<C: Capability, const N: usize = 3, M: SubmissionModel = OneTime> {
     pools: [CommandPool<C, M>; N],
     timeline: TimelineSemaphore,
     /// Timeline value each slot's prior lease promised to signal.  `0` on the first lap matches
