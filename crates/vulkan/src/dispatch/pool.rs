@@ -274,12 +274,13 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
     ) -> Result<(&mut CommandPool<C, M>, SignalIntent), VulkanError> {
         let slot = self.cursor;
         self.done_values[slot].wait(device, timeout)?;
-        unsafe {
-            device.reset_command_pool(
-                *self.pools[slot].as_raw(),
-                vk::CommandPoolResetFlags::empty(),
-            )?;
-        }
+
+        let slot = self.cursor;
+        self.done_values[slot].wait(device, timeout)?;
+        // SAFETY: the slot's prior lease signaled `done_values[slot]`, which we just waited on,
+        // so every buffer allocated from this pool has retired.
+        unsafe { self.pools[slot].reset(device, false)? };
+
         let intent = self.timeline.next_signal();
         self.done_values[slot] = intent.wait_value();
         self.cursor = (slot + 1) % N;
