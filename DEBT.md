@@ -9,7 +9,6 @@ Github.
 ## Contents
 
 - [Currently Paying Down](#currently-paying-down)
-  - [Moving Spectrum Analyzer to GPU](#moving-spectrum-analyzer-to-gpu)
   - [Externally Synchronized](#externally-synchronized)
   - [From Manual Destruction to Drop](#from-manual-destruction-to-drop)
   - [Error Handling](#error-handling)
@@ -33,25 +32,6 @@ Github.
 # Currently Paying Down
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
-
-## Moving Spectrum Analyzer to GPU
-
-The first-pass at the CQT has a number of problems:
-
-- Rather than constant Q (quality factor), some high frequency bins end up with 800 samples making them too precise making us miss energy between bins
-- Low frequency iso226 correction is to extreme or the bins we are applying it to are missing energy due to accuracy issues and then the correction drops them out entirely
-- No roll-on / roll-off behavior to speed up summing
-- Decimation does not low-pass off the high pitches, so we fold noise from higher pitches until it dominates lower bins
-
-There is more.  Filter banks require *engineering*.  See the [longer discussion](https://github.com/positron-solutions/MuTate/discussions/1)
-
-The problem that is almost in the way of development is that even with `--release` the frame time at 1440p will be around 12ms of *just* audio processing time. That is too much.  We need to move this onto the GPU and try to kill some of the other issues as soon as possible.
-
-Rather than making the CQT faster on the CPU, which will mainly involve doing things that worsen quality or fight very hard to avoid making it terrible, we should focus on moving to the GPU where we can suddenly do "expensive" things like adding a lot more filter bins and then make it cheaper because ... it's the right thing to do even though we have 512 cores or so 😉.
-
-The migration to Slang was going to itself require better engineering around pipeline-shader development.
-
-**All of the machine learning and graphics work depends on having a healthy spectrogram buffer on the device, and we don't have that yet.**
 
 ## Externally Synchronized
 
