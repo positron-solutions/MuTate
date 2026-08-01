@@ -137,7 +137,9 @@ Consider the `AudioConsumer` abstraction ripe to be rebuilt for shared ownership
 
 ## Logs & Tracing
 
-We're need some real infra for emitting error feedback.  Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
+You have a validation error.  A resource is being misused and the helpful validation layer output tells you the involved objects.  We want to just turn on tracing for the object type, find the modules creating the instances, then follow the problem instances around with more hands-on debugging.
+
+In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!  Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.
 
 ### For Now
 
