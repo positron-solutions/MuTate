@@ -17,7 +17,6 @@
 use std::{os::raw::c_char, ffi::{c_void, CStr}};
 
 use ash::vk;
-use smallvec::SmallVec;
 
 use mutate_assets as assets;
 #[cfg(feature="winit")]
