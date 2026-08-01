@@ -327,6 +327,7 @@ impl Instance {
 
         let checks: &[(&'static str, bool)] = &[
             ("shader_int16",                                            features2.features.shader_int16 == vk::TRUE),
+            ("shader_int64",                                            features2.features.shader_int64 == vk::TRUE),
             ("swapchain_maintenance1",                                  swapchain_maintenance1.swapchain_maintenance1 == vk::TRUE),
             ("1.1 storage_buffer16_bit_access",                         features_1_1.storage_buffer16_bit_access == vk::TRUE),
             // XXX Axe this feature

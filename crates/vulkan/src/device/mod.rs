@@ -99,7 +99,11 @@ impl Device {
             .maintenance4(true);
 
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
-            .features(vk::PhysicalDeviceFeatures::default().shader_int16(true))
+            .features(
+                vk::PhysicalDeviceFeatures::default()
+                    .shader_int16(true)
+                    .shader_int64(true),
+            )
             .push_next(&mut features_1_3)
             .push_next(&mut features_1_2)
             .push_next(&mut features_1_1);
