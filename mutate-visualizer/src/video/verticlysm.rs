@@ -16,25 +16,25 @@ use crate::audio;
 #[compute_pipeline(
     compute = stage!("verticlysm/verticlysm", Compute, c"main"),
     push = push!(VerticlysmPushConstants {
-        // Input
+        // Input channel rings and geometry.
         pub left_channel: DeviceAddress,
         pub right_channel: DeviceAddress,
-        // Output
-        pub output: DeviceAddress,
-
-        pub window_width: UInt,
-        pub window_height: UInt,
-
-        /// number of DFT bins (rows of the ring)
+        /// Number of DFT bins
         pub input_height: UInt,
-        /// ring width in columns; PoT
+        /// Ring columns.  Time.  Always PoT.
         pub input_width: UInt,
 
+        // The time slice being read.
         pub beg_col: UInt,
         pub beg_phase: Float,
         pub span: Float,
 
         // pub gain: DeviceAddress,
+
+        /// Output buffer
+        pub output: DeviceAddress,
+        pub output_width: UInt,
+        pub output_height: UInt,
     }),
 )]
 struct VerticlysmPipeline;
@@ -110,16 +110,16 @@ impl Verticlysm {
         let push = VerticlysmPushConstants {
             left_channel: dft.channels[0].into(),
             right_channel: dft.channels[1].into(),
-            output: self.output_address,
-
-            window_width: extent.width.into(),
-            window_height: extent.height.into(),
 
             input_height: dft.ring_height.into(),
             input_width: width.into(),
             beg_col: (beg_col as u32).into(),
             beg_phase: beg_phase.into(),
             span: (span as f32).into(),
+
+            output: self.output_address,
+            output_width: extent.width.into(),
+            output_height: extent.height.into(),
         };
         self.pipeline.push(device, **cb, &push);
 

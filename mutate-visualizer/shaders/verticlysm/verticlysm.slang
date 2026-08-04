@@ -40,40 +40,27 @@ cbuffer VerticlasmConstants {
     // Input buffers
     float* left_channel;
     float* right_channel;
-    // Output
-    uint* output;
 
-    uint window_width;
-    uint window_height;
-
-    // Column length == bin count of the DFT
+    // Column height == bin count of the DFT
     uint input_height;
-    // Ring buffer width.  Always PoT for easy wrap.
+    // Ring buffer width.  Rows are time.  Always PoT for easy wrap.
     uint input_width;
-    // The input ring is a representation of recent processed audio.  Columns of
-    // the ring are time slices over bins.  Rows are a single bin over time.  We
-    // will integrate a time slice for each frame.  The time slice has been
-    // converted on the host to physical indexes that may land between input
-    // indexes.  The host tracks index using integer index with partial index
-    // stored in a companion float.  The resulting range is along the columns of
-    // the column-major input ring.  Rows represent bins, so a slice of a row is
-    // a time slice of a bin.
 
-    // Physical column of the slice start, pre-masked by the host.
-    // Invariant: beg_col < input_width
+    // Physical column index.
     uint  beg_col;
-    // Phase within beg_col.  Invariant: [0.0, 1.0)
+    // Phase within beg_col.  [0.0, 1.0)
     float beg_phase;
-    // Length of the time slice in columns.  Always positive; wrap is implicit
-    // in the masked walk, never in this value.
-    // Invariant: (0.0, float(input_width)]
+    // Width of the time slice in input columns.
     float span;
 
     // NEXT a gain correction on the left and right channel will be applied to
     // each input using the identical indexing.
     // float* gains;
 
-
+    // Output buffer, row major and usually copied to a swapchain or other image.
+    uint* output;
+    uint output_width;
+    uint output_height;
 };
 
 // How many rows will each lane write the outputs for?  Looking up the left &
@@ -159,7 +146,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     float grad_r = mag_r - (1.0 - y_beg);       // green, bottom -> top
 
     uint y = tid.y * LANE_ROWS;           // note: `tix.y` typo in the source
-    let y_end = min(y + LANE_ROWS, window_height);
+    let y_end = min(y + LANE_ROWS, output_height);
     while (y < y_end) {
         output[y * window_width + tid.x] = pack_bgra(grad_l, grad_r, 0.0, 1.0);
         grad_l -= row_height;
