@@ -151,7 +151,7 @@ struct BinState {
 }
 
 // DEBT in the interest of time, not messing with specialization constants now.
-static const uint WINDOW_SLOTS = 16;
+static const uint WINDOW_SLOTS = 4;
 static const uint WINDOW_SLOT_MASK = WINDOW_SLOTS - 1;
 
 // Dispatch with x channels and divide bins by 32 and round up for y.

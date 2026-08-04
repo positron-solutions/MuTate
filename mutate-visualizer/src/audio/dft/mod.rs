@@ -121,7 +121,7 @@ const BINS: u32 = 2560 / 8;
 /// ticks lead to slightly better COLA for observing peaks and more finely spaced window sum ticks
 /// on low pitch bins.  This product does directly scale the major axis of work for each lane!
 // ♻️ Duplicated within the slang.
-const OVERLAP_RATIO: u32 = 16;
+const OVERLAP_RATIO: u32 = 4;
 const OUTPUT_COLUMNS: u32 = 128; // About 0.5s at 240Hz
 const _: () = assert!(
     OUTPUT_COLUMNS.is_power_of_two(),
