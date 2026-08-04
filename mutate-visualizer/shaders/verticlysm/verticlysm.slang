@@ -101,7 +101,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     for (uint c = 0; c < col_count; ++c) {
         // Overlap of column `c` with [col_phase, col_phase + span), in
         // relative space.  Relative, so this arithmetic never sees the seam.
-        let col_lo = max(float(c),       col_phase);
+        let col_lo = max(float(c), col_phase);
         let col_hi = min(float(c) + 1.0, col_phase + span);
         let col_weight = max(col_hi - col_lo, 0.0);
 

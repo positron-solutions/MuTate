@@ -6,11 +6,12 @@
 //!
 //! - Own upstream audio connection that copies chunks to a persistently mapped device buffer.
 //! - Call a user supplied callback with snapshots of the ring state and timing data.
-//! - Forward reclaim notifications for retired audio data back to the producer.
+//! - Forward retirement notifications for audio data back to the producer.
 //!
 //! When chunks arrive from the upstream audio server, they are written to the ring.  A coherent
 //! snapshot of the ring state and timing data is then given to the user-supplied [`ImportSink`].
-//! The timing data enables the `ImportSink` to smoothly track the incoming stream.
+//! The timing data enables the `ImportSink` and other downstreams to smoothly track the incoming
+//! raw audio stream.
 //!
 //! ## Reclaim
 //!
@@ -53,7 +54,6 @@
 //! // Initialize a stream onto the device (initialization not shown);
 //! let stream = context.import_to_device::<2, _>(&device, &choice, 48_000, "mutate", callback)?;
 //!
-//! // XXX demonstrate a competent ImportSink.
 //! ```
 //!
 //! ### Memory Layout
@@ -64,8 +64,8 @@
 //!
 //! ## Ownership
 //!
-//! The implementation creates a `Consumer` that owns a `AudioConsumer` via thread scope.
-//! `AudioConsume` owns the upstream pipewire stream (`AudioConnection`, not the entire
+//! The implementation creates an `AudioImport` that owns a `AudioConsumer` via thread scope.
+//! `AudioConsumer` owns the upstream pipewire stream (`AudioConnection`, not the entire
 //! `AudioContext`).
 
 // DEBT We've hit a mildly intersection between manual drop of Vulkan resources (which require
@@ -539,7 +539,7 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
         if self.control.closed.load(Ordering::Relaxed) {
             return Err(MutateError::Dropped);
         }
-        // XXX this could be a torn read.  Use untorn crate.
+        // XXX These two reads can tear.  Pair the reads with Untorn.
         let write = self.control.write_head.load(Ordering::Acquire);
         let read = self.control.read_head.load(Ordering::Relaxed);
         Ok((write - read) as u32)
@@ -558,7 +558,7 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
         }))
     }
 
-    /// Will set a flag for upstream and returns when that thread joins.  Therefore, blocking.
+    /// Will set a flag for upstream and returns when that thread joins.  This method blocks.
     pub fn destroy(&mut self, device: &Device) -> Result<(), MutateError> {
         // tombstone, join the reader thread, and destroy the allocation.
         self.control.closed.store(true, Ordering::Relaxed);

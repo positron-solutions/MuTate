@@ -437,8 +437,8 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
                 },
             );
 
-            // let window_function = WindowFunction::DolphChebyshev {…} {
-            //     attenuation_db: 70.0,
+            // let window_function = WindowFunction::DolphChebyshev {
+            //     attenuation_db: 80.0,
             // };
             let window_function = WindowFunction::Bartlett;
             let mut w = window_function.make_window_32(n as usize);
