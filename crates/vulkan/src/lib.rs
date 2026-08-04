@@ -192,7 +192,7 @@ pub(crate) mod internal {
 
     pub use std::ffi::CStr;
 
-    pub use ash::vk;
+    pub use ash::vk::{self, Handle as _Handle};
     pub use smallvec::SmallVec;
 
     pub use super::VulkanError;
