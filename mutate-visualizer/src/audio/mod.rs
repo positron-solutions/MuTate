@@ -41,6 +41,7 @@ pub struct CallbackResources {
     pool_ring: PoolRing<Graphics, 3>,
     dft: dft::Dft,
     outputs: Arc<Mutex<Option<AudioOutputs>>>,
+    last_consumed: u32,
     dead: AtomicBool, // Hacky tombstone to stop dispatches faster.
 }
 
@@ -116,6 +117,7 @@ impl Audio {
             pool_ring: PoolRing::new(device, &callback_queue)?,
             dft,
             outputs: outputs.clone(),
+            last_consumed: 0,
             dead: false.into(),
         }));
 
@@ -158,8 +160,19 @@ impl Audio {
 
             *outputs.lock().unwrap() = Some(AudioOutputs { dft: output });
 
-            // Returns all of the data to allow it all to be reclaimed
-            Ok(consumed)
+            // XXX Super hack here, but consistent.  We should catch up a bit differently to try and
+            // ensure good recovery after allowing the producer to stall.  The real fix is to skip
+            // half of the input and allow the producer to reclaim it.  The remaining half should
+            // then be read a bit faster to get back up to the write head.  We want maximum ring
+            // slack because the consumer slews in **output**.  This callback is reading **input**.
+            if state.occupied_len() > 1024 {
+                res.last_consumed = 1024;
+                Ok(consumed - 1024)
+            } else {
+                let last = res.last_consumed;
+                res.last_consumed = consumed;
+                Ok(last)
+            }
         };
 
         // Create the import, which fires the callback.
