@@ -86,11 +86,9 @@ Expectations are that memory usage will be relatively low but less predictable d
 
 ### For Now
 
-Drain CBs and swapchains or even just `device_wait_idle`.  This loses frames, but until we have proper epoch tracking over everything in flight, or something simpler such as a wait-four-frames heuristic, this is the best we can do.  (Wait four frames and pack everything into a deletion / reclaim queue!)
+We have a really basic deletion queue.  It is no replacement for dependency reference counting and having the runtime smartly handle this for us, but it bails us out when the manual destructor has no idea who is still using resources.
 
-We don't really have any infra for one-big-allocation or deletion & compaction.  Specs will just hydrate kind of dumbly at first while we nail the ergonomics.
-
-Don't go crazy avoiding copies just yet, especially where sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.  Until we have a solution that will do better than the driver, just allocate for each image / buffer.
+We don't really have any infra for one-big-allocation or deletion & compaction.  Specs will just hydrate kind of dumbly at first while we nail the ergonomics.  Drain CBs and swapchains or even just `device_wait_idle` for tricky destruction cases like swapchain recreation.
 
 ## Reactive Updates
 
