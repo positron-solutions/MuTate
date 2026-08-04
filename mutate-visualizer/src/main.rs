@@ -279,11 +279,19 @@ impl ApplicationHandler for MutateApp {
         };
         // DEBT Deletion queue 🥵
         active.audio.destroy(&mut active.device);
-        active.device.wait_idle().unwrap();
-        for (_, wc) in active.windows.drain() {
-            wc.destroy(&mut active.device);
-        }
-        active.device.destroy();
+        // XXX This horrible little hunk was an attempt to atone for other sins but is also not
+        // fixing the root problems anywhere close to where they need to really die.
+        match active.device.wait_idle() {
+            Ok(_) => {
+                for (_, wc) in active.windows.drain() {
+                    wc.destroy(&mut active.device);
+                }
+                active.device.destroy();
+            }
+            Err(e) => {
+                eprintln!("Device probably lost: {:?}", e);
+            }
+        };
     }
 }
 
