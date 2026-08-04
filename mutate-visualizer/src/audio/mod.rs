@@ -38,7 +38,7 @@ pub struct CallbackResources {
     /// How far have we read into the data so far?
     // NOTE unbuffered, same clock
     consume_head: u64,
-    pool_ring: PoolRing<Graphics, 3>,
+    pool_ring: PoolRing<Graphics, 4>,
     dft: dft::Dft,
     outputs: Arc<Mutex<Option<AudioOutputs>>>,
     last_consumed: u32,
