@@ -110,11 +110,12 @@ impl Audio {
         let callback_queue = queue.clone();
         let callback_device = device.as_raw().clone();
         let callback_outputs = outputs.clone();
+        let pool_ring = PoolRing::new(device, &callback_queue)?;
 
         let dft = dft::Dft::new(device, ring_layout)?;
         let resources = Box::into_raw(Box::new(CallbackResources {
             consume_head: 0,
-            pool_ring: PoolRing::new(device, &callback_queue)?,
+            pool_ring,
             dft,
             outputs: outputs.clone(),
             last_consumed: 0,
@@ -135,7 +136,14 @@ impl Audio {
                 return Ok(state.occupied_len());
             }
 
-            let (pool, intent) = res.pool_ring.acquire(device, 0)?;
+            let (pool, intent) = match res.pool_ring.acquire(device, 16_000_000_000) {
+                Ok(acquired) => acquired,
+                Err(e) => {
+                    println!("Pool acquisition: {:?}", e);
+                    // XXX this error path has not been scrutenized.  Or encountered.
+                    return Ok(0);
+                }
+            };
             let cb = pool.primary(device)?;
 
             let regions = state.regions_since(res.consume_head);
@@ -196,7 +204,6 @@ impl Audio {
         } = self;
         // Notify the callback that it should stop sending anything downstream
         let resources = unsafe { Box::from_raw(resources) };
-        // XXX This is clean sometimes.  At least the crashes clean up somewhat fast.
         resources.dead.store(true, Ordering::Release);
 
         // Destroy the audio stream first so it will stop calling our callback.

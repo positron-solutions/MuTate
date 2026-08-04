@@ -132,6 +132,12 @@ macro_rules! cb_state {
                 &self.raw
             }
         }
+
+        impl< $( $param: $bound ),+ > std::fmt::Debug for $name< $( $param ),+ > {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Debug::fmt(&self.raw, f)
+            }
+        }
     };
 }
 

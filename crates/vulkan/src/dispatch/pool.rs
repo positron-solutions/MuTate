@@ -189,6 +189,12 @@ impl<C: Capability> CommandPool<C, OneTime> {
     }
 }
 
+impl<C: Capability, M: SubmissionModel> std::fmt::Debug for CommandPool<C, M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.raw, f)
+    }
+}
+
 // NEXT with_pool macro for easy testing?
 
 /// A ring of [`CommandPool`] leases.  Intended for one-pool-per-epoch style usages where a pool is
@@ -309,6 +315,19 @@ impl<C: Capability, M: SubmissionModel, const N: usize> PoolRing<C, N, M> {
             pool.destroy(device);
         }
         timeline.destroy(device);
+    }
+}
+
+impl<C: Capability, M: SubmissionModel, const N: usize> std::fmt::Debug for PoolRing<C, N, M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolRing")
+            .field("pools", &self.pools)
+            .field("cursor", &self.cursor)
+            .field(
+                "done_values",
+                &format_args!("{:?}", self.done_values.map(|w| w.value())),
+            )
+            .finish()
     }
 }
 
