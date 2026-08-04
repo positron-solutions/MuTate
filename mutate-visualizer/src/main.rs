@@ -106,6 +106,9 @@ impl WindowContext {
                 }
             }
         }
+
+        // Enable deferred deletion to progress.
+        device.deletion_queue.tick();
     }
 
     fn handle_resize(&mut self, device: &mut Device) -> Result<(), MutateError> {
