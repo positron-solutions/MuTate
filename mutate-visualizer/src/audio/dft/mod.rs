@@ -189,7 +189,7 @@ pub struct DftDispatch<const CHANNELS: usize = 2> {
         /// Physical start of the input samples.
         input_beg: UInt,
         /// Physical end index of the input samples.
-        input_end: UInt,
+        input_count: UInt,
 
         /// Host calculated starting offset, the phase between the output and input clock.  Wish I can
         /// find a cleaner way to explain it.  In a hurry to get to the debugging.
@@ -542,7 +542,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             static_base: self.static_base,
             dynamic_base: self.dynamic_base,
             input_beg: (self.read_head as u32 & self.input_mask).into(),
-            input_end: (((self.read_head + count as u64) as u32) & self.input_mask).into(),
+            input_count: count.into(),
             column_ticks_beg: self.column_ticks.into(),
             output_column: self.output_column.into(),
         };
