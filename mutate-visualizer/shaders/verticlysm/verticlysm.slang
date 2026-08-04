@@ -69,8 +69,11 @@ static const uint LANE_ROWS = 128;
 // The magnitude calculation is re-used by each lane for LANE_ROWS rows.
 [numthreads(32, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {
+    // The +1 ensures odd output widths include the middle within bounds.
+    let half_width = (output_width + 1) >> 1;
+
     // Bounds check masks off lanes that would draw outside of the available area.
-    if ((tid.x >= window_width) || (tid.y * LANE_ROWS >= window_height))
+    if ((tid.x >= half_width) || (tid.y * LANE_ROWS >= output_height))
         return;
 
     // Calculate magnitude.  We will re-sample the bins that land within this
@@ -89,7 +92,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     // Bin axis: rows of the ring, re-sampled onto output buffer x.
     let bins_per_px = float(input_height) / float(half_width);
     let bin_beg   = float(tid.x) * bins_per_px;
-    let bin_end   = (float(tid.x) + 1.0) * bins_per_px;
+    let bin_end   = min((float(tid.x) + 1.0) * bins_per_px, float(input_height));
     let bin_first = uint(floor(bin_beg));
     let bin_count = uint(ceil(bin_end)) - bin_first;
 
@@ -142,10 +145,17 @@ void main(uint3 tid : SV_DispatchThreadID) {
     float grad_l = mag_l - y_beg; // blue, top -> bottom
     float grad_r = mag_r - (1.0 - y_beg); // green, bottom -> top
 
+    // Calculate the mirroring of the x coordinate.
+    let out_x = tid.x;
+    let out_x_reflected = output_width - 1 - tid.x;
+
     uint y = tid.y * LANE_ROWS;
     let y_end = min(y + LANE_ROWS, output_height);
     while (y < y_end) {
-        output[y * window_width + tid.x] = pack_bgra(grad_l, grad_r, 0.0, 1.0);
+        let row_base = y * output_width;
+        let texel = pack_bgra(grad_l, grad_r, 0.0, 1.0);
+        output[row_base + out_x] = texel;
+        output[row_base + out_x_reflected] = texel;
         grad_l -= row_height;
         grad_r += row_height;
         ++y;

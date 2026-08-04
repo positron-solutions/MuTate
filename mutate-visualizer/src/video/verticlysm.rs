@@ -125,7 +125,10 @@ impl Verticlysm {
 
         const LANE_WIDTH: u32 = 32;
         const LANE_ROWS: u32 = 128;
-        let dispatch_x = extent.width.div_ceil(LANE_WIDTH);
+        // Each lane writes its column and its mirror, so dispatch half, rounding up for the middle
+        // output.
+        let dispatch_x = extent.width.div_ceil(2).div_ceil(LANE_WIDTH);
+
         let dispatch_y = extent.height.div_ceil(LANE_ROWS);
         self.pipeline
             .dispatch(device, **cb, dispatch_x, dispatch_y, 1);
