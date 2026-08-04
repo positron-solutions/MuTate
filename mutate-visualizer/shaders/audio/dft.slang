@@ -245,8 +245,9 @@ void main(uint3 tid : SV_DispatchThreadID) {
 
             bank(open_area, banked_level, level,
                  dft_cfg.ticks_per_column - banked_ticks);
+
             out_image[output_column * dft_cfg.bin_count + bin] =
-                open_area * inv_ticks_per_column;
+                pow((open_area * inv_ticks_per_column), 0.67);
 
             open_area    = 0.0f;
             banked_level = level;
