@@ -393,7 +393,9 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
             while !writer_control.closed.load(Ordering::Relaxed) {
                 // Wait up to 16ms for a chunk and then warn that chunks are late.
                 match rx.wait(std::time::Duration::from_micros(16_000)) {
-                    Ok(got) => {
+                    // LIES we don't use `got` because it's not guaranteed available until we copy
+                    // it from the pipewire ingestion ring to our scratch buffer.
+                    Ok(_got) => {
                         let read = rx.read(&mut scratch)?;
                         let frame_bytes = 4 * CHANNELS;
                         // NOTE not checking for partial samples as pipewire seems well-behaved so far.
