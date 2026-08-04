@@ -209,7 +209,10 @@ fn hamming(x: f64) -> f64 {
 /// Integrates discrete bin weights given a window_fn.  Will automatically normalize windows where
 /// normalization in the window_fn is hard.
 pub fn bin_weights(window_fn: &impl Fn(f64) -> f64, bins: usize) -> Vec<f64> {
-    let samples_per_bin = 512;
+    #[cfg(debug_assertions)]
+    let samples_per_bin = 1;
+    #[cfg(not(debug_assertions))]
+    let samples_per_bin = 64;
     let mut weights = Vec::with_capacity(bins);
 
     for bin in 0..bins {
