@@ -568,7 +568,12 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
         } else {
             Ok(Ok(()))
         };
-        self.buffer.destroy(device)?;
+
+        // MAYBE  still give the buffer back and let the caller queue the deletion.
+        // DEBT no sub-allocator, so memory also needs deferred deletion.
+        device.deletion_queue.push(self.buffer.buffer);
+        device.deletion_queue.push(self.buffer.memory);
+
         join_result.map_err(|_| MutateError::AudioTerminate)?
     }
 }

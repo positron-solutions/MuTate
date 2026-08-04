@@ -602,6 +602,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
     }
 
     pub fn destroy(self, device: &Device) {
+        device.deletion_queue.push(self.timeline.into_raw());
         self.allocation.destroy(device);
         self.pipeline.destroy(device);
     }
