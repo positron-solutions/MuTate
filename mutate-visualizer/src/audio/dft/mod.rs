@@ -112,6 +112,7 @@ mod plan;
 use std::mem::MaybeUninit;
 
 use ash::vk;
+use mutate_lib::tree::TreeSum;
 use mutate_lib::{self as utate, audio::import::RingLayout, prelude::*};
 use utate::dsp::{self, bank, window::WindowFunction};
 
@@ -441,11 +442,20 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             //     attenuation_db: 80.0,
             // };
             let window_function = WindowFunction::Bartlett;
-            let mut w = window_function.make_window_32(n as usize);
+            // let mut w = window_function.make_window_32(n as usize);
+            // let s: f32 = w.iter().sum();
+            // println!("weights sum: {}", s);
+
+            let mut w = window_function.make_window(n as usize); // f64
+            let cg: f64 = w.iter().copied().tree_sum();
+            // let scale = b.iso226_gain as f64 / cg;
+            let scale = 1.0 / cg;
+            let w: Vec<f32> = w.iter().map(|x| (x * scale) as f32).collect();
+
             // Pre-multiply the weights by an iso226 gain levelling curve so that bins come out
             // approximately perceptually flat in relative RMS/SPL
-            let scale = b.iso226_gain as f32;
-            w.iter_mut().for_each(|x| *x *= scale);
+            // let scale = b.iso226_gain as f32;
+            // w.iter_mut().for_each(|x| *x *= scale);
 
             plan::put_slice(stat, weights[bin], &w);
         }
