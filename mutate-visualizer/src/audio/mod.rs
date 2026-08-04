@@ -24,7 +24,10 @@
 pub mod dft;
 pub mod rms;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 use ash::vk;
 use mutate_lib::{self as utate, audio, prelude::*};
@@ -38,6 +41,7 @@ pub struct CallbackResources {
     pool_ring: PoolRing<Graphics, 3>,
     dft: dft::Dft,
     outputs: Arc<Mutex<Option<AudioOutputs>>>,
+    dead: AtomicBool, // Hacky tombstone to stop dispatches faster.
 }
 
 /// Until some kind of reactive parameter design is done, cram outputs onto this struct so that each
@@ -112,6 +116,7 @@ impl Audio {
             pool_ring: PoolRing::new(device, &callback_queue)?,
             dft,
             outputs: outputs.clone(),
+            dead: false.into(),
         }));
 
         // Pass resources address into the callback.  Ownership and cleanup remain with us.
@@ -121,6 +126,12 @@ impl Audio {
             let device = &callback_device;
             let timing = state.timing;
             let res = unsafe { &mut *(addr as *mut CallbackResources) };
+
+            if res.dead.load(Ordering::Acquire) {
+                // Stop advancing, stop dispatching, tell pipewire upstream it's okay to reclaim
+                // everything.
+                return Ok(state.occupied_len());
+            }
 
             let (pool, intent) = res.pool_ring.acquire(device, 0)?;
             let cb = pool.primary(device)?;
@@ -170,9 +181,14 @@ impl Audio {
             audio_import: mut consumer,
             outputs,
         } = self;
+        // Notify the callback that it should stop sending anything downstream
+        let resources = unsafe { Box::from_raw(resources) };
+        // XXX This is clean sometimes.  At least the crashes clean up somewhat fast.
+        resources.dead.store(true, Ordering::Release);
+
         // Destroy the audio stream first so it will stop calling our callback.
         consumer.destroy(device)?;
-        let resources = unsafe { Box::from_raw(resources) };
+
         // If you're getting validation issues, check that sinks (video) are being killed first.
         resources.pool_ring.drain(device, 1_000_000_000)?;
         resources.pool_ring.destroy(device);
