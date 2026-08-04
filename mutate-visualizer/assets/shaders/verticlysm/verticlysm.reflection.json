@@ -25,36 +25,12 @@
                             "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
                         },
                         {
-                            "name": "output",
-                            "type": {
-                                "kind": "pointer",
-                                "valueType": "uint"
-                            },
-                            "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
-                        },
-                        {
-                            "name": "window_width",
-                            "type": {
-                                "kind": "scalar",
-                                "scalarType": "uint32"
-                            },
-                            "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
-                        },
-                        {
-                            "name": "window_height",
-                            "type": {
-                                "kind": "scalar",
-                                "scalarType": "uint32"
-                            },
-                            "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
-                        },
-                        {
                             "name": "input_height",
                             "type": {
                                 "kind": "scalar",
                                 "scalarType": "uint32"
                             },
-                            "binding": {"kind": "uniform", "offset": 32, "size": 4, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
                         },
                         {
                             "name": "input_width",
@@ -62,7 +38,7 @@
                                 "kind": "scalar",
                                 "scalarType": "uint32"
                             },
-                            "binding": {"kind": "uniform", "offset": 36, "size": 4, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
                         },
                         {
                             "name": "beg_col",
@@ -70,7 +46,7 @@
                                 "kind": "scalar",
                                 "scalarType": "uint32"
                             },
-                            "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
                         },
                         {
                             "name": "beg_phase",
@@ -78,7 +54,7 @@
                                 "kind": "scalar",
                                 "scalarType": "float32"
                             },
-                            "binding": {"kind": "uniform", "offset": 44, "size": 4, "elementStride": 0}
+                            "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
                         },
                         {
                             "name": "span",
@@ -86,7 +62,31 @@
                                 "kind": "scalar",
                                 "scalarType": "float32"
                             },
+                            "binding": {"kind": "uniform", "offset": 32, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "output",
+                            "type": {
+                                "kind": "pointer",
+                                "valueType": "uint"
+                            },
+                            "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "output_width",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
                             "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "output_height",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 52, "size": 4, "elementStride": 0}
                         }
                     ]
                 },
@@ -114,36 +114,12 @@
                                 "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
                             },
                             {
-                                "name": "output",
-                                "type": {
-                                    "kind": "pointer",
-                                    "valueType": "uint"
-                                },
-                                "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
-                            },
-                            {
-                                "name": "window_width",
-                                "type": {
-                                    "kind": "scalar",
-                                    "scalarType": "uint32"
-                                },
-                                "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
-                            },
-                            {
-                                "name": "window_height",
-                                "type": {
-                                    "kind": "scalar",
-                                    "scalarType": "uint32"
-                                },
-                                "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
-                            },
-                            {
                                 "name": "input_height",
                                 "type": {
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
-                                "binding": {"kind": "uniform", "offset": 32, "size": 4, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
                             },
                             {
                                 "name": "input_width",
@@ -151,7 +127,7 @@
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
-                                "binding": {"kind": "uniform", "offset": 36, "size": 4, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
                             },
                             {
                                 "name": "beg_col",
@@ -159,7 +135,7 @@
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
-                                "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
                             },
                             {
                                 "name": "beg_phase",
@@ -167,7 +143,7 @@
                                     "kind": "scalar",
                                     "scalarType": "float32"
                                 },
-                                "binding": {"kind": "uniform", "offset": 44, "size": 4, "elementStride": 0}
+                                "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
                             },
                             {
                                 "name": "span",
@@ -175,11 +151,35 @@
                                     "kind": "scalar",
                                     "scalarType": "float32"
                                 },
+                                "binding": {"kind": "uniform", "offset": 32, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "output",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "uint"
+                                },
+                                "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "output_width",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
                                 "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "output_height",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 52, "size": 4, "elementStride": 0}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 52, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 56, "elementStride": 0}
                 }
             }
         }
