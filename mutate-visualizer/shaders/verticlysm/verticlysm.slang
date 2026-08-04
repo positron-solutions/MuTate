@@ -1,36 +1,35 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// Vertaclysm
+// Verticlysm
 //
-// DFT bins mapped across the x-axis of the screen with a slight vertical twist.
+// DFT bins mapped across the x-axis of the output buffer and rendered
+// vertically.
 //
-// The input ring, is an image ring.  The rows of the input are the number of
-// DFT bins.  The columns of the ring are time.  The data is stored column
-// major.  We map the rows onto the x-axis.  The time slice controls the columns
-// that we will integrate.  The time slice end points are defined with index +
-// phase.
+// The upstream DFT output is a ring for each channel stored as a column-major
+// buffer of f32s.  The rows of the input are DFT bins.  The columns of the ring
+// are time.  The data is stored column major.
 //
-// The host has converted logical index to physical index already, and the
-// logical width of the input is a PoT value for easy wrapping math.  Each time
-// step in the output is considered to start exactly at the index with phase =
-// 0.0 and ends when phase = 1.0, when the index will increment.  Bins like-wise
-// start at 0.0 and end at width for x-axis re-sampling.
+// We map the bin rows onto the output buffer's x-axis.  A slice of audio output
+// bins lands within each x pixel.  This slice of rows is then integrated over a
+// time slice, a range of the columns.  The integration produces the magnitude
+// of energy within the time slice and the audio pitch range.
 //
-// Because the bins map onto the x-axis, we first find the magnitude of each bin
-// integrated over the time slice.  These magnitudes can be used across many
-// rows.
+// The y axis of the output buffer re-uses the magnitude and only the way
+// magnitude is drawn changes along the y axis.  Dispatch geometry takes
+// advantage of this re-use of the by giving each lane a output buffer column
+// and using one lane of dispatch to write `LANE_ROWS` of that column.
 //
-// The rest of the routine writes outputs over `LANE_ROWS` rows, re-using the
-// magnitudes over a number of rows.  The outputs draw vertical gradient lines
-// along the column of the screen, from a start y to an end y.
+// The host has converted logical index to physical index already.  Physical
+// wrap is performed at the input ring row width, which is guaranteed to be PoT.
 //
-// Both left and right channels draw as a vertical gradient.  Left is blue and
-// makes a gradient from top to bottom.  Right is green and makes a gradient
-// from bottom to top.  The gradient math starts at the magnitude and drops by
-// 1.0 per screen.  A magnitude of 0.6 will become zero when the gradient is 0.6
-// screens from the edge.  A magnitude of 1.0 will be 0.5 in the middle of the
-// screen.  A magnitude of 0.1 is 0.0 at 0.1 screens from the edge.
+// Both left and right channels are drawn as a vertical gradient along the
+// column.  Left is blue and makes a gradient from top to bottom.  Right is
+// green and makes a gradient from bottom to top.  The gradient math starts at
+// the magnitude and drops by 1.0 per output buffer.  A magnitude of 0.6 will
+// become zero when the gradient is 0.6 output buffers from the edge.  A
+// magnitude of 1.0 will be 0.5 in the middle of the output buffer.  A magnitude
+// of 0.1 is 0.0 at 0.1 output buffers from the edge.
 
 // NEXT look at snapping the bin edges during interpolation to avoid
 // pathological slivers of bins when bins and pixels align almost exactly.
@@ -63,9 +62,7 @@ cbuffer VerticlasmConstants {
     uint output_height;
 };
 
-// How many rows will each lane write the outputs for?  Looking up the left &
-// right magnitude can be re-used across the height of the window, but to
-// parallelize, we use one magnitude calculation for 128 output writes.
+// Each mangitude calculation is re-used to write outputs on this many rows.
 static const uint LANE_ROWS = 128;
 
 // Warps operate on 32 pixel wide, LANE_ROWS tall areas of the output image.
@@ -77,7 +74,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
         return;
 
     // Calculate magnitude.  We will re-sample the bins that land within this
-    // screen x and integrate the same bin slice over the time slice to obtain
+    // output buffer x and integrate the same bin slice over the time slice to obtain
     // the magnitude.  Remember, bins are rows and columns are time.
     float acc_l = 0.0;
     float acc_r = 0.0;
@@ -89,8 +86,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
     let col_first = beg_col & col_mask;
     let col_count = uint(ceil(col_phase + span)); // host ensures <= input_width
 
-    // Bin axis: rows of the ring, re-sampled onto screen x.
-    let bins_per_px = float(input_height) / float(window_width);
+    // Bin axis: rows of the ring, re-sampled onto output buffer x.
+    let bins_per_px = float(input_height) / float(half_width);
     let bin_beg   = float(tid.x) * bins_per_px;
     let bin_end   = (float(tid.x) + 1.0) * bins_per_px;
     let bin_first = uint(floor(bin_beg));
@@ -139,13 +136,13 @@ void main(uint3 tid : SV_DispatchThreadID) {
     let mag_r = sqrt(acc_r * inv_area) * DEBUG_GAIN;
 
     // Iterate over Y for LANE_ROWS output rows, writing BGRA.
-    let row_height  = 1.0 / float(window_height);  // one row in screen units
+    let row_height  = 1.0 / float(output_height);
     let y_beg = float(tid.y * LANE_ROWS) * row_height;
 
-    float grad_l = mag_l - y_beg;               // blue, top -> bottom
-    float grad_r = mag_r - (1.0 - y_beg);       // green, bottom -> top
+    float grad_l = mag_l - y_beg; // blue, top -> bottom
+    float grad_r = mag_r - (1.0 - y_beg); // green, bottom -> top
 
-    uint y = tid.y * LANE_ROWS;           // note: `tix.y` typo in the source
+    uint y = tid.y * LANE_ROWS;
     let y_end = min(y + LANE_ROWS, output_height);
     while (y < y_end) {
         output[y * window_width + tid.x] = pack_bgra(grad_l, grad_r, 0.0, 1.0);
