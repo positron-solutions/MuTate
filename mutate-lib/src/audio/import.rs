@@ -383,7 +383,6 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
         // world exists, this just works.
         let mut view = buffer.write_view(device);
         let writer_control = control.clone();
-        let writer_layout = ring_layout.clone();
         let mut timing = rx.timing()?;
 
         let read_thread_handle = Some(std::thread::spawn(move || {
