@@ -23,7 +23,7 @@ use std::ffi::{c_void, CStr};
 
 use mutate_assets as assets;
 
-use crate::internal::*;
+use crate::{internal::*, resource::retired};
 
 pub struct Device {
     pub physical_device: vk::PhysicalDevice,
@@ -33,6 +33,7 @@ pub struct Device {
 
     /// Descriptor table and runtime management of its entries.
     pub descriptors: descriptors::Descriptors,
+    pub deletion_queue: retired::DeletionQueue,
 
     // XXX move to some other higher context?  PSOs are device-dependent, and we're using this to
     // get PSOs, so probably the other context is runtime support for shader loading.
@@ -133,6 +134,7 @@ impl Device {
         let queues = queue::Queues::new(&raw, queue_plan);
         let descriptors = descriptors::Descriptors::new(&raw).unwrap();
         let memory = memory::Memory::new(instance, &physical_device, &raw);
+        let deletion_queue = retired::DeletionQueue::new(&raw);
 
         Self {
             physical_device,
@@ -140,6 +142,7 @@ impl Device {
             memory,
             queues,
             descriptors,
+            deletion_queue,
 
             // XXX there is another context where this will likely belong better.
             assets: assets::AssetDirs::new(),
@@ -170,6 +173,7 @@ impl Device {
     pub fn destroy(&self) {
         unsafe {
             self.descriptors.destroy(&self.raw);
+            self.deletion_queue.drain();
             self.raw.destroy_device(None);
         };
     }
