@@ -541,9 +541,9 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
             return Err(MutateError::Dropped);
         }
         // XXX These two reads can tear.  Pair the reads with Untorn.
+        let read = self.control.read_head.load(Ordering::Acquire);
         let write = self.control.write_head.load(Ordering::Acquire);
-        let read = self.control.read_head.load(Ordering::Relaxed);
-        Ok((write - read) as u32)
+        Ok(write.saturating_sub(read) as u32)
     }
 
     /// Physical base address of each channel's ring sub-allocation.  **Bare use of these addresses
