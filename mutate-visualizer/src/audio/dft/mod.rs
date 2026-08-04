@@ -123,6 +123,11 @@ const BINS: u32 = 2560 / 8;
 // ♻️ Duplicated within the slang.
 const OVERLAP_RATIO: u32 = 16;
 const OUTPUT_COLUMNS: u32 = 128; // About 0.5s at 240Hz
+const _: () = assert!(
+    OUTPUT_COLUMNS.is_power_of_two(),
+    "output ring must be PoT for wrap masking",
+);
+const Q: f32 = 32.0; // Goal is 300. Will take some effort.
 
 // NOTE Example output buffer size: 2560 bins * 128 columns * 4 bytes per F32 output * 2 channels ~=
 // 2.5MB.  At 60Hz, the 240Hz ring is using about 4 columns per frame.  Producer lapping is roughly

@@ -87,7 +87,6 @@ impl Verticlysm {
             .barrier_compute_pre(&cb, device);
 
         let width = dft.ring_width;
-        debug_assert!(width.is_power_of_two(), "shader masks with input_width - 1");
 
         // Leading edge in fractional logical columns: closed columns plus the
         // fraction of the open column the device has already accumulated.
