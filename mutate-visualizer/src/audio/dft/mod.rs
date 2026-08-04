@@ -348,7 +348,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             .iter()
             .map(|b| {
                 // Conservative q just to get to debugging!
-                let q: f32 = 8.0;
+                let q: f32 = Q;
                 ((q * SAMPLE_RATE as f32 / (b.center as f32)).ceil() as u32)
                     .next_multiple_of(OVERLAP_RATIO)
             })

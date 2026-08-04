@@ -134,7 +134,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     // let mag_l = acc_l * inv_area;
     // let mag_r = acc_r * inv_area;
 
-    static const float DEBUG_GAIN = 0.001;
+    static const float DEBUG_GAIN = 45.0;
     let mag_l = sqrt(acc_l * inv_area) * DEBUG_GAIN;
     let mag_r = sqrt(acc_r * inv_area) * DEBUG_GAIN;
 
