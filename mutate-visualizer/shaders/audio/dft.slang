@@ -118,6 +118,8 @@ struct BinConfig {
     uint window_weights_offset;
     // Number of window weights.
     uint window_weights_count;
+    // EMA decay factor for phase coherence.
+    float coherence_alpha;
 }
 
 // Bin dynamic states.  Window sums and accumulator state both live here.
@@ -131,8 +133,6 @@ struct BinState {
     // Coerces to `Complex*`.  Offset from `dynamic_base`.  Always
     // `WINDOW_SLOTS` slots.
     uint window_sums_offset;
-    // Slot that is next to retire.
-    uint next_retire;
     // Samples elapsed since the retirement that produced `ramp_end`.  In
     // [0, window_spacing).  Retirement fires when it reaches window_spacing.
     uint ramp_samples;
@@ -148,11 +148,18 @@ struct BinState {
     // level-ticks.  Divided by `DftConfig::ticks_per_column` at the close,
     // which makes the stored value the column mean.
     float open_area;
+
+    /// Phase tracking
+    Complex z_prev;
+    Complex d_sum;
+    float   d_pow;
 }
 
 // DEBT in the interest of time, not messing with specialization constants now.
 static const uint WINDOW_SLOTS = 4;
 static const uint WINDOW_SLOT_MASK = WINDOW_SLOTS - 1;
+static const float COH_FLOOR = 0.1;
+static const float COH_SCALE = 3.3;
 
 // Dispatch with x channels and divide bins by 32 and round up for y.
 [numthreads(1, 32, 1)]
@@ -165,7 +172,6 @@ void main(uint3 tid : SV_DispatchThreadID) {
     let dynamic_base = pc.dynamic_base;
 
     DftConfig dft_cfg = *(Ptr<DftConfig>)static_base;
-    if (bin >= dft_cfg.bin_count) { return; }
 
     Ptr<ChannelConfig> channel_cfgs =
         (Ptr<ChannelConfig>)(static_base + (uint64_t)dft_cfg.channel_configs_offset);
@@ -189,15 +195,18 @@ void main(uint3 tid : SV_DispatchThreadID) {
     Ptr<float> window_weights =
         (Ptr<float>)(static_base + (uint64_t)bin_cfg.window_weights_offset);
 
-    Ptr<Complex> window_sums =
+    Ptr<Complex> window_sums_spill =
         (Ptr<Complex>)(dynamic_base + (uint64_t)state.window_sums_offset);
+
+    Complex sums[WINDOW_SLOTS];
+    [ForceUnroll]
+    for (uint i = 0; i < WINDOW_SLOTS; ++i) { sums[i] = window_sums_spill[i]; }
 
     Ptr<float> out_image =
         (Ptr<float>)(dynamic_base + (uint64_t)channel_state.output_image_offset);
 
     // Carried filter state.
     Complex phasor = state.phasor;
-    uint next_retire  = state.next_retire;
     uint ramp_samples = state.ramp_samples;
 
     // Carried integrator state.  The ramp on display over the segment we are
@@ -205,11 +214,22 @@ void main(uint3 tid : SV_DispatchThreadID) {
     float ramp_beg = state.ramp_beg;
     float ramp_end = state.ramp_end;
     float open_area = state.open_area;
+    Complex z_prev = state.z_prev;
+    Complex d_sum = state.d_sum;
+    float d_pow = state.d_pow;
+
+    // Host packs bins into 32-wide groups of identical window length, so both
+    // of these are wave-uniform.  Broadcasting from lane 0 is what makes that
+    // fact visible to the compiler -- without it the retirement test below is
+    // divergent as far as codegen is concerned, and the run-length restructuring
+    // is not legal.
+    let window_spacing = WaveReadLaneFirst(bin_cfg.window_spacing);
+    let weights_count = WaveReadLaneFirst(bin_cfg.window_weights_count);
 
     // Reciprocals hoisted out of the sample loop.  Each is a ratio against an
     // integer grid: samples within a ramp, ticks within a sample, ticks within
     // a column.
-    let inv_window_spacing   = 1.0f / (float)bin_cfg.window_spacing;
+    let inv_window_spacing   = 1.0f / (float)window_spacing;
     let inv_ticks_per_column = 1.0f / (float)dft_cfg.ticks_per_column;
     let inv_ticks_per_sample = 1.0f / (float)dft_cfg.ticks_per_sample;
 
@@ -225,70 +245,96 @@ void main(uint3 tid : SV_DispatchThreadID) {
                               (float)ramp_samples * inv_window_spacing);
 
     uint read_index = pc.input_beg;
-    for (uint s = 0; s < pc.input_count; ++s) {
-        // Advance both clocks to this sample's instant.  Everything below reads
-        // them as "now", so they must move together.
-        ramp_samples += 1;                  // in [1, window_spacing] within the body
-        column_ticks += dft_cfg.ticks_per_sample;
+    uint s = 0;
+    while (s < pc.input_count) {
+        let run = min(window_spacing - ramp_samples, pc.input_count - s);
 
-        // Close the column if the boundary fell at or before this instant.
-        // NOTE column tick rate always < input tick rate.
-        if (column_ticks >= dft_cfg.ticks_per_column) {
-            column_ticks -= dft_cfg.ticks_per_column;
+        for (uint k = 0; k < run; ++k) {
+            // Advance both clocks to this sample's instant.  Everything below reads
+            // them as "now", so they must move together.
+            ramp_samples += 1;                  // in [1, window_spacing] within the body
+            column_ticks += dft_cfg.ticks_per_sample;
 
-            // The leftover *is* how far back the boundary sits from this sample,
-            // in ticks.  With ticks_per_sample == 1 it is always 0 and boundaries
-            // coincide with sample instants.
-            let samples_back = (float)column_ticks * inv_ticks_per_sample;
-            let level = lerp(ramp_beg, ramp_end,
-                             ((float)ramp_samples - samples_back) * inv_window_spacing);
+            // Close the column if the boundary fell at or before this instant.
+            // NOTE column tick rate always < input tick rate.
+            if (column_ticks >= dft_cfg.ticks_per_column) {
+                column_ticks -= dft_cfg.ticks_per_column;
 
-            bank(open_area, banked_level, level,
-                 dft_cfg.ticks_per_column - banked_ticks);
+                // The leftover *is* how far back the boundary sits from this sample,
+                // in ticks.  With ticks_per_sample == 1 it is always 0 and boundaries
+                // coincide with sample instants.
+                let samples_back = (float)column_ticks * inv_ticks_per_sample;
+                let level = lerp(ramp_beg, ramp_end,
+                                 ((float)ramp_samples - samples_back) * inv_window_spacing);
 
-            out_image[output_column * dft_cfg.bin_count + bin] =
-                pow((open_area * inv_ticks_per_column), 0.67);
+                bank(open_area, banked_level, level,
+                     dft_cfg.ticks_per_column - banked_ticks);
 
-            open_area    = 0.0f;
-            banked_level = level;
-            banked_ticks = 0;
+                out_image[output_column * dft_cfg.bin_count + bin] =
+                    pow((open_area * inv_ticks_per_column), 0.67);
 
-            output_column += 1;
-            if (output_column == dft_cfg.output_image_width) { output_column = 0; }
-        }
+                open_area    = 0.0f;
+                banked_level = level;
+                banked_ticks = 0;
 
-        let sample = input_ring[read_index];
-        read_index = (read_index + 1) & input_mask;
+                output_column += 1;
+                if (output_column == dft_cfg.output_image_width) { output_column = 0; }
+            }
 
-        // The Goertzel.  Why we're here.  ٩(⊙‿⊙)۶
-        let projected = cscale(phasor, sample);
-        phasor = cmul(phasor, bin_cfg.theta);
+            let sample = WaveReadLaneFirst(input_ring[read_index]);
+            read_index = (read_index + 1) & input_mask;
 
-        // Fan into the live windows.
-        [ForceUnroll]
-        for (uint i = 0; i < WINDOW_SLOTS; ++i) {
-            // Age in hops; 0 is the window that retires next.
-            let age = (i + WINDOW_SLOTS - next_retire) & WINDOW_SLOT_MASK;
+            // The Goertzel.  Why we're here.  ٩(⊙‿⊙)۶
+            let projected = cscale(phasor, sample);
+            phasor = cmul(phasor, bin_cfg.theta);
+
+            // Fan into the live windows.
+
             // Next-to-retire window's read head.  It reaches the last weight
             // exactly when ramp_samples reaches window_spacing.  Host guarantees
-            // window_weights_count >= window_spacing, so this never underflows.
-            let head = bin_cfg.window_weights_count - 1
-                     - bin_cfg.window_spacing + ramp_samples;
-            let hop_back = age * bin_cfg.window_spacing;   // needs 32 bits: 15 * 4800
-            // Only way out of range is stepping back past the start.  Explicit
-            // test, no reliance on underflow.
-            let live     = hop_back <= head;
-            // Something something underflow OpSelect...  Be my guest if this
-            // code breaks on your driver.
-            let w_index  = live ? head - hop_back : 0u;
-            let w        = live ? window_weights[w_index] : 0.0f;
-            window_sums[i] = cmad(window_sums[i], projected, w);
+            // window_weights_count >= window_spacing, so this never
+            // underflows.
+            let head = weights_count - 1 - window_spacing + ramp_samples;
+
+            [ForceUnroll]
+            for (uint i = 0; i < WINDOW_SLOTS; ++i) {
+                // Slots rotate on retire, so slot index is age in hops directly.
+                let hop_back = i * window_spacing;   // needs 32 bits: 15 * 4800
+                // Only way out of range is stepping back past the start.  Explicit
+                // test, no reliance on underflow.
+                let live     = hop_back <= head;
+                // Something something underflow OpSelect...  Be my guest if this
+                // code breaks on your driver.
+                let w_index  = live ? head - hop_back : 0u;
+                let w        = live ? window_weights[w_index] : 0.0f;
+                sums[i] = cmad(sums[i], projected, w);
+            }
         }
+        s += run;
 
         // The ramp is exactly at `ramp_end` here; retire the window.
-        if (ramp_samples == bin_cfg.window_spacing) {
-            let sum   = window_sums[next_retire];
-            let level = sqrt(sum.real * sum.real + sum.imag * sum.imag);
+        if (ramp_samples == window_spacing) {
+            let sum = sums[0];
+
+            // Increment against the previous retirement.  The phasor is never
+            // reset, so `sum` is already in the absolute frame and this product
+            // needs no derotation: arg(d) is zero on-bin and (w0 - w1) * spacing
+            // off-bin.
+            let d  = cmul(sum, cconj(z_prev));
+            let d2 = cdot(d, d);
+
+            // Matched EMAs.  Cauchy-Schwarz gives |E[d]|^2 <= E[|d|^2], so the
+            // ratio lands in [0, 1] with no K bookkeeping and no reset -- which
+            // matters because retirements and column closes are on unrelated
+            // grids and a boxcar over K would need a K this shader doesn't have.
+            d_sum = clerp(d_sum, d,  bin_cfg.coherence_alpha);
+            d_pow =  lerp(d_pow, d2, bin_cfg.coherence_alpha);
+
+            let coh  = cdot(d_sum, d_sum) / max(d_pow, 1e-30f);
+            let gate = saturate((coh - COH_FLOOR) * COH_SCALE);
+
+            let level = sqrt(cdot(sum, sum)) * gate;
+            z_prev = sum;
 
             bank(open_area, banked_level, ramp_end, column_ticks - banked_ticks);
             banked_level = ramp_end;
@@ -297,8 +343,14 @@ void main(uint3 tid : SV_DispatchThreadID) {
             ramp_beg = ramp_end;
             ramp_end = level;
 
-            window_sums[next_retire] = Complex(0.0f, 0.0f);
-            next_retire  = (next_retire + 1) & WINDOW_SLOT_MASK;
+
+            // Rotate rather than bump a cursor: every index stays a literal
+            // after unrolling, which is what keeps `sums` in registers.  Three
+            // register moves at WINDOW_SLOTS == 4, against the 8 memory ops per
+            // sample this buys back.
+            [ForceUnroll]
+            for (uint i = 0; i < WINDOW_SLOTS - 1; ++i) { sums[i] = sums[i + 1]; }
+            sums[WINDOW_SLOTS - 1] = Complex(0.0f, 0.0f);
             ramp_samples = 0;
         }
     }
@@ -319,11 +371,17 @@ void main(uint3 tid : SV_DispatchThreadID) {
     // unpack/repack symmetric and lets this lower to a single contiguous store;
     // the immutable fields are rewritten with the values they already held.
     state.phasor = phasor;
-    state.next_retire = next_retire;
+
+    [ForceUnroll]
+    for (uint i = 0; i < WINDOW_SLOTS; ++i) { window_sums_spill[i] = sums[i]; }
+
     state.ramp_samples = ramp_samples;
     state.ramp_beg = ramp_beg;
     state.ramp_end = ramp_end;
     state.open_area = open_area;
+    state.z_prev = z_prev;
+    state.d_sum = d_sum;
+    state.d_pow = d_pow;
     *state_ptr = state;
 }
 
@@ -344,6 +402,14 @@ Complex cmad(Complex acc, Complex a, float s) {
 
 Complex cscale(Complex a, float s) {
     return Complex(a.real * s, a.imag * s);
+}
+
+Complex cconj(Complex a) { return Complex(a.real, -a.imag); }
+
+float   cdot(Complex a, Complex b) { return a.real * b.real + a.imag * b.imag; }
+
+Complex clerp(Complex a, Complex b, float t) {
+    return Complex(lerp(a.real, b.real, t), lerp(a.imag, b.imag, t));
 }
 
 // Bank the trapezoid under the ramp from the last banked event to this one.

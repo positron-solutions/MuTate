@@ -1,6 +1,6 @@
 //! # Discrete Fourier Transform
 //!
-//! A filter bank of many windowed Goertzel filters.
+//! See the dft.rs for more discussion.
 //!
 //! - One independent DFT bank per channel
 //! - Dolph-Chebyshev window (special case of ultra-spherical)
@@ -11,8 +11,11 @@
 //!   + timeline semaphore to ensure published dispatch has arrived
 //!   + publish output control data at a single address
 //! - ISO226 leveling for a 70phon reference curve, pre-applied to window weights
+//! - Logarithmic bin spacing (musical octaves have constant visual spacing)
 //!
-//! - Relatively constant Q (musical octaves have constant visual spacing)
+//! ## Implementation Tradeoffs
+//!
+//! - Many configurations only change every 32 bins, keeping warps more uniform.
 //!
 //! ## Important Coherence Relations
 //!
@@ -35,8 +38,9 @@
 //! - In both the fast and slow case, each fraction of each output maps to a fraction of the output
 //!   without overlap, in the same order.  A single accumulator can do the job in both cases.
 //!
-//! Window retirement may happen on any audio datum, but only one window is going to retire next, so
-//! we track it and do the retirement check at one point in the loop, keeping divergence low.
+//! Window retirement may happen on any audio datum, but only one of the overlapping windows is
+//! going to retire next, so we track it and do the retirement check at one point in the loop,
+//! keeping divergence low.
 //!
 //! ## Data Structures
 //!
@@ -117,7 +121,9 @@ use mutate_lib::{self as utate, audio::import::RingLayout, prelude::*};
 use utate::dsp::{self, bank, window::WindowFunction};
 
 /// Number of bins.  Per channel.  Usually sampled in high resolution and re-sampled as needed.
-const BINS: u32 = 2560 / 8;
+const BINS: u32 = 2560 / 2;
+const BIN_GROUP: u32 = 32;
+const _: () = assert!(BINS % BIN_GROUP == 0, "grouping assumes exact groups");
 /// To maintain COLA in time, each input datum is seen by at least this many windows.  Faster window
 /// ticks lead to slightly better COLA for observing peaks and more finely spaced window sum ticks
 /// on low pitch bins.  This product does directly scale the major axis of work for each lane!
@@ -265,6 +271,8 @@ struct BinConfig {
     window_weights_offset: u32,
     /// Number of window weights.
     window_weights_count: u32,
+    /// EMA decay factor for phase coherence.
+    coherence_alpha: f32,
 }
 
 /// Bin dynamic states.  Window sums and accumulator state both live here.
@@ -275,8 +283,6 @@ struct BinState {
 
     /// Coerces to `Complex*`.  Offset from `dynamic_base`
     window_sums_offset: u32,
-    /// Window slot that retires next.
-    next_retire: u32,
     // Samples elapsed since the retirement that produced `ramp_end`.  In
     // [0, window_spacing).  Retirement fires when it reaches window_spacing.
     ramp_samples: u32,
@@ -290,6 +296,10 @@ struct BinState {
 
     /// Trapezoid area accumulated into the current output interval
     open_area: f32,
+
+    z_prev: Complex,
+    d_sum: Complex,
+    d_pow: f32,
 }
 
 /// 48kHz until we support rates like 44.1 etc
@@ -338,21 +348,29 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
         let input_size = ring_layout.sample_count;
         debug_assert!(input_size.is_power_of_two());
 
-        let bins = bank::bins(
-            dsp::MIN_FREQ_CHEAP_DRIVERS,
-            dsp::MAX_FREQ_OLD_PEOPLE,
-            BINS as usize,
-        );
+        let bins = bank::bins(dsp::MIN_FREQ_CHEAP_DRIVERS, 15000.0, BINS as usize);
 
         // Window geometry.  Length is rounded to a multiple of OVERLAP_RATIO for shader index walking.
+        // let window_lengths: Vec<u32> = bins
+        //     .iter()
+        //     .map(|b| {
+        //         // Conservative q just to get to debugging!
+        //         let q: f32 = Q;
+        //         (((q * SAMPLE_RATE as f32 / (b.center as f32)).ceil() as u32)
+        //             .next_multiple_of(OVERLAP_RATIO))
+        //         .min(4096 * 2)
+        //     })
+        //     .collect();
+
+        let window_length = |center: f64| {
+            (((Q * SAMPLE_RATE as f32 / center as f32).ceil() as u32)
+                .next_multiple_of(OVERLAP_RATIO))
+            .min(32 * 32 * 4) // 4096
+        };
+        // Lowest center in each group sets the length, so every bin in the group meets Q as a floor.
         let window_lengths: Vec<u32> = bins
-            .iter()
-            .map(|b| {
-                // Conservative q just to get to debugging!
-                let q: f32 = Q;
-                ((q * SAMPLE_RATE as f32 / (b.center as f32)).ceil() as u32)
-                    .next_multiple_of(OVERLAP_RATIO)
-            })
+            .chunks(BIN_GROUP as usize)
+            .flat_map(|g| std::iter::repeat_n(window_length(g[0].center), g.len()))
             .collect();
 
         // Walk the static section to find offsets.
@@ -435,6 +453,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
                     window_spacing: n / OVERLAP_RATIO,
                     window_weights_offset: weights[bin],
                     window_weights_count: n,
+                    coherence_alpha: 0.1,
                 },
             );
 
@@ -448,8 +467,8 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
 
             let mut w = window_function.make_window(n as usize); // f64
             let cg: f64 = w.iter().copied().tree_sum();
-            // let scale = b.iso226_gain as f64 / cg;
-            let scale = 1.0 / cg;
+            let scale = b.iso226_gain as f64 / cg;
+            // let scale = 1.0 / cg;
             let w: Vec<f32> = w.iter().map(|x| (x * scale) as f32).collect();
 
             // Pre-multiply the weights by an iso226 gain levelling curve so that bins come out
@@ -481,11 +500,20 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
                         },
                         window_sums_offset: window_sums[i]
                             + bin * OVERLAP_RATIO * size_of::<Complex>() as u32,
-                        next_retire: 0,
                         ramp_samples: 0,
                         ramp_beg: 0.0,
                         ramp_end: 0.0,
                         open_area: 0.0,
+
+                        z_prev: Complex {
+                            real: 1.0,
+                            imag: 0.0,
+                        },
+                        d_sum: Complex {
+                            real: 1.0,
+                            imag: 0.0,
+                        },
+                        d_pow: 0.0,
                     },
                 );
             }
