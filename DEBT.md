@@ -9,6 +9,8 @@ Github.
 ## Contents
 
 - [Currently Paying Down](#currently-paying-down)
+  - [Timing Scheme Conventions](#timing-scheme-conventions)
+  - [Slang Libraries](#slang-libraries)
   - [Externally Synchronized](#externally-synchronized)
   - [From Manual Destruction to Drop](#from-manual-destruction-to-drop)
   - [Error Handling](#error-handling)
@@ -33,15 +35,54 @@ Github.
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
+## Timing Scheme Conventions
+
+This topic already has some treatment in [CONTRIBUTING](./CONTRIBUTING.md) because it's a really important set of decisions.
+
+What is marked as debt is the lack of consistent wording, state representations,
+and procedures.  It's really important to get all this nailed down.  Slang and
+Rust have their differences.  Talking to upstream audio servers has its
+differences.  Different processing techniques can introduce their own sense of
+local time or what time an output represents.
+
+### For Now
+
+Reduce entropy.  Never use global indexing, always upstream time-relative.  Read the [CONTRIBUTING](./CONTRIBUTING) section on timing.  Argue about it.  Find and reduce inconsistencies.  Try to extract common models in both Slang and Rust.
+
+## Slang Libraries
+
+A lot of the Slang in the visualizer belongs in lib.  The mislocated slang will increase before it decreases.
+
+The fix uses the `links` attribute in the lib's Cargo.toml.
+
+```toml
+links = "mutate_lib"
+```
+
+And then build scripts can find the lib crate in order to inform `slangc` where to find those remote (when mutate_lib is used as a library) slang libraries.
+```
+let shaders_dir = std::env::var("DEP_MUTATE_LIB_SHADERS_DIR").unwrap();
+```
+
+This will also require the assets loader and the pipeline macros to learn how to use shaders from lib and how to package them into finished binaries.  The mechanism is clear.  The implementation is all that remains.
+
+### For Now
+
+Keep stuffing slang into the visualizer.  It's wrong.  The cost is mainly changing some paths later, but when we start to want libraries to pull together more common operations and newtypes, it will become more urgent to fix this.
+
 ## Externally Synchronized
 
-We can't use [some Vulkan resources](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-threadingbehavior) concurrently with some other usages.  This isn't a huge concern yet.  Queues only needs a `Mutex` on submissions.  Audio and video processing data on the device on two different clocks is an early example where we must do the external sync.
+We can't use [some Vulkan resources](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-threadingbehavior) concurrently with some other usages.  This isn't a huge concern yet.  Queue submission is a common case.  Each queue just uses a `Mutex` on the submissions.  De-aliasing overloaded queues was the harder problem than synchronizing them.
+
+Audio and video processing data on the device on two different threads that tick on independent clocks is an early example where we must do the external sync.
 
 We are aiming to re-use more sync operations with course granularity, leaning on phase alignment to create larger, shared synchronization domains to drain deferred operations owned by each thread.
 
 ### For Now
 
-Synchronize internal mutability where trivial (see descriptors).  Use whatever hand-hacked wait-free doesn't crash too frequently.  Use safe points and just document them.  Along the way, **focus on the synchronization domains so we can figure out which views of which data need to exist, which operations can and should be deferred, which operations must not be concurrent.**
+Synchronize internal mutability where trivial (see descriptors).  Use whatever hand-hacked wait-free doesn't crash too frequently.  Use safe points and just document them.  Along the way, focus on the synchronization domains so we can figure out which views of which data need to exist and how to wire synchronization around.
+
+**The most important thing is to understand which operations we actually want to do that must not be concurrent.**  It's not that much.
 
 ## From Manual Destruction to Drop
 
