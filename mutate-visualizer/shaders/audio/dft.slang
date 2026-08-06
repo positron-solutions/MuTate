@@ -124,7 +124,6 @@ void main(uint3 tid : SV_DispatchThreadID) {
     BinState state = *state_ptr;
 
     Ptr<float> input_ring = channel_cfg.input_ring_base;
-    let input_mask  = dft_cfg.input_size - 1;
 
     Ptr<float> window_weights =
         (Ptr<float>)(static_base + (uint64_t)dft_cfg.window_weights_offset);
@@ -136,7 +135,10 @@ void main(uint3 tid : SV_DispatchThreadID) {
         (Ptr<Complex>)(dynamic_base + (uint64_t)channel_state.output_image_offset);
 
     let window_spacing = WaveReadLaneFirst(dft_cfg.window_spacing);
-    let weights_count  = WaveReadLaneFirst(dft_cfg.window_weights_count);
+    let input_size = WaveReadLaneFirst(dft_cfg.input_size);
+    let input_mask  = dft_cfg.input_size - 1;
+    let bin_count = WaveReadLaneFirst(dft_cfg.bin_count);
+    let output_image_mask = WaveReadLaneFirst(dft_cfg.output_image_width) - 1;
 
     // Carried filter state and window sums
     Complex phasor = state.phasor;
@@ -167,7 +169,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     while (s < input_count) {
         // Clamp to the hop boundary and to the ring wrap
         uint run = min(window_spacing - ramp_samples, input_count - s);
-        run = min(run, dft_cfg.input_size - read_index);
+        run = min(run, input_size - read_index);
 
         Ptr<float> rp = input_ring + read_index;
         for (uint k = 0; k < run; ++k) {
@@ -197,8 +199,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
         // Window retirement.  Write the output, rotate the sums, reset loop
         // loop control.
         if (ramp_samples == window_spacing) {
-            out_image[output_column * dft_cfg.bin_count + bin] = sums[0];
-            output_column = (output_column + 1) & (dft_cfg.output_image_width - 1);
+            out_image[output_column * bin_count + bin] = sums[0];
+            output_column = (output_column + 1) & output_image_mask;
 
             // Rotate the window sums and zero the last slot
             [ForceUnroll]
