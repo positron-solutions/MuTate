@@ -9,6 +9,7 @@ Github.
 ## Contents
 
 - [Currently Paying Down](#currently-paying-down)
+  - [Warp Geometry](#warp-geometry)
   - [Timing Scheme Conventions](#timing-scheme-conventions)
   - [Slang Libraries](#slang-libraries)
   - [Externally Synchronized](#externally-synchronized)
@@ -34,6 +35,23 @@ Github.
 # Currently Paying Down
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
+
+## Warp Geometry
+
+At first this was considered an ergonomics problem for dispatching.  Miraculously, we have not encountered `WaveReadLaneFirst` where thread IDs got mixed on a warp, but we have also not protected from it at all.
+
+We can protect in a number of ways:
+
+- Better conventions are many of the improvements that get made
+- Detect unnecessary dangerous choices via Reflection
+- Enable several Vulkan features
+- Proc macros to emit const checks on arguments to dispatch sites
+
+This will get worse and begin to spread **vendor-specific cancer** all over the code base if we do not nail it down early.
+
+### For Now
+
+Pick one axis to make 32-wide, pray, and then write more code.  You were warned.
 
 ## Timing Scheme Conventions
 

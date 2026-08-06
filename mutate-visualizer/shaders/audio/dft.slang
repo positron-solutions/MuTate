@@ -24,6 +24,7 @@
 // ripple-carry-adds will increase the precision of long sums and convert some
 // adds to simple moves.  Requires an extra Complex slot per window and
 // retirement epilogue unless window length guarantees an empty carry slot.
+// DEBT Warp geometry!
 
 // LMAO positional constructor arguments for structs?  Wow Slang.  We will
 // definitely be discarding this awful practice via types and macros.
@@ -103,7 +104,7 @@ static const uint WINDOW_SLOTS = 4;
 // Dispatch with x channels and divide bins by 32 and round up for y.
 [numthreads(1, 32, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {
-    let channel = tid.x;
+    let channel = WaveReadLaneFirst(tid.x);
     let bin = tid.y;
 
     // Unpack all of the states and retain pointers for write-back.
@@ -141,7 +142,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
 
     let window_spacing = WaveReadLaneFirst(dft_cfg.window_spacing);
     let input_size = WaveReadLaneFirst(dft_cfg.input_size);
-    let input_mask  = dft_cfg.input_size - 1;
+    let input_mask  = input_size - 1;
     let bin_count = WaveReadLaneFirst(dft_cfg.bin_count);
     let output_image_mask = WaveReadLaneFirst(dft_cfg.output_image_width) - 1;
 
