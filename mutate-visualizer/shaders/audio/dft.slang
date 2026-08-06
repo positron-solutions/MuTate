@@ -181,13 +181,6 @@ void main(uint3 tid : SV_DispatchThreadID) {
 
         if (ramp_samples == window_spacing) {
             ramp_samples = 0;
-            // out_image[output_column * dft_cfg.bin_count + bin] = sums[0];
-
-            let bad = isnan(sums[0].real) || isnan(sums[0].imag) ||
-                isinf(sums[0].real) || isinf(sums[0].imag);
-            out_image[output_column * dft_cfg.bin_count + bin] =
-                bad ? Complex(100.0f, 0.0f) : sums[0];
-
 
             output_column = (output_column + 1) & (dft_cfg.output_image_width - 1);
 
@@ -195,6 +188,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
             // after unrolling, which is what keeps `sums` in registers.  Three
             // register moves at WINDOW_SLOTS == 4, against the 8 memory ops per
             // sample this buys back.
+            out_image[output_column * dft_cfg.bin_count + bin] = sums[0];
             [ForceUnroll]
             for (uint i = 0; i < WINDOW_SLOTS - 1; ++i) { sums[i] = sums[i + 1]; }
             sums[WINDOW_SLOTS - 1] = Complex(0.0f, 0.0f);
