@@ -159,7 +159,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
         for (uint k = 0; k < run; ++k) {
             let phase = ramp_samples + k;
 
-            let sample = WaveReadLaneFirst(input_ring[read_index]);
+            let sample = input_ring[WaveReadLaneFirst(read_index)];
             read_index = (read_index + 1) & input_mask;
 
             // The Goertzel.  Why we're here.  ٩(⊙‿⊙)۶
