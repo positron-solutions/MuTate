@@ -17,6 +17,13 @@
 // extra conversions and no benefit unless registers are spilling back to
 // memory, which would be dominated by window sum complexity, not the phase
 // tracking data.
+// NEXT phasor updates can be split into 2x theta at the cost of some prologue /
+// epilogue.  The operations serialize and may be creating latency we can hide
+// by providing a second phasor to rotate.
+// NEXT if we have enough register space and it won't change the loads, some
+// ripple-carry-adds will increase the precision of long sums and convert some
+// adds to simple moves.  Requires an extra Complex slot per window and
+// retirement epilogue unless window length guarantees an empty carry slot.
 
 // LMAO positional constructor arguments for structs?  Wow Slang.  We will
 // definitely be discarding this awful practice via types and macros.

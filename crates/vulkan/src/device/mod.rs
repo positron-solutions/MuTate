@@ -109,6 +109,13 @@ impl Device {
             .push_next(&mut features_1_2)
             .push_next(&mut features_1_1);
 
+        #[cfg(debug_assertions)]
+        let mut pipeline_exec_props =
+            vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR::default()
+                .pipeline_executable_info(true);
+        #[cfg(debug_assertions)]
+        let mut features2 = features2.push_next(&mut pipeline_exec_props);
+
         if supported_device.profile.surface {
             features2 = features2
                 .push_next(&mut pw_features)

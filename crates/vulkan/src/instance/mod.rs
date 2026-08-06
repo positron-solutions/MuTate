@@ -81,6 +81,9 @@ impl InstanceProfile {
 // pub(crate) const KHR_PRESENT_TIMING_NAME: &CStr = c"VK_EXT_present_timing";
 // DEBT currently the requirements and support checks are all hardcoded.
 pub(crate) const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
+    #[cfg(debug_assertions)]
+    vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME,
+
     vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME,
     // NEXT better debug gating (see validation layer activation above).
     // Enables some debug functionality in shaders.
@@ -340,6 +343,12 @@ impl Instance {
             .push_next(&mut features_1_2)
             .push_next(&mut features_1_1);
 
+        #[cfg(debug_assertions)]
+        let mut pipeline_exec_props =
+            vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR::default();
+        #[cfg(debug_assertions)]
+        let mut features2 = features2.push_next(&mut pipeline_exec_props);
+
         unsafe {
             self.raw.get_physical_device_features2(physical_device, &mut features2);
         }
@@ -348,6 +357,8 @@ impl Instance {
             ("shader_int16",                                            features2.features.shader_int16 == vk::TRUE),
             ("shader_int64",                                            features2.features.shader_int64 == vk::TRUE),
             ("swapchain_maintenance1",                                  swapchain_maintenance1.swapchain_maintenance1 == vk::TRUE),
+            #[cfg(debug_assertions)]
+            ("pipeline_executable_info",                                pipeline_exec_props.pipeline_executable_info == vk::TRUE),
             ("1.1 storage_buffer16_bit_access",                         features_1_1.storage_buffer16_bit_access == vk::TRUE),
             // XXX Axe this feature
             // ("1.1 storage_input_output16",                              features_1_1.storage_input_output16 == vk::TRUE),

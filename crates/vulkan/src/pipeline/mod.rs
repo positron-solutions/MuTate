@@ -170,9 +170,21 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
             .module(*shader)
             .name(stage_spec.entry);
 
+        // DEBT Tracing & debug: Was about to immediately log all pipelines, but the `Device` is
+        // maybe not the right home for the necessary loader and going in the wrong direction.
+        // Leaving the creation flags in place.  Whenever we hydrate pipelines via runtime, that
+        // runtime can maintain the proper loader (needs an instance) and we can use that to query
+        // the pipeline and search for things like poor register usage.
+        let mut flags = vk::PipelineCreateFlags::empty();
+        #[cfg(debug_assertions)]
+        let mut flags =
+            vk::PipelineCreateFlags::empty() | vk::PipelineCreateFlags::CAPTURE_STATISTICS_KHR;
+
         let pipeline_ci = vk::ComputePipelineCreateInfo::default()
             .stage(stage)
-            .layout(layout.as_raw());
+            .layout(layout.as_raw())
+            .flags(flags);
+
         // NEXT PSO compiling can take a while and definitely should be queued into background via resources.
         let pipeline = unsafe {
             device
