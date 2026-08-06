@@ -148,6 +148,16 @@ void main(uint3 tid : SV_DispatchThreadID) {
     // Samples elapsed in the current hop.  Retires at `window_spacing`.
     uint ramp_samples = pc.ramp_beg;
 
+    // Pre-build slot stride (pre-build on the host?)
+    uint slot_stride[WINDOW_SLOTS];
+    [ForceUnroll]
+        for (uint i = 0; i < WINDOW_SLOTS; ++i) {
+            slot_stride[i] = (WINDOW_SLOTS - 1 - i) * window_spacing;
+        }
+
+    // Set a pointer into window weights for use with our strides
+    Ptr<float> wp = window_weights + ramp_samples;
+
     uint output_column = pc.output_column;
 
     uint read_index = pc.input_beg;
@@ -166,29 +176,34 @@ void main(uint3 tid : SV_DispatchThreadID) {
             let projected = cscale(phasor, sample);
             phasor = cmul(phasor, bin_cfg.theta);
 
-            // Fan into the live windows.  Uses window spacing to walk through
-            // window weights.
+            // Pre-multiply the input sample by the weights since it will carry
+            // through to the phasor projection and addition.
+            //
+            // Uses window spacing to walk through window weights.
+            float sw[WINDOW_SLOTS];
             [ForceUnroll]
-            for (uint i = 0; i < WINDOW_SLOTS; ++i) {
-                let w_index = phase + (WINDOW_SLOTS - 1 - i) * window_spacing;
-                sums[i] = cmad(sums[i], projected, window_weights[w_index]);
-            }
+                for (uint i = 0; i < WINDOW_SLOTS; ++i) { sw[i] = sample * wp[slot_stride[i]]; }
+
+            // Fan into the live windows
+            [ForceUnroll]
+                for (uint i = 0; i < WINDOW_SLOTS; ++i) { sums[i] = cmad(sums[i], phasor, sw[i]); }
+
+            wp = wp + 1;
         }
 
         // The ramp is exactly at `ramp_end` here; retire the window.
         s += run;
         ramp_samples += run;
 
+        // phase has reset
         if (ramp_samples == window_spacing) {
             ramp_samples = 0;
+            wp = window_weights;
 
+            out_image[output_column * dft_cfg.bin_count + bin] = sums[0];
             output_column = (output_column + 1) & (dft_cfg.output_image_width - 1);
 
-            // Rotate rather than bump a cursor: every index stays a literal
-            // after unrolling, which is what keeps `sums` in registers.  Three
-            // register moves at WINDOW_SLOTS == 4, against the 8 memory ops per
-            // sample this buys back.
-            out_image[output_column * dft_cfg.bin_count + bin] = sums[0];
+            // Rotate the window sums and zero the last slot
             [ForceUnroll]
             for (uint i = 0; i < WINDOW_SLOTS - 1; ++i) { sums[i] = sums[i + 1]; }
             sums[WINDOW_SLOTS - 1] = Complex(0.0f, 0.0f);
