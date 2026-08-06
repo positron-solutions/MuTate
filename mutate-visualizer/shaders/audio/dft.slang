@@ -36,7 +36,7 @@ struct DftPushConstants {
     uint input_beg;
     uint input_count;
     uint output_column;
-    uint ramp_beg;
+    uint column_phase;
 }
 
 [[vk::push_constant]]
@@ -55,7 +55,6 @@ struct DftConfig {
 
     // Coerce to `float*`.  Offset from `static_base`.
     uint window_weights_offset;
-    uint window_weights_count;
     uint window_spacing;
 }
 
@@ -93,7 +92,6 @@ struct BinState {
 
 // DEBT in the interest of time, not messing with specialization constants now.
 static const uint WINDOW_SLOTS = 4;
-static const uint WINDOW_SLOT_MASK = WINDOW_SLOTS - 1;
 
 // Dispatch with x channels and divide bins by 32 and round up for y.
 [numthreads(1, 32, 1)]
@@ -148,7 +146,9 @@ void main(uint3 tid : SV_DispatchThreadID) {
     for (uint i = 0; i < WINDOW_SLOTS; ++i) { sums[i] = window_sums_spill[i]; }
 
     // Samples elapsed in the current hop.  Retires at `window_spacing`.
-    uint ramp_samples = pc.ramp_beg;
+    // INVARIANT Host guarantees ramp_beg < window_spacing.  Equality yields
+    // run == 0 and hangs the wave
+    uint column_phase = pc.column_phase;
 
     // Pre-build slot stride (pre-build on the host?)
     uint slot_stride[WINDOW_SLOTS];
@@ -158,7 +158,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
         }
 
     // Set a pointer into window weights for use with our strides
-    Ptr<float> wp = window_weights + ramp_samples;
+    Ptr<float> wp = window_weights + column_phase;
 
     uint output_column = pc.output_column;
 
@@ -168,7 +168,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
 
     while (s < input_count) {
         // Clamp to the hop boundary and to the ring wrap
-        uint run = min(window_spacing - ramp_samples, input_count - s);
+        uint run = min(window_spacing - column_phase, input_count - s);
         run = min(run, input_size - read_index);
 
         Ptr<float> rp = input_ring + read_index;
@@ -193,12 +193,12 @@ void main(uint3 tid : SV_DispatchThreadID) {
         }
 
         s += run;
-        ramp_samples += run;
+        column_phase += run;
         read_index = (read_index + run) & input_mask;
 
         // Window retirement.  Write the output, rotate the sums, reset loop
         // loop control.
-        if (ramp_samples == window_spacing) {
+        if (column_phase == window_spacing) {
             out_image[output_column * bin_count + bin] = sums[0];
             output_column = (output_column + 1) & output_image_mask;
 
@@ -207,7 +207,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
             for (uint i = 0; i < WINDOW_SLOTS - 1; ++i) { sums[i] = sums[i + 1]; }
             sums[WINDOW_SLOTS - 1] = Complex(0.0f, 0.0f);
 
-            ramp_samples = 0;
+            column_phase = 0;
             wp = window_weights;
         }
     }

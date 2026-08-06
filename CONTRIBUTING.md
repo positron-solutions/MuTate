@@ -114,6 +114,7 @@ Tracking and slewing in data-time is one of the technically trickier aspects of 
 
 - Track a **virtual** write head that is the continuous interpretation of the discretely chunked stream.
 - Maintain local offsets from the virtual write head, which is located nearby in time, instead of global index relations.
+- Use integral ticks greatest-common-multiple rate expressions on the host math (`u64`) but use smaller integers and physical indexes with wrap on the device.  On-device rings **must** use PoT sizes unless expressed otherwise.
 
 With local offset tracking, we discard knowledge of the absolute index drift and instead focus on local data re-sampling scale accuracy.  Globally we are re-sampling inaccurately.  Locally, the ratio of input to output is quite accurate and the error self-corrects rather than accumulates.
 

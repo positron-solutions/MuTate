@@ -161,8 +161,8 @@ pub struct DftOutput<const CHANNELS: usize = 2> {
     pub write_head: u64,
 
     /// `[0, samples_per_column)`.  Consumers timing the input against the output use
-    /// `read_head - ramp_samples` as the instant of the last column boundary.
-    pub ramp_samples: u32,
+    /// `read_head - column_phase` as the instant of the last column boundary.
+    pub column_phase: u32,
     pub samples_per_column: u32,
 }
 
@@ -198,7 +198,7 @@ pub struct DftDispatch<const CHANNELS: usize = 2> {
         /// and device *must* not disagree with
         output_column: UInt,
         /// The number of input samples that have been consumed but did not emit an output yet.
-        ramp_beg: UInt,
+        column_phase: UInt,
     }),
 )]
 pub struct DftComputePipeline;
@@ -220,8 +220,6 @@ struct DftConfig {
     // NOTE channel count omitted.  Host controls maximum channel count with `tid.x`.
     /// Coerce to `float*` in slang.  Offset from `static_base`.
     window_weights_offset: u32,
-    /// Number of window weights, window length.
-    window_weights_count: u32,
     /// Input sample offset of each window start.  This *is* the output clock.  One column closes
     /// every `window_spacing` samples, on a sample instant.
     window_spacing: u32,
@@ -287,8 +285,8 @@ pub struct Dft<const CHANNELS: usize = 2> {
     output_ring_offsets: [u32; CHANNELS],
 
     /// Samples accumulated into the open hop.  In `[0, WINDOW_SPACING)`.  Invariant is:
-    ///   `read_head == columns_written * WINDOW_SPACING + ramp_samples`
-    ramp_samples: u32,
+    /// `read_head == columns_written * WINDOW_SPACING + column_phase`
+    column_phase: u32,
     // XXX I think we can derive this
     /// Physical index of the open column.
     output_column: u32,
@@ -363,7 +361,6 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
                 channel_configs_offset,
 
                 window_weights_offset,
-                window_weights_count: WINDOW_LENGTH,
                 window_spacing: WINDOW_LENGTH / OVERLAP_RATIO,
             },
         );
@@ -445,7 +442,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             output_ring_offsets: output_rings,
             pipeline: ComputePipeline::<DftComputePipeline>::new(device)?,
             allocation,
-            ramp_samples: 0,
+            column_phase: 0,
             output_column: 0,
             columns_written: 0,
             read_head: 0,
@@ -491,7 +488,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             input_beg: (self.read_head as u32 & self.input_mask).into(),
             input_count: count.into(),
             output_column: self.output_column.into(),
-            ramp_beg: self.ramp_samples.into(),
+            column_phase: self.column_phase.into(),
         };
         self.pipeline.push(device, **cb, &constants);
 
@@ -501,18 +498,18 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
         }
 
         // Advance device state mirrors.
-        let total = self.ramp_samples + count;
+        let total = self.column_phase + count;
         let closed = total / WINDOW_SPACING;
         let first_closed = self.output_column;
 
-        self.ramp_samples = total % WINDOW_SPACING;
+        self.column_phase = total % WINDOW_SPACING;
         self.output_column = (self.output_column + closed) & (OUTPUT_COLUMNS - 1);
         self.columns_written += closed as u64;
         self.read_head += count as u64;
 
         debug_assert_eq!(
             self.read_head,
-            self.columns_written * WINDOW_SPACING as u64 + self.ramp_samples as u64,
+            self.columns_written * WINDOW_SPACING as u64 + self.column_phase as u64,
         );
         debug_assert_eq!(
             self.output_column as u64,
@@ -535,7 +532,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             data_ready: ready.wait_value(), // 👍 nice!
             read_head: self.read_head,
             write_head: self.columns_written,
-            ramp_samples: self.ramp_samples,
+            column_phase: self.column_phase,
             samples_per_column: WINDOW_SPACING,
         };
 
