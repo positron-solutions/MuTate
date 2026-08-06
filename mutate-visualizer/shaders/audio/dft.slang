@@ -167,13 +167,11 @@ void main(uint3 tid : SV_DispatchThreadID) {
         let run = min(window_spacing - ramp_samples, pc.input_count - s);
 
         for (uint k = 0; k < run; ++k) {
-            let phase = ramp_samples + k;
 
             let sample = input_ring[WaveReadLaneFirst(read_index)];
             read_index = (read_index + 1) & input_mask;
 
             // The Goertzel.  Why we're here.  ٩(⊙‿⊙)۶
-            let projected = cscale(phasor, sample);
             phasor = cmul(phasor, bin_cfg.theta);
 
             // Pre-multiply the input sample by the weights since it will carry
