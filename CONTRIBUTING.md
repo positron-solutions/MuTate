@@ -130,6 +130,48 @@ Maintaining a local time anchor erases underruns, jitter, and drift from history
 - To appropriately feed high-speed displays and stretched output, buffers intended for downstream consumption should emit data at 240Hz or above.
 - Interpolation occurs by transitioning from the old output datum to the new output datum *over one datum of time*, fairly weighing each datum while applying FIR filtering at the point of consumption.
 
+## Power Consumption
+
+Keeping potatoes cool and living under a strict budget.
+
+### Nvidia Devices
+
+Dig supported values out of `nvidia-smi -q -d SUPPORTED_CLOCKS`
+
+```
+nvidia-smi -lmc 810,810      # pin memory
+nvidia-smi -lgc 300,300      # pin core
+nvidia-smi -rmc && nvidia-smi -rgc   # reset both
+```
+
+## Performance Debugging
+
+Request help if you need features enabled on the device in order to use external performance debugging tools.
+
+### Nsight
+
+```
+# Nsight systems is available in nixpkgs as cudaPackages.nsight_systems
+# ie nix shell nixpkgs#cudaPackages.nsight_systems
+
+# Get device
+nsys profile --gpu-metrics-devices=help
+
+# Get metrics support
+nsys profile --gpu-metrics-set=help
+
+# Profile
+nsys profile --trace=vulkan,nvtx,osrt  \
+  --gpu-metrics-devices=0 \
+  --gpu-metrics-set=tu10x-gfxt \
+  --gpu-metrics-frequency=10000 \
+  -o trace
+  ./target/debug/mutate-visualizer
+  
+# Inspect
+nsys-ui ./trace.nsys-rep
+```
+
 ## PrizeForge, User-Lead Funding
 
 All contributors may be selected for paying out PrizeForge awards.  The aim is for users of PrizeForge to decide who gets paid and what features are important.  PrizeForge keeps decision power with the backers, not the project maintainers, so **don't ask us for backer money.  We don't control any.**  We are building discussion tools for PrizeForge to enable much more effective support and communication between backers and contributors, so eventually you can talk there.
