@@ -37,8 +37,8 @@
 [[vk::push_constant]]
 cbuffer VerticlasmConstants {
     // Input buffers
-    float* left_channel;
-    float* right_channel;
+    Complex* left_channel;
+    Complex* right_channel;
 
     // Column height == bin count of the DFT
     uint input_height;
@@ -62,7 +62,7 @@ cbuffer VerticlasmConstants {
     uint output_height;
 };
 
-// Each mangitude calculation is re-used to write outputs on this many rows.
+// Each magnitude calculation is re-used to write outputs on this many rows.
 static const uint LANE_ROWS = 128;
 
 // Warps operate on 32 pixel wide, LANE_ROWS tall areas of the output image.
@@ -113,14 +113,11 @@ void main(uint3 tid : SV_DispatchThreadID) {
         float col_acc_r = 0.0;
         for (uint b = 0; b < bin_count; ++b) {
             let bin = bin_first + b;
-            let bin_lo = max(float(bin),       bin_beg);
+            let bin_lo = max(float(bin), bin_beg);
             let bin_hi = min(float(bin) + 1.0, bin_end);
             let bin_weight = max(bin_hi - bin_lo, 0.0);
-
-            let sample_l = float(left_channel [col_base + bin]);
-            let sample_r = float(right_channel[col_base + bin]);
-            col_acc_l += bin_weight * sample_l * sample_l;
-            col_acc_r += bin_weight * sample_r * sample_r;
+            col_acc_l += bin_weight * cpower(left_channel [col_base + bin]);
+            col_acc_r += bin_weight * cpower(right_channel[col_base + bin]);
         }
 
         acc_l += col_weight * col_acc_l;
@@ -134,16 +131,13 @@ void main(uint3 tid : SV_DispatchThreadID) {
     // let mag_l = acc_l * inv_area;
     // let mag_r = acc_r * inv_area;
 
-    static const float DEBUG_GAIN = 45.0;
+    static const float DEBUG_GAIN = 0.5;
+
     let mag_l = sqrt(acc_l * inv_area) * DEBUG_GAIN;
     let mag_r = sqrt(acc_r * inv_area) * DEBUG_GAIN;
 
     // Iterate over Y for LANE_ROWS output rows, writing BGRA.
     let row_height  = 1.0 / float(output_height);
-    let y_beg = float(tid.y * LANE_ROWS) * row_height;
-
-    float grad_l = mag_l - y_beg; // blue, top -> bottom
-    float grad_r = mag_r - (1.0 - y_beg); // green, bottom -> top
 
     // Calculate the mirroring of the x coordinate.
     let out_x = tid.x;
@@ -153,11 +147,12 @@ void main(uint3 tid : SV_DispatchThreadID) {
     let y_end = min(y + LANE_ROWS, output_height);
     while (y < y_end) {
         let row_base = y * output_width;
+        let t = float(y) * row_height;
+        let grad_l = mag_l - t;                 // blue, top -> bottom
+        let grad_r = mag_r - (1.0 - t);         // green, bottom -> top
         let texel = pack_bgra(grad_l, grad_r, 0.0, 1.0);
         output[row_base + out_x] = texel;
         output[row_base + out_x_reflected] = texel;
-        grad_l -= row_height;
-        grad_r += row_height;
         ++y;
     }
 }
@@ -167,3 +162,11 @@ uint pack_bgra(float b, float g, float r, float a) {
     let q = uint4(round(c * 255.0));
     return (q.w << 24) | (q.z << 16) | (q.y << 8) | q.x;
 }
+
+// DEBT Slang libraries
+struct Complex {
+    float real;
+    float imag;
+}
+
+float cpower(Complex c) { return c.real * c.real + c.imag * c.imag; }

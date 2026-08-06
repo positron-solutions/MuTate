@@ -16,7 +16,6 @@
 // sent to the thread and finally pulled by.. the caller during the callback.
 // NEXT automatically promote u32 -> UInt32 and newtypes thereof
 // XXX DeviceAddress and vk::DeviceAddress are too redundant.
-// XXX Sporadic races in destruction
 // NOTE Like the visualizer, support for a dynamic set of audio pipelines is necessary.  Lacking
 // that, the RMS pipeline was fully removed to add the DFT.  See blame.  We would like support for
 // mixtures of pipelines, and the resource runtime will need to orchestrate this.

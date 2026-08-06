@@ -1,6 +1,9 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// See the dft.rs for more details.  Field descriptions in the Rust code are
+// authoritative.
+
 // LIES ⚠️ "static allocation" and "dynamic allocation" are not yet part of the
 // implementation, but the comment language will be consistent if they *were*.
 // Device addresses will be used even though they come from the same allocation.
@@ -10,21 +13,13 @@
 // Device address + u32 yields a valid pointer for the T described by the field.
 // NEXT As the common math begins to show up, start supporting newtypes and
 // streamline the device address coercion so that our Slang is cleaner.
-// NOTE Rate representation.  Output columns advance at a rational multiple of
-// the input rate.  Windows retire on the input grid.  Columns close on the
-// output grid.  The device carries the position within the open column.
-// NEXT a lot of re-sampling phase values can be compressed to u16, but with
+// NEXT a lot of physical ring indexes can be compressed to u16, but with
 // extra conversions and no benefit unless registers are spilling back to
 // memory, which would be dominated by window sum complexity, not the phase
 // tracking data.
-// NEXT We can zero-pad some weights to change the hot loop geometry.
+
 // LMAO positional constructor arguments for structs?  Wow Slang.  We will
 // definitely be discarding this awful practice via types and macros.
-// NEXT Windows weights are symmetric.  We can halve the storage at the cost of
-// a more complex inner loop, taking advantage of reflection and retirement
-// occurring at the same point if we play everything right.
-
-// See the dft.rs for more details.
 
 struct DftPushConstants {
     // Root device address of static data, such as configs, window weights etc.
@@ -38,18 +33,10 @@ struct DftPushConstants {
     // NOTE Every index here is physical and already wrapped by the host, so the
     // device never sees an absolute count and never has to reduce one.  Ring
     // wrap is handled by the read cursor and the column bump locally.
-
-    // Physical index of the first sample to read.
     uint input_beg;
-    // How many samples to read.  Wrapping is the cursor's problem.
     uint input_count;
-
-    // Ticks elapsed in the open output column as of the sample immediately
-    // before `input_beg`.  In [0, ticks_per_column).  Host-derived and shared
-    // by every bin, so no bin can drift relative to another.
-    uint column_ticks_beg;
-    // Physical column index of the output column still open at that instant.
     uint output_column;
+    uint ramp_beg;
 }
 
 [[vk::push_constant]]
@@ -57,32 +44,21 @@ ConstantBuffer<DftPushConstants> pc;
 
 // Configuration shared by all channels.  Found at `static_base`.
 struct DftConfig {
-    // Number of bins in this DFT.  Also interpreted as output image height.
     uint bin_count;
-    // Upstream ring buffer sample count.  We require PoT length for cheap
-    // modulus and other arithmetic benefits.
     uint input_size;
-    // Length of lines in the output image.  Each bin will write to a row of the
-    // output image, which is stored in column-major format for temporal
-    // barriers to cover contiguous regions.
     uint output_image_width;
 
-    // Individual channel configurations.  Offset from `static_base`.  Coerce to
-    // ChannelConfig*. Index by tid.x.
+    // Offset from `static_base`.  Coerce to ChannelConfig*. Index by tid.x.
     uint channel_configs_offset;
     // NOTE Count omitted.  Host controls maximum tid.x with no bounds check
     // necessary.
 
-    // Output grid as an exact rational on the input grid.  One tick is
-    // 1/`ticks_per_column` of an output column; one input sample advances the
-    // output position by `ticks_per_sample` ticks.  Host reduces the pair.
-    //   48 kHz in, 240 Hz out: 200 and 1.  Boundaries land on sample instants.
-    //   44.1 kHz in, 240 Hz out: 735 and 4.  Boundaries land on quarter samples.
-    uint ticks_per_sample;
-    uint ticks_per_column;
+    // Coerce to `float*`.  Offset from `static_base`.
+    uint window_weights_offset;
+    uint window_weights_count;
+    uint window_spacing;
 }
 
-// Configuration shared by all bins in the channel.
 struct ChannelConfig {
     // Input device address for this channel.  Pointer rather than offset
     // because it comes from the upstream, not our base.
@@ -93,73 +69,31 @@ struct ChannelConfig {
     uint bin_configs_offset;
 }
 
-// State shared by all bins in the channel.
 struct ChannelState {
-    // Offset of this channel's bin state array from `dynamic_base`.  Coerce to
-    // `BinState*`.  Index directly by tid.y.  Bounds check on
-    // `DftConfig::bin_count`.
+    //  Coerce to `BinState*`.  Offset from `dynamic_base`.   Index directly by
+    //  tid.y.
     uint bin_states_offset;
 
-    // Offset of this channel's output image ring from `dynamic_base`.  Coerce
-    // to `float*`.  Storage is column-major.  Column count is
-    // `DftConfig::output_image_width`.  Row count is `DftConfig::bin_count`.
+    // Coerce to `Complex*`.  Offset from `dynamic_base`.
     uint output_image_offset;
 }
 
-// Static configuration data for a single DFT bin.
 struct BinConfig {
-    // Bin phasor rotation per input.
+    // Bin phasor rotation per sample.
     Complex theta;
-    // How many samples are between window starts.  Set by host to control the
-    // overlap density in time.
-    uint window_spacing;
-
-    // Coerce to `float*`.  Offset from `static_base`.
-    uint window_weights_offset;
-    // Number of window weights.
-    uint window_weights_count;
-    // EMA decay factor for phase coherence.
-    float coherence_alpha;
 }
 
-// Bin dynamic states.  Window sums and accumulator state both live here.
 struct BinState {
     // The current phasor value, the state variable of the projected Goertzel filter.
     Complex phasor;
-    // MAYBE Could store windows as an array if the length constant could be
-    // propagated up to Rust.  Using a proc macro to pull out a shared constant
-    // or to generate them for slang would not be too cancerous.
-
     // Coerces to `Complex*`.  Offset from `dynamic_base`.  Always
     // `WINDOW_SLOTS` slots.
     uint window_sums_offset;
-    // Samples elapsed since the retirement that produced `ramp_end`.  In
-    // [0, window_spacing).  Retirement fires when it reaches window_spacing.
-    uint ramp_samples;
-
-    // Accumulator states
-
-    // Endpoints of the ramp currently on display.  `ramp_beg` is window n-1's
-    // level, `ramp_end` is window n's, and the pair is consumed over [T_n,
-    // T_n+1) *following* the retirement that produced `ramp_end`.
-    float ramp_beg;
-    float ramp_end;
-    // Trapezoid area banked into the still-open output column, carried in
-    // level-ticks.  Divided by `DftConfig::ticks_per_column` at the close,
-    // which makes the stored value the column mean.
-    float open_area;
-
-    /// Phase tracking
-    Complex z_prev;
-    Complex d_sum;
-    float   d_pow;
 }
 
 // DEBT in the interest of time, not messing with specialization constants now.
 static const uint WINDOW_SLOTS = 4;
 static const uint WINDOW_SLOT_MASK = WINDOW_SLOTS - 1;
-static const float COH_FLOOR = 0.1;
-static const float COH_SCALE = 3.3;
 
 // Dispatch with x channels and divide bins by 32 and round up for y.
 [numthreads(1, 32, 1)]
@@ -193,93 +127,37 @@ void main(uint3 tid : SV_DispatchThreadID) {
     let input_mask  = dft_cfg.input_size - 1;
 
     Ptr<float> window_weights =
-        (Ptr<float>)(static_base + (uint64_t)bin_cfg.window_weights_offset);
+        (Ptr<float>)(static_base + (uint64_t)dft_cfg.window_weights_offset);
 
     Ptr<Complex> window_sums_spill =
         (Ptr<Complex>)(dynamic_base + (uint64_t)state.window_sums_offset);
+
+    Ptr<Complex> out_image =
+        (Ptr<Complex>)(dynamic_base + (uint64_t)channel_state.output_image_offset);
+
+    let window_spacing = WaveReadLaneFirst(dft_cfg.window_spacing);
+    let weights_count  = WaveReadLaneFirst(dft_cfg.window_weights_count);
+
+    // Carried filter state and window sums
+    Complex phasor = state.phasor;
 
     Complex sums[WINDOW_SLOTS];
     [ForceUnroll]
     for (uint i = 0; i < WINDOW_SLOTS; ++i) { sums[i] = window_sums_spill[i]; }
 
-    Ptr<float> out_image =
-        (Ptr<float>)(dynamic_base + (uint64_t)channel_state.output_image_offset);
+    // Samples elapsed in the current hop.  Retires at `window_spacing`.
+    uint ramp_samples = pc.ramp_beg;
 
-    // Carried filter state.
-    Complex phasor = state.phasor;
-    uint ramp_samples = state.ramp_samples;
-
-    // Carried integrator state.  The ramp on display over the segment we are
-    // entering, plus whatever has been banked into the open output interval.
-    float ramp_beg = state.ramp_beg;
-    float ramp_end = state.ramp_end;
-    float open_area = state.open_area;
-    Complex z_prev = state.z_prev;
-    Complex d_sum = state.d_sum;
-    float d_pow = state.d_pow;
-
-    // Host packs bins into 32-wide groups of identical window length, so both
-    // of these are wave-uniform.  Broadcasting from lane 0 is what makes that
-    // fact visible to the compiler -- without it the retirement test below is
-    // divergent as far as codegen is concerned, and the run-length restructuring
-    // is not legal.
-    let window_spacing = WaveReadLaneFirst(bin_cfg.window_spacing);
-    let weights_count = WaveReadLaneFirst(bin_cfg.window_weights_count);
-
-    // Reciprocals hoisted out of the sample loop.  Each is a ratio against an
-    // integer grid: samples within a ramp, ticks within a sample, ticks within
-    // a column.
-    let inv_window_spacing   = 1.0f / (float)window_spacing;
-    let inv_ticks_per_column = 1.0f / (float)dft_cfg.ticks_per_column;
-    let inv_ticks_per_sample = 1.0f / (float)dft_cfg.ticks_per_sample;
-
-    // Position on the output grid, carried in from the host.
-    uint column_ticks  = pc.column_ticks_beg;
     uint output_column = pc.output_column;
-    uint banked_ticks  = column_ticks;
-
-    // Level at the last banked event.  Every dispatch closes with a bank at its
-    // final sample instant, so that event is always the previous dispatch's
-    // last sample.
-    float banked_level = lerp(ramp_beg, ramp_end,
-                              (float)ramp_samples * inv_window_spacing);
 
     uint read_index = pc.input_beg;
     uint s = 0;
+
     while (s < pc.input_count) {
         let run = min(window_spacing - ramp_samples, pc.input_count - s);
 
         for (uint k = 0; k < run; ++k) {
-            // Advance both clocks to this sample's instant.  Everything below reads
-            // them as "now", so they must move together.
-            ramp_samples += 1;                  // in [1, window_spacing] within the body
-            column_ticks += dft_cfg.ticks_per_sample;
-
-            // Close the column if the boundary fell at or before this instant.
-            // NOTE column tick rate always < input tick rate.
-            if (column_ticks >= dft_cfg.ticks_per_column) {
-                column_ticks -= dft_cfg.ticks_per_column;
-
-                // The leftover *is* how far back the boundary sits from this sample,
-                // in ticks.  With ticks_per_sample == 1 it is always 0 and boundaries
-                // coincide with sample instants.
-                let samples_back = (float)column_ticks * inv_ticks_per_sample;
-                let level = lerp(ramp_beg, ramp_end,
-                                 ((float)ramp_samples - samples_back) * inv_window_spacing);
-
-                bank(open_area, banked_level, level,
-                     dft_cfg.ticks_per_column - banked_ticks);
-
-                out_image[output_column * dft_cfg.bin_count + bin] =
-                    pow((open_area * inv_ticks_per_column), 0.67);
-
-                open_area    = 0.0f;
-                banked_level = level;
-                banked_ticks = 0;
-
-                output_column += 1;
-                if (output_column == dft_cfg.output_image_width) { output_column = 0; }
-            }
+            let phase = ramp_samples + k;
 
             let sample = WaveReadLaneFirst(input_ring[read_index]);
             read_index = (read_index + 1) & input_mask;
@@ -288,61 +166,30 @@ void main(uint3 tid : SV_DispatchThreadID) {
             let projected = cscale(phasor, sample);
             phasor = cmul(phasor, bin_cfg.theta);
 
-            // Fan into the live windows.
-
-            // Next-to-retire window's read head.  It reaches the last weight
-            // exactly when ramp_samples reaches window_spacing.  Host guarantees
-            // window_weights_count >= window_spacing, so this never
-            // underflows.
-            let head = weights_count - 1 - window_spacing + ramp_samples;
-
+            // Fan into the live windows.  Uses window spacing to walk through
+            // window weights.
             [ForceUnroll]
             for (uint i = 0; i < WINDOW_SLOTS; ++i) {
-                // Slots rotate on retire, so slot index is age in hops directly.
-                let hop_back = i * window_spacing;   // needs 32 bits: 15 * 4800
-                // Only way out of range is stepping back past the start.  Explicit
-                // test, no reliance on underflow.
-                let live     = hop_back <= head;
-                // Something something underflow OpSelect...  Be my guest if this
-                // code breaks on your driver.
-                let w_index  = live ? head - hop_back : 0u;
-                let w        = live ? window_weights[w_index] : 0.0f;
-                sums[i] = cmad(sums[i], projected, w);
+                let w_index = phase + (WINDOW_SLOTS - 1 - i) * window_spacing;
+                sums[i] = cmad(sums[i], projected, window_weights[w_index]);
             }
         }
-        s += run;
 
         // The ramp is exactly at `ramp_end` here; retire the window.
+        s += run;
+        ramp_samples += run;
+
         if (ramp_samples == window_spacing) {
-            let sum = sums[0];
+            ramp_samples = 0;
+            // out_image[output_column * dft_cfg.bin_count + bin] = sums[0];
 
-            // Increment against the previous retirement.  The phasor is never
-            // reset, so `sum` is already in the absolute frame and this product
-            // needs no derotation: arg(d) is zero on-bin and (w0 - w1) * spacing
-            // off-bin.
-            let d  = cmul(sum, cconj(z_prev));
-            let d2 = cdot(d, d);
+            let bad = isnan(sums[0].real) || isnan(sums[0].imag) ||
+                isinf(sums[0].real) || isinf(sums[0].imag);
+            out_image[output_column * dft_cfg.bin_count + bin] =
+                bad ? Complex(100.0f, 0.0f) : sums[0];
 
-            // Matched EMAs.  Cauchy-Schwarz gives |E[d]|^2 <= E[|d|^2], so the
-            // ratio lands in [0, 1] with no K bookkeeping and no reset -- which
-            // matters because retirements and column closes are on unrelated
-            // grids and a boxcar over K would need a K this shader doesn't have.
-            d_sum = clerp(d_sum, d,  bin_cfg.coherence_alpha);
-            d_pow =  lerp(d_pow, d2, bin_cfg.coherence_alpha);
 
-            let coh  = cdot(d_sum, d_sum) / max(d_pow, 1e-30f);
-            let gate = saturate((coh - COH_FLOOR) * COH_SCALE);
-
-            let level = sqrt(cdot(sum, sum)) * gate;
-            z_prev = sum;
-
-            bank(open_area, banked_level, ramp_end, column_ticks - banked_ticks);
-            banked_level = ramp_end;
-            banked_ticks = column_ticks;
-
-            ramp_beg = ramp_end;
-            ramp_end = level;
-
+            output_column = (output_column + 1) & (dft_cfg.output_image_width - 1);
 
             // Rotate rather than bump a cursor: every index stays a literal
             // after unrolling, which is what keeps `sums` in registers.  Three
@@ -351,41 +198,23 @@ void main(uint3 tid : SV_DispatchThreadID) {
             [ForceUnroll]
             for (uint i = 0; i < WINDOW_SLOTS - 1; ++i) { sums[i] = sums[i + 1]; }
             sums[WINDOW_SLOTS - 1] = Complex(0.0f, 0.0f);
-            ramp_samples = 0;
         }
     }
-
-    // Close the dispatch on a banked event at the final sample instant, so the
-    // next dispatch resumes with banked_ticks == pc.column_ticks_beg and can
-    // rebuild banked_level from the ramp alone.
-    bank(open_area, banked_level,
-         lerp(ramp_beg, ramp_end, (float)ramp_samples * inv_window_spacing),
-         column_ticks - banked_ticks);
 
     // Renormalize once per quantum.  Kills the exponential magnitude drift;
     // phase drift is a bounded random walk and needs no correction.
     phasor = cscale(phasor, rsqrt(phasor.real * phasor.real +
                                   phasor.imag * phasor.imag));
 
-    // Write back.  Repacking into the loaded struct and storing once keeps the
-    // unpack/repack symmetric and lets this lower to a single contiguous store;
-    // the immutable fields are rewritten with the values they already held.
-    state.phasor = phasor;
-
+    // Write window states and phasor state back to VRAM
     [ForceUnroll]
     for (uint i = 0; i < WINDOW_SLOTS; ++i) { window_sums_spill[i] = sums[i]; }
 
-    state.ramp_samples = ramp_samples;
-    state.ramp_beg = ramp_beg;
-    state.ramp_end = ramp_end;
-    state.open_area = open_area;
-    state.z_prev = z_prev;
-    state.d_sum = d_sum;
-    state.d_pow = d_pow;
+    state.phasor = phasor;
     *state_ptr = state;
 }
 
-// NEXT library dawg
+// DEBT Slang libraries
 struct Complex {
     float real;
     float imag;
@@ -402,19 +231,4 @@ Complex cmad(Complex acc, Complex a, float s) {
 
 Complex cscale(Complex a, float s) {
     return Complex(a.real * s, a.imag * s);
-}
-
-Complex cconj(Complex a) { return Complex(a.real, -a.imag); }
-
-float   cdot(Complex a, Complex b) { return a.real * b.real + a.imag * b.imag; }
-
-Complex clerp(Complex a, Complex b, float t) {
-    return Complex(lerp(a.real, b.real, t), lerp(a.imag, b.imag, t));
-}
-
-// Bank the trapezoid under the ramp from the last banked event to this one.
-// `ticks` is the exact width in ticks, so `open_area` carries in level-ticks and
-// dividing by `ticks_per_column` at the close *is* the column mean.
-void bank(inout float open_area, float a, float b, uint ticks) {
-    open_area += 0.5f * (a + b) * (float)ticks;
 }

@@ -5,6 +5,9 @@
 //!
 //! Currently just some tools for getting the control data sizes and offsets figured out.
 
+// NEXT we will need a whole lot more control data writing, and making it easier is a huge time
+// saver.
+
 /// Bump cursor for computing `u32` offsets from a base address.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Cursor(u32);
@@ -55,12 +58,6 @@ pub fn put_slice<T: Copy>(bytes: &mut [u8], offset: u32, values: &[T]) {
             values.len(),
         )
     };
-}
-
-/// Get the window length from quality ratio, `fs` sample frequency, `fc` center frequency.
-// TODO Not in use
-pub fn window_length(q: f32, fs: f32, fc: f32) -> u32 {
-    ((q * fs / fc).ceil() as u32)
 }
 
 /// Greatest common divisor. `gcd(0, 0) == 0`.

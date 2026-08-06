@@ -12,7 +12,7 @@
                             "name": "left_channel",
                             "type": {
                                 "kind": "pointer",
-                                "valueType": "float"
+                                "valueType": "Complex"
                             },
                             "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
                         },
@@ -20,7 +20,7 @@
                             "name": "right_channel",
                             "type": {
                                 "kind": "pointer",
-                                "valueType": "float"
+                                "valueType": "Complex"
                             },
                             "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
                         },
@@ -101,7 +101,7 @@
                                 "name": "left_channel",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "float"
+                                    "valueType": "Complex"
                                 },
                                 "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
                             },
@@ -109,7 +109,7 @@
                                 "name": "right_channel",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "float"
+                                    "valueType": "Complex"
                                 },
                                 "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
                             },

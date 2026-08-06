@@ -1,53 +1,33 @@
 //! # Discrete Fourier Transform
 //!
-//! See the dft.rs for more discussion.
+//! Short-time windowed discrete Fourier transform providing complex-valued output rings for
+//! parallel downstream spectral analysis.  This transform just provides raw input for pitch
+//! reassignment and synchrosqueezing etc.
 //!
 //! - One independent DFT bank per channel
-//! - Dolph-Chebyshev window (special case of ultra-spherical)
-//! - Fixed quantum size, for direct use in audio callback without tracking
-//! - 240Hz output ring buffer
+//! - Logarithmic bin spacing, independently calculated Goertzel projections per bin.
+//! - Short-time overlapping windowed block outputs.
+//! - Dolph-Chebyshev windows (special case of ultra-spherical)
 //! - Downstream payloads
-//!   + read-scoped barrier generation
-//!   + timeline semaphore to ensure published dispatch has arrived
-//!   + publish output control data at a single address
-//! - ISO226 leveling for a 70phon reference curve, pre-applied to window weights
-//! - Logarithmic bin spacing (musical octaves have constant visual spacing)
+//!   + Raw complex outputs stored in ring buffers for multiple downstreams
+//!   + Time-slice contiguous barrier generation for consumer dispatches.
+//!   + Timeline semaphore to ensure latest published dispatch can be made visible.
+//!   + Dispatch published semaphore values for wait-free read.
+//!   + Control data publish is wait-free, best-effort for consuming on another clock.
 //!
 //! ## Implementation Tradeoffs
 //!
-//! - Many configurations only change every 32 bins, keeping warps more uniform.
-//!
-//! ## Important Coherence Relations
-//!
-//! - Window overlap ratio and window length set the window step size.
-//! - Window step size determines window sum tick rate.
-//! - Output rate, fixed for all bins, is a re-sampling of each bin's window tick rate.
-//! - Bin count is equal to output rows.
-//!
-//! Quality ratios are calculated to produce at least overlapping bandwidths to avoid pitches
-//! falling through all bins.  Quality ratio determines the window length.  Window length,
-//! bandwidth, noise suppression, and time resolution are all tradeoffs.
-//!
-//! ### Key Implementation Drivers
-//!
-//! - Window sum ticks can be a lot slower than the output rate (the 20Hz bin has a long window but
-//!   output is 240Hz), requiring interpolation for updates to write smooth data, but introducing an
-//!   interpolation phase delay 💀.
-//! - Window sum ticks can be a lot faster than the output rate, requiring accumulation before
-//!   writing outputs.
-//! - In both the fast and slow case, each fraction of each output maps to a fraction of the output
-//!   without overlap, in the same order.  A single accumulator can do the job in both cases.
-//!
-//! Window retirement may happen on any audio datum, but only one of the overlapping windows is
-//! going to retire next, so we track it and do the retirement check at one point in the loop,
-//! keeping divergence low.
+//! - Dispatch level window configuration for low divergence.  This makes many values such as Q
+//!   bin-dependent, which has to be ironed out downstream.  Windows with padding weights would
+//!   still require different spacing, and so the warp was chosen as the quantum of dispatch and
+//!   configuration.
 //!
 //! ## Data Structures
 //!
 //! - One `DftConfig` with values shared across channels
-//! - One `ChannelConfig` and `ChannelState` per channel
-//! - `BINS` bins per channel, accessed via `ChannelConfig` and `ChannelState`.
-//! - One `BinConfig` and `BinState` per bin
+//! - One `ChannelConfig` per channel.
+//! - `BINS` `BinConfig`s per DFT.
+//! - `BINS` `BinState`s per channel.
 //!
 //! ## Memory Layout
 //!
@@ -58,52 +38,46 @@
 //! weights follow.
 //!
 //! **Static data**:
-//! - `DftConfig`s
+//! - `DftConfig`
+//! - `ChannelConfig`s
+//! - `Window weights`
 //! - `BinConfig`s
-//! - Window weights
 //!
 //! **Dynamic states**:
-//! - DFT Output ring, column-major
-//! - `BinState`s
+//! - `ChannelState`s
+//! - Per Channel:
+//!   + `BinState`s
+//!   + `WindowSum`
+//!   + Output rings. One per channel.  Column-major
 //!
 //! ### DFT Output Format
 //!
-//! Each channel uses an independent output ring.  The time axis advances by column and the memory
-//! layout is column major, so barriers for a time slice of the ring cover a contiguous region of
-//! memory or two for regions that straddle the end of the ring.
-//!
-//! Output is stored as an `f32` magnitude of the window sum to enable dynamic range interpretation
-//! and more flexible downstream use, such as HDR.  Phase information is discarded, but may be
-//! re-introduced if short-time phase rotation can be used as a pitch-resolution signal to gate
-//! low-pitch bin activation (it can).
+//! Each channel uses an independent output ring of `Complex` values.  The time axis advances by
+//! column and the memory layout is column major, so barriers for a time slice of the ring cover a
+//! contiguous region of memory or two for regions that straddle the end of the ring.
 //!
 //! ## Compute Pipeline Behavior
 //!
-//! - Each lane finds its channel and then bin using dispatch geometry, masking itself if out of
-//!   the range.
-//! - Each bin maintains [`OVERLAP_RATIO`] windows that are loaded to registers once.
-//! - Each bin contains an output accumulator, again loaded to registers and updated for the timing
-//!   re-anchor.
+//! - Each lane finds its channel and then bin using dispatch geometry.
+//! - Each bin maintains [`OVERLAP_RATIO`] window complex accumulators that are loaded to registers
+//!   once.
 //! - Each input sample is first projected onto the Goertzel phasor once.
-//! - Each window sum applies its next weight and accumulates.
-//! - Only one window can possibly retire on every input datum.  If retirement happens, the output
-//!   accumulator is updated, window sum reset, and retirement index rotated.
-//! - When input time advances beyond the output tick, each output accumulator is partially drained
-//!   for the consumed time segment into the output ring.
-//! - After the dispatch completes, persistent states are written back to the bin's dynamic state,
-//!   including the partial output residing in the accumulator.
+//! - Each window sum applies its next weight to the phasor and accumulates.
+//! - Only one window sum can possibly retire on every input datum.  If retirement happens, a
+//!   complex output is written to the ring.
+//! - After the dispatch completes, the bin's dynamic state and window sums are written back to
+//!   VRAM.
 
-// NEXT see discussion about perfecting the spectrogram, but the biggest, most obvious improvements
-// will be dampening far off-bin pitches using pre-condition and using, narrow-dynamic range
-// companion DFTs to create a very high time-resolution bank that can sharpen a slower,
-// pitch-precise DFT.  This will require cross-reference training that is not available yet.
+// NOTE Other DFTs can be made from this structure.  When building composites with different tick
+// rates, aligning the tracking is the responsibility of the user and should use the tick rate
+// differential to deduce write-head offsets.
 // DEBT DMA vs transfer abstraction.  The control data should be written device visible and then
 // copied / handed off into device-only memory.  We would initialize this lazily, only beginning
 // dispatches when the upload of control data is available and black-holing (later shared consumers
 // will need a concept of the reclaim owner) data to keep upstream ring slack available.  There's a
 // lot of runtime spec hydration and downstream dependency concepts in there.
 // NEXT separate static and dynamic data.  Use UBO buffer flags etc.
-// NEXT We're not using any slang introspection.  This is the motivating problem for which we would
+// NEXT We're not using any slang reflection.  This is the motivating problem for which we would
 // even finish implementing the field checks 🤡.  Look at all of these buffer device addresses that
 // have some coercion target!  This will require some newtype wrapping.  Probably the biggest time
 // saver would be checking field orders.  99 times out of 10, if any type or alignment is wrong,
@@ -120,30 +94,54 @@ use mutate_lib::tree::TreeSum;
 use mutate_lib::{self as utate, audio::import::RingLayout, prelude::*};
 use utate::dsp::{self, bank, window::WindowFunction};
 
-/// Number of bins.  Per channel.  Usually sampled in high resolution and re-sampled as needed.
+// NEXT suppose this could be configurable, but add some compile-time checks to configuration
+// declarations.  Slang constant agreement via proc macro would be very welcome.
+/// Number of bins.  `WARP_SIZE` multiple enforcement saves us from padding or a masking check
+/// within the shader.
 const BINS: u32 = 2560 / 2;
-const BIN_GROUP: u32 = 32;
-const _: () = assert!(BINS % BIN_GROUP == 0, "grouping assumes exact groups");
+const WARP_SIZE: u32 = 32;
+const _: () = assert!(BINS % WARP_SIZE == 0, "grouping assumes exact groups");
+const WINDOW_LENGTH: u32 = 128;
+const _: () = assert!(
+    WINDOW_LENGTH.is_power_of_two(),
+    "window length must be PoT for wrap masking",
+);
+
 /// To maintain COLA in time, each input datum is seen by at least this many windows.  Faster window
-/// ticks lead to slightly better COLA for observing peaks and more finely spaced window sum ticks
-/// on low pitch bins.  This product does directly scale the major axis of work for each lane!
+/// ticks lead to slightly better COLA for observing transients.
 // ♻️ Duplicated within the slang.
 const OVERLAP_RATIO: u32 = 4;
-const OUTPUT_COLUMNS: u32 = 128; // About 0.5s at 240Hz
+const WINDOW_SPACING: u32 = WINDOW_LENGTH / OVERLAP_RATIO;
+const _: () = assert!(
+    WINDOW_LENGTH % OVERLAP_RATIO == 0,
+    "window spacing must divide evenly",
+);
+const _: () = assert!(
+    WINDOW_LENGTH == WINDOW_SPACING * OVERLAP_RATIO,
+    "shader can only walk weights that are a multiple of spacing.",
+);
+
+const OUTPUT_COLUMNS: u32 = 128;
 const _: () = assert!(
     OUTPUT_COLUMNS.is_power_of_two(),
     "output ring must be PoT for wrap masking",
 );
-const Q: f32 = 32.0; // Goal is 300. Will take some effort.
 
-// NOTE Example output buffer size: 2560 bins * 128 columns * 4 bytes per F32 output * 2 channels ~=
-// 2.5MB.  At 60Hz, the 240Hz ring is using about 4 columns per frame.  Producer lapping is roughly
-// impossible and the ring has extremely generous slack, about 10x over-provisioned, more-so on
-// faster displays that hazard less data at a time and retire hazards faster.  The over-provision
-// mainly provides buffer for tracking & slew.
+// NOTE Example output buffer size: 2560 bins * 128 columns * 8 bytes per Complex output * 2
+// channels ~= 5MB.  With a window length of 256 and overlap ratio of 2, we get about 375.0Hz
+// updates.  At that rate, 6.25 columns fit within a single 60Hz frame.  That means the output ring
+// has over the pipeline depth + triple buffering of slack.  It's about 10x over-provisioned,
+// more-so on faster displays that hazard less data at a time and retire hazards faster.  The
+// over-provision mainly provides buffer for tracking & slew.
+
+// DEBT sample rate
+/// 48kHz until we support rates like 44.1 etc
+const SAMPLE_RATE: u32 = 48_000;
+const OUTPUT_RATE_NUM: u32 = SAMPLE_RATE;
+const OUTPUT_RATE_DEN: u32 = WINDOW_SPACING;
 
 /// Geometry, location, and tracking information for downstream consumers.
-// XXX Create and publish this post dispatch!
+// XXX Publish this post dispatch!
 #[derive(Clone, Debug)]
 pub struct DftOutput<const CHANNELS: usize = 2> {
     /// Output buffer addresses.
@@ -152,22 +150,20 @@ pub struct DftOutput<const CHANNELS: usize = 2> {
     pub ring_height: u32,
     /// Width of each ring in pixels.  Number of columns.
     pub ring_width: u32,
+    /// Consumed logical read head of the upstream audio input.  May be used for tracking & slewing.
+    pub read_head: u64,
 
     /// Timeline semaphore signaled on dispatch for latest quantum (witnessed by this structure
     /// during construction).
     pub data_ready: WaitValue,
-    /// Consumed logical read head of the upstream audio input.  May be used for tracking & slewing.
-    pub read_head: u64,
     /// Logical write head of the downstream **after** `data_ready` signals.  Note: this is output
     /// rate, 240Hz.
     pub write_head: u64,
-    // XXX I don't like this name
-    /// Sub-datum phase of the write head against the read head.  Use to time the input against the output.
-    pub column_ticks_beg: u32,
 
-    /// The rational data rate relation between input and output
-    pub ticks_per_sample: u32,
-    pub ticks_per_column: u32,
+    /// `[0, samples_per_column)`.  Consumers timing the input against the output use
+    /// `read_head - ramp_samples` as the instant of the last column boundary.
+    pub ramp_samples: u32,
+    pub samples_per_column: u32,
 }
 
 /// Result structure for dispatches.  Audio callback consumes and publishes `output` for downstream
@@ -184,9 +180,9 @@ pub struct DftDispatch<const CHANNELS: usize = 2> {
 #[compute_pipeline(
     compute = stage!("audio/dft", Compute, c"main"),
     // XXX Was not allowed to write a doc comment in this position.
-    // Each channel reads from a segment of the input ring, from start to end.  Thanks to PoT ring
-    // width, straddled values are fine, but audio server quantums usually will not straddle the
-    // device input rings.
+    // Each channel reads from a segment of the input ring, from start to end.  Thanks to PoT input
+    // ring width, straddled values are fine, but audio server quantums usually will not straddle
+    // the device input rings.
     push = push!(DftPushConstants {
         /// Coerces to `DftConfig*` in slang.  Static data offsets use this base.
         static_base: DeviceAddress,
@@ -198,12 +194,11 @@ pub struct DftDispatch<const CHANNELS: usize = 2> {
         /// Physical end index of the input samples.
         input_count: UInt,
 
-        /// Host calculated starting offset, the phase between the output and input clock.  Wish I can
-        /// find a cleaner way to explain it.  In a hurry to get to the debugging.
-        column_ticks_beg: UInt,
         /// Host pre-calculates end column and feeds it in.  Device counts down the difference.  Host
         /// and device *must* not disagree with
         output_column: UInt,
+        /// The number of input samples that have been consumed but did not emit an output yet.
+        ramp_beg: UInt,
     }),
 )]
 pub struct DftComputePipeline;
@@ -213,7 +208,7 @@ pub struct DftComputePipeline;
 struct DftConfig {
     /// Number of bins.  Also interpreted as output image height.
     bin_count: u32,
-    /// Input rings size informs wrapping logic.  Should be PoT.
+    /// Input rings size informs wrapping logic.  Must be PoT.
     input_size: u32,
     /// Length of lines in the output image.  Each bin will write to a row of the
     /// output image, which is stored in column-major format for temporal
@@ -222,13 +217,14 @@ struct DftConfig {
     /// Individual channel configurations.  Offset from `static_base`.  Coerce to
     /// `ChannelConfig*`. Index by tid.x.
     channel_configs_offset: u32,
-    // NOTE count omitted.  Host controls maximum channel count with `tid.x`.
-    /// Output grid as an exact rational on the input grid.  One tick is 1/`ticks_per_column` of an
-    /// output column; one input sample advances the output position by `ticks_per_sample` ticks.
-    /// Host reduces the pair.  48 kHz in, 240 Hz out: 200 and 1.  Boundaries land on sample
-    /// instants.  44.1 kHz in, 240 Hz out: 735 and 4.  Boundaries land on quarter samples.
-    ticks_per_sample: UInt,
-    ticks_per_column: UInt,
+    // NOTE channel count omitted.  Host controls maximum channel count with `tid.x`.
+    /// Coerce to `float*` in slang.  Offset from `static_base`.
+    window_weights_offset: u32,
+    /// Number of window weights, window length.
+    window_weights_count: u32,
+    /// Input sample offset of each window start.  This *is* the output clock.  One column closes
+    /// every `window_spacing` samples, on a sample instant.
+    window_spacing: u32,
 }
 
 #[repr(C)]
@@ -247,7 +243,7 @@ struct ChannelConfig {
 struct ChannelState {
     /// Offset from `dynamic_base`.  Coerce to `BinState*`.  Index by tid.y.
     bin_states_offset: u32,
-    /// Offset from `dynamic_base`.  Coerce to `float*`.  Column-major, `output_image_width`
+    /// Offset from `dynamic_base`.  Coerce to `Complex*`.  Column-major, `output_image_width`
     /// columns of `bin_count` rows.
     output_image_offset: u32,
 }
@@ -261,18 +257,8 @@ struct Complex {
 /// Static configuration data for a single DFT bin.
 #[repr(C)]
 struct BinConfig {
-    /// Bin phasor rotation per input.
+    /// Bin phasor rotation per input sample.
     theta: Complex,
-
-    /// Input sample offset of each window start.
-    window_spacing: u32,
-
-    /// Coerce to `float*` in slang.  Offset from `static_base`.
-    window_weights_offset: u32,
-    /// Number of window weights.
-    window_weights_count: u32,
-    /// EMA decay factor for phase coherence.
-    coherence_alpha: f32,
 }
 
 /// Bin dynamic states.  Window sums and accumulator state both live here.
@@ -280,32 +266,10 @@ struct BinConfig {
 struct BinState {
     /// Goertzel filter's state variable.
     phasor: Complex,
-
+    // XXX Should we try to pack and load these differently to coalesce reads?
     /// Coerces to `Complex*`.  Offset from `dynamic_base`
     window_sums_offset: u32,
-    // Samples elapsed since the retirement that produced `ramp_end`.  In
-    // [0, window_spacing).  Retirement fires when it reaches window_spacing.
-    ramp_samples: u32,
-
-    // Accumulator states.
-    /// Endpoints of the ramp currently on display.  `ramp_beg` is window n-1's
-    /// level, `ramp_end` is window n's, and the pair is consumed over [T_n,
-    /// T_n+1) *following* the retirement that produced `ramp_end`.
-    ramp_beg: f32,
-    ramp_end: f32,
-
-    /// Trapezoid area accumulated into the current output interval
-    open_area: f32,
-
-    z_prev: Complex,
-    d_sum: Complex,
-    d_pow: f32,
 }
-
-/// 48kHz until we support rates like 44.1 etc
-const SAMPLE_RATE: u32 = 48_000;
-/// 240 is our default output rate on all video input sources.
-const OUTPUT_RATE: u32 = 240;
 
 /// The host-side handle for the control data and dispatches.  Owns, dispatches, and publishes
 /// consumer control data.
@@ -322,10 +286,10 @@ pub struct Dft<const CHANNELS: usize = 2> {
     /// Byte offsets of each channel's output ring from `dynamic_base`.  Barrier ranges.
     output_ring_offsets: [u32; CHANNELS],
 
-    // Host-owned mirror of the device's output clock.  The device reads these from push
-    // constants and never writes them back, so divergence here is silent corruption.
-    /// Ticks into the currently open column.  In `[0, ticks_per_column)`.
-    column_ticks: u32,
+    /// Samples accumulated into the open hop.  In `[0, WINDOW_SPACING)`.  Invariant is:
+    ///   `read_head == columns_written * WINDOW_SPACING + ramp_samples`
+    ramp_samples: u32,
+    // XXX I think we can derive this
     /// Physical index of the open column.
     output_column: u32,
     /// Monotonic count of *closed* columns.  This is `DftOutput::write_head`.
@@ -333,8 +297,6 @@ pub struct Dft<const CHANNELS: usize = 2> {
     /// Logical sample index we have consumed through.
     read_head: u64,
 
-    ticks_per_sample: u32,
-    ticks_per_column: u32,
     /// `input_size - 1`, cached for wrapping `input_beg`.
     input_mask: u32,
     /// `BINS.div_ceil(32)`
@@ -345,57 +307,44 @@ pub struct Dft<const CHANNELS: usize = 2> {
 
 impl<const CHANNELS: usize> Dft<CHANNELS> {
     pub fn new(device: &Device, ring_layout: RingLayout<CHANNELS>) -> Result<Self, MutateError> {
+        // XXX move this upstream and create a call-site compile time check
         let input_size = ring_layout.sample_count;
         debug_assert!(input_size.is_power_of_two());
 
-        let bins = bank::bins(dsp::MIN_FREQ_CHEAP_DRIVERS, 15000.0, BINS as usize);
+        // Returns log-spaced bins.
+        // XXX make center to center
+        let bins = bank::bins(dsp::MIN_FREQ_CHEAP_DRIVERS, 16_666.0, BINS as usize);
 
-        // Window geometry.  Length is rounded to a multiple of OVERLAP_RATIO for shader index walking.
-        // let window_lengths: Vec<u32> = bins
-        //     .iter()
-        //     .map(|b| {
-        //         // Conservative q just to get to debugging!
-        //         let q: f32 = Q;
-        //         (((q * SAMPLE_RATE as f32 / (b.center as f32)).ceil() as u32)
-        //             .next_multiple_of(OVERLAP_RATIO))
-        //         .min(4096 * 2)
-        //     })
-        //     .collect();
+        // Laying out the memory is essentially just walking the sizes and offsets of everything we
+        // want to put in it, remembering those values to later populate the memory, and allocating
+        // the total sizes.
 
-        let window_length = |center: f64| {
-            (((Q * SAMPLE_RATE as f32 / center as f32).ceil() as u32)
-                .next_multiple_of(OVERLAP_RATIO))
-            .min(32 * 32 * 4) // 4096
-        };
-        // Lowest center in each group sets the length, so every bin in the group meets Q as a floor.
-        let window_lengths: Vec<u32> = bins
-            .chunks(BIN_GROUP as usize)
-            .flat_map(|g| std::iter::repeat_n(window_length(g[0].center), g.len()))
-            .collect();
-
-        // Walk the static section to find offsets.
+        // Walk the static section to find offsets and size.
         let mut c = plan::Cursor::default();
-        let dft_config = c.push::<DftConfig>(1);
-        let channel_configs = c.push::<ChannelConfig>(CHANNELS as u32);
-        let bin_configs = c.push::<BinConfig>(BINS);
-        let weights: Vec<u32> = window_lengths.iter().map(|&n| c.push::<f32>(n)).collect();
+        let dft_config_offset = c.push::<DftConfig>(1);
+        let channel_configs_offset = c.push::<ChannelConfig>(CHANNELS as u32);
+        let window_weights_offset = c.push::<f32>(WINDOW_LENGTH as u32);
+        let bin_configs_offset = c.push::<BinConfig>(BINS);
+
+        // NOTE alignment for within the buffer
         let static_bytes = c.align_to(256);
 
-        // Walk the dynamic section to find offsets.
+        // Walk the dynamic section to find offsets and size.
         let mut c = plan::Cursor::default();
-        let channel_states = c.push::<ChannelState>(CHANNELS as u32);
+        let channel_states_offset = c.push::<ChannelState>(CHANNELS as u32);
+
+        // State for each channel is written contiguously.
         let mut bin_states = [0u32; CHANNELS];
         let mut window_sums = [0u32; CHANNELS];
         let mut output_rings = [0u32; CHANNELS];
-        // Channel-major: each channel's regions are contiguous, matching the per-channel ring
-        // barrier and the eventual per-channel split.
         for i in 0..CHANNELS {
             bin_states[i] = c.push::<BinState>(BINS);
             window_sums[i] = c.push::<Complex>(BINS * OVERLAP_RATIO);
-            output_rings[i] = c.push::<f32>(BINS * OUTPUT_COLUMNS);
+            output_rings[i] = c.push::<Complex>(BINS * OUTPUT_COLUMNS);
         }
         let dynamic_bytes = c.len();
 
+        // XXX unknown alignment of this allocation
         let mut allocation = utate::vulkan::resource::buffer::MappedAllocation::<u8>::new(
             device,
             (static_bytes + dynamic_bytes) as usize,
@@ -404,85 +353,64 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             .as_mut_slice()
             .split_at_mut(static_bytes as usize);
 
-        let g = plan::gcd(SAMPLE_RATE, OUTPUT_RATE);
-        let ticks_per_sample = OUTPUT_RATE / g;
-        let ticks_per_column = SAMPLE_RATE / g;
-        assert!(
-            ticks_per_sample < ticks_per_column,
-            "device closes at most one column per sample"
-        );
-
         plan::put(
             stat,
-            dft_config,
+            dft_config_offset,
             DftConfig {
                 bin_count: BINS,
                 input_size: ring_layout.sample_count,
                 output_image_width: OUTPUT_COLUMNS,
-                channel_configs_offset: channel_configs,
-                ticks_per_column: (SAMPLE_RATE / g).into(),
-                ticks_per_sample: (OUTPUT_RATE / g).into(),
+                channel_configs_offset,
+
+                window_weights_offset,
+                window_weights_count: WINDOW_LENGTH,
+                window_spacing: WINDOW_LENGTH / OVERLAP_RATIO,
             },
         );
 
         for i in 0..CHANNELS {
             plan::put(
                 stat,
-                channel_configs + i as u32 * size_of::<ChannelConfig>() as u32,
+                channel_configs_offset + i as u32 * size_of::<ChannelConfig>() as u32,
                 ChannelConfig {
                     input_ring_base: (ring_layout.base_address
                         + ring_layout.channel_offsets[i] as u64)
                         .into(),
-                    bin_configs_offset: bin_configs.into(),
+                    bin_configs_offset: bin_configs_offset.into(),
                 },
             );
         }
 
-        for (bin, (b, &n)) in bins.iter().zip(&window_lengths).enumerate() {
+        // let window_function = WindowFunction::DolphChebyshev {
+        //     attenuation_db: 120.0,
+        // };
+        // let window_function = WindowFunction::Hamming;
+        let window_function = WindowFunction::BoxCar;
+        let weights = window_function.make_window_32(WINDOW_LENGTH as usize);
+        plan::put_slice(stat, window_weights_offset, &weights);
+
+        for (i, bin) in bins.iter().enumerate() {
             plan::put(
                 stat,
-                bin_configs + bin as u32 * size_of::<BinConfig>() as u32,
+                bin_configs_offset + i as u32 * size_of::<BinConfig>() as u32,
                 BinConfig {
                     theta: {
-                        // sin = imag, cos = real.  This is intentional!
-                        let (imag, real) = (std::f32::consts::TAU * (b.center as f32)
-                            / SAMPLE_RATE as f32)
-                            .sin_cos();
-                        Complex { real, imag }
+                        // sin = imag, cos = real.  This ordering is intentional!
+                        let (imag, real) =
+                            (std::f64::consts::TAU * (bin.center / SAMPLE_RATE as f64)).sin_cos();
+                        Complex {
+                            real: real as f32,
+                            imag: imag as f32,
+                        }
                     },
-                    window_spacing: n / OVERLAP_RATIO,
-                    window_weights_offset: weights[bin],
-                    window_weights_count: n,
-                    coherence_alpha: 0.1,
                 },
             );
-
-            // let window_function = WindowFunction::DolphChebyshev {
-            //     attenuation_db: 80.0,
-            // };
-            let window_function = WindowFunction::Bartlett;
-            // let mut w = window_function.make_window_32(n as usize);
-            // let s: f32 = w.iter().sum();
-            // println!("weights sum: {}", s);
-
-            let mut w = window_function.make_window(n as usize); // f64
-            let cg: f64 = w.iter().copied().tree_sum();
-            let scale = b.iso226_gain as f64 / cg;
-            // let scale = 1.0 / cg;
-            let w: Vec<f32> = w.iter().map(|x| (x * scale) as f32).collect();
-
-            // Pre-multiply the weights by an iso226 gain levelling curve so that bins come out
-            // approximately perceptually flat in relative RMS/SPL
-            // let scale = b.iso226_gain as f32;
-            // w.iter_mut().for_each(|x| *x *= scale);
-
-            plan::put_slice(stat, weights[bin], &w);
         }
 
         for i in 0..CHANNELS {
             plan::put(
                 dynam,
-                channel_states + i as u32 * size_of::<ChannelState>() as u32,
+                channel_states_offset + i as u32 * size_of::<ChannelState>() as u32,
                 ChannelState {
                     bin_states_offset: bin_states[i],
                     output_image_offset: output_rings[i],
@@ -493,27 +421,12 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
                     dynam,
                     bin_states[i] + bin * size_of::<BinState>() as u32,
                     BinState {
-                        // Goertzel state is a unit phasor, not zero.
                         phasor: Complex {
                             real: 1.0,
                             imag: 0.0,
                         },
                         window_sums_offset: window_sums[i]
                             + bin * OVERLAP_RATIO * size_of::<Complex>() as u32,
-                        ramp_samples: 0,
-                        ramp_beg: 0.0,
-                        ramp_end: 0.0,
-                        open_area: 0.0,
-
-                        z_prev: Complex {
-                            real: 1.0,
-                            imag: 0.0,
-                        },
-                        d_sum: Complex {
-                            real: 1.0,
-                            imag: 0.0,
-                        },
-                        d_pow: 0.0,
                     },
                 );
             }
@@ -524,9 +437,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
         allocation.flush(device);
 
         let timeline = device.make_timeline_semaphore()?;
-
         let base = allocation.device_address(device)?;
-
         Ok(Self {
             timeline,
             static_base: base.into(),
@@ -534,14 +445,12 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             output_ring_offsets: output_rings,
             pipeline: ComputePipeline::<DftComputePipeline>::new(device)?,
             allocation,
-            column_ticks: 0,
+            ramp_samples: 0,
             output_column: 0,
             columns_written: 0,
             read_head: 0,
-            ticks_per_sample,
-            ticks_per_column,
             input_mask: input_size - 1,
-            groups_y: BINS.div_ceil(32),
+            groups_y: BINS / WARP_SIZE, // NOTE enforced by const check
         })
     }
 
@@ -555,7 +464,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
         device: &ash::Device,
         cb: &RecordingBuffer<Graphics, OneTime>,
         state: &DeviceRingView<CHANNELS>,
-    ) -> Result<DftDispatch, MutateError> {
+    ) -> Result<DftDispatch<CHANNELS>, MutateError> {
         // XXX upstream a length check before handing over an empty dispatch
         let count = state.occupied_len();
 
@@ -581,8 +490,8 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             dynamic_base: self.dynamic_base,
             input_beg: (self.read_head as u32 & self.input_mask).into(),
             input_count: count.into(),
-            column_ticks_beg: self.column_ticks.into(),
             output_column: self.output_column.into(),
+            ramp_beg: self.ramp_samples.into(),
         };
         self.pipeline.push(device, **cb, &constants);
 
@@ -591,15 +500,24 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             device.cmd_dispatch(**cb, CHANNELS as u32, self.groups_y, 1);
         }
 
-        // Advance the mirror.  Must match the device's per-sample loop exactly.
-        let total = self.column_ticks as u64 + count as u64 * self.ticks_per_sample as u64;
-        let closed = (total / self.ticks_per_column as u64) as u32;
+        // Advance device state mirrors.
+        let total = self.ramp_samples + count;
+        let closed = total / WINDOW_SPACING;
         let first_closed = self.output_column;
 
-        self.column_ticks = (total % self.ticks_per_column as u64) as u32;
-        self.output_column = (self.output_column + closed) % OUTPUT_COLUMNS;
+        self.ramp_samples = total % WINDOW_SPACING;
+        self.output_column = (self.output_column + closed) & (OUTPUT_COLUMNS - 1);
         self.columns_written += closed as u64;
         self.read_head += count as u64;
+
+        debug_assert_eq!(
+            self.read_head,
+            self.columns_written * WINDOW_SPACING as u64 + self.ramp_samples as u64,
+        );
+        debug_assert_eq!(
+            self.output_column as u64,
+            self.columns_written & (OUTPUT_COLUMNS as u64 - 1),
+        );
 
         // Hand the freshly closed columns to the consumer.
         if closed > 0 {
@@ -617,9 +535,8 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             data_ready: ready.wait_value(), // 👍 nice!
             read_head: self.read_head,
             write_head: self.columns_written,
-            column_ticks_beg: self.column_ticks,
-            ticks_per_sample: self.ticks_per_sample,
-            ticks_per_column: self.ticks_per_column,
+            ramp_samples: self.ramp_samples,
+            samples_per_column: WINDOW_SPACING,
         };
 
         Ok(DftDispatch {

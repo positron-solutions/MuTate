@@ -41,7 +41,7 @@ struct VerticlysmPipeline;
 
 pub struct Verticlysm {
     pipeline: ComputePipeline<VerticlysmPipeline>,
-    output: Option<MappedAllocation<rgb::Rgba<u8>>>,
+    output: Option<MappedAllocation<rgb::Bgra<u8>>>,
     output_address: DeviceAddress,
 }
 
@@ -86,25 +86,41 @@ impl Verticlysm {
             .unwrap()
             .barrier_compute_pre(&cb, device);
 
+        dft.data_ready.wait(device, 1_000_000_000).unwrap();
+
+        let pre = vk::MemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::COPY | vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_access_mask(
+                vk::AccessFlags2::TRANSFER_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+            )
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_access_mask(
+                vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+            );
+        let pre_barriers = [pre];
+        let dep = vk::DependencyInfo::default().memory_barriers(&pre_barriers);
+        unsafe { device.cmd_pipeline_barrier2(**cb, &dep) };
+
         let width = dft.ring_width;
+        debug_assert!(width.is_power_of_two());
+        let mask = width as u64 - 1;
 
-        // Leading edge in fractional logical columns: closed columns plus the
-        // fraction of the open column the device has already accumulated.
-        let open_frac = dft.column_ticks_beg as f64 / dft.ticks_per_column as f64;
-        let end = dft.write_head as f64 + open_frac;
+        // HACK No sub-column phase is published, so the read scheme is integral:
+        // `write_head` is an exclusive count of *closed* columns, so [end - span, end)
+        // is exactly the set of columns the device has committed.  `beg_phase` is
+        // pinned to zero and the shader's interpolation degenerates to nearest-column.
+        const TARGET_SPAN: u64 = 4;
+        let end = dft.write_head;
 
-        // Never integrate columns that were never written, and never lap the ring.
-        const TARGET_SPAN: f64 = 6.0;
-
-        let width = dft.ring_width;
-        let span = TARGET_SPAN.min(end).min(width as f64 - 1.0);
-        if span <= 0.0 {
+        // Never reach past what's been written, and leave one column of slack so we
+        // can't alias the column the device is currently accumulating into.
+        let span = TARGET_SPAN.min(end).min(width as u64 - 1);
+        if span == 0 {
             return; // nothing published yet
         }
 
-        let beg = end - span;
-        let beg_col = (beg.floor() as u64) & (width as u64 - 1);
-        let beg_phase = (beg - beg.floor()) as f32;
+        let beg_col = (end - span) & mask;
+        let beg_phase = 0.0f32;
 
         let push = VerticlysmPushConstants {
             left_channel: dft.channels[0].into(),

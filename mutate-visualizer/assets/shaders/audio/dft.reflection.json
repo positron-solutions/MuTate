@@ -42,7 +42,7 @@
                             "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
                         },
                         {
-                            "name": "column_ticks_beg",
+                            "name": "output_column",
                             "type": {
                                 "kind": "scalar",
                                 "scalarType": "uint32"
@@ -50,7 +50,7 @@
                             "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
                         },
                         {
-                            "name": "output_column",
+                            "name": "ramp_beg",
                             "type": {
                                 "kind": "scalar",
                                 "scalarType": "uint32"
@@ -100,7 +100,7 @@
                                 "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
                             },
                             {
-                                "name": "column_ticks_beg",
+                                "name": "output_column",
                                 "type": {
                                     "kind": "scalar",
                                     "scalarType": "uint32"
@@ -108,7 +108,7 @@
                                 "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
                             },
                             {
-                                "name": "output_column",
+                                "name": "ramp_beg",
                                 "type": {
                                     "kind": "scalar",
                                     "scalarType": "uint32"
