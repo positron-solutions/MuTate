@@ -55,10 +55,6 @@ impl Device {
         let mut pw_features =
             vk::PhysicalDevicePresentWaitFeaturesKHR::default().present_wait(true);
 
-        let mut swapchain_maintenance1 =
-            vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
-                .swapchain_maintenance1(true);
-
         let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default()
             .shader_draw_parameters(true)
             .storage_buffer16_bit_access(true)
@@ -71,10 +67,10 @@ impl Device {
         let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default()
             .buffer_device_address(true)
             .descriptor_binding_partially_bound(true)
-            .descriptor_binding_variable_descriptor_count(true)
             .descriptor_binding_sampled_image_update_after_bind(true)
             .descriptor_binding_storage_buffer_update_after_bind(true)
             .descriptor_binding_storage_image_update_after_bind(true)
+            .descriptor_binding_variable_descriptor_count(true)
             .descriptor_indexing(true)
             .draw_indirect_count(true)
             .host_query_reset(true)
@@ -115,6 +111,10 @@ impl Device {
                 .pipeline_executable_info(true);
         #[cfg(debug_assertions)]
         let mut features2 = features2.push_next(&mut pipeline_exec_props);
+
+        let mut swapchain_maintenance1 =
+            vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
+                .swapchain_maintenance1(true);
 
         if supported_device.profile.surface {
             features2 = features2
