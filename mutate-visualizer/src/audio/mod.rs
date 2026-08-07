@@ -21,6 +21,7 @@
 // mixtures of pipelines, and the resource runtime will need to orchestrate this.
 
 pub mod dft;
+pub mod plan;
 pub mod rms;
 
 use std::sync::{

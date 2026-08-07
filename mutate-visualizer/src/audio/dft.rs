@@ -85,14 +85,14 @@
 // size and alignment accounting, so it's probably worth it to begin the JSON imports of reflection
 // data and begin checks.
 
-mod plan;
-
 use std::mem::MaybeUninit;
 
 use ash::vk;
 use mutate_lib::tree::TreeSum;
 use mutate_lib::{self as utate, audio::import::RingLayout, prelude::*};
 use utate::dsp::{self, bank, window::WindowFunction};
+
+use super::plan;
 
 // NEXT suppose this could be configurable, but add some compile-time checks to configuration
 // declarations.  Slang constant agreement via proc macro would be very welcome.
