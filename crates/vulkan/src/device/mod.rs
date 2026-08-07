@@ -76,24 +76,34 @@ impl Device {
             .host_query_reset(true)
             .runtime_descriptor_array(true)
             .scalar_block_layout(true)
+            .shader_buffer_int64_atomics(true)
             .shader_float16(true)
             .shader_int8(true)
             .shader_sampled_image_array_non_uniform_indexing(true)
+            .shader_shared_int64_atomics(true)
             .shader_storage_buffer_array_non_uniform_indexing(true)
             .shader_storage_image_array_non_uniform_indexing(true)
             .shader_uniform_buffer_array_non_uniform_indexing(true)
             .storage_buffer8_bit_access(true)
             .storage_push_constant8(true)
             .timeline_semaphore(true)
-            .uniform_and_storage_buffer8_bit_access(true);
+            .uniform_and_storage_buffer8_bit_access(true)
+            .vulkan_memory_model(true)
+            .vulkan_memory_model_device_scope(true);
 
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default()
             .compute_full_subgroups(true)
             .dynamic_rendering(true)
             .inline_uniform_block(true)
             .shader_demote_to_helper_invocation(true)
+            .subgroup_size_control(true)
             .synchronization2(true)
             .maintenance4(true);
+
+        let mut subgroup_uniform_control_flow =
+            vk::PhysicalDeviceShaderSubgroupUniformControlFlowFeaturesKHR::default();
+        let mut maximal_reconvergence =
+            vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR::default();
 
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .features(
@@ -103,7 +113,9 @@ impl Device {
             )
             .push_next(&mut features_1_3)
             .push_next(&mut features_1_2)
-            .push_next(&mut features_1_1);
+            .push_next(&mut features_1_1)
+            .push_next(&mut subgroup_uniform_control_flow)
+            .push_next(&mut maximal_reconvergence);
 
         #[cfg(debug_assertions)]
         let mut pipeline_exec_props =

@@ -102,6 +102,9 @@ pub(crate) const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
     vk::EXT_MEMORY_BUDGET_NAME,
     vk::EXT_MEMORY_PRIORITY_NAME,
 
+    vk::KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_NAME,
+    vk::KHR_SHADER_MAXIMAL_RECONVERGENCE_NAME,
+
     // ROLL VK_EXT_present_timing is still too new.  I have no supported devices / drivers yet.
     // KHR_PRESENT_TIMING_NAME,
 
@@ -329,15 +332,19 @@ impl Instance {
     }
 
     fn device_meets_features(&self, physical_device: vk::PhysicalDevice) -> bool {
-
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
         let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
         let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
         let mut swapchain_maintenance1 =
             vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default();
-
+        let mut maximal_reconvergence =
+            vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR::default();
+        let mut subgroup_uniform_control_flow =
+            vk::PhysicalDeviceShaderSubgroupUniformControlFlowFeaturesKHR::default();
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .features(vk::PhysicalDeviceFeatures::default())
+            .push_next(&mut subgroup_uniform_control_flow)
+            .push_next(&mut maximal_reconvergence)
             .push_next(&mut swapchain_maintenance1)
             .push_next(&mut features_1_3)
             .push_next(&mut features_1_2)
@@ -357,6 +364,8 @@ impl Instance {
             ("shader_int16",                                            features2.features.shader_int16 == vk::TRUE),
             ("shader_int64",                                            features2.features.shader_int64 == vk::TRUE),
             ("swapchain_maintenance1",                                  swapchain_maintenance1.swapchain_maintenance1 == vk::TRUE),
+            ("shader_subgroup_uniform_control_flow",                    subgroup_uniform_control_flow.shader_subgroup_uniform_control_flow == vk::TRUE),
+            ("shader_maximal_reconvergence",                            maximal_reconvergence.shader_maximal_reconvergence == vk::TRUE),
             #[cfg(debug_assertions)]
             ("pipeline_executable_info",                                pipeline_exec_props.pipeline_executable_info == vk::TRUE),
             ("1.1 storage_buffer16_bit_access",                         features_1_1.storage_buffer16_bit_access == vk::TRUE),
@@ -376,9 +385,11 @@ impl Instance {
             ("1.2 host_query_reset",                                    features_1_2.host_query_reset == vk::TRUE),
             ("1.2 runtime_descriptor_array",                            features_1_2.runtime_descriptor_array == vk::TRUE),
             ("1.2 scalar_block_layout",                                 features_1_2.scalar_block_layout == vk::TRUE),
+            ("1.2 shader_buffer_int64_atomics",                         features_1_2.shader_buffer_int64_atomics == vk::TRUE),
             ("1.2 shader_float16",                                      features_1_2.shader_float16 == vk::TRUE),
             ("1.2 shader_int8",                                         features_1_2.shader_int8 == vk::TRUE),
             ("1.2 shader_sampled_image_array_non_uniform_indexing",     features_1_2.shader_sampled_image_array_non_uniform_indexing == vk::TRUE),
+            ("1.2 shader_shared_int64_atomics",                         features_1_2.shader_shared_int64_atomics == vk::TRUE),
             ("1.2 shader_storage_buffer_array_non_uniform_indexing",    features_1_2.shader_storage_buffer_array_non_uniform_indexing == vk::TRUE),
             ("1.2 shader_storage_image_array_non_uniform_indexing",     features_1_2.shader_storage_image_array_non_uniform_indexing == vk::TRUE),
             ("1.2 shader_uniform_buffer_array_non_uniform_indexing",    features_1_2.shader_uniform_buffer_array_non_uniform_indexing == vk::TRUE),
@@ -386,11 +397,14 @@ impl Instance {
             ("1.2 storage_push_constant8",                              features_1_2.storage_push_constant8 == vk::TRUE),
             ("1.2 timeline_sempahore",                                  features_1_2.timeline_semaphore == vk::TRUE),
             ("1.2 uniform_and_storage_buffer8_bit_access",              features_1_2.uniform_and_storage_buffer8_bit_access == vk::TRUE),
+            ("1.2 vulkan_memory_model",                                 features_1_2.vulkan_memory_model == vk::TRUE),
+            ("1.2 vulkan_memory_model_device_scope",                    features_1_2.vulkan_memory_model_device_scope == vk::TRUE),
             ("1.3 compute_full_subgroups",                              features_1_3.compute_full_subgroups == vk::TRUE),
             ("1.3 dynamic_rendering",                                   features_1_3.dynamic_rendering == vk::TRUE),
             ("1.3 inline_uniform_block",                                features_1_3.inline_uniform_block == vk::TRUE),
             ("1.3 maintenance4",                                        features_1_3.maintenance4 == vk::TRUE),
             ("1.3 shader_demote_to_helper_invocation",                  features_1_3.shader_demote_to_helper_invocation == vk::TRUE),
+            ("1.3 subgroup_size_control",                               features_1_3.subgroup_size_control == vk::TRUE),
             ("1.3 synchronization2",                                    features_1_3.synchronization2 == vk::TRUE),
         ];
         let missing: Vec<&'static str> = checks
