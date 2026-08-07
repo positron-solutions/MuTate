@@ -101,7 +101,7 @@ use utate::dsp::{self, bank, window::WindowFunction};
 const BINS: u32 = 2560 / 2;
 const WARP_SIZE: u32 = 32;
 const _: () = assert!(BINS % WARP_SIZE == 0, "grouping assumes exact groups");
-const WINDOW_LENGTH: u32 = 128;
+const WINDOW_LENGTH: u32 = 256;
 const _: () = assert!(
     WINDOW_LENGTH.is_power_of_two(),
     "window length must be PoT for wrap masking",
@@ -179,12 +179,8 @@ pub struct DftDispatch<const CHANNELS: usize = 2> {
 
 #[compute_pipeline(
     compute = stage!("audio/dft", Compute, c"main"),
-    // XXX Was not allowed to write a doc comment in this position.
-    // Each channel reads from a segment of the input ring, from start to end.  Thanks to PoT input
-    // ring width, straddled values are fine, but audio server quantums usually will not straddle
-    // the device input rings.
     push = push!(DftPushConstants {
-        /// Coerces to `DftConfig*` in slang.  Static data offsets use this base.
+        /// Coerces to `DftConfig` in slang.  Static data offsets use this base.
         static_base: DeviceAddress,
         /// Coerces to `ChannelState*` in slang.  All dynamic offsets are relative to this base.
         dynamic_base: DeviceAddress,
@@ -378,11 +374,11 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
             );
         }
 
-        // let window_function = WindowFunction::DolphChebyshev {
-        //     attenuation_db: 120.0,
-        // };
+        let window_function = WindowFunction::DolphChebyshev {
+            attenuation_db: 120.0,
+        };
         // let window_function = WindowFunction::Hamming;
-        let window_function = WindowFunction::BoxCar;
+        // let window_function = WindowFunction::BoxCar;
         let weights = window_function.make_window_32(WINDOW_LENGTH as usize);
         plan::put_slice(stat, window_weights_offset, &weights);
 
