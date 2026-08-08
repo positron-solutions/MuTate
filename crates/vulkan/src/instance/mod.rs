@@ -44,6 +44,7 @@ const INSTANCE_EXTENSIONS_SURFACE: &[&CStr] = &[
     vk::KHR_GET_SURFACE_CAPABILITIES2_NAME,
     vk::EXT_SURFACE_MAINTENANCE1_NAME,
 ];
+
 // Useful for headless swapchain CI tests later (no running window system).
 // pub const EXTENSIONS_HEADLESS: &[&CStr] = &[
 //     vk::EXT_HEADLESS_SURFACE_NAME,
@@ -80,10 +81,7 @@ impl InstanceProfile {
 // Waiting for this value to show up in ash
 // pub(crate) const KHR_PRESENT_TIMING_NAME: &CStr = c"VK_EXT_present_timing";
 // DEBT currently the requirements and support checks are all hardcoded.
-pub(crate) const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
-    #[cfg(debug_assertions)]
-    vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME,
-
+const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
     vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME,
     // NEXT better debug gating (see validation layer activation above).
     // Enables some debug functionality in shaders.
@@ -102,7 +100,6 @@ pub(crate) const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
     vk::EXT_MEMORY_BUDGET_NAME,
     vk::EXT_MEMORY_PRIORITY_NAME,
 
-    vk::KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_NAME,
     vk::KHR_SHADER_MAXIMAL_RECONVERGENCE_NAME,
 
     // ROLL VK_EXT_present_timing is still too new.  I have no supported devices / drivers yet.
@@ -114,7 +111,14 @@ pub(crate) const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
     // vk::KHR_ACCELERATION_STRUCTURE_NAME,
     // vk::KHR_DEFERRED_HOST_OPERATIONS_NAME,
 ];
-pub(crate) const DEVICE_EXTENSIONS_SURFACE: &[&CStr] = &[
+
+const DEVICE_EXTENSIONS_OPTIONAL: &[&CStr] = &[
+    vk::KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_NAME,
+    #[cfg(debug_assertions)]
+    vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME,
+];
+
+const DEVICE_EXTENSIONS_SURFACE: &[&CStr] = &[
     vk::KHR_SWAPCHAIN_NAME,
     vk::KHR_PRESENT_WAIT_NAME,
     vk::KHR_PRESENT_ID_NAME,
@@ -294,7 +298,8 @@ impl Instance {
             exts.extend_from_slice(extensions);
             exts
         };
-        let mut physical_devices: Vec<(vk::PhysicalDevice, vk::PhysicalDeviceProperties)> = physical_devices
+
+        let mut physical_devices: Vec<(vk::PhysicalDevice, vk::PhysicalDeviceProperties, DeviceCaps)> = physical_devices
             .into_iter()
             .filter_map(|physical_device| {
                 let props = unsafe { self.raw.get_physical_device_properties(physical_device) };
@@ -303,13 +308,15 @@ impl Instance {
                     let minor = vk::api_version_minor(props.api_version);
                     major > 1 || (major == 1 && minor >= 3)
                 };
-                (meets_version
-                    && self.device_meets_features(physical_device)
-                    && self.device_meets_extensions(physical_device, &extensions))
-                    .then_some((physical_device, props))
+                if !meets_version || !self.device_meets_extensions(physical_device, &extensions) {
+                    return None;
+                }
+                let caps = self.device_meets_features(physical_device)?;
+                Some((physical_device, props, caps))
             })
             .collect();
-        physical_devices.sort_by_key(|(physical_device, props)| {
+
+        physical_devices.sort_by_key(|(physical_device, props, _)| {
             let device_type_rank = |t: vk::PhysicalDeviceType| match t {
                 vk::PhysicalDeviceType::DISCRETE_GPU  => 0u8,
                 vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
@@ -325,13 +332,23 @@ impl Instance {
                 .unwrap_or(0);
             (device_type_rank(props.device_type), std::cmp::Reverse(max_memory))
         });
+
         physical_devices
             .into_iter()
-            .map(|(physical_device, _)| SupportedDevice::new(physical_device, self, &extensions, self.profile))
+            .map(|(physical_device, _, caps)| {
+                let mut exts = extensions.clone();
+                if caps.subgroup_uniform_control_flow {
+                    exts.push(vk::KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_NAME);
+                }
+                if caps.pipeline_executable_info {
+                    exts.push(vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME);
+                }
+                SupportedDevice::new(physical_device, self, &exts, self.profile, caps)
+            })
             .collect()
     }
 
-    fn device_meets_features(&self, physical_device: vk::PhysicalDevice) -> bool {
+    fn device_meets_features(&self, physical_device: vk::PhysicalDevice) -> Option<DeviceCaps> {
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
         let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
         let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
@@ -364,10 +381,7 @@ impl Instance {
             ("shader_int16",                                            features2.features.shader_int16 == vk::TRUE),
             ("shader_int64",                                            features2.features.shader_int64 == vk::TRUE),
             ("swapchain_maintenance1",                                  swapchain_maintenance1.swapchain_maintenance1 == vk::TRUE),
-            ("shader_subgroup_uniform_control_flow",                    subgroup_uniform_control_flow.shader_subgroup_uniform_control_flow == vk::TRUE),
             ("shader_maximal_reconvergence",                            maximal_reconvergence.shader_maximal_reconvergence == vk::TRUE),
-            #[cfg(debug_assertions)]
-            ("pipeline_executable_info",                                pipeline_exec_props.pipeline_executable_info == vk::TRUE),
             ("1.1 storage_buffer16_bit_access",                         features_1_1.storage_buffer16_bit_access == vk::TRUE),
             // XXX Axe this feature
             // ("1.1 storage_input_output16",                              features_1_1.storage_input_output16 == vk::TRUE),
@@ -413,7 +427,18 @@ impl Instance {
             .collect();
 
         if missing.is_empty() {
-            true
+            let have_ext = |name: &CStr| self.device_has_extension(physical_device, name);
+            Some(DeviceCaps {
+                subgroup_uniform_control_flow:
+                    subgroup_uniform_control_flow.shader_subgroup_uniform_control_flow == vk::TRUE
+                        && have_ext(vk::KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_NAME),
+                #[cfg(debug_assertions)]
+                pipeline_executable_info:
+                    pipeline_exec_props.pipeline_executable_info == vk::TRUE
+                        && have_ext(vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME),
+                #[cfg(not(debug_assertions))]
+                pipeline_executable_info: false,
+            })
         } else {
             // DEBT logging.  We could return an error but it's not an error for a device to be
             // missing functionality, only for all devices to be missing some functionality.
@@ -428,8 +453,18 @@ impl Instance {
                     println!("  missing feature: {}", m)
                 }
             }
-            false
+            None
         }
+    }
+
+    // XXX Let's pass in a resolved set of extensions?
+    fn device_has_extension(&self, physical_device: vk::PhysicalDevice, name: &CStr) -> bool {
+        let available = unsafe {
+            self.raw
+                .enumerate_device_extension_properties(physical_device)
+                .expect("Failed to enumerate device extensions")
+        };
+        available.iter().any(|e| e.extension_name_as_c_str().is_ok_and(|n| n == name))
     }
 
     fn device_meets_version(&self, physical_device: vk::PhysicalDevice) -> bool {
@@ -547,6 +582,13 @@ macro_rules! with_context {
     }};
 }
 
+/// Query results about a physical device.  Only optional support is contained on this structure.
+#[derive(Debug, Clone, Default)]
+pub struct DeviceCaps {
+    pub subgroup_uniform_control_flow: bool,
+    pub pipeline_executable_info: bool,
+}
+
 #[derive(Debug, Clone)]
 /// Query physical devices from the `Instance` to obtain a list of `SupportedDevices`.  These can
 /// be checked for surface support with `supports_surface`.  This only checks for a queue family
@@ -563,11 +605,12 @@ pub struct SupportedDevice {
     pub extensions: Vec<&'static CStr>,
 
     pub profile: InstanceProfile,
+    pub caps: DeviceCaps,
 }
 
 impl SupportedDevice {
-    fn new(physical_device: vk::PhysicalDevice, instance: &Instance, extensions: &[&'static
-    CStr], profile: InstanceProfile) -> SupportedDevice{
+    fn new(physical_device: vk::PhysicalDevice, instance: &Instance, extensions: &[&'static CStr],
+        profile: InstanceProfile, caps: DeviceCaps) -> SupportedDevice {
         let name = unsafe {
             let props =
                 instance.raw.get_physical_device_properties(physical_device);
@@ -583,6 +626,7 @@ impl SupportedDevice {
             name,
             extensions,
             profile,
+            caps,
         }
     }
 

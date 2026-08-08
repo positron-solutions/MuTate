@@ -27,7 +27,9 @@ use crate::{internal::*, resource::retired};
 
 pub struct Device {
     pub physical_device: vk::PhysicalDevice,
+    pub caps: crate::instance::DeviceCaps,
     pub raw: ash::Device,
+
     pub queues: queue::Queues,
     pub memory: memory::Memory,
 
@@ -50,6 +52,7 @@ impl Device {
         } = &instance;
         let physical_device = supported_device.device();
         let extensions = &supported_device.extensions;
+        let caps = supported_device.caps;
 
         let mut pwid_features = vk::PhysicalDevicePresentIdFeaturesKHR::default().present_id(true);
         let mut pw_features =
@@ -100,10 +103,9 @@ impl Device {
             .synchronization2(true)
             .maintenance4(true);
 
-        let mut subgroup_uniform_control_flow =
-            vk::PhysicalDeviceShaderSubgroupUniformControlFlowFeaturesKHR::default();
         let mut maximal_reconvergence =
-            vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR::default();
+            vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR::default()
+                .shader_maximal_reconvergence(true);
 
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .features(
@@ -114,15 +116,23 @@ impl Device {
             .push_next(&mut features_1_3)
             .push_next(&mut features_1_2)
             .push_next(&mut features_1_1)
-            .push_next(&mut subgroup_uniform_control_flow)
             .push_next(&mut maximal_reconvergence);
+
+        let mut subgroup_uniform_control_flow =
+            vk::PhysicalDeviceShaderSubgroupUniformControlFlowFeaturesKHR::default()
+                .shader_subgroup_uniform_control_flow(true);
+        if caps.subgroup_uniform_control_flow {
+            features2 = features2.push_next(&mut subgroup_uniform_control_flow);
+        }
 
         #[cfg(debug_assertions)]
         let mut pipeline_exec_props =
             vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR::default()
                 .pipeline_executable_info(true);
         #[cfg(debug_assertions)]
-        let mut features2 = features2.push_next(&mut pipeline_exec_props);
+        if caps.pipeline_executable_info {
+            features2 = features2.push_next(&mut pipeline_exec_props);
+        }
 
         let mut swapchain_maintenance1 =
             vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
@@ -158,6 +168,8 @@ impl Device {
         Self {
             physical_device,
             raw,
+            caps,
+
             memory,
             queues,
             descriptors,
