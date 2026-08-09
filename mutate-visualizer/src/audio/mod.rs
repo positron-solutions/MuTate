@@ -169,8 +169,8 @@ impl Audio {
             let done = cb.end(device)?;
             callback_queue
                 .submission()
-                .execute(done)
                 .wait(previous, vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .execute(done)
                 .signal(ready, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .signal(intent, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .submit(&callback_device, vk::Fence::null())?;
