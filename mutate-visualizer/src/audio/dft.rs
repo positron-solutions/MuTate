@@ -96,9 +96,11 @@ use std::mem::MaybeUninit;
 use ash::vk;
 use mutate_lib::tree::TreeSum;
 use mutate_lib::{self as utate, audio::import::RingLayout, prelude::*};
+use num_traits::One;
 use utate::dsp::{self, bank, window::WindowFunction};
 
 use super::plan;
+use num_complex::Complex32 as Complex;
 
 // NEXT suppose this could be configurable, but add some compile-time checks to configuration
 // declarations.  Slang constant agreement via proc macro would be very welcome.
@@ -248,12 +250,6 @@ struct ChannelState {
     output_image_offset: u32,
 }
 
-#[repr(C)]
-struct Complex {
-    real: f32,
-    imag: f32,
-}
-
 /// Static configuration data for a single DFT bin.
 #[repr(C)]
 struct BinConfig {
@@ -397,10 +393,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
                         // sin = imag, cos = real.  This ordering is intentional!
                         let (imag, real) =
                             (std::f64::consts::TAU * (bin.center / SAMPLE_RATE as f64)).sin_cos();
-                        Complex {
-                            real: real as f32,
-                            imag: imag as f32,
-                        }
+                        Complex::new(real as f32, imag as f32)
                     },
                 },
             );
@@ -420,10 +413,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
                     dynam,
                     bin_states[i] + bin * size_of::<BinState>() as u32,
                     BinState {
-                        phasor: Complex {
-                            real: 1.0,
-                            imag: 0.0,
-                        },
+                        phasor: Complex::one(),
                         window_sums_offset: window_sums[i]
                             + bin * OVERLAP_RATIO * size_of::<Complex>() as u32,
                     },
