@@ -84,6 +84,12 @@
 // it's because fields are missing, extra, or out of order.  That doesn't depend on fine-grained
 // size and alignment accounting, so it's probably worth it to begin the JSON imports of reflection
 // data and begin checks.
+// DEBT reading bins contiguously in a single time slice is the common access pattern.  The data has
+// never cared about column / row major, only output[bin][time].  Transpose the output ring so that
+// we can get on row-major, larger row index = time forward sensing, the super standard that is
+// incidentally the sometimes weirdly regarded choice of X,Y = (0,0) being top-left pixel.  The
+// "column major" thing started because scrolling an FFT in time to make a spectrogram has a strong
+// right to left user interface tendency.
 
 use std::mem::MaybeUninit;
 

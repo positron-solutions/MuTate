@@ -1,8 +1,20 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! # Audio
 //!
-//! Select a device.  Set up stream from server to device.  Run a callback on each audio tick.
+//! Select a device.  Set up stream from server to device.  Run a callback on each audio tick.  The
+//! callback pumps an audio graph.  The outputs of the audio graph are published best-effort
+//! (consumers can choose to wait on upcoming dispatches or not) via `AudioOutputs`.  On the host
+//! side we are publishing addresses and sizes so that the downstream dispatches can point at the
+//! right memory.
+//!
+//! Audio and video will basically never tick on the same clock or at the same rate, and VRR
+//! displays and other frontends will just further expose the independence.  The tracking & slew and
+//! re-sampling are all unavoidable and consumers **must** be built these dynamics in mind.
+//!
+//! Eventually the audio side will become a runtime component that can drive an audio graph and
+//! manage pushing values to reactive dependents (pointer swaps, read/write heads etc).
 
 // DEBT Reactive updates.  Keep modularizing audio pipelines for downstreams.  Dispatching a bunch
 // of IIRs and other audio processing will parallelize easily and the output addresses can just be
@@ -22,7 +34,6 @@
 
 pub mod dft;
 pub mod plan;
-pub mod rms;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -146,12 +157,13 @@ impl Audio {
             };
             let cb = pool.primary(device)?;
 
+            // DFT dispatch
             let regions = state.regions_since(res.consume_head);
             let layout = state.ring_layout;
             let DftDispatch {
                 consumed,
                 ready,
-                output,
+                output: dft_out,
             } = res.dft.dispatch(device, &cb, state)?;
             let previous = ready.predecessor();
             let done = cb.end(device)?;
@@ -166,7 +178,7 @@ impl Audio {
             // All data has been sent down the pipe.
             res.consume_head = state.write_head;
 
-            *outputs.lock().unwrap() = Some(AudioOutputs { dft: output });
+            *outputs.lock().unwrap() = Some(AudioOutputs { dft: dft_out });
 
             // XXX Super hack here, but consistent.  We should catch up a bit differently to try and
             // ensure good recovery after allowing the producer to stall.  The real fix is to skip
