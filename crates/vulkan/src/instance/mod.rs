@@ -302,6 +302,9 @@ impl Instance {
         let mut physical_devices: Vec<(vk::PhysicalDevice, vk::PhysicalDeviceProperties, DeviceCaps)> = physical_devices
             .into_iter()
             .filter_map(|physical_device| {
+
+                let mut subgroup_props = vk::PhysicalDeviceSubgroupProperties::default();
+                let mut size_control = vk::PhysicalDeviceSubgroupSizeControlProperties::default();
                 let props = unsafe { self.raw.get_physical_device_properties(physical_device) };
                 let meets_version = {
                     let major = vk::api_version_major(props.api_version);
@@ -428,6 +431,20 @@ impl Instance {
 
         if missing.is_empty() {
             let have_ext = |name: &CStr| self.device_has_extension(physical_device, name);
+
+            let mut subgroup = vk::PhysicalDeviceSubgroupProperties::default();
+            let mut size_control = vk::PhysicalDeviceSubgroupSizeControlProperties::default();
+
+            let properties = {
+                let mut props2 = vk::PhysicalDeviceProperties2::default()
+                    .push_next(&mut subgroup)
+                    .push_next(&mut size_control);
+                unsafe {
+                    self.get_physical_device_properties2(physical_device, &mut props2)
+                };
+                props2.properties
+            };
+
             Some(DeviceCaps {
                 subgroup_uniform_control_flow:
                     subgroup_uniform_control_flow.shader_subgroup_uniform_control_flow == vk::TRUE
@@ -438,6 +455,14 @@ impl Instance {
                         && have_ext(vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME),
                 #[cfg(not(debug_assertions))]
                 pipeline_executable_info: false,
+
+                subgroup_size: subgroup.subgroup_size,
+                min_subgroup_size: size_control.min_subgroup_size,
+                max_subgroup_size: size_control.max_subgroup_size,
+                max_compute_workgroup_subgroups: size_control.max_compute_workgroup_subgroups,
+                max_workgroup_invocations: properties.limits.max_compute_work_group_invocations,
+                max_workgroup_size: properties.limits.max_compute_work_group_size,
+                max_shared_memory: properties.limits.max_compute_shared_memory_size,
             })
         } else {
             // DEBT logging.  We could return an error but it's not an error for a device to be
@@ -445,7 +470,7 @@ impl Instance {
             #[cfg(debug_assertions)]
             {
                 let props = unsafe {
-                    self.raw.get_physical_device_properties(physical_device)
+                    self.get_physical_device_properties(physical_device)
                 };
                 let name = unsafe { std::ffi::CStr::from_ptr(props.device_name.as_ptr()) };
                 println!("Physical device unsupported: {}", name.to_string_lossy());
@@ -587,6 +612,25 @@ macro_rules! with_context {
 pub struct DeviceCaps {
     pub subgroup_uniform_control_flow: bool,
     pub pipeline_executable_info: bool,
+
+    pub subgroup_size: u32,
+    pub min_subgroup_size: u32,
+    pub max_subgroup_size: u32,
+    pub max_compute_workgroup_subgroups: u32,
+    pub max_workgroup_invocations: u32,
+    pub max_workgroup_size: [u32; 3],
+    pub max_shared_memory: u32,
+}
+
+impl DeviceCaps {
+    pub fn pinned_subgroup_size(&self, want: u32, stage: vk::ShaderStageFlags) -> Option<u32> {
+        let hi = self.max_subgroup_size.min(want);
+        if hi < self.min_subgroup_size {
+            return None; // device floor exceeds what we want
+        }
+        let pot = 1 << (u32::BITS - 1 - hi.leading_zeros());
+        (pot >= self.min_subgroup_size).then_some(pot)
+    }
 }
 
 #[derive(Debug, Clone)]

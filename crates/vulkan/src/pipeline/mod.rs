@@ -165,10 +165,23 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
         let stage_spec = <S::Stage as stage::Stage<stage::Compute>>::SPEC;
         let shader = shader::ShaderModule::load(device, stage_spec.name)?;
 
-        let stage = vk::PipelineShaderStageCreateInfo::default()
+        let caps = &device.caps;
+        let mut flags = vk::PipelineShaderStageCreateFlags::empty();
+        let pinned = caps.pinned_subgroup_size(32, vk::ShaderStageFlags::COMPUTE);
+        if pinned.is_some() {
+            flags |= vk::PipelineShaderStageCreateFlags::REQUIRE_FULL_SUBGROUPS;
+        }
+        let mut required_size = pinned.map(|n| {
+            vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo::default()
+                .required_subgroup_size(n)
+        });
+        let mut stage_ci = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(*shader)
             .name(stage_spec.entry);
+        if let Some(rs) = required_size.as_mut() {
+            stage_ci = stage_ci.push_next(rs);
+        }
 
         // DEBT Tracing & debug: Was about to immediately log all pipelines, but the `Device` is
         // maybe not the right home for the necessary loader and going in the wrong direction.
@@ -181,7 +194,7 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
             vk::PipelineCreateFlags::empty() | vk::PipelineCreateFlags::CAPTURE_STATISTICS_KHR;
 
         let pipeline_ci = vk::ComputePipelineCreateInfo::default()
-            .stage(stage)
+            .stage(stage_ci)
             .layout(layout.as_raw())
             .flags(flags);
 

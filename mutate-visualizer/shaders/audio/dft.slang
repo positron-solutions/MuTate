@@ -102,7 +102,8 @@ struct BinState {
 
 // DEBT in the interest of time, not messing with specialization constants now.
 static const uint WINDOW_SLOTS = 4;
-
+static const uint LANES = 32;
+[WaveSize(LANES)]
 // Dispatch with x channels and divide bins by 32 and round up for y.
 [numthreads(1, 32, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {
