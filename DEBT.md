@@ -14,7 +14,6 @@ Github.
   - [Slang Libraries](#slang-libraries)
   - [Externally Synchronized](#externally-synchronized)
   - [From Manual Destruction to Drop](#from-manual-destruction-to-drop)
-  - [Error Handling](#error-handling)
   - [Memory Management](#memory-management)
   - [Reactive Updates](#reactive-updates)
   - [Fallible Resource Acquisition](#fallible-resource-acquisition)
@@ -106,25 +105,6 @@ The strategy being used to develop actual lifetime contracts is to start at leaf
 Until we reach the root, prefer manual destruction.  Manual destruction avoids a class of bugs where an RAII wrapper holds a cloned handle to enable cleanup but then outlives the wrapper for the handle.  **Not destroying things produces very clear validation errors.**  Unclear drop orders of temporaries can lurk in barely-working code, so manual destruction **is** more conservative.
 
 There are also must-consume types, for which drops are almost assuredly program bugs, and so `DropBomb` is being used until some other kind of linear type solution (ever?) exists.  Why would a user drop a command buffer that is in the middle of recording, especially if the allocation would leak even after pool reset?
-
-## Error Handling
-
-The lib side is using `thiserror` and will present a single error `MutateError` type to consumers.  Farther upstream crates like `vulkan` have their own type (`VulkanError`) that is forwarded through `MutateError` variants.
-
-The hierarchies may still have little semantic or diagnostic value at first. We need to know what error handlers want to get out of the upstream error source
-before providing views into the underlying causes depends on.  Without the
-forcing pressure from error consumers, we don't really know what types to
-separate or what information to expose yet.
-
-Error handling has traditionally been an area of ergonomic innovation in Rust.  It's likely not beyond the innovation phase.
-
-### For Now
-
-- ~~Unwrap and panic liberally 🤠~~
-- Return `Result` types from fallible operations to **ensure proper return signatures are not piling up missing plumbing.**.
-- Use any MuTate error that seams appropriate or make a new one, and be honest about its use when documenting.
-- If you are a saint, go implement proper tracing, tracing formatting, options for consumers that want to ignore tracing, spans and the like.
-- If you are less of a saint, find panics where continuing has some meaningful use case and convert them to `Result` and do something useful after returning it.
 
 ## Memory Management
 

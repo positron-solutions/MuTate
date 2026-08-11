@@ -105,6 +105,10 @@ These are not project specific, but maintainer tendencies on mature projects (th
   + External dependencies
   + Workspace dependencies
   + Crate dependencies
+  
+### Error Types
+
+The lib side is using `thiserror` and presents a single error `MutateError` type to consumers.  Farther upstream crates like `vulkan` have their own type (`VulkanError`) that is forwarded through `MutateError` variants.  Work on these types is appreciated.
 
 ## Timing Model
 
