@@ -423,7 +423,7 @@ mod test {
 
     #[test]
     pub fn resolve_all_domains() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             let memory = &device.memory;
 
             println!("\n=== memory types present ===");

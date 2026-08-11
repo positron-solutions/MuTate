@@ -339,7 +339,7 @@ mod test {
 
     #[test]
     fn pool_instantiate() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             let queue = device
                 .queues
                 .graphics_offscreen(QueuePriority::Low)
@@ -351,7 +351,7 @@ mod test {
 
     #[test]
     fn pool_buffer_create() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             let queue = device
                 .queues
                 .graphics_offscreen(QueuePriority::Low)
@@ -368,7 +368,7 @@ mod test {
 
     #[test]
     fn ring_instantiate() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             let queue = device
                 .queues
                 .graphics_offscreen(QueuePriority::Low)
@@ -380,7 +380,7 @@ mod test {
 
     #[test]
     fn acquire_pool() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             let queue = device
                 .queues
                 .graphics_offscreen(QueuePriority::Low)
