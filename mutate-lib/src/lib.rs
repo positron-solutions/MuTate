@@ -38,8 +38,14 @@ pub mod vulkan {
     pub use mutate_vulkan::*;
 }
 
+pub(crate) mod core {
+    #[cfg(target_os = "linux")]
+    pub use super::audio::core::*;
+}
+
 pub mod prelude {
-    pub use crate::MutateError;
+    pub use super::core::*;
+    pub use super::MutateError;
     #[cfg(feature = "vulkan")]
     pub use mutate_vulkan::prelude::*;
 }

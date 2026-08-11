@@ -14,6 +14,7 @@ use utate::vulkan::resource::{buffer, image};
     compute = stage!("hello/compute", Compute, c"main"),
     push = push!(HelloConstants {
         pub counter: UInt,
+        // XXX this works.. but should it?  Shader accepts a float2 behind a uint counter
         pub window_width: Float,
         pub window_height: Float,
         pub output_idx: SsboIdx,
@@ -25,7 +26,7 @@ pub struct HelloDraw {
     pipeline: ComputePipeline<HelloPipeline>,
     counter: u32,
 
-    output_buffer: Option<buffer::MappedAllocation<rgb::Rgba<u8>>>,
+    output_buffer: Option<buffer::MappedAllocation<rgb::Bgra<u8>>>,
     output_idx: SsboIdx,
 }
 
@@ -53,7 +54,7 @@ impl HelloDraw {
         }
 
         let output_buffer =
-            buffer::MappedAllocation::new((size.width * size.height) as usize, device)?;
+            buffer::MappedAllocation::new(device, (size.width * size.height) as usize)?;
 
         self.output_idx = output_buffer.bound(device);
         self.output_buffer = Some(output_buffer);
@@ -104,7 +105,7 @@ impl HelloDraw {
 
         let region = buffer::buffer_image_copy_full(extent);
         unsafe {
-            device.as_raw().cmd_copy_buffer_to_image(
+            device.cmd_copy_buffer_to_image(
                 **cb,
                 self.output_buffer.as_ref().unwrap().buffer,
                 acquired_image.image,

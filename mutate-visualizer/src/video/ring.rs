@@ -6,8 +6,8 @@
 //! Dump the raw audio ring buffer onto the screen
 
 use ash::vk;
-use mutate_lib::{self as utate, prelude::*};
-use utate::vulkan::resource::{buffer, image};
+// XXX IMPORTS
+use mutate_lib::{self as utate, prelude::*, vulkan::resource::buffer};
 
 #[compute_pipeline(
     compute = stage!("ring/compute", Compute, c"main"),
@@ -27,7 +27,7 @@ pub struct RawRingDraw {
     pipeline: ComputePipeline<RawRingPipeline>,
     counter: u32,
 
-    output_buffer: Option<buffer::MappedAllocation<rgb::Rgba<u8>>>,
+    output_buffer: Option<MappedAllocation<rgb::Rgba<u8>>>,
     output_idx: SsboIdx,
 }
 
@@ -54,8 +54,7 @@ impl RawRingDraw {
             self.output_idx = SsboIdx::INVALID;
         }
 
-        let output_buffer =
-            buffer::MappedAllocation::new((size.width * size.height) as usize, device)?;
+        let output_buffer = MappedAllocation::new(device, (size.width * size.height) as usize)?;
 
         self.output_idx = output_buffer.bound(device);
         self.output_buffer = Some(output_buffer);
@@ -112,7 +111,7 @@ impl RawRingDraw {
 
         let region = buffer::buffer_image_copy_full(extent);
         unsafe {
-            device.as_raw().cmd_copy_buffer_to_image(
+            device.cmd_copy_buffer_to_image(
                 **cb,
                 self.output_buffer.as_ref().unwrap().buffer,
                 acquired_image.image,

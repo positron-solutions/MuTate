@@ -9,18 +9,20 @@ Github.
 ## Contents
 
 - [Currently Paying Down](#currently-paying-down)
-  - [Moving Spectrum Analyzer to GPU](#moving-spectrum-analyzer-to-gpu)
+  - [Host-Slang Agreement](#host-slang-agreement)
+  - [Timing Scheme Conventions](#timing-scheme-conventions)
+  - [Slang Libraries](#slang-libraries)
   - [Externally Synchronized](#externally-synchronized)
   - [From Manual Destruction to Drop](#from-manual-destruction-to-drop)
-  - [Error Handling](#error-handling)
   - [Memory Management](#memory-management)
   - [Reactive Updates](#reactive-updates)
   - [Fallible Resource Acquisition](#fallible-resource-acquisition)
 - [Charging Interest](#charging-interest)
+  - [Pipewire Mis-Indirection](#pipewire-mis-indirection)
+  - [Warp Geometry](#warp-geometry)
   - [Logs & Tracing](#logs--tracing)
   - [Dynamic Rendering State Shadow](#dynamic-rendering-state-shadow)
   - [Transfer / Staging vs UMA](#transfer--staging-vs-uma)
-  - [Host-Slang Agreement](#host-slang-agreement)
   - [Descriptor Set Strategy](#descriptor-set-strategy)
   - [Vulkan Versions, Device & Platform Compatibility](#vulkan-versions-device--platform-compatibility)
   - [Audio Formats](#audio-formats)
@@ -33,34 +35,66 @@ Github.
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
-## Moving Spectrum Analyzer to GPU
+## Host-Slang Agreement
 
-The first-pass at the CQT has a number of problems:
+We want field name and named-type agreement for marshalling data in and out of the device.  What is the name of the field?  What is the name of the type?  If those things don't agree, that's a byte layout problem even if there is no problem with the marshalling logic.
 
-- Rather than constant Q (quality factor), some high frequency bins end up with 800 samples making them too precise making us miss energy between bins
-- Low frequency iso226 correction is to extreme or the bins we are applying it to are missing energy due to accuracy issues and then the correction drops them out entirely
-- No roll-on / roll-off behavior to speed up summing
-- Decimation does not low-pass off the high pitches, so we fold noise from higher pitches until it dominates lower bins
+The slang module has gotten pretty out of hand.  It contains a lot of ideas that need to be collapsed into a solution, but we just don't have the `std430` motivations yet to see the correct shape.  Nonetheless, the newtype wrapper via macro concept is the right shape. We need the slang analogs and integration tests.
 
-There is more.  Filter banks require *engineering*.  See the [longer discussion](https://github.com/positron-solutions/MuTate/discussions/1)
+By not using reflection already, **some types that are byte compatible are piling up but will not pass more strict named type reflection checks later.**
 
-The problem that is almost in the way of development is that even with `--release` the frame time at 1440p will be around 12ms of *just* audio processing time. That is too much.  We need to move this onto the GPU and try to kill some of the other issues as soon as possible.
+### For Now
 
-Rather than making the CQT faster on the CPU, which will mainly involve doing things that worsen quality or fight very hard to avoid making it terrible, we should focus on moving to the GPU where we can suddenly do "expensive" things like adding a lot more filter bins and then make it cheaper because ... it's the right thing to do even though we have 512 cores or so 😉.
+See the audio pipeline and control data layout & initialization in the plan module.  We really need control data marshalling and slang type checking to be built towards a unified purpose.  Device addresses & offsets and the types they point to need some newtype macro support so that if we try to store a pointer in the wrong place, we can **see it without debugging corrupted device memory and crashes**.  We want to describe buffer deref types and make it ergonomic to keep it all in sync.
 
-The migration to Slang was going to itself require better engineering around pipeline-shader development.
+## Timing Scheme Conventions
 
-**All of the machine learning and graphics work depends on having a healthy spectrogram buffer on the device, and we don't have that yet.**
+This topic already has some treatment in [CONTRIBUTING](./CONTRIBUTING.md) because it's a really important set of decisions.
+
+What is marked as debt is the lack of consistent wording, state representations,
+and procedures.  It's really important to get all this nailed down.  Slang and
+Rust have their differences.  Talking to upstream audio servers has its
+differences.  Different processing techniques can introduce their own sense of
+local time or what time an output represents.
+
+### For Now
+
+Reduce entropy.  Never use global indexing, always upstream time-relative.  Read the [CONTRIBUTING](./CONTRIBUTING) section on timing.  Argue about it.  Find and reduce inconsistencies.  Try to extract common models in both Slang and Rust.
+
+## Slang Libraries
+
+A lot of the Slang in the visualizer belongs in lib.  The mislocated slang will increase before it decreases.
+
+The fix uses the `links` attribute in the lib's Cargo.toml.
+
+```toml
+links = "mutate_lib"
+```
+
+And then build scripts can find the lib crate in order to inform `slangc` where to find those remote (when mutate_lib is used as a library) slang libraries.
+```
+let shaders_dir = std::env::var("DEP_MUTATE_LIB_SHADERS_DIR").unwrap();
+```
+
+This will also require the assets loader and the pipeline macros to learn how to use shaders from lib and how to package them into finished binaries.  The mechanism is clear.  The implementation is all that remains.
+
+### For Now
+
+Keep stuffing slang into the visualizer.  It's wrong.  The cost is mainly changing some paths later, but when we start to want libraries to pull together more common operations and newtypes, it will become more urgent to fix this.
 
 ## Externally Synchronized
 
-We can't use [some Vulkan resources](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-threadingbehavior) concurrently with some other usages.  This isn't a huge concern yet.  Queues only needs a `Mutex` on submissions.  Audio and video processing data on the device on two different clocks is an early example where we must do the external sync.
+We can't use [some Vulkan resources](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-threadingbehavior) concurrently with some other usages.  This isn't a huge concern yet.  Queue submission is a common case.  Each queue just uses a `Mutex` on the submissions.  De-aliasing overloaded queues was the harder problem than synchronizing them.
+
+Audio and video processing data on the device on two different threads that tick on independent clocks is an early example where we must do the external sync.
 
 We are aiming to re-use more sync operations with course granularity, leaning on phase alignment to create larger, shared synchronization domains to drain deferred operations owned by each thread.
 
 ### For Now
 
-Synchronize internal mutability where trivial (see descriptors).  Use whatever hand-hacked wait-free doesn't crash too frequently.  Use safe points and just document them.  Along the way, **focus on the synchronization domains so we can figure out which views of which data need to exist, which operations can and should be deferred, which operations must not be concurrent.**
+Synchronize internal mutability where trivial (see descriptors).  Use whatever hand-hacked wait-free doesn't crash too frequently.  Use safe points and just document them.  Along the way, focus on the synchronization domains so we can figure out which views of which data need to exist and how to wire synchronization around.
+
+**The most important thing is to understand which operations we actually want to do that must not be concurrent.**  It's not that much.
 
 ## From Manual Destruction to Drop
 
@@ -71,25 +105,6 @@ The strategy being used to develop actual lifetime contracts is to start at leaf
 Until we reach the root, prefer manual destruction.  Manual destruction avoids a class of bugs where an RAII wrapper holds a cloned handle to enable cleanup but then outlives the wrapper for the handle.  **Not destroying things produces very clear validation errors.**  Unclear drop orders of temporaries can lurk in barely-working code, so manual destruction **is** more conservative.
 
 There are also must-consume types, for which drops are almost assuredly program bugs, and so `DropBomb` is being used until some other kind of linear type solution (ever?) exists.  Why would a user drop a command buffer that is in the middle of recording, especially if the allocation would leak even after pool reset?
-
-## Error Handling
-
-The lib side is using `thiserror` and will present a single error `MutateError` type to consumers.  Farther upstream crates like `vulkan` have their own type (`VulkanError`) that is forwarded through `MutateError` variants.
-
-The hierarchies may still have little semantic or diagnostic value at first. We need to know what error handlers want to get out of the upstream error source
-before providing views into the underlying causes depends on.  Without the
-forcing pressure from error consumers, we don't really know what types to
-separate or what information to expose yet.
-
-Error handling has traditionally been an area of ergonomic innovation in Rust.  It's likely not beyond the innovation phase.
-
-### For Now
-
-- ~~Unwrap and panic liberally 🤠~~
-- Return `Result` types from fallible operations to **ensure proper return signatures are not piling up missing plumbing.**.
-- Use any MuTate error that seams appropriate or make a new one, and be honest about its use when documenting.
-- If you are a saint, go implement proper tracing, tracing formatting, options for consumers that want to ignore tracing, spans and the like.
-- If you are less of a saint, find panics where continuing has some meaningful use case and convert them to `Result` and do something useful after returning it.
 
 ## Memory Management
 
@@ -105,11 +120,9 @@ Expectations are that memory usage will be relatively low but less predictable d
 
 ### For Now
 
-Drain CBs and swapchains or even just `device_wait_idle`.  This loses frames, but until we have proper epoch tracking over everything in flight, or something simpler such as a wait-four-frames heuristic, this is the best we can do.  (Wait four frames and pack everything into a deletion / reclaim queue!)
+We have a really basic deletion queue.  It is no replacement for dependency reference counting and having the runtime smartly handle this for us, but it bails us out when the manual destructor has no idea who is still using resources.
 
-We don't really have any infra for one-big-allocation or deletion & compaction.  Specs will just hydrate kind of dumbly at first while we nail the ergonomics.
-
-Don't go crazy avoiding copies just yet, especially where sizes are in low kilobytes.  We can suffer reallocating buffers of these sizes per frame.  Until we have a solution that will do better than the driver, just allocate for each image / buffer.
+We don't really have any infra for one-big-allocation or deletion & compaction.  Specs will just hydrate kind of dumbly at first while we nail the ergonomics.  Drain CBs and swapchains or even just `device_wait_idle` for tricky destruction cases like swapchain recreation.
 
 ## Reactive Updates
 
@@ -118,6 +131,8 @@ Dependents should be notified reactively (or enabling them to poll) when their d
 The first instance problem coming up is to resize a screen-dimension-sensitive visual when the screen size changes.  The resize information comes from the presentation target, and these changes must reach dependents, which may cascade into further dependents.
 
 ### For Now
+
+Expose all possible outputs to all readers on one structure.  Let the readers decide which output addresses to actually consume.  It's not dynamic and not accessible for ML, but it gets us one signature for everyone.  Dependency will be manual, and loops will be possible.
 
 Without reactive updates, we have to manually provision and re-provision buffers and images.  This **absolutely will not scale into shared ownership or memory region aliasing.**
 
@@ -138,17 +153,42 @@ Each element includes two parts:
 - A description of the problem being managed and how it may be solved better later.
 - "For now" instructions to minimize the cost of interest that will be paid when cleaning up the debt.
 
+## Pipewire Mis-Indirection
 
+Long term, we need more than audio data ingested onto the device, so the direct pipewire integration will live for complex pro-audio/video uses cases.  CPAL can reduce some audio pain but is not intended to completely do the job of pipewire.
 
+The way pipewire works, using callbacks and an owned `user_data` field, is about as good as it gets with respect to latency.  Our current solution is not really designed for this.  Ideally, we do take ownership of the pipewire data as fast as possible in order to allow pipewire to reclaim the buffers.  From there, we want to dispatch to externally owned callbacks where the owner can again take ownership of new data and use a thread or just execute on the pipewire thread.
 
+The most complex motivating cases will involve multiple unmixed channels, such as for live performance.  The downstream mix on the device will always involve independent clocks, and so will need phase-aware time-based tracking (and presentation data!) to do correctly.
 
+Stream ownership will eventually be shared, and connection handles will only be smart enough to talk to the shared owner, alleviating the drop responsibility and allowing multiple downstreams from a single physical upstream.
 
 ### For Now
 
+Consider the `AudioConsumer` abstraction ripe to be rebuilt for shared ownership by multiple downstreams.  The latency etc is not really that bad at all, microseconds with a good scheduler.  The independent clocks mean that the video tracking is not really sensitive to this minor latency.  **Do whatever must be done to support what you want to work, but don't be shy about bludgeoning the existing code and interfaces.**.
+
+## Warp Geometry
+
+At first this was considered an ergonomics problem for dispatching.  Miraculously, we have not encountered `WaveReadLaneFirst` where thread IDs got mixed on a warp, but we have also not protected from it at all in the compute pipeline dispatch API.
+
+We can protect in a number of ways:
+
+- Better conventions are many of the improvements that get made
+- Detect unnecessary dangerous choices via Reflection
+- Enable several Vulkan features
+- Proc macros to emit const checks on arguments to dispatch sites
+
+This will get worse and begin to spread **vendor-specific cancer** all over the code base if we do not nail it down early.
+
+### For Now
+
+LDS workgroup strategies will drive designs towards getting lanes in the right places before input geometry will.  Use the wave size `[WaveSize(32)]`.  Use the first dimension as lanes.
 
 ## Logs & Tracing
 
-We're need some real infra for emitting error feedback.  Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.  In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!
+You have a validation error.  A resource is being misused and the helpful validation layer output tells you the involved objects.  We want to just turn on tracing for the object type, find the modules creating the instances, then follow the problem instances around with more hands-on debugging.
+
+In the end, debugging becomes one of the biggest differentiators for professionals, so work here is highly appreciated!  Tracing selected.  We can do log fallback later for people who don't want tracing.  Option to make release builds silent should be supported.
 
 ### For Now
 
@@ -173,18 +213,6 @@ We'd probably like to make thread-safe writes over sub-ranges and that infra wil
 ### For Now
 
 Transfer?  Use the UMA path until something is actually big.  Maybe put it behind a dummy interface with some kind of sensible semantics that will work for the above.  **If a unified API can be used on top of a crap implementation, cost of debt is low.  Shaders just need pointers inserted into their control data, and that pointer indirection is flexible.**
-
-## Host-Slang Agreement
-
-The slang module and proc macros (`ComputePipeline`, `PushConstants`, etc) should be reading the reflection data and emitting const checks.
-
-We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).
-
-**Some types that are byte compatible are piling up but will not pass more strict named type reflection checks later.**
-
-### For Now
-
-Ergonomics over contracts.  The APIs are *sufficient* to add the reflection checks.  Get `GraphicsPipeline` working first.
 
 ## Descriptor Set Strategy
 

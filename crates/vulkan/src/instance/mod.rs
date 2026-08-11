@@ -17,7 +17,6 @@
 use std::{os::raw::c_char, ffi::{c_void, CStr}};
 
 use ash::vk;
-use smallvec::SmallVec;
 
 use mutate_assets as assets;
 #[cfg(feature="winit")]
@@ -45,6 +44,7 @@ const INSTANCE_EXTENSIONS_SURFACE: &[&CStr] = &[
     vk::KHR_GET_SURFACE_CAPABILITIES2_NAME,
     vk::EXT_SURFACE_MAINTENANCE1_NAME,
 ];
+
 // Useful for headless swapchain CI tests later (no running window system).
 // pub const EXTENSIONS_HEADLESS: &[&CStr] = &[
 //     vk::EXT_HEADLESS_SURFACE_NAME,
@@ -81,7 +81,7 @@ impl InstanceProfile {
 // Waiting for this value to show up in ash
 // pub(crate) const KHR_PRESENT_TIMING_NAME: &CStr = c"VK_EXT_present_timing";
 // DEBT currently the requirements and support checks are all hardcoded.
-pub(crate) const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
+const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
     vk::EXT_EXTENDED_DYNAMIC_STATE3_NAME,
     // NEXT better debug gating (see validation layer activation above).
     // Enables some debug functionality in shaders.
@@ -100,6 +100,8 @@ pub(crate) const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
     vk::EXT_MEMORY_BUDGET_NAME,
     vk::EXT_MEMORY_PRIORITY_NAME,
 
+    vk::KHR_SHADER_MAXIMAL_RECONVERGENCE_NAME,
+
     // ROLL VK_EXT_present_timing is still too new.  I have no supported devices / drivers yet.
     // KHR_PRESENT_TIMING_NAME,
 
@@ -109,7 +111,14 @@ pub(crate) const DEVICE_EXTENSIONS_CORE: &[&CStr] = &[
     // vk::KHR_ACCELERATION_STRUCTURE_NAME,
     // vk::KHR_DEFERRED_HOST_OPERATIONS_NAME,
 ];
-pub(crate) const DEVICE_EXTENSIONS_SURFACE: &[&CStr] = &[
+
+const DEVICE_EXTENSIONS_OPTIONAL: &[&CStr] = &[
+    vk::KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_NAME,
+    #[cfg(debug_assertions)]
+    vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME,
+];
+
+const DEVICE_EXTENSIONS_SURFACE: &[&CStr] = &[
     vk::KHR_SWAPCHAIN_NAME,
     vk::KHR_PRESENT_WAIT_NAME,
     vk::KHR_PRESENT_ID_NAME,
@@ -202,12 +211,32 @@ impl Instance {
 
         let app_info =
             vk::ApplicationInfo::default().api_version(vk::make_api_version(0, 1, 3, 0));
-        let validation_layers = [
-            // #[cfg(debug_assertions)]
-            // NOTE Leaving this on all the time because there are still issues in `--release`
-            // builds and we need to default to leaving it on via the dev shells or something.
-            c"VK_LAYER_KHRONOS_validation".as_ptr()
+
+        const REQUESTED_LAYERS: &[&core::ffi::CStr] = &[
+            #[cfg(debug_assertions)]
+            c"VK_LAYER_KHRONOS_validation",
         ];
+
+        let available_layers = unsafe {
+            entry
+                .enumerate_instance_layer_properties()
+                .expect("Failed to enumerate instance layers")
+        };
+
+        let mut layer_buf = [core::ptr::null(); REQUESTED_LAYERS.len()];
+        let mut layer_len = 0usize;
+
+        for &want in REQUESTED_LAYERS {
+            if available_layers
+                .iter()
+                .any(|p| p.layer_name_as_c_str().is_ok_and(|have| have == want)) {
+                    layer_buf[layer_len] = want.as_ptr();
+                    layer_len += 1;
+                } else {
+                    eprintln!("warning: layer {want:?} requested but not available; skipping");
+                }
+        }
+        let selected_layers = &layer_buf[..layer_len];
 
         let ext_ptrs: Vec<*const i8> = required_exts.iter().copied()
             .chain(INSTANCE_EXTENSIONS_CORE.iter().map(|s| s.as_ptr()))
@@ -216,7 +245,7 @@ impl Instance {
         let instance_ci = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
             .enabled_extension_names(&ext_ptrs)
-            .enabled_layer_names(&validation_layers);
+            .enabled_layer_names(selected_layers);
         let instance = unsafe { entry.create_instance(&instance_ci, None).unwrap() };
         Self {
             entry,
@@ -269,22 +298,28 @@ impl Instance {
             exts.extend_from_slice(extensions);
             exts
         };
-        let mut physical_devices: Vec<(vk::PhysicalDevice, vk::PhysicalDeviceProperties)> = physical_devices
+
+        let mut physical_devices: Vec<(vk::PhysicalDevice, vk::PhysicalDeviceProperties, DeviceCaps)> = physical_devices
             .into_iter()
             .filter_map(|physical_device| {
+
+                let mut subgroup_props = vk::PhysicalDeviceSubgroupProperties::default();
+                let mut size_control = vk::PhysicalDeviceSubgroupSizeControlProperties::default();
                 let props = unsafe { self.raw.get_physical_device_properties(physical_device) };
                 let meets_version = {
                     let major = vk::api_version_major(props.api_version);
                     let minor = vk::api_version_minor(props.api_version);
                     major > 1 || (major == 1 && minor >= 3)
                 };
-                (meets_version
-                    && self.device_meets_features(physical_device)
-                    && self.device_meets_extensions(physical_device, &extensions))
-                    .then_some((physical_device, props))
+                if !meets_version || !self.device_meets_extensions(physical_device, &extensions) {
+                    return None;
+                }
+                let caps = self.device_meets_features(physical_device)?;
+                Some((physical_device, props, caps))
             })
             .collect();
-        physical_devices.sort_by_key(|(physical_device, props)| {
+
+        physical_devices.sort_by_key(|(physical_device, props, _)| {
             let device_type_rank = |t: vk::PhysicalDeviceType| match t {
                 vk::PhysicalDeviceType::DISCRETE_GPU  => 0u8,
                 vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
@@ -300,26 +335,46 @@ impl Instance {
                 .unwrap_or(0);
             (device_type_rank(props.device_type), std::cmp::Reverse(max_memory))
         });
+
         physical_devices
             .into_iter()
-            .map(|(physical_device, _)| SupportedDevice::new(physical_device, self, &extensions, self.profile))
+            .map(|(physical_device, _, caps)| {
+                let mut exts = extensions.clone();
+                if caps.subgroup_uniform_control_flow {
+                    exts.push(vk::KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_NAME);
+                }
+                if caps.pipeline_executable_info {
+                    exts.push(vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME);
+                }
+                SupportedDevice::new(physical_device, self, &exts, self.profile, caps)
+            })
             .collect()
     }
 
-    fn device_meets_features(&self, physical_device: vk::PhysicalDevice) -> bool {
-
+    fn device_meets_features(&self, physical_device: vk::PhysicalDevice) -> Option<DeviceCaps> {
         let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
         let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
         let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
         let mut swapchain_maintenance1 =
             vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default();
-
+        let mut maximal_reconvergence =
+            vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR::default();
+        let mut subgroup_uniform_control_flow =
+            vk::PhysicalDeviceShaderSubgroupUniformControlFlowFeaturesKHR::default();
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .features(vk::PhysicalDeviceFeatures::default())
+            .push_next(&mut subgroup_uniform_control_flow)
+            .push_next(&mut maximal_reconvergence)
             .push_next(&mut swapchain_maintenance1)
             .push_next(&mut features_1_3)
             .push_next(&mut features_1_2)
             .push_next(&mut features_1_1);
+
+        #[cfg(debug_assertions)]
+        let mut pipeline_exec_props =
+            vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR::default();
+        #[cfg(debug_assertions)]
+        let mut features2 = features2.push_next(&mut pipeline_exec_props);
 
         unsafe {
             self.raw.get_physical_device_features2(physical_device, &mut features2);
@@ -327,7 +382,9 @@ impl Instance {
 
         let checks: &[(&'static str, bool)] = &[
             ("shader_int16",                                            features2.features.shader_int16 == vk::TRUE),
+            ("shader_int64",                                            features2.features.shader_int64 == vk::TRUE),
             ("swapchain_maintenance1",                                  swapchain_maintenance1.swapchain_maintenance1 == vk::TRUE),
+            ("shader_maximal_reconvergence",                            maximal_reconvergence.shader_maximal_reconvergence == vk::TRUE),
             ("1.1 storage_buffer16_bit_access",                         features_1_1.storage_buffer16_bit_access == vk::TRUE),
             // XXX Axe this feature
             // ("1.1 storage_input_output16",                              features_1_1.storage_input_output16 == vk::TRUE),
@@ -345,9 +402,11 @@ impl Instance {
             ("1.2 host_query_reset",                                    features_1_2.host_query_reset == vk::TRUE),
             ("1.2 runtime_descriptor_array",                            features_1_2.runtime_descriptor_array == vk::TRUE),
             ("1.2 scalar_block_layout",                                 features_1_2.scalar_block_layout == vk::TRUE),
+            ("1.2 shader_buffer_int64_atomics",                         features_1_2.shader_buffer_int64_atomics == vk::TRUE),
             ("1.2 shader_float16",                                      features_1_2.shader_float16 == vk::TRUE),
             ("1.2 shader_int8",                                         features_1_2.shader_int8 == vk::TRUE),
             ("1.2 shader_sampled_image_array_non_uniform_indexing",     features_1_2.shader_sampled_image_array_non_uniform_indexing == vk::TRUE),
+            ("1.2 shader_shared_int64_atomics",                         features_1_2.shader_shared_int64_atomics == vk::TRUE),
             ("1.2 shader_storage_buffer_array_non_uniform_indexing",    features_1_2.shader_storage_buffer_array_non_uniform_indexing == vk::TRUE),
             ("1.2 shader_storage_image_array_non_uniform_indexing",     features_1_2.shader_storage_image_array_non_uniform_indexing == vk::TRUE),
             ("1.2 shader_uniform_buffer_array_non_uniform_indexing",    features_1_2.shader_uniform_buffer_array_non_uniform_indexing == vk::TRUE),
@@ -355,11 +414,14 @@ impl Instance {
             ("1.2 storage_push_constant8",                              features_1_2.storage_push_constant8 == vk::TRUE),
             ("1.2 timeline_sempahore",                                  features_1_2.timeline_semaphore == vk::TRUE),
             ("1.2 uniform_and_storage_buffer8_bit_access",              features_1_2.uniform_and_storage_buffer8_bit_access == vk::TRUE),
+            ("1.2 vulkan_memory_model",                                 features_1_2.vulkan_memory_model == vk::TRUE),
+            ("1.2 vulkan_memory_model_device_scope",                    features_1_2.vulkan_memory_model_device_scope == vk::TRUE),
             ("1.3 compute_full_subgroups",                              features_1_3.compute_full_subgroups == vk::TRUE),
             ("1.3 dynamic_rendering",                                   features_1_3.dynamic_rendering == vk::TRUE),
             ("1.3 inline_uniform_block",                                features_1_3.inline_uniform_block == vk::TRUE),
             ("1.3 maintenance4",                                        features_1_3.maintenance4 == vk::TRUE),
             ("1.3 shader_demote_to_helper_invocation",                  features_1_3.shader_demote_to_helper_invocation == vk::TRUE),
+            ("1.3 subgroup_size_control",                               features_1_3.subgroup_size_control == vk::TRUE),
             ("1.3 synchronization2",                                    features_1_3.synchronization2 == vk::TRUE),
         ];
         let missing: Vec<&'static str> = checks
@@ -368,14 +430,47 @@ impl Instance {
             .collect();
 
         if missing.is_empty() {
-            true
+            let have_ext = |name: &CStr| self.device_has_extension(physical_device, name);
+
+            let mut subgroup = vk::PhysicalDeviceSubgroupProperties::default();
+            let mut size_control = vk::PhysicalDeviceSubgroupSizeControlProperties::default();
+
+            let properties = {
+                let mut props2 = vk::PhysicalDeviceProperties2::default()
+                    .push_next(&mut subgroup)
+                    .push_next(&mut size_control);
+                unsafe {
+                    self.get_physical_device_properties2(physical_device, &mut props2)
+                };
+                props2.properties
+            };
+
+            Some(DeviceCaps {
+                subgroup_uniform_control_flow:
+                    subgroup_uniform_control_flow.shader_subgroup_uniform_control_flow == vk::TRUE
+                        && have_ext(vk::KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_NAME),
+                #[cfg(debug_assertions)]
+                pipeline_executable_info:
+                    pipeline_exec_props.pipeline_executable_info == vk::TRUE
+                        && have_ext(vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME),
+                #[cfg(not(debug_assertions))]
+                pipeline_executable_info: false,
+
+                subgroup_size: subgroup.subgroup_size,
+                min_subgroup_size: size_control.min_subgroup_size,
+                max_subgroup_size: size_control.max_subgroup_size,
+                max_compute_workgroup_subgroups: size_control.max_compute_workgroup_subgroups,
+                max_workgroup_invocations: properties.limits.max_compute_work_group_invocations,
+                max_workgroup_size: properties.limits.max_compute_work_group_size,
+                max_shared_memory: properties.limits.max_compute_shared_memory_size,
+            })
         } else {
             // DEBT logging.  We could return an error but it's not an error for a device to be
             // missing functionality, only for all devices to be missing some functionality.
             #[cfg(debug_assertions)]
             {
                 let props = unsafe {
-                    self.raw.get_physical_device_properties(physical_device)
+                    self.get_physical_device_properties(physical_device)
                 };
                 let name = unsafe { std::ffi::CStr::from_ptr(props.device_name.as_ptr()) };
                 println!("Physical device unsupported: {}", name.to_string_lossy());
@@ -383,8 +478,18 @@ impl Instance {
                     println!("  missing feature: {}", m)
                 }
             }
-            false
+            None
         }
+    }
+
+    // XXX Let's pass in a resolved set of extensions?
+    fn device_has_extension(&self, physical_device: vk::PhysicalDevice, name: &CStr) -> bool {
+        let available = unsafe {
+            self.raw
+                .enumerate_device_extension_properties(physical_device)
+                .expect("Failed to enumerate device extensions")
+        };
+        available.iter().any(|e| e.extension_name_as_c_str().is_ok_and(|n| n == name))
     }
 
     fn device_meets_version(&self, physical_device: vk::PhysicalDevice) -> bool {
@@ -502,6 +607,32 @@ macro_rules! with_context {
     }};
 }
 
+/// Query results about a physical device.  Only optional support is contained on this structure.
+#[derive(Debug, Clone, Default)]
+pub struct DeviceCaps {
+    pub subgroup_uniform_control_flow: bool,
+    pub pipeline_executable_info: bool,
+
+    pub subgroup_size: u32,
+    pub min_subgroup_size: u32,
+    pub max_subgroup_size: u32,
+    pub max_compute_workgroup_subgroups: u32,
+    pub max_workgroup_invocations: u32,
+    pub max_workgroup_size: [u32; 3],
+    pub max_shared_memory: u32,
+}
+
+impl DeviceCaps {
+    pub fn pinned_subgroup_size(&self, want: u32, stage: vk::ShaderStageFlags) -> Option<u32> {
+        let hi = self.max_subgroup_size.min(want);
+        if hi < self.min_subgroup_size {
+            return None; // device floor exceeds what we want
+        }
+        let pot = 1 << (u32::BITS - 1 - hi.leading_zeros());
+        (pot >= self.min_subgroup_size).then_some(pot)
+    }
+}
+
 #[derive(Debug, Clone)]
 /// Query physical devices from the `Instance` to obtain a list of `SupportedDevices`.  These can
 /// be checked for surface support with `supports_surface`.  This only checks for a queue family
@@ -518,11 +649,12 @@ pub struct SupportedDevice {
     pub extensions: Vec<&'static CStr>,
 
     pub profile: InstanceProfile,
+    pub caps: DeviceCaps,
 }
 
 impl SupportedDevice {
-    fn new(physical_device: vk::PhysicalDevice, instance: &Instance, extensions: &[&'static
-    CStr], profile: InstanceProfile) -> SupportedDevice{
+    fn new(physical_device: vk::PhysicalDevice, instance: &Instance, extensions: &[&'static CStr],
+        profile: InstanceProfile, caps: DeviceCaps) -> SupportedDevice {
         let name = unsafe {
             let props =
                 instance.raw.get_physical_device_properties(physical_device);
@@ -538,6 +670,7 @@ impl SupportedDevice {
             name,
             extensions,
             profile,
+            caps,
         }
     }
 

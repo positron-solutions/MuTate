@@ -165,14 +165,39 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
         let stage_spec = <S::Stage as stage::Stage<stage::Compute>>::SPEC;
         let shader = shader::ShaderModule::load(device, stage_spec.name)?;
 
-        let stage = vk::PipelineShaderStageCreateInfo::default()
+        let caps = &device.caps;
+        let mut flags = vk::PipelineShaderStageCreateFlags::empty();
+        let pinned = caps.pinned_subgroup_size(32, vk::ShaderStageFlags::COMPUTE);
+        if pinned.is_some() {
+            flags |= vk::PipelineShaderStageCreateFlags::REQUIRE_FULL_SUBGROUPS;
+        }
+        let mut required_size = pinned.map(|n| {
+            vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo::default()
+                .required_subgroup_size(n)
+        });
+        let mut stage_ci = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(*shader)
             .name(stage_spec.entry);
+        if let Some(rs) = required_size.as_mut() {
+            stage_ci = stage_ci.push_next(rs);
+        }
+
+        // DEBT Tracing & debug: Was about to immediately log all pipelines, but the `Device` is
+        // maybe not the right home for the necessary loader and going in the wrong direction.
+        // Leaving the creation flags in place.  Whenever we hydrate pipelines via runtime, that
+        // runtime can maintain the proper loader (needs an instance) and we can use that to query
+        // the pipeline and search for things like poor register usage.
+        let mut flags = vk::PipelineCreateFlags::empty();
+        #[cfg(debug_assertions)]
+        let mut flags =
+            vk::PipelineCreateFlags::empty() | vk::PipelineCreateFlags::CAPTURE_STATISTICS_KHR;
 
         let pipeline_ci = vk::ComputePipelineCreateInfo::default()
-            .stage(stage)
-            .layout(layout.as_raw());
+            .stage(stage_ci)
+            .layout(layout.as_raw())
+            .flags(flags);
+
         // NEXT PSO compiling can take a while and definitely should be queued into background via resources.
         let pipeline = unsafe {
             device
@@ -187,9 +212,10 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
         })
     }
 
-    // XXX typed recording slot
+    // XXX typed recording slot?  Cannot use a transfer command buffer.
+    // XXX Be sure to change this to &vk::CommandBuffer at least
     // XXX possibly keep a device borrow on recording slots?
-    pub fn push(&self, device: &Device, cb: vk::CommandBuffer, data: &S::Push) {
+    pub fn push(&self, device: &ash::Device, cb: vk::CommandBuffer, data: &S::Push) {
         self.layout.push(device, cb, data);
     }
 
@@ -201,8 +227,11 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
     // expressions to ensure perfect geometry by type contract.
     pub fn dispatch(&self, device: &Device, cb: vk::CommandBuffer, x: u32, y: u32, z: u32) {
         unsafe {
-            // NEXT persist the ID or hash in a CB state shadow and no-op this re-bind when already identical.
-            device.as_raw().cmd_bind_descriptor_sets(
+            // NEXT persist the ID or hash in a CB state shadow and no-op this re-bind when already
+            // identical.
+            // FIXME split out the descriptor binding requisites into some view thing so that we can
+            // send the necessary gear cross-thread.  Binding here precludes multithreaded usage.
+            device.cmd_bind_descriptor_sets(
                 cb,
                 vk::PipelineBindPoint::COMPUTE,
                 self.layout.as_raw(),
@@ -210,17 +239,22 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
                 &[device.descriptors.set()],
                 &[],
             );
-            device
-                .as_raw()
-                .cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-            device.as_raw().cmd_dispatch(cb, x, y, z);
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_dispatch(cb, x, y, z);
         }
     }
 
     pub fn destroy(self, device: &Device) {
         unsafe {
-            device.as_raw().destroy_pipeline(self.pipeline, None);
+            device.destroy_pipeline(self.pipeline, None);
         }
         self.layout.destroy(device);
+    }
+}
+
+impl<S: ComputePipelineSpec> std::ops::Deref for ComputePipeline<S> {
+    type Target = vk::Pipeline;
+    fn deref(&self) -> &Self::Target {
+        &self.pipeline
     }
 }

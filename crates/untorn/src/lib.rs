@@ -1,5 +1,11 @@
 //! ## Untorn
 //!
+//! ⚠️ This crate was marked as debt a while back and the fix has been identified.  We're going with
+//! a stack-local double buffering, allowing reader starvation on worst case contention with chatty
+//! writers.  In practice, the edge cases are irrelevant, and I think that's the trade-off we're
+//! going to lean into.  The synchronizations we need tend to be separated by milliseconds and take
+//! nanoseconds to complete, meaning any contention *is* the edge case.
+//!
 //! Make atomic structs that are protected from torn reads & writes.  The semantics are
 //! **synchronous**, non-blocking for both readers and writers.  Wrap any struct that is at least
 //! `Copy` (details below).  Cheap cloned thread-safe handles like `Arc`.
@@ -253,6 +259,13 @@ impl<T: Copy> SeqInner<T> {
             let seq2 = self.seq.load(Ordering::Acquire);
             if seq1 == seq2 {
                 return result;
+            }
+            // Seq torn.  Increment spins
+            spins += 1;
+            match spins {
+                0..YIELD_THRESHOLD => std::hint::spin_loop(),
+                YIELD_THRESHOLD..u16::MAX => std::thread::yield_now(),
+                u16::MAX => panic!("Untorn reader starved by writers"),
             }
         }
     }

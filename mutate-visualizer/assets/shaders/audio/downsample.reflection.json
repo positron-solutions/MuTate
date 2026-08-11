@@ -1,0 +1,163 @@
+{
+    "parameters": [
+        {
+            "name": "pc",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "PushConstants",
+                    "fields": [
+                        {
+                            "name": "static_base",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint64"
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "first_window_center",
+                            "type": {
+                                "kind": "array",
+                                "elementCount": 3,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "uniformStride": 4
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 12, "elementStride": 4}
+                        },
+                        {
+                            "name": "first_output_slot",
+                            "type": {
+                                "kind": "array",
+                                "elementCount": 3,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "uniformStride": 4
+                            },
+                            "binding": {"kind": "uniform", "offset": 20, "size": 12, "elementStride": 4}
+                        },
+                        {
+                            "name": "output_count",
+                            "type": {
+                                "kind": "array",
+                                "elementCount": 3,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "uniformStride": 4
+                            },
+                            "binding": {"kind": "uniform", "offset": 32, "size": 12, "elementStride": 4}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "PushConstants",
+                        "fields": [
+                            {
+                                "name": "static_base",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint64"
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "first_window_center",
+                                "type": {
+                                    "kind": "array",
+                                    "elementCount": 3,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "uint32"
+                                    },
+                                    "uniformStride": 4
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 12, "elementStride": 4}
+                            },
+                            {
+                                "name": "first_output_slot",
+                                "type": {
+                                    "kind": "array",
+                                    "elementCount": 3,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "uint32"
+                                    },
+                                    "uniformStride": 4
+                                },
+                                "binding": {"kind": "uniform", "offset": 20, "size": 12, "elementStride": 4}
+                            },
+                            {
+                                "name": "output_count",
+                                "type": {
+                                    "kind": "array",
+                                    "elementCount": 3,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "uint32"
+                                    },
+                                    "uniformStride": 4
+                                },
+                                "binding": {"kind": "uniform", "offset": 32, "size": 12, "elementStride": 4}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 44, "elementStride": 0}
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "main",
+            "stage": "compute",
+            "parameters": [
+                {
+                    "name": "group_id",
+                    "semanticName": "SV_GROUPID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                },
+                {
+                    "name": "thread_id",
+                    "semanticName": "SV_GROUPTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                }
+            ],
+            "threadGroupSize": [32, 8, 1],
+            "bindings": [
+                {
+                    "name": "pc",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        }
+    ],
+    "bindlessSpaceIndex": 0
+}

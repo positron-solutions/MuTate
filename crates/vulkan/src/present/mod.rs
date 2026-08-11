@@ -137,11 +137,11 @@ impl PresentRing {
         // ROLL VK_KHR_present_wait will enable "display this no sooner than X".
         // For FRR, we just need to hit the deadline.  For VRR and using a user-configured maximum
         // frame rate, aligning the call to present with our chosen cadence is the correct knob.
-        let present_result = self.swapchain.present(
-            unsafe { self.queue.as_raw() },
-            acquired_image.sync_index,
-            &present_info,
-        );
+        let present_result = {
+            let (raw, _guard) = unsafe { self.queue.lock_raw()? };
+            self.swapchain
+                .present(raw, acquired_image.sync_index, &present_info)
+        };
         self.present.notify_waiter();
         return match present_result {
             Ok(()) => Ok(()),

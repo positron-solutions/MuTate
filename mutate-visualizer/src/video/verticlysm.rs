@@ -1,0 +1,184 @@
+// Copyright 2026 The MuTate Contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! # Verticlysm
+//!
+//! Draws DFT with bins mapped horizontally, creating a vertical pattern.  Left interpolates from
+//! bottom to top.  Right interpolates from top to bottom.  Intensity controls both initial
+//! brightness and length of interpolation along the screen's vertical axis.  Interpolates bins and
+//! the 240Hz output with phase-aware tracking of the input stream.
+
+use ash::vk;
+use mutate_lib::{self as utate, prelude::*, vulkan::resource::buffer};
+
+use crate::audio;
+
+#[compute_pipeline(
+    compute = stage!("verticlysm/verticlysm", Compute, c"main"),
+    push = push!(VerticlysmPushConstants {
+        // Input channel rings and geometry.
+        pub left_channel: DeviceAddress,
+        pub right_channel: DeviceAddress,
+        /// Number of DFT bins
+        pub input_height: UInt,
+        /// Ring columns.  Time.  Always PoT.
+        pub input_width: UInt,
+
+        // The time slice being read.
+        pub beg_col: UInt,
+        pub beg_phase: Float,
+        pub span: Float,
+
+        // pub gain: DeviceAddress,
+
+        /// Output buffer
+        pub output: DeviceAddress,
+        pub output_width: UInt,
+        pub output_height: UInt,
+    }),
+)]
+struct VerticlysmPipeline;
+
+pub struct Verticlysm {
+    pipeline: ComputePipeline<VerticlysmPipeline>,
+    output: Option<MappedAllocation<rgb::Bgra<u8>>>,
+    output_address: DeviceAddress,
+}
+
+impl Verticlysm {
+    pub fn new(device: &Device) -> Self {
+        Self {
+            pipeline: ComputePipeline::<VerticlysmPipeline>::new(device).unwrap(),
+            output: None,
+            output_address: DeviceAddress::NULL,
+        }
+    }
+
+    pub fn provision(
+        &mut self,
+        device: &Device,
+        size: vk::Extent2D,
+    ) -> Result<(), utate::MutateError> {
+        if let Some(existing) = self.output.take() {
+            unsafe {
+                existing.destroy(device)?;
+            }
+        }
+        let output = MappedAllocation::new(device, (size.width * size.height) as usize)?;
+        self.output_address = output.device_address(device)?.into();
+        self.output = Some(output);
+        Ok(())
+    }
+
+    pub fn draw(
+        &mut self,
+        device: &Device,
+        cb: &RecordingBuffer<Graphics, OneTime>,
+        acquired_image: &AcquiredImage,
+        audio_outputs: &audio::AudioOutputs,
+    ) {
+        let extent = acquired_image.extent;
+        let dft = &audio_outputs.dft;
+
+        // XXX argument order (reverse cb & device)
+        self.output
+            .as_ref()
+            .unwrap()
+            .barrier_compute_pre(&cb, device);
+
+        dft.data_ready.wait(device, 1_000_000_000).unwrap();
+
+        let pre = vk::MemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::COPY | vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_access_mask(
+                vk::AccessFlags2::TRANSFER_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+            )
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_access_mask(
+                vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+            );
+        let pre_barriers = [pre];
+        let dep = vk::DependencyInfo::default().memory_barriers(&pre_barriers);
+        unsafe { device.cmd_pipeline_barrier2(**cb, &dep) };
+
+        let width = dft.ring_width;
+        debug_assert!(width.is_power_of_two());
+        let mask = width as u64 - 1;
+
+        // HACK No sub-column phase is published, so the read scheme is integral:
+        // `write_head` is an exclusive count of *closed* columns, so [end - span, end)
+        // is exactly the set of columns the device has committed.  `beg_phase` is
+        // pinned to zero and the shader's interpolation degenerates to nearest-column.
+        const TARGET_SPAN: u64 = 4;
+        let end = dft.write_head;
+
+        // Never reach past what's been written, and leave one column of slack so we
+        // can't alias the column the device is currently accumulating into.
+        let span = TARGET_SPAN.min(end).min(width as u64 - 1);
+        if span == 0 {
+            return; // nothing published yet
+        }
+
+        let beg_col = (end - span) & mask;
+        let beg_phase = 0.0f32;
+
+        let push = VerticlysmPushConstants {
+            left_channel: dft.channels[0].into(),
+            right_channel: dft.channels[1].into(),
+
+            input_height: dft.ring_height.into(),
+            input_width: width.into(),
+            beg_col: (beg_col as u32).into(),
+            beg_phase: beg_phase.into(),
+            span: (span as f32).into(),
+
+            output: self.output_address,
+            output_width: extent.width.into(),
+            output_height: extent.height.into(),
+        };
+        self.pipeline.push(device, **cb, &push);
+
+        const LANE_WIDTH: u32 = 32;
+        const LANE_ROWS: u32 = 128;
+        // Each lane writes its column and its mirror, so dispatch half, rounding up for the middle
+        // output.
+        let dispatch_x = extent.width.div_ceil(2).div_ceil(LANE_WIDTH);
+
+        let dispatch_y = extent.height.div_ceil(LANE_ROWS);
+        self.pipeline
+            .dispatch(device, **cb, dispatch_x, dispatch_y, 1);
+
+        self.output
+            .as_ref()
+            .unwrap()
+            .barrier_compute_post(&cb, device);
+
+        let region = buffer::buffer_image_copy_full(extent);
+        unsafe {
+            device.cmd_copy_buffer_to_image(
+                **cb,
+                self.output.as_ref().unwrap().buffer,
+                acquired_image.image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+        }
+
+        // XXX we have no way to pass semaphores to the render gear
+        // Yeah... we have a submission builder that cannot be given any extra semaphores...
+        // Seems like we will need to build our own submission harness.  That sucks, but it will
+        // work better.  During the multithreaded switcharoo we can get that done.  Just hope it's
+        // on time =D
+        let ready = &dft.data_ready;
+    }
+
+    pub fn destroy(self, device: &Device) -> Result<(), utate::MutateError> {
+        unsafe {
+            self.pipeline.destroy(device);
+            if let Some(allocated) = self.output {
+                allocated.destroy(&device)?;
+            }
+        }
+        Ok(())
+    }
+}

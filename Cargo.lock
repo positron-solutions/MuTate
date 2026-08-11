@@ -1135,6 +1135,7 @@ dependencies = [
  "mutate-assets",
  "mutate-lib",
  "mutate-slide",
+ "num-complex",
  "num-traits",
  "palette",
  "rand 0.9.2",

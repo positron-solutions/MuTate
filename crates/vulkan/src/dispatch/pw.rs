@@ -261,7 +261,7 @@ impl PresentWaiter {
             let id = consumer.next_id;
             let swapchain = consumer.swapchain;
 
-            // NEXT we really need KHR_present_timing.  This method has jitter of about 2ms that did
+            // NEXT we really need EXT_present_wait.  This method has jitter of about 2ms that did
             // not go away with a zero timeout spin-loop polling setup.  It also doesn't tell us the
             // extremely critical present deadline.
             match unsafe { self.pw_device.wait_for_present(swapchain, id, 6_000_000) } {

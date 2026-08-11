@@ -13,7 +13,10 @@ mod audio;
 mod video;
 mod window;
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use ash::vk;
 use clap::Parser;
@@ -47,8 +50,10 @@ struct WindowContext {
     // NEXT As the render architecture gets more sophisticated, a lot of the spectrum work on the
     // device can be shared per window that the device supports.  Rare device-per-window cases, if
     // they still exist, would require only one audio downstream per device and then that data can
-    // be reused for all windows.
-    renderer: video::ring::RawRingDraw,
+    // be reused for all windows.  Resource runtime can express per-device work via dependencies,
+    // and that's why declarative state reconciliation is the way.
+    renderer: video::verticlysm::Verticlysm,
+    audio_outputs: Arc<Mutex<Option<audio::AudioOutputs>>>,
 }
 
 impl WindowContext {
@@ -56,46 +61,42 @@ impl WindowContext {
         instance: &Instance,
         device: &mut Device,
         window: winit::window::Window,
-        raw_surface: vk::SurfaceKHR,
+        surface: Surface,
+        audio_outputs: Arc<Mutex<Option<audio::AudioOutputs>>>,
     ) -> Self {
-        let surface = Surface::new(instance, device, raw_surface, &window).unwrap();
+        // XXX create the present ring and clone the queue to audio farther upstream?
         let present_ring = PresentRing::new(device, instance, &surface).unwrap();
-        let mut renderer = video::ring::RawRingDraw::new(device);
+        let mut renderer = video::verticlysm::Verticlysm::new(device);
         renderer.provision(device, surface.extent()).unwrap();
         Self {
             window,
             surface,
             present_ring,
             renderer,
+            audio_outputs,
         }
     }
 
     fn draw_frame(&mut self, device: &mut Device, audio: &mut audio::Audio) {
-        // black hole the data to check the ring tracking
-        audio
-            .consumer
-            .advance_read(audio.consumer.occupied_len().unwrap_or(0))
-            .unwrap();
-        let channels = unsafe { audio.consumer.channels().unwrap() };
-        let left_channel = channels[0];
-        let right_channel = channels[1];
-        let capacity = audio.consumer.capacity();
-        self.present_ring
-            .record(
+        // NOTE AudioInputs is an interim common interface.  Runtime argument injection will handle
+        // this kind of conditional rendering in the future.
+        let result = {
+            let guard = self.audio_outputs.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(audio_outputs) = guard.as_ref() else {
+                return;
+            };
+            self.present_ring.record(
                 device,
                 compute_present(device, |device, cb, acquired_image| {
-                    self.renderer.draw(
-                        device,
-                        cb,
-                        acquired_image,
-                        left_channel,
-                        right_channel,
-                        capacity,
-                    );
+                    self.renderer
+                        .draw(device, cb, acquired_image, audio_outputs);
                 }),
                 || self.window.pre_present_notify(),
             )
-            .map_err(|e| match e {
+        }; // guard dropped here, self.audio_outputs borrow released
+
+        if let Err(e) = result {
+            match e {
                 utate::vulkan::VulkanError::SwapchainOutOfDate
                 | utate::vulkan::VulkanError::SwapchainSuboptimal => {
                     self.handle_resize(device);
@@ -103,7 +104,11 @@ impl WindowContext {
                 _ => {
                     eprintln!("application: draw failed {:?}", e);
                 }
-            });
+            }
+        }
+
+        // Enable deferred deletion to progress.
+        device.deletion_queue.tick();
     }
 
     fn handle_resize(&mut self, device: &mut Device) -> Result<(), MutateError> {
@@ -154,9 +159,15 @@ impl ActiveApp {
         let selected = supported_devices[0].clone();
         println!("device selected: {}", selected.name);
         let mut device = selected.into_logical(instance);
-        let audio = audio::Audio::new(&device)?;
-
-        let wc = WindowContext::new(instance, &mut device, window, raw_surface);
+        let surface = Surface::new(instance, &device, raw_surface, &window)?;
+        let queue = &device
+            .queues
+            .graphics(instance, &surface, QueuePriority::High)
+            // XXX shouldn't this already be an error?
+            .ok_or(utate::vulkan::VulkanError::QueueNotFound)?;
+        let audio = audio::Audio::new(&device, &queue.queue_ref())?;
+        let audio_outputs = audio.outputs.clone();
+        let wc = WindowContext::new(instance, &mut device, window, surface, audio_outputs);
         let window_id = wc.window.id();
         let mut windows = HashMap::new();
         windows.insert(window_id, wc);
@@ -265,15 +276,25 @@ impl ApplicationHandler for MutateApp {
 
     // handles all exit paths
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        let AppState::Active(active) = &mut self.state else {
+        let AppState::Active(mut active) = std::mem::replace(&mut self.state, AppState::Dormant)
+        else {
             return;
         };
-        active.device.wait_idle().unwrap();
-        for (_, wc) in active.windows.drain() {
-            wc.destroy(&mut active.device);
-        }
+        // DEBT Deletion queue 🥵
         active.audio.destroy(&mut active.device);
-        active.device.destroy();
+        // XXX This horrible little hunk was an attempt to atone for other sins but is also not
+        // fixing the root problems anywhere close to where they need to really die.
+        match active.device.wait_idle() {
+            Ok(_) => {
+                for (_, wc) in active.windows.drain() {
+                    wc.destroy(&mut active.device);
+                }
+                active.device.destroy();
+            }
+            Err(e) => {
+                eprintln!("Device probably lost: {:?}", e);
+            }
+        };
     }
 }
 

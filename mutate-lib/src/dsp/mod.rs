@@ -73,14 +73,12 @@ pub mod window;
 /// allow us to resolve higher frequencies, there is little visually interesting above them, and
 /// only trouble makers who carry on and talk back seem to respond to them anyway.  🦕🦕🦕🦕
 // NEXT user setting
-// XXX remove from CQT
 pub const MAX_FREQ_OLD_PEOPLE: f64 = 12_333.0;
 /// Unless you have some $2000 headphones or a room built to collect energy at 20Hz, there is little
 /// to perceive and thus little to draw below this frequency.  It is also very difficult to measure
 /// very slow waves since they are almost entirely smooth DC that will always take a while for any
 /// detector to phase-lock on while high-cutting literally everything else.
 // NEXT user setting
-// XXX remove from CQT
 pub const MIN_FREQ_CHEAP_DRIVERS: f64 = 24.0;
 
 // /// Compute peak amplitude of a sine wave for a given SPL (in dB)

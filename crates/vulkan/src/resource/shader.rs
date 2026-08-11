@@ -30,7 +30,7 @@ impl<'device> ShaderModule<'device> {
         // some justice.
         let spv = device.assets.find_shader(path).unwrap();
         let module_ci = vk::ShaderModuleCreateInfo::default().code(spv.as_slice());
-        let module = unsafe { device.as_raw().create_shader_module(&module_ci, None)? };
+        let module = unsafe { device.create_shader_module(&module_ci, None)? };
 
         Ok(Self {
             device: &device.as_raw(),

@@ -209,7 +209,7 @@ impl PresentSync {
             }
         }
 
-        match unsafe { device.as_raw().wait_for_fences(&live[..n], true, timeout) } {
+        match unsafe { device.wait_for_fences(&live[..n], true, timeout) } {
             Ok(()) => Ok(true),
             Err(vk::Result::TIMEOUT) => Ok(false),
             Err(e) => Err(e.into()),
@@ -218,21 +218,20 @@ impl PresentSync {
 
     /// Callers must drain before destruction.
     pub fn destroy(&self, device: &Device) {
-        let raw = device.as_raw();
         unsafe {
             for s in &self.image_available {
-                raw.destroy_semaphore(s.as_raw(), None);
+                device.destroy_semaphore(s.as_raw(), None);
             }
             for s in &self.present_ready {
-                raw.destroy_semaphore(s.as_raw(), None);
+                device.destroy_semaphore(s.as_raw(), None);
             }
             for f in &self.present_finished {
                 if !f.0.is_null() {
-                    raw.destroy_fence(f.0, None);
+                    device.destroy_fence(f.0, None);
                 }
             }
             if !self.stranded_fence.0.is_null() {
-                raw.destroy_fence(self.stranded_fence.0, None);
+                device.destroy_fence(self.stranded_fence.0, None);
             }
         }
     }
@@ -450,7 +449,7 @@ impl Swapchain {
     pub fn destroy(&self, device: &Device) {
         unsafe {
             for view in &self.image_views {
-                device.as_raw().destroy_image_view(*view, None);
+                device.destroy_image_view(*view, None);
             }
             self.loader.destroy_swapchain(self.raw, None);
         }
@@ -458,7 +457,7 @@ impl Swapchain {
         for retired in &self.retired {
             unsafe {
                 for view in &retired.image_views {
-                    device.as_raw().destroy_image_view(*view, None);
+                    device.destroy_image_view(*view, None);
                 }
                 self.loader.destroy_swapchain(retired.swapchain, None);
             }
@@ -500,7 +499,7 @@ fn create_image_views(
                 },
                 ..Default::default()
             };
-            unsafe { device.as_raw().create_image_view(&view_ci, None).unwrap() }
+            unsafe { device.create_image_view(&view_ci, None).unwrap() }
         })
         .collect()
 }

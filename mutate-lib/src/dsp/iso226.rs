@@ -34,13 +34,27 @@ const CURVE_PHONS: f64 = 70.0;
 /// their logs are actually near negative infinity, but tiny amounts of noise in calculations can be
 /// combined with very large gain corrections to produce spurious signals after gain that are well
 /// above the chosen noise floor.
-pub fn iso226_gain(freq: f64) -> Result<f64, MutateError> {
+pub fn iso226_db_gain(freq: f64) -> Result<f64, MutateError> {
     let ref_spl = iso226_phon2spl(1000.0);
     let target_spl = iso226_phon2spl(freq);
 
     // Convert this to a correction, how much gain should be applied relative to 1kHz to obtain a
     // value relative to the iso-loud value on the 70 phon curve?
     Ok(ref_spl - target_spl)
+}
+
+/// Perceptual correction as a linear *amplitude* factor, always >= 1.0.
+///
+/// This is meant to be folded into window weights to pre-apply the gain.  We level by boosting
+/// rather than cutting.  Cutting would shrink small-signal bins toward the denormal hole and throw
+/// away mantissa bits we can never get back.
+pub fn iso226_window_gain(freq: f64) -> f64 {
+    // Loudest SPL on the curve.  Below FREQ[0] we clamp, so this is the true max.
+    let ref_spl = iso226_phon2spl(FREQ[0]);
+    let target_spl = iso226_phon2spl(freq);
+
+    // dB of level -> linear amplitude.
+    10f64.powf((ref_spl - target_spl) / 20.0)
 }
 
 // This is the C implementation without indirection.
@@ -111,8 +125,8 @@ pub mod test {
 
     #[test]
     fn test_iso226_curve() {
-        let at_20_hz = iso226_gain(20.0).unwrap();
-        let at_1000hz = iso226_gain(1000.0).unwrap();
+        let at_20_hz = iso226_db_gain(20.0).unwrap();
+        let at_1000hz = iso226_db_gain(1000.0).unwrap();
 
         // The iso-loud SPL for 20Hz is about 45dB above the SPL at 1kHz.
         assert!(((at_1000hz - at_20_hz) - 45.0).abs() < 5.0);
@@ -127,7 +141,7 @@ pub mod test {
             println!(
                 "freq: {:10.0} gain dB: {:10.6}",
                 freq,
-                iso226_gain(*freq).unwrap()
+                iso226_db_gain(*freq).unwrap()
             );
         }
 
@@ -145,7 +159,7 @@ pub mod test {
 
         // Tests
         for (freq, expected) in freqs.iter().zip(expected) {
-            let res = iso226_gain(*freq).unwrap(); // IDENTITY for development
+            let res = iso226_db_gain(*freq).unwrap(); // IDENTITY for development
             let err = (res - expected).abs() / expected;
             assert!(
                 err < TOLERANCE,

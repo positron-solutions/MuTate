@@ -73,8 +73,8 @@ impl TimelineSemaphore {
         self.semaphore
     }
 
-    pub fn destroy(self, device: &Device) {
-        unsafe { device.as_raw().destroy_semaphore(self.into_raw(), None) };
+    pub fn destroy(self, device: &ash::Device) {
+        unsafe { device.destroy_semaphore(self.into_raw(), None) };
     }
 }
 
@@ -120,7 +120,7 @@ impl SignalIntent {
             let wait_info = vk::SemaphoreWaitInfo::default()
                 .semaphores(std::slice::from_ref(&self.semaphore))
                 .values(std::slice::from_ref(&previous));
-            unsafe { device.as_raw().wait_semaphores(&wait_info, timeout) }?;
+            unsafe { device.wait_semaphores(&wait_info, timeout) }?;
         }
 
         // Signal the value for this intent.
@@ -128,8 +128,17 @@ impl SignalIntent {
             .semaphore(self.semaphore)
             .value(self.value);
 
-        unsafe { device.as_raw().signal_semaphore(&signal_info) }?;
+        unsafe { device.signal_semaphore(&signal_info) }?;
         Ok(self.value)
+    }
+
+    /// Obtain a `WaitValue` for the previous intent.  Useful when the original signal intent has
+    /// already been dropped.
+    pub fn predecessor(&self) -> WaitValue {
+        WaitValue {
+            semaphore: self.semaphore,
+            value: self.value - 1,
+        }
     }
 
     /// Produce a `WaitValue` for this intent.
@@ -145,7 +154,7 @@ unsafe impl Send for SignalIntent {}
 
 /// A value that will be signaled (the `SignalIntent` was created and will not be dropped).  It is
 /// valid to wait on a single value at multiple points, so `SignalValue` can be cloned.
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct WaitValue {
     semaphore: vk::Semaphore,
     value: u64,
@@ -164,12 +173,12 @@ impl WaitValue {
     }
 
     /// Block the calling thread until this value has been signaled.
-    pub fn wait(&self, device: &Device, timeout: u64) -> Result<u64, vk::Result> {
+    pub fn wait(&self, device: &ash::Device, timeout: u64) -> Result<u64, vk::Result> {
         let wait_info = vk::SemaphoreWaitInfo::default()
             .semaphores(std::slice::from_ref(&self.semaphore))
             .values(std::slice::from_ref(&self.value));
         unsafe {
-            device.as_raw().wait_semaphores(&wait_info, timeout);
+            device.wait_semaphores(&wait_info, timeout);
         }
         Ok(self.value)
     }
@@ -233,7 +242,7 @@ impl BinarySemaphore {
     }
 
     pub fn destroy(self, device: &Device) {
-        unsafe { device.as_raw().destroy_semaphore(self.semaphore, None) };
+        unsafe { device.destroy_semaphore(self.semaphore, None) };
     }
 }
 
