@@ -238,8 +238,6 @@ impl Audio {
             //     Ok(last)
             // }
 
-            println!("downsample consumed: {:?}", downsample_consumed);
-            println!("occupied len: {:?}", state.occupied_len());
             Ok(state.occupied_len())
         };
 
