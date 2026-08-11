@@ -9,7 +9,7 @@ Github.
 ## Contents
 
 - [Currently Paying Down](#currently-paying-down)
-  - [Warp Geometry](#warp-geometry)
+  - [Host-Slang Agreement](#host-slang-agreement)
   - [Timing Scheme Conventions](#timing-scheme-conventions)
   - [Slang Libraries](#slang-libraries)
   - [Externally Synchronized](#externally-synchronized)
@@ -20,10 +20,10 @@ Github.
   - [Fallible Resource Acquisition](#fallible-resource-acquisition)
 - [Charging Interest](#charging-interest)
   - [Pipewire Mis-Indirection](#pipewire-mis-indirection)
+  - [Warp Geometry](#warp-geometry)
   - [Logs & Tracing](#logs--tracing)
   - [Dynamic Rendering State Shadow](#dynamic-rendering-state-shadow)
   - [Transfer / Staging vs UMA](#transfer--staging-vs-uma)
-  - [Host-Slang Agreement](#host-slang-agreement)
   - [Descriptor Set Strategy](#descriptor-set-strategy)
   - [Vulkan Versions, Device & Platform Compatibility](#vulkan-versions-device--platform-compatibility)
   - [Audio Formats](#audio-formats)
@@ -36,22 +36,17 @@ Github.
 
 Crimes where the solution has been chosen and all new work should burn down existing problems.  Separate any distinct crimes that emerge into new debt.
 
-## Warp Geometry
+## Host-Slang Agreement
 
-At first this was considered an ergonomics problem for dispatching.  Miraculously, we have not encountered `WaveReadLaneFirst` where thread IDs got mixed on a warp, but we have also not protected from it at all.
+The slang module and proc macros (`ComputePipeline`, `PushConstants`, etc) should be reading the reflection data and emitting const checks.
 
-We can protect in a number of ways:
+We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).
 
-- Better conventions are many of the improvements that get made
-- Detect unnecessary dangerous choices via Reflection
-- Enable several Vulkan features
-- Proc macros to emit const checks on arguments to dispatch sites
-
-This will get worse and begin to spread **vendor-specific cancer** all over the code base if we do not nail it down early.
+**Some types that are byte compatible are piling up but will not pass more strict named type reflection checks later.**
 
 ### For Now
 
-Pick one axis to make 32-wide, pray, and then write more code.  You were warned.
+Ergonomics over contracts.  The APIs are *sufficient* to add the reflection checks.  Get `GraphicsPipeline` working first.
 
 ## Timing Scheme Conventions
 
@@ -192,6 +187,23 @@ Stream ownership will eventually be shared, and connection handles will only be 
 
 Consider the `AudioConsumer` abstraction ripe to be rebuilt for shared ownership by multiple downstreams.  The latency etc is not really that bad at all, microseconds with a good scheduler.  The independent clocks mean that the video tracking is not really sensitive to this minor latency.  **Do whatever must be done to support what you want to work, but don't be shy about bludgeoning the existing code and interfaces.**.
 
+## Warp Geometry
+
+At first this was considered an ergonomics problem for dispatching.  Miraculously, we have not encountered `WaveReadLaneFirst` where thread IDs got mixed on a warp, but we have also not protected from it at all in the compute pipeline dispatch API.
+
+We can protect in a number of ways:
+
+- Better conventions are many of the improvements that get made
+- Detect unnecessary dangerous choices via Reflection
+- Enable several Vulkan features
+- Proc macros to emit const checks on arguments to dispatch sites
+
+This will get worse and begin to spread **vendor-specific cancer** all over the code base if we do not nail it down early.
+
+### For Now
+
+LDS workgroup strategies will drive designs towards getting lanes in the right places before input geometry will.  Use the wave size `[WaveSize(32)]`.  Use the first dimension as lanes.
+
 ## Logs & Tracing
 
 You have a validation error.  A resource is being misused and the helpful validation layer output tells you the involved objects.  We want to just turn on tracing for the object type, find the modules creating the instances, then follow the problem instances around with more hands-on debugging.
@@ -221,18 +233,6 @@ We'd probably like to make thread-safe writes over sub-ranges and that infra wil
 ### For Now
 
 Transfer?  Use the UMA path until something is actually big.  Maybe put it behind a dummy interface with some kind of sensible semantics that will work for the above.  **If a unified API can be used on top of a crap implementation, cost of debt is low.  Shaders just need pointers inserted into their control data, and that pointer indirection is flexible.**
-
-## Host-Slang Agreement
-
-The slang module and proc macros (`ComputePipeline`, `PushConstants`, etc) should be reading the reflection data and emitting const checks.
-
-We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).
-
-**Some types that are byte compatible are piling up but will not pass more strict named type reflection checks later.**
-
-### For Now
-
-Ergonomics over contracts.  The APIs are *sufficient* to add the reflection checks.  Get `GraphicsPipeline` working first.
 
 ## Descriptor Set Strategy
 
