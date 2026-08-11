@@ -1,7 +1,7 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Dft Planning
+//! Plan
 //!
 //! Currently just some tools for getting the control data sizes and offsets figured out.
 

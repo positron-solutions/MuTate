@@ -25,8 +25,6 @@
 // adds to simple moves.  Requires an extra Complex slot per window and
 // retirement epilogue unless window length guarantees an empty carry slot.
 // DEBT Warp geometry!
-// NOTE This shader inspired reassign.slang.  The two shaders do a lot
-// similarly, so check or similar issues when making changes.
 
 // LMAO positional constructor arguments for structs?  Wow Slang.  We will
 // definitely be discarding this awful practice via types and macros.
@@ -104,6 +102,7 @@ struct BinState {
 static const uint WINDOW_SLOTS = 4;
 static const uint LANES = 32;
 [WaveSize(LANES)]
+// XXX pretty sure this is really bad
 // Dispatch with x channels and divide bins by 32 and round up for y.
 [numthreads(1, 32, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {

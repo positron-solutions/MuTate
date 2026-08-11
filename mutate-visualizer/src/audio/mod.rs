@@ -19,9 +19,8 @@
 // DEBT Reactive updates.  Keep modularizing audio pipelines for downstreams.  Dispatching a bunch
 // of IIRs and other audio processing will parallelize easily and the output addresses can just be
 // exposed to video pipelines without dynamic resolution for now.
-// NEXT Slang texel types
-// NEXT Extend vk::Device for things that don't require Device.  Then &Device grows those methods
-// via Deref.
+// NEXT Extend vk::Device for things that don't require the wrapped Device.  Then &Device grows
+// those methods via Deref.
 // MAYBE get rid of fences on most submissions?
 // NOTE resource reactivity for audio pipelines is interesting.  The signal to resize the screen for
 // example might trigger resource recreation.  The resource change notifications then need to be
