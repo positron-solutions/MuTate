@@ -155,6 +155,17 @@
 //! assert_eq!(ShadowMapIdx::INVALID.raw(), u32::MAX);
 //! ```
 
+// NEXT 🤖 Aight, I have given this module a review while making some changes.  The upcoming audio
+// pipelines are showing us where we really want contracts, and it's honestly not so much about
+// layouts as it is field name order and type name so we can get the semantic typing going.
+// IIRC even UBOs can be handled with BDA and use scalar layout, so we're pretty close to just
+// deciding to intentionally go find some type that doesn't line up with scalar block's `repr(C)` so
+// that there is something to USE the layout gear.  If std430 and especially 140 are just going away
+// pretty much, who even cares?  Names and type names however!  That is some important gear.
+// Newtype macros for not giving the wrong buffer types to the wrong push constants.  And finally,
+// LLMs are getting pretty cracktastic good at these "find the needle" problems where the type of X
+// is slightly off.  Deciding how to lay out control data?  That is some exceedingly boring code
+// that could use some macros later.
 // XXX Might be possible to pull more information up onto the GpuType and leave GpuScalar and
 //     GpuPrimitive split in order support float3 etc as simply as possible.
 // XXX Buffer Device Address destination payload types not implemented
@@ -330,6 +341,14 @@ impl<T: GpuScalar, D: DataLayout> GpuPrimitive<D> for T {
     const ALIGN: usize = T::SIZE; // scalars: align == size
 }
 
+// All arrays of things that implement GpuType implement GpuType
+impl<T: GpuType<D>, D: DataLayout, const N: usize> GpuType<D> for [T; N] {
+    const FIELD_NODE: FieldNode = FieldNode::Array {
+        elem: <T as GpuType<D>>::FIELD_NODE_REF,
+        len: N,
+    };
+}
+
 // XXX We might want to go ahead and implement at least float2-float4 in order to exercise the
 // GpuPrimitive code.
 
@@ -346,6 +365,11 @@ pub struct FieldDesc {
 pub enum FieldNode {
     /// Terminal — a primitive or transparent newtype over one.
     Leaf(FieldDesc),
+    /// Fixed-size array.
+    Array {
+        elem: &'static FieldNode,
+        len: usize,
+    },
     /// Composite — recurse into its own field list.
     Tree {
         slang_name: &'static str,
@@ -364,30 +388,19 @@ pub enum FieldNode {
 pub trait GpuType<D: DataLayout = Scalar> {
     /// Traversable view of the data layout of all contained fields, down to scalars and primitives.
     const FIELD_NODE: FieldNode;
-
+    /// Indirection so composites can take a `'static` reference to a child node.
+    // 🤖 Even if this works, needs to be thought about in a second pass.
+    const FIELD_NODE_REF: &'static FieldNode = &Self::FIELD_NODE;
     /// The Slang-side name for introspection matching.
-    /// - **primitives**:   matches the Slang builtin name ("float16_t" etc.)
+    /// - **primitives**:   match the Slang builtin name ("float16_t" etc.)
     /// - **newtypes**:     the Slang struct name ("Temperature" etc.)
     /// - **structs**:      the Slang struct name
-    const SLANG_NAME: &'static str = match &Self::FIELD_NODE {
-        FieldNode::Leaf(d) => d.slang_name,
-        FieldNode::Tree { slang_name, .. } => slang_name,
-    };
+    const SLANG_NAME: &'static str = node_slang_name(Self::FIELD_NODE_REF);
     /// The size is usually equal to the comprising scalars, but if some fields require padding
     /// under a layout, the size will be bigger.
     const SIZE: usize = packed_size(&Self::FIELD_NODE, D::DATA_LAYOUT);
     /// Data layout-dependent alignment.  See float3 on std140 etc.
     const ALIGN: usize = node_align(&Self::FIELD_NODE, D::DATA_LAYOUT);
-}
-
-// impl covers primitives and scalars through scalar's impl for primitives.
-impl<T: GpuPrimitive<D>, D: DataLayout> GpuType<D> for T {
-    const FIELD_NODE: FieldNode = FieldNode::Leaf(FieldDesc {
-        primitive: T::PRIMITIVE,
-        size: T::SIZE,
-        align: T::ALIGN,
-        slang_name: T::SLANG_NAME,
-    });
 }
 
 const fn align_up(offset: usize, align: usize) -> usize {
@@ -421,6 +434,23 @@ const fn flatten_node(
             ctx.idx += 1;
             ctx
         }
+        FieldNode::Array { elem, len } => {
+            // DEBT scalar block only 🤖
+            let src_stride = array_stride(elem, rule);
+            let dst_stride = array_stride(elem, rule);
+            let base_src = ctx.src;
+            let base_dst = ctx.dst;
+            let mut i = 0;
+            while i < *len {
+                ctx.src = base_src + i * src_stride;
+                ctx.dst = base_dst + i * dst_stride;
+                ctx = flatten_node(elem, rule, ctx, out);
+                i += 1;
+            }
+            ctx.src = base_src + *len * src_stride;
+            ctx.dst = base_dst + *len * dst_stride;
+            ctx
+        }
         FieldNode::Tree { fields, .. } => {
             let mut i = 0;
             while i < fields.len() {
@@ -440,6 +470,7 @@ const fn flatten_node(
 const fn region_count(node: &FieldNode) -> usize {
     match node {
         FieldNode::Leaf(_) => 1,
+        FieldNode::Array { elem, len } => region_count(elem) * *len,
         FieldNode::Tree { fields, .. } => {
             let mut count = 0;
             let mut i = 0;
@@ -456,6 +487,7 @@ const fn region_count(node: &FieldNode) -> usize {
 const fn packed_size(node: &FieldNode, rule: DataLayoutToken) -> usize {
     match node {
         FieldNode::Leaf(d) => d.size,
+        FieldNode::Array { elem, len } => array_stride(elem, rule) * *len,
         FieldNode::Tree { fields, .. } => match rule {
             DataLayoutToken::Scalar => {
                 let mut offset = 0;
@@ -489,10 +521,16 @@ const fn packed_size(node: &FieldNode, rule: DataLayoutToken) -> usize {
     }
 }
 
+const fn array_stride(elem: &FieldNode, rule: DataLayoutToken) -> usize {
+    // XXX Not ready for std430 etc
+    align_up(packed_size(elem, rule), node_align(elem, rule))
+}
+
 /// Alignment of `node` under `rule`.
 const fn node_align(node: &FieldNode, rule: DataLayoutToken) -> usize {
     match node {
         FieldNode::Leaf(d) => d.align,
+        FieldNode::Array { elem, .. } => node_align(elem, rule),
         FieldNode::Tree { fields, .. } => tree_align(fields, rule),
     }
 }
@@ -575,6 +613,10 @@ const fn make_pack_plan(node: &FieldNode, rule: DataLayoutToken) -> PackPlan {
 pub const fn field_start(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
     match node {
         FieldNode::Leaf(_) => 0, // scalars have no sub-fields
+        FieldNode::Array { elem, len } => {
+            assert!(idx <= *len, "array index out of bounds");
+            idx * array_stride(elem, rule)
+        }
         FieldNode::Tree { fields, .. } => {
             assert!(idx <= fields.len(), "field index out of bounds");
             let mut offset = 0;
@@ -615,10 +657,54 @@ pub const fn field_start(node: &FieldNode, idx: usize, rule: DataLayoutToken) ->
 pub const fn field_end(node: &FieldNode, idx: usize, rule: DataLayoutToken) -> usize {
     match node {
         FieldNode::Leaf(_) => 0,
+        FieldNode::Array { elem, len } => {
+            assert!(idx < *len, "array index out of bounds");
+            field_start(node, idx, rule) + packed_size(elem, rule)
+        }
         FieldNode::Tree { fields, .. } => {
             assert!(idx < fields.len(), "field index out of bounds");
             field_start(node, idx, rule) + packed_size(&fields[idx], rule)
         }
+    }
+}
+
+/// True when `node` under `rule` has no interior padding and its host
+/// (`repr(C)`) layout is byte-identical to its GPU layout, meaning the whole
+/// subtree is a single memcpy.
+const fn is_contiguous(node: &FieldNode, rule: DataLayoutToken) -> bool {
+    match node {
+        FieldNode::Leaf(_) => true,
+        FieldNode::Array { elem, .. } => {
+            is_contiguous(elem, rule) && array_stride(elem, rule) == packed_size(elem, rule)
+        }
+        FieldNode::Tree { fields, .. } => {
+            let mut offset = 0;
+            let mut i = 0;
+            while i < fields.len() {
+                if !is_contiguous(&fields[i], rule) {
+                    return false;
+                }
+                let align = node_align(&fields[i], rule);
+                if align_up(offset, align) != offset {
+                    return false;
+                }
+                offset += packed_size(&fields[i], rule);
+                i += 1;
+            }
+            offset == packed_size(node, rule) // no trailing pad
+        }
+    }
+}
+
+/// Name used for reflection matching. Arrays have no nominal identity in Slang —
+/// reflection reports them structurally as `{"kind": "array", "elementCount": N,
+/// "elementType": {...}}` — so an array delegates to its element and the checker
+/// matches array-ness structurally on the `FieldNode` rather than by name.
+pub const fn node_slang_name(node: &'static FieldNode) -> &'static str {
+    match node {
+        FieldNode::Leaf(d) => d.slang_name,
+        FieldNode::Array { elem, .. } => node_slang_name(elem),
+        FieldNode::Tree { slang_name, .. } => slang_name,
     }
 }
 
@@ -660,6 +746,22 @@ impl<D: DataLayout, T: GpuType<D> + Pod> Pack<D> for T {
             i += 1;
         }
     }
+}
+
+/// Emit the `GpuType` leaf impl for a type that already implements `GpuPrimitive`.
+#[macro_export]
+macro_rules! impl_gpu_type_leaf {
+    ($name:ty) => {
+        impl<D: $crate::slang::DataLayout> $crate::slang::GpuType<D> for $name {
+            const FIELD_NODE: $crate::slang::FieldNode =
+                $crate::slang::FieldNode::Leaf($crate::slang::FieldDesc {
+                    primitive: <$name as $crate::slang::GpuPrimitive<D>>::PRIMITIVE,
+                    size: <$name as $crate::slang::GpuPrimitive<D>>::SIZE,
+                    align: <$name as $crate::slang::GpuPrimitive<D>>::ALIGN,
+                    slang_name: <$name as $crate::slang::GpuPrimitive<D>>::SLANG_NAME,
+                });
+        }
+    };
 }
 
 /// Registers a Rust type as a Slang scalar primitive.
@@ -708,6 +810,8 @@ macro_rules! slang_scalar {
         unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name {}
+
+        $crate::impl_gpu_type_leaf!($name);
     };
 }
 
@@ -761,6 +865,8 @@ macro_rules! slang_newtype {
         unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name where $inner: GpuScalar {}
+
+        $crate::impl_gpu_type_leaf!($name);
     };
 }
 
@@ -809,6 +915,8 @@ impl GpuScalar for Bool {
 impl sealed::Sealed for Bool {}
 
 unsafe impl<D: DataLayout> GpuPod<D> for Bool {}
+
+impl_gpu_type_leaf!(Bool);
 
 // https://shader-slang.org/slang/user-guide/conventional-features.html#types
 slang_scalar!(Int8, i8, SlangType::Int8, "int8_t");
@@ -878,6 +986,8 @@ impl sealed::Sealed for DeviceAddress {}
 
 unsafe impl<D: DataLayout> GpuPod<D> for DeviceAddress {}
 
+impl_gpu_type_leaf!(DeviceAddress);
+
 #[macro_export]
 macro_rules! device_address_newtype {
     ($name:ident, $slang_name:literal) => {
@@ -918,6 +1028,8 @@ macro_rules! device_address_newtype {
         unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name {}
+
+        $crate::impl_gpu_type_leaf!($name);
     };
 }
 
@@ -975,6 +1087,8 @@ macro_rules! descriptor_base {
         unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name {}
+
+        $crate::impl_gpu_type_leaf!($name);
     };
 }
 
@@ -1049,6 +1163,8 @@ macro_rules! descriptor_newtype {
         unsafe impl $crate::__::bytemuck::Pod for $name {}
 
         unsafe impl<D: DataLayout> GpuPod<D> for $name where $inner: GpuScalar {}
+
+        $crate::impl_gpu_type_leaf!($name);
     };
 }
 

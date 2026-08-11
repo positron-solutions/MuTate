@@ -38,15 +38,15 @@ Crimes where the solution has been chosen and all new work should burn down exis
 
 ## Host-Slang Agreement
 
-The slang module and proc macros (`ComputePipeline`, `PushConstants`, etc) should be reading the reflection data and emitting const checks.
+We want field name and named-type agreement for marshalling data in and out of the device.  What is the name of the field?  What is the name of the type?  If those things don't agree, that's a byte layout problem even if there is no problem with the marshalling logic.
 
-We're going with scalar block layout.  While it's pretty flexible, it's not `repr(C)`.  We don't yet have full scalar block checking everywhere (anywhere).
+The slang module has gotten pretty out of hand.  It contains a lot of ideas that need to be collapsed into a solution, but we just don't have the `std430` motivations yet to see the correct shape.  Nonetheless, the newtype wrapper via macro concept is the right shape. We need the slang analogs and integration tests.
 
-**Some types that are byte compatible are piling up but will not pass more strict named type reflection checks later.**
+By not using reflection already, **some types that are byte compatible are piling up but will not pass more strict named type reflection checks later.**
 
 ### For Now
 
-Ergonomics over contracts.  The APIs are *sufficient* to add the reflection checks.  Get `GraphicsPipeline` working first.
+See the audio pipeline and control data layout & initialization in the plan module.  We really need control data marshalling and slang type checking to be built towards a unified purpose.  Device addresses & offsets and the types they point to need some newtype macro support so that if we try to store a pointer in the wrong place, we can **see it without debugging corrupted device memory and crashes**.  We want to describe buffer deref types and make it ergonomic to keep it all in sync.
 
 ## Timing Scheme Conventions
 
