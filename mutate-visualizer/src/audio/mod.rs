@@ -32,6 +32,7 @@
 // mixtures of pipelines, and the resource runtime will need to orchestrate this.
 
 pub mod dft;
+pub mod downsample;
 pub mod plan;
 
 use std::sync::{
@@ -42,14 +43,13 @@ use std::sync::{
 use ash::vk;
 use mutate_lib::{self as utate, audio, prelude::*};
 
-use crate::audio::dft::DftDispatch;
-
 pub struct CallbackResources {
     /// How far have we read into the data so far?
     // NOTE unbuffered, same clock
     consume_head: u64,
     pool_ring: PoolRing<Graphics, 4>,
     dft: dft::Dft,
+    downsample: downsample::Downsample,
     outputs: Arc<Mutex<Option<AudioOutputs>>>,
     last_consumed: u32,
     dead: AtomicBool, // Hacky tombstone to stop dispatches faster.
@@ -61,8 +61,10 @@ pub struct CallbackResources {
 #[derive(Clone, Debug)]
 pub struct AudioOutputs {
     pub dft: dft::DftOutput,
+    pub downsample: downsample::DownsampleOutput,
     // Dynamic range gain factor location (on device)
     // Timing data for downstream buffered tracking
+    // XXX isn't the timing daata available for clone?
 }
 
 pub struct Audio {
@@ -122,11 +124,13 @@ impl Audio {
         let callback_outputs = outputs.clone();
         let pool_ring = PoolRing::new(device, &callback_queue)?;
 
-        let dft = dft::Dft::new(device, ring_layout)?;
+        let downsample = downsample::Downsample::new(device, ring_layout)?;
+        let dft = dft::Dft::new(device, downsample.level_layout(2))?;
         let resources = Box::into_raw(Box::new(CallbackResources {
             consume_head: 0,
             pool_ring,
             dft,
+            downsample,
             outputs: outputs.clone(),
             last_consumed: 0,
             dead: false.into(),
@@ -135,6 +139,7 @@ impl Audio {
         // Pass resources address into the callback.  Ownership and cleanup remain with us.
         let addr = resources as usize;
         let on_flush = move |state: &utate::audio::import::DeviceRingView<2>| {
+            // Drive the audio pipeline (◕‿◕)♡
             let outputs = &callback_outputs;
             let device = &callback_device;
             let timing = state.timing;
@@ -146,52 +151,96 @@ impl Audio {
                 return Ok(state.occupied_len());
             }
 
+            let regions = state.regions_since(res.consume_head);
+            if regions[0].occupied_len() == 0 {
+                return Ok(0);
+            }
+            let layout = state.ring_layout;
+
             let (pool, intent) = match res.pool_ring.acquire(device, 16_000_000_000) {
                 Ok(acquired) => acquired,
                 Err(e) => {
                     println!("Pool acquisition: {:?}", e);
-                    // XXX this error path has not been scrutenized.  Or encountered.
+                    // XXX this error path has not been scrutanized.  Or encountered.
                     return Ok(0);
                 }
             };
             let cb = pool.primary(device)?;
 
-            // DFT dispatch
-            let regions = state.regions_since(res.consume_head);
-            let layout = state.ring_layout;
-            let DftDispatch {
-                consumed,
-                ready,
+            let downsample::DownsampleDispatch {
+                output: downsample_out,
+                ready: downsample_ready,
+                consumed: downsample_consumed,
+            } = res.downsample.dispatch(device, &cb, state)?;
+            let downsample_previous = downsample_ready.predecessor();
+
+            let dft_out_wait = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ);
+            let barriers = [dft_out_wait];
+            let dep = vk::DependencyInfo::default().memory_barriers(&barriers);
+            unsafe { device.cmd_pipeline_barrier2(**&cb, &dep) };
+
+            // TODO get downsample outputs for the DFT
+
+            let dft::DftDispatch {
+                consumed: dft_consumed,
+                ready: dft_ready,
                 output: dft_out,
-            } = res.dft.dispatch(device, &cb, state)?;
-            let previous = ready.predecessor();
+            } = res.dft.dispatch(device, &cb, &downsample_out)?;
+            let dft_previous = dft_ready.predecessor();
+
+            // DFT dependents need this barrier.  The need is graph-detected later.
+            let dft_out_wait = vk::MemoryBarrier2::default()
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ);
+            let barriers = [dft_out_wait];
+            let dep = vk::DependencyInfo::default().memory_barriers(&barriers);
+            unsafe { device.cmd_pipeline_barrier2(**&cb, &dep) };
+
+            // NEXT use shared on outputs and wait on the correct semaphores
             let done = cb.end(device)?;
             callback_queue
                 .submission()
-                .wait(previous, vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .wait(downsample_previous, vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .wait(dft_previous, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .execute(done)
-                .signal(ready, vk::PipelineStageFlags2::COMPUTE_SHADER)
+                // XXX Rip out the individual semaphores.  Most consumers will prefer to see one
+                // consistent audio graph.
+                .signal(downsample_ready, vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .signal(dft_ready, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .signal(intent, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .submit(&callback_device, vk::Fence::null())?;
 
             // All data has been sent down the pipe.
             res.consume_head = state.write_head;
 
-            *outputs.lock().unwrap() = Some(AudioOutputs { dft: dft_out });
+            *outputs.lock().unwrap() = Some(AudioOutputs {
+                dft: dft_out,
+                downsample: downsample_out,
+            });
 
             // XXX Super hack here, but consistent.  We should catch up a bit differently to try and
             // ensure good recovery after allowing the producer to stall.  The real fix is to skip
             // half of the input and allow the producer to reclaim it.  The remaining half should
             // then be read a bit faster to get back up to the write head.  We want maximum ring
             // slack because the consumer slews in **output**.  This callback is reading **input**.
-            if state.occupied_len() > 1024 {
-                res.last_consumed = 1024;
-                Ok(consumed - 1024)
-            } else {
-                let last = res.last_consumed;
-                res.last_consumed = consumed;
-                Ok(last)
-            }
+            // if state.occupied_len() > 1024 {
+            //     res.last_consumed = 1024;
+            //     Ok(consumed - 1024)
+            // } else {
+            //     let last = res.last_consumed;
+            //     res.last_consumed = consumed;
+            //     Ok(last)
+            // }
+
+            println!("downsample consumed: {:?}", downsample_consumed);
+            println!("occupied len: {:?}", state.occupied_len());
+            Ok(state.occupied_len())
         };
 
         // Create the import, which fires the callback.
@@ -223,6 +272,7 @@ impl Audio {
         // If you're getting validation issues, check that sinks (video) are being killed first.
         resources.pool_ring.drain(device, 1_000_000_000)?;
         resources.pool_ring.destroy(device);
+        resources.downsample.destroy(device);
         resources.dft.destroy(device);
         // context has no vulkan resources and may just drop.
         Ok(())

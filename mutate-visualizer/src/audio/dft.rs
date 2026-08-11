@@ -99,6 +99,7 @@ use mutate_lib::{self as utate, audio::import::RingLayout, prelude::*};
 use num_traits::One;
 use utate::dsp::{self, bank, window::WindowFunction};
 
+use super::downsample;
 use super::plan;
 use num_complex::Complex32 as Complex;
 
@@ -106,10 +107,10 @@ use num_complex::Complex32 as Complex;
 // declarations.  Slang constant agreement via proc macro would be very welcome.
 /// Number of bins.  `WARP_SIZE` multiple enforcement saves us from padding or a masking check
 /// within the shader.
-const BINS: u32 = 2560 / 2;
+pub const BINS: u32 = 2560 / 2;
 const WARP_SIZE: u32 = 32;
 const _: () = assert!(BINS % WARP_SIZE == 0, "grouping assumes exact groups");
-const WINDOW_LENGTH: u32 = 256;
+pub const WINDOW_LENGTH: u32 = 512;
 const _: () = assert!(
     WINDOW_LENGTH.is_power_of_two(),
     "window length must be PoT for wrap masking",
@@ -129,7 +130,7 @@ const _: () = assert!(
     "shader can only walk weights that are a multiple of spacing.",
 );
 
-const OUTPUT_COLUMNS: u32 = 128;
+pub const OUTPUT_COLUMNS: u32 = 128;
 const _: () = assert!(
     OUTPUT_COLUMNS.is_power_of_two(),
     "output ring must be PoT for wrap masking",
@@ -144,7 +145,7 @@ const _: () = assert!(
 
 // DEBT sample rate
 /// 48kHz until we support rates like 44.1 etc
-const SAMPLE_RATE: u32 = 48_000;
+const SAMPLE_RATE: u32 = 6_000;
 const OUTPUT_RATE_NUM: u32 = SAMPLE_RATE;
 const OUTPUT_RATE_DEN: u32 = WINDOW_SPACING;
 
@@ -262,7 +263,6 @@ struct BinConfig {
 struct BinState {
     /// Goertzel filter's state variable.
     phasor: Complex,
-    // XXX Should we try to pack and load these differently to coalesce reads?
     /// Coerces to `Complex*`.  Offset from `dynamic_base`
     window_sums_offset: u32,
 }
@@ -308,8 +308,7 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
         debug_assert!(input_size.is_power_of_two());
 
         // Returns log-spaced bins.
-        // XXX make center to center
-        let bins = bank::bins(dsp::MIN_FREQ_CHEAP_DRIVERS, 16_666.0, BINS as usize);
+        let bins = bank::bins(dsp::MIN_FREQ_CHEAP_DRIVERS, 3_000.0, BINS as usize);
 
         // Laying out the memory is essentially just walking the sizes and offsets of everything we
         // want to put in it, remembering those values to later populate the memory, and allocating
@@ -452,28 +451,13 @@ impl<const CHANNELS: usize> Dft<CHANNELS> {
         &mut self,
         device: &ash::Device,
         cb: &RecordingBuffer<Graphics, OneTime>,
-        state: &DeviceRingView<CHANNELS>,
+        downsample: &downsample::DownsampleOutput<CHANNELS>,
     ) -> Result<DftDispatch<CHANNELS>, MutateError> {
-        // XXX upstream a length check before handing over an empty dispatch
-        let count = state.occupied_len();
-
-        // XXX Don't forget WAR/RAW against the previous dispatch's BinState and the trailing column
-        // write.  Same queue, same buffer, so a single global barrier is cheapest and correct.
-        let pre = vk::MemoryBarrier2::default()
-            .src_stage_mask(vk::PipelineStageFlags2::COPY | vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_access_mask(
-                vk::AccessFlags2::TRANSFER_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
-            )
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_access_mask(
-                vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
-            );
-        let pre_barriers = [pre];
-        let dep = vk::DependencyInfo::default().memory_barriers(&pre_barriers);
-        unsafe { device.cmd_pipeline_barrier2(**cb, &dep) };
+        let channels = downsample.level(2);
+        let read_head = channels.write_head;
+        let count = (read_head - self.read_head) as u32;
 
         // Push constants describe the clock as of the sample *before* input_beg.
-        // XXX These push constants are wrong...
         let constants = DftPushConstants {
             static_base: self.static_base,
             dynamic_base: self.dynamic_base,
