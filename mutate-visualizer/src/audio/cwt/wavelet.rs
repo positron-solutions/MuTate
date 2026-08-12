@@ -147,6 +147,7 @@ pub struct Plan {
     c: f64,        // half_width_scaled; taps = 2*ceil(c/omega0)+1
     du: f64,       // uniform step in u = w/w_peak
     psi: Vec<f64>, // psi at u_j = j*du, already L2-normalized
+    lo: usize,     // first grid point above eps; psi[..lo] is zero
 }
 
 impl Plan {
@@ -170,14 +171,15 @@ impl Plan {
         while g(j as f64 * du) < le {
             j += 1;
         }
-        // j is now the first grid point inside the band; walk past the peak to the far edge.
+        let lo = j;
         while g(j as f64 * du) >= le {
             j += 1;
         }
         let m = j + 1;
 
         let mut psi = vec![0.0; m];
-        fill_grid(&shape, du, &mut psi);
+        fill_grid(&shape, du, lo, &mut psi);
+
         let inv = psi.iter().map(|v| v * v).sum::<f64>().sqrt().recip();
         for v in psi.iter_mut() {
             *v *= inv;
@@ -189,6 +191,7 @@ impl Plan {
             c,
             du,
             psi,
+            lo,
         }
     }
 
@@ -251,21 +254,27 @@ impl Plan {
         let n = out.len();
         let half = n / 2;
         let step = self.du * bin.w0;
+        let (ss, sc) = Plan::seed_step(step, self.lo);
+        let (mut sr, mut si) = (1.0f64, 0.0f64);
 
         for i in half..n {
             let d = step * (i - half) as f64;
             let (ds, dc) = d.sin_cos();
-            let (mut cr, mut ci) = (1.0f64, 0.0f64);
+            let (mut cr, mut ci) = (sr, si);
             let (mut re, mut im) = (0.0f64, 0.0f64);
-            for &p in &self.psi[1..] {
+            for &p in &self.psi[self.lo..] {
+                re += p * cr;
+                im += p * ci;
                 let (nr, ni) = (cr * dc - ci * ds, cr * ds + ci * dc);
                 cr = nr;
                 ci = ni;
-                re += p * cr;
-                im += p * ci;
             }
             out[i] = (re, im);
             out[n - 1 - i] = (re, -im);
+
+            let (nr, ni) = (sr * sc - si * ss, sr * ss + si * sc);
+            sr = nr;
+            si = ni;
         }
     }
 
@@ -308,6 +317,11 @@ impl Plan {
     /// frequency you intend to bake at the same rate.
     pub fn scratch(&self, bin: Bin) -> Scratch {
         Scratch::with_len(bin.len)
+    }
+
+    /// Per-tap advance for a rotor seeded at grid index `base`.
+    fn seed_step(step: f64, base: usize) -> (f64, f64) {
+        (step * base as f64).sin_cos()
     }
 }
 
@@ -357,25 +371,32 @@ impl ReassignPlan {
         let half = n / 2;
         let step = self.plan.du * bin.w0;
 
+        let (ss, sc) = Plan::seed_step(step, 1);
+        let (mut sr, mut si) = (1.0f64, 0.0f64);
+
         for i in half..n {
             let dt = step * (i - half) as f64;
             let (ds, dc) = dt.sin_cos();
-            let (mut cr, mut ci) = (1.0f64, 0.0f64);
+            let (mut cr, mut ci) = (sr, si);
             let (mut a0, mut a1, mut a2) = ((0.0f64, 0.0f64), (0.0f64, 0.0f64), (0.0f64, 0.0f64));
 
             for &[sp, sd, st] in &self.spec[1..] {
-                let (nr, ni) = (cr * dc - ci * ds, cr * ds + ci * dc);
-                cr = nr;
-                ci = ni;
                 a0 = (a0.0 + sp * cr, a0.1 + sp * ci);
                 a1 = (a1.0 + sd * cr, a1.1 + sd * ci);
                 a2 = (a2.0 + st * cr, a2.1 + st * ci);
+                let (nr, ni) = (cr * dc - ci * ds, cr * ds + ci * dc);
+                cr = nr;
+                ci = ni;
             }
 
             for (out, acc) in [(&mut *psi, a0), (&mut *d, a1), (&mut *t, a2)] {
                 out[i] = acc;
                 out[n - 1 - i] = (acc.0, -acc.1);
             }
+
+            let (nr, ni) = (sr * sc - si * ss, sr * ss + si * sc);
+            sr = nr;
+            si = ni;
         }
     }
 }
