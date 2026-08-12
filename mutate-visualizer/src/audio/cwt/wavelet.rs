@@ -83,7 +83,7 @@
 // will be used are not particularly aware, so it's not expected that we can re-use exact bins in
 // any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
 // NEXT Run time of the bin generation test (not reflective of actual sample rates and Q) is about
-// 200ms on a Zen2+ part.  This affects DFT startup time.
+// 50ms on a Zen2+ part.  This affects CWT startup time.
 
 // 🤖 Heavy generation.  Should be pretty standard academic stuff, so not expecting a lot of
 // surprises.  We will, for the most part, swiftly and knowingly eat shit if the wavelet is busted.
@@ -156,8 +156,9 @@ impl Plan {
         let c = half_width_scaled(shape, eps, tail_a);
 
         // Aliasing in t occurs at tau/(du*omega0); taps ~ 2c/omega0, so du < pi/c.
-        // Half that for margin against the DC-removal tail.
-        let du = core::f64::consts::FRAC_PI_2 / c;
+        // At 0.8 the replica's own eps-edge clears ours by half a window half-width;
+        // the core is Gaussian there, so leakage is far under eps at every Q we bake.
+        let du = 0.8 * core::f64::consts::PI / c;
 
         // g(u) = beta*ln(u) - (beta/gamma)*u^gamma, g(1) = -beta/gamma.
         // Truncate where g(u) - g(1) < ln(eps), on both flanks.
