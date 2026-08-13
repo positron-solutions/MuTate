@@ -123,13 +123,13 @@
 pub struct Bin {
     // rad/sample at the decimated rate
     w0: f64,
-    len: usize,
+    taps: usize,
 }
 
 impl Bin {
     /// Number of taps.
-    pub fn len(&self) -> usize {
-        self.len
+    pub fn taps(&self) -> usize {
+        self.taps
     }
 
     /// Rotational velocity ദ്ദി(•̀ω-)✧ in radians.
@@ -273,17 +273,16 @@ impl Plan {
         let w0 = core::f64::consts::TAU * center / rate;
         Bin {
             w0,
-            len: 2 * (self.c / w0).ceil() as usize + 1,
+            taps: 2 * (self.c / w0).ceil() as usize + 1,
         }
     }
 
     /// Writes `bin.len()` complex taps, centered, unit L2, DC removed.
     pub fn taps_into(&self, bin: Bin, scratch: &mut Scratch, out: &mut [(f32, f32)]) {
-        let buf = scratch.one(bin.len);
+        let buf = scratch.one(bin.taps);
         self.transform(bin, buf);
         Self::center_l2(buf);
 
-        let n = bin.len;
         // NOTE this fiddly code was generated while scanning for low-hanging sources of floating
         // point error.  Exploiting symmetry is just too good to pass up.  Here's what was said:
         //
@@ -291,6 +290,7 @@ impl Plan {
         // center tap once and the mirrored pairs twice, so the residual DC after quantization is
         // minimized rather than accumulating as a random walk. The imaginary part is left alone
         // because DC removal only touched the real part.
+        let n = bin.taps;
         let half = n / 2;
         let mut err = 0.0f64;
         for i in half..n {
@@ -371,7 +371,7 @@ impl Plan {
     /// Scratch sized for `bin` and every smaller one. Pass the lowest center
     /// frequency you intend to bake at the same rate.
     pub fn scratch(&self, bin: Bin) -> Scratch {
-        Scratch::with_len(bin.len)
+        Scratch::with_len(bin.taps)
     }
 
     /// Per-tap advance for a rotor seeded at grid index `base`.
@@ -399,7 +399,7 @@ impl ReassignPlan {
         d: &mut [(f32, f32)],
         t: &mut [(f32, f32)],
     ) {
-        let [bp, bd, bt] = scratch.three(bin.len);
+        let [bp, bd, bt] = scratch.three(bin.taps);
         self.transform3(bin, bp, bd, bt);
 
         let norm = Plan::center_l2(bp);
@@ -521,7 +521,7 @@ mod test {
 
     fn taps(plan: &Plan, bin: Bin) -> Vec<(f32, f32)> {
         let mut s = plan.scratch(bin);
-        let mut t = vec![(0.0, 0.0); bin.len()];
+        let mut t = vec![(0.0, 0.0); bin.taps()];
         plan.taps_into(bin, &mut s, &mut t);
         t
     }
@@ -767,5 +767,253 @@ mod test {
         );
 
         println!("bin filling time: {:?}µs", elapsed.as_micros());
+    }
+
+    /// psi from transform3 must match transform, which starts at `lo`.
+    /// Also the cheapest place to see the reassignment envelopes.
+    #[test]
+    fn transform3_matches_transform() {
+        let base = plan(2.0, 1e-8);
+        let bin = base.bin(2_000.0, RATE);
+        let n = bin.taps();
+        let mut s = base.scratch(bin);
+
+        let mut plain = vec![(0.0f32, 0.0f32); n];
+        base.taps_into(bin, &mut s, &mut plain);
+
+        let plan = base.with_reassignment();
+        let (mut psi, mut d, mut t) = (
+            vec![(0.0f32, 0.0f32); n],
+            vec![(0.0f32, 0.0f32); n],
+            vec![(0.0f32, 0.0f32); n],
+        );
+        plan.taps_into(bin, &mut s, &mut psi, &mut d, &mut t);
+
+        print_wave("PSI (transform3)", &psi, 30);
+        print_wave("D = w*psi", &d, 30);
+        print_wave(
+            "T = dpsi/dw (bipolar spectrum, expect a node at center)",
+            &t,
+            30,
+        );
+        print_wave("PLAIN (transform)", &plain, 30);
+
+        let skew = plain
+            .iter()
+            .zip(psi.iter())
+            .map(|(a, b)| (a.0 - b.0).abs().max((a.1 - b.1).abs()) as f64)
+            .fold(0.0, f64::max);
+        println!(
+            "omega0 {:.5}  taps {}  psi max diff {:.3e}",
+            bin.velocity(),
+            n,
+            skew
+        );
+
+        let worst = plain
+            .iter()
+            .zip(psi.iter())
+            .enumerate()
+            .max_by(|a, b| {
+                let f = |(_, (p, q)): &(usize, (&(f32, f32), &(f32, f32)))| {
+                    (p.0 - q.0).abs().max((p.1 - q.1).abs())
+                };
+                f(a).total_cmp(&f(b))
+            })
+            .unwrap();
+        println!("worst at {:+}", worst.0 as isize - (n / 2) as isize);
+
+        let pk = |v: &[(f32, f32)]| v.iter().map(|&(r, _)| r.abs()).fold(0.0f32, f32::max);
+        let peak = pk(&plain);
+        println!("peak plain {:.7}  peak psi {:.7}", peak, pk(&psi));
+
+        // Both rotors agree in f64; the only spread is f32 rounding at the output.
+        let ulp = (peak as f64) * f64::from(f32::EPSILON);
+        assert!(skew <= 2.0 * ulp, "skew {skew:.3e} ulp {ulp:.3e}");
+
+        // t is the bipolar spectrum; its real part passes through zero at the center.
+        let half = n / 2;
+        assert!(
+            (t[half].0 as f64).abs() < 1e-3 * pk(&t) as f64,
+            "t center {:.3e} peak {:.3e}",
+            t[half].0,
+            pk(&t)
+        );
+    }
+
+    /// Both rotors against direct evaluation. Agreement with each other follows.
+    #[test]
+    fn rotor_vs_reference() {
+        let p = plan(20.0, 1e-8);
+        let bin = p.bin(12_000.0, RATE);
+        let n = bin.taps();
+        let (half, step) = (n / 2, p.du * bin.w0);
+
+        let plan = p.with_reassignment();
+
+        let mut want = [
+            vec![(0.0f64, 0.0f64); n],
+            vec![(0.0f64, 0.0f64); n],
+            vec![(0.0f64, 0.0f64); n],
+        ];
+        for i in half..n {
+            let d = step * (i - half) as f64;
+            let mut acc = [(0.0f64, 0.0f64); 3];
+            for (j, &spec) in plan.spec.iter().enumerate() {
+                let (s, c) = (j as f64 * d).sin_cos();
+                for (a, v) in acc.iter_mut().zip(spec) {
+                    *a = (a.0 + v * c, a.1 + v * s);
+                }
+            }
+            for (w, a) in want.iter_mut().zip(acc) {
+                w[i] = a;
+                w[n - 1 - i] = (a.0, -a.1);
+            }
+        }
+
+        let e = |a: &[(f64, f64)], b: &[(f64, f64)]| {
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x.0 - y.0).abs().max((x.1 - y.1).abs()))
+                .fold(0.0f64, f64::max)
+        };
+
+        let mut got = vec![(0.0f64, 0.0f64); n];
+        plan.transform(bin, &mut got);
+        assert!(
+            e(&want[0], &got) < 1e-9,
+            "transform {:.3e}",
+            e(&want[0], &got)
+        );
+
+        let (mut gp, mut gd, mut gt) = (
+            vec![(0.0f64, 0.0f64); n],
+            vec![(0.0f64, 0.0f64); n],
+            vec![(0.0f64, 0.0f64); n],
+        );
+        plan.transform3(bin, &mut gp, &mut gd, &mut gt);
+        for (label, w, g) in [
+            ("psi", &want[0], &gp),
+            ("d", &want[1], &gd),
+            ("t", &want[2], &gt),
+        ] {
+            let err = e(w, g);
+            // d carries a factor of w ~ peak, so scale the bound by the magnitude present.
+            let scale = w
+                .iter()
+                .map(|s| s.0.abs().max(s.1.abs()))
+                .fold(1.0f64, f64::max);
+            assert!(
+                err < 1e-9 * scale,
+                "transform3 {label} {err:.3e} scale {scale:.3e}"
+            );
+        }
+    }
+
+    /// Smoke test.  Hermitian, DC-free, unit L2.
+    #[test]
+    fn taps_are_conditioned() {
+        let p = plan(3.0, 1e-8);
+        for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 8000.0), (12_000.0, RATE)] {
+            let bin = p.bin(fc, sr);
+            let t = taps(&p, bin);
+            let n = bin.taps();
+
+            for j in 0..n / 2 {
+                let (a, b) = (t[j], t[n - 1 - j]);
+                assert_eq!(a.0, b.0);
+                assert_eq!(a.1, -b.1);
+            }
+
+            let (dc, e) = t.iter().fold((0.0f64, 0.0f64), |(d, e), &(r, i)| {
+                (d + r as f64, e + (r as f64).powi(2) + (i as f64).powi(2))
+            });
+            assert!(dc.abs() < 1e-5, "fc {fc} dc {dc:.3e}");
+            assert!((e - 1.0).abs() < 1e-5, "fc {fc} energy {e:.6}");
+        }
+    }
+
+    /// The four numbers a spectrogram actually depends on: where the bin sits,
+    /// how wide it is, how much leaks to negative frequency, and the stopband floor.
+    #[test]
+    fn response_is_characterized() {
+        const SWEEP: usize = 8192;
+
+        let p = plan(3.0, 1e-8);
+        let want_rel = 2.0 * 2.0f64.ln().sqrt() / p.shape.p();
+
+        println!(
+            "\n=== RESPONSE (Q = 3, eps = 1e-8, target rel width {:.5}) ===",
+            want_rel
+        );
+
+        for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 8000.0), (12_000.0, RATE)] {
+            let bin = p.bin(fc, sr);
+            let t = taps(&p, bin);
+            let w0 = bin.velocity();
+
+            // Coarse sweep: peak location, negative-frequency leakage.
+            let mut peak = (0.0f64, 0.0f64);
+            let mut neg = 0.0f64;
+            for k in 0..=SWEEP {
+                let w =
+                    -core::f64::consts::PI + 2.0 * core::f64::consts::PI * k as f64 / SWEEP as f64;
+                let h = dtft(&t, w);
+                if w < 0.0 {
+                    neg = neg.max(h);
+                }
+                if h > peak.1 {
+                    peak = (w, h);
+                }
+            }
+
+            // Refine the peak on the coarse cell, then the half-power edges.
+            let cell = 2.0 * core::f64::consts::PI / SWEEP as f64;
+            let (mut a, mut b) = (peak.0 - cell, peak.0 + cell);
+            for _ in 0..80 {
+                let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+                if dtft(&t, m1) < dtft(&t, m2) {
+                    a = m1;
+                } else {
+                    b = m2;
+                }
+            }
+            let wpk = 0.5 * (a + b);
+            let hpk = dtft(&t, wpk);
+
+            let half = hpk / 2.0f64.sqrt();
+            let lo = crossing(&t, wpk - w0, wpk, half);
+            let hi = crossing(&t, wpk, (wpk + w0).min(core::f64::consts::PI), half);
+            let rel = (hi - lo) / wpk;
+
+            // Stopband: everything past three half-power widths from the peak.
+            let guard = 3.0 * (hi - lo);
+            let mut floor = 0.0f64;
+            for k in 0..=SWEEP {
+                let w =
+                    -core::f64::consts::PI + 2.0 * core::f64::consts::PI * k as f64 / SWEEP as f64;
+                if (w - wpk).abs() > guard {
+                    floor = floor.max(dtft(&t, w));
+                }
+            }
+
+            let db = |v: f64| 20.0 * (v / hpk).log10();
+            println!(
+                "\nfc {:>7.0} sr {:>6.0}  taps {:>5}  w0 {:.6}",
+                fc,
+                sr,
+                bin.taps(),
+                w0
+            );
+            println!("  peak at {:.6}  offset {:+.3e} rel", wpk, (wpk - w0) / w0);
+            println!(
+                "  rel width {:.5}  want {:.5}  ratio {:.4}",
+                rel,
+                want_rel,
+                rel / want_rel
+            );
+            println!("  negative-freq max {:>8.2} dB", db(neg));
+            println!("  stopband floor    {:>8.2} dB", db(floor));
+        }
     }
 }
