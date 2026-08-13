@@ -147,6 +147,9 @@ void main(uint3 group_id : SV_GroupID, uint3 thread_id : SV_GroupThreadID) {
                      + warp * outputs_per_warp
                      + output_slot;
 
+    // NOTE this check matches the output guard.
+    if (output_index >= pc.output_count[level]) return;
+
     // Physical index of the sample at the center of this output's window.
     // Underflows below on `- radius + tap` are intentional: two's-complement
     // wrap composed with a power-of-two mask is the ring wrap.
@@ -177,7 +180,7 @@ void main(uint3 group_id : SV_GroupID, uint3 thread_id : SV_GroupThreadID) {
         sum += WaveShuffle(sum, lane_index ^ step);
     }
 
-    if (tap_slice == 0 && output_index < pc.output_count[level]) {
+    if (tap_slice == 0) {
         let destination = (pc.first_output_slot[level] + output_index) & output_view.mask;
         output_ring[destination] = sum;
     }
