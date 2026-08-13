@@ -7,271 +7,541 @@
 //! >
 //! > - Your dad
 //!
-//! Weights generated from the packaged PMR tool.  See README to re-generate other lengths.  Weights
-//! are designed for the shader execution structure.  Details on the filter design in downsample.rs.
+//! Weights generated from the packaged PMR tool.  See README and included command examples to
+//! re-generate other lengths.  Weights are designed for the shader execution structure.  Details on
+//! the filter design in downsample.rs.
 
 // NEXT Design for main lobe widths!  There's a lot of subjective tuning done so far.
 // NEXT Proc macro!  The CLI tool is kind of a dumpster fire just good enough to waddle across the
 // finish line!  At a minimum, the CLI tool needs to be configured for our use case instead of
 // leaving the generation commands in the comments.
+// NOTE The final down sampler should always use a flat pass band down to DC.  The --terminal option
+// for the PMR tool sets this low-ripple configuration.
+// NOTE 16x group delay is about 1/8th of a 60FPS frame.  If we buy more downsampling, we pay for it
+// in time that faster attacking wavelets cannot buy back.  Not that any transient can exist that
+// outpaces the wavelength of the carrier when perceived by the listener without percussive onsets
+// lighting up the screen.
+// NEXT Document frequencies at usual input rate!  I can't read 0.03123445 in a hurry!!
 
-// $ cargo pmr lowpass --taps 25 --pass 0.125 --stop 0.375 --pass-guard 0.1 --stop-guard 0.2
-// --decimate 2`
+/// Low pass filter.  Odd.  Symmetric.
+pub(crate) struct Lowpass<const N: usize> {
+    read_band: f64,
+    guard_band: f64,
+    /// Input samples consumed per output sample.
+    pub decimation: u32,
+    /// Raw weights.
+    pub taps: [f32; N],
+}
+
+impl<const N: usize> Lowpass<N> {
+    /// Use as an iteration count from the outside in.
+    pub const fn radius(&self) -> u32 {
+        (N as u32 - 1) / 2
+    }
+
+    /// Outward-in half of weights, center inclusive.  Works as a zero-to-center or backwards
+    /// iterated end-to-center array of weights.
+    pub fn folded(&self) -> &[f32] {
+        &self.taps[..=self.radius() as usize]
+    }
+
+    /// Group delay in *input* samples.  Linear phase, so it's just the center tap index.
+    pub const fn delay_in(&self) -> u32 {
+        self.radius()
+    }
+
+    /// Group delay in *output* samples, post-decimation.
+    pub const fn delay_out(&self) -> u32 {
+        self.radius() / self.decimation
+    }
+
+    /// Cutoff frequency for analysis.  `rate_in` is the pre-decimation sample rate.  Upper passband
+    /// edge in cycles/sample of the *input* rate.  Main lobes of filters must not be centered above
+    /// this cutoff.
+    pub fn cutoff(&self, rate_in: f64) -> f64 {
+        self.read_band * rate_in
+    }
+
+    /// Cutoff frequency beyond which folded noise begins to appear.  `rate_in` is the
+    /// pre-decimation sample rate.  Upper edge of the guarded (solver configuration) band in
+    /// cycles/sample of the *input* rate.  Filter lobes that exceed this band will begin to see
+    /// folded noise.
+    pub fn guarded_cutoff(&self, rate_in: f64) -> f64 {
+        self.guard_band * rate_in
+    }
+}
+
+// NOTE The first filter is intended to allow reads of the bottom half of the new Nyquist.  Old
+// Nyquist is half.  New Nyquist is a quarter.  Half of a quarter is an eighth.  All subsequent
+// filters provide read bands below half that down to the next filter.
+
+pub(crate) const DOWN_TWO: Lowpass<21> = Lowpass {
+    read_band: 0.125,
+    guard_band: 0.1375,
+    decimation: 2,
+    taps: DOWN_TWO_TAPS,
+};
+
+pub(crate) const DOWN_FOUR: Lowpass<41> = Lowpass {
+    read_band: 0.0625,
+    guard_band: 0.06875,
+    decimation: 4,
+    taps: DOWN_FOUR_TAPS,
+};
+
+pub(crate) const DOWN_EIGHT: Lowpass<81> = Lowpass {
+    read_band: 0.03125,
+    guard_band: 0.034375,
+    decimation: 8,
+    taps: DOWN_EIGHT_TAPS,
+};
+
+pub(crate) const DOWN_SIXTEEN: Lowpass<161> = Lowpass {
+    read_band: 0.015625,
+    guard_band: 0.0171875,
+    decimation: 16,
+    taps: DOWN_SIXTEEN_TAPS,
+};
+
+// cargo pmr lowpass --taps 21 --decimate 2
 //
 // Optimal Lowpass FIR Weights:
 // =========================================================
-// Filter length: 25
-// Band frequencies are normalized to sample rate of 1.0
+// Filter length: 21
+// decimation: 2x
+// output rate:    0.5000  (target Nyquist 0.2500)
 //
-// passband:   0.0-0.1250 (guarded to 0.1500)
-// stopband:   0.3750-0.5 (guarded from 0.3250)
-// transition: 0.2500 wide, 0.1750 after guards
-//
-// Design Results
-// =========================================================
-//   weighted error: 0.01381347
-//   flatness: 0.00000611
-//   iterations: 8
-//
-// Gain Testing
-// =========================================================
-//   deep pass band:                            0.99978405
-//   pass band:                                 0.99984044
-//   new Nyquist:                               0.32821527
-//   upper passband fold mirror:                0.00007019
-//   deep passband fold mirror:                 0.00004710
-//   stop band:                                 0.00007019
-//   deep stop band:                            0.00004710
-pub(crate) const DOWN_TWO: [f32; 25] = [
-    f32::from_bits(0xba3d6162), // -7.224289002e-4
-    f32::from_bits(0xba57a042), // -8.225479396e-4
-    f32::from_bits(0x3b3e0b0c), // +2.899828367e-3
-    f32::from_bits(0x3b8aa08c), // +4.230564460e-3
-    f32::from_bits(0xbbec4190), // -7.209964097e-3
-    f32::from_bits(0xbc5ecb44), // -1.359826699e-2
-    f32::from_bits(0x3c5f764a), // +1.363904215e-2
-    f32::from_bits(0x3d109501), // +3.529835120e-2
-    f32::from_bits(0xbca9a000), // -2.070617676e-2
-    f32::from_bits(0xbdb087ce), // -8.619652689e-2
-    f32::from_bits(0x3cd89648), // +2.643884718e-2
-    f32::from_bits(0x3e9f5183), // +3.111687601e-1
-    f32::from_bits(0x3ef1619c), // +4.714478254e-1
-    f32::from_bits(0x3e9f5183), // +3.111687601e-1
-    f32::from_bits(0x3cd89648), // +2.643884718e-2
-    f32::from_bits(0xbdb087ce), // -8.619652689e-2
-    f32::from_bits(0xbca9a000), // -2.070617676e-2
-    f32::from_bits(0x3d109501), // +3.529835120e-2
-    f32::from_bits(0x3c5f764a), // +1.363904215e-2
-    f32::from_bits(0xbc5ecb44), // -1.359826699e-2
-    f32::from_bits(0xbbec4190), // -7.209964097e-3
-    f32::from_bits(0x3b8aa08c), // +4.230564460e-3
-    f32::from_bits(0x3b3e0b0c), // +2.899828367e-3
-    f32::from_bits(0xba57a042), // -8.225479396e-4
-    f32::from_bits(0xba3d6162), // -7.224289002e-4
-];
-
-// $ cargo pmr lowpass --taps 49 --pass 0.0625 --stop 0.1875 --pass-guard 0.1 --stop-guard 0.2
-// --decimate 4
-//
-// Optimal Lowpass FIR Weights:
-// =========================================================
-// Filter length: 49
-// Band frequencies are normalized to sample rate of 1.0
-//
-// passband:   0.0-0.0625 (guarded to 0.0750)
-// stopband:   0.1875-0.5 (guarded from 0.1625)
-// transition: 0.1250 wide, 0.0875 after guards
+// All fractions in cycles/sample of the input rate (Nyquist = 0.5).
+// passband:   0.0-0.1250 (guarded through 0.1375)
+// shoulder:   0.1375-0.2500 (lands in unread band)
+// fold:       0.2500-0.3625 (folds into unread band)
+// stopband:   0.3625-0.5 (folds into passband)
+// transition: 0.2250 wide
+// weighting:  non-terminal (DC ripple relaxed)
 //
 // Design Results
 // =========================================================
-//   weighted error: 0.02173785
+//   weighted error: 0.16595566
 //   flatness: 0.00000000
-//   iterations: 7
+//   iterations: 11
 //
 // Gain Testing
 // =========================================================
-//   deep pass band:                            0.99957645
-//   pass band:                                 0.99975353
-//   new Nyquist:                               0.34572175
-//   upper passband fold mirror:                0.00012299
-//   deep passband fold mirror:                 0.00004243
-//   stop band:                                 0.00012299
-//   deep stop band:                            0.00008010
-pub(crate) const DOWN_FOUR: [f32; 49] = [
-    f32::from_bits(0xb9353eda), // -1.728491916e-4
-    f32::from_bits(0xb9bfb2f4), // -3.656368935e-4
-    f32::from_bits(0xb9b24159), // -3.399949346e-4
-    f32::from_bits(0x39248b21), // +1.569208835e-4
-    f32::from_bits(0x3a939d4f), // +1.126209158e-3
-    f32::from_bits(0x3b06a0cd), // +2.054262208e-3
-    f32::from_bits(0x3b047459), // +2.021095017e-3
-    f32::from_bits(0x398b70cd), // +2.659618913e-4
-    f32::from_bits(0xbb448500), // -2.998650074e-3
-    f32::from_bits(0xbbc8fdde), // -6.133778952e-3
-    f32::from_bits(0xbbd72768), // -6.565976888e-3
-    f32::from_bits(0xbb18e2ae), // -2.332847100e-3
-    f32::from_bits(0x3bc6065e), // +6.043239497e-3
-    f32::from_bits(0x3c701115), // +1.465251017e-2
-    f32::from_bits(0x3c8e857b), // +1.739763282e-2
-    f32::from_bits(0x3c18b7fa), // +9.321207181e-3
-    f32::from_bits(0xbc1a0f04), // -9.402994066e-3
-    f32::from_bits(0xbcfff290), // -3.124359250e-2
-    f32::from_bits(0xbd2f8f0e), // -4.286103696e-2
-    f32::from_bits(0xbcfac31c), // -3.061061352e-2
-    f32::from_bits(0x3c482f84), // +1.221835986e-2
-    f32::from_bits(0x3da424b8), // +8.014816046e-2
-    f32::from_bits(0x3e1f3cde), // +1.555056274e-1
-    f32::from_bits(0x3e5b9daa), // +2.144686282e-1
-    f32::from_bits(0x3e7272f8), // +2.367666960e-1
-    f32::from_bits(0x3e5b9daa), // +2.144686282e-1
-    f32::from_bits(0x3e1f3cde), // +1.555056274e-1
-    f32::from_bits(0x3da424b8), // +8.014816046e-2
-    f32::from_bits(0x3c482f84), // +1.221835986e-2
-    f32::from_bits(0xbcfac31c), // -3.061061352e-2
-    f32::from_bits(0xbd2f8f0e), // -4.286103696e-2
-    f32::from_bits(0xbcfff290), // -3.124359250e-2
-    f32::from_bits(0xbc1a0f04), // -9.402994066e-3
-    f32::from_bits(0x3c18b7fa), // +9.321207181e-3
-    f32::from_bits(0x3c8e857b), // +1.739763282e-2
-    f32::from_bits(0x3c701115), // +1.465251017e-2
-    f32::from_bits(0x3bc6065e), // +6.043239497e-3
-    f32::from_bits(0xbb18e2ae), // -2.332847100e-3
-    f32::from_bits(0xbbd72768), // -6.565976888e-3
-    f32::from_bits(0xbbc8fdde), // -6.133778952e-3
-    f32::from_bits(0xbb448500), // -2.998650074e-3
-    f32::from_bits(0x398b70cd), // +2.659618913e-4
-    f32::from_bits(0x3b047459), // +2.021095017e-3
-    f32::from_bits(0x3b06a0cd), // +2.054262208e-3
-    f32::from_bits(0x3a939d4f), // +1.126209158e-3
-    f32::from_bits(0x39248b21), // +1.569208835e-4
-    f32::from_bits(0xb9b24159), // -3.399949346e-4
-    f32::from_bits(0xb9bfb2f4), // -3.656368935e-4
-    f32::from_bits(0xb9353eda), // -1.728491916e-4
+//   deep pass band:                            1.00052061     +0.00 dB
+//   pass band:                                 1.00157115     +0.01 dB
+//   new Nyquist:                               0.16595566    -15.60 dB
+//   upper passband fold mirror:                0.00001381    -97.19 dB
+//   deep passband fold mirror:                 0.00000825   -101.67 dB
+//   stop band:                                 0.00001660    -95.60 dB
+//   deep stop band:                            0.00001462    -96.70 dB
+//
+const DOWN_TWO_TAPS: [f32; 21] = [
+    f32::from_bits(0xba0fd4b3), // -5.486711743e-4
+    f32::from_bits(0xbb7cc388), // -3.856869414e-3
+    f32::from_bits(0xbc034f81), // -8.014560677e-3
+    f32::from_bits(0xba0fc98c), // -5.485049915e-4
+    f32::from_bits(0x3c9cc336), // +1.913605258e-2
+    f32::from_bits(0x3c4a691d), // +1.235416252e-2
+    f32::from_bits(0xbd37ed85), // -4.490425065e-2
+    f32::from_bits(0xbd8ffdbe), // -7.030819356e-2
+    f32::from_bits(0x3d71cd5b), // +5.903373286e-2
+    f32::from_bits(0x3e99e477), // +3.005711734e-1
+    f32::from_bits(0x3edaa466), // +4.270355105e-1
+    f32::from_bits(0x3e99e477), // +3.005711734e-1
+    f32::from_bits(0x3d71cd5b), // +5.903373286e-2
+    f32::from_bits(0xbd8ffdbe), // -7.030819356e-2
+    f32::from_bits(0xbd37ed85), // -4.490425065e-2
+    f32::from_bits(0x3c4a691d), // +1.235416252e-2
+    f32::from_bits(0x3c9cc336), // +1.913605258e-2
+    f32::from_bits(0xba0fc98c), // -5.485049915e-4
+    f32::from_bits(0xbc034f81), // -8.014560677e-3
+    f32::from_bits(0xbb7cc388), // -3.856869414e-3
+    f32::from_bits(0xba0fd4b3), // -5.486711743e-4
 ];
 
-// $ cargo pmr lowpass --taps 97 --pass 0.03125 --stop 0.09375 --pass-guard 0.1 --stop-guard 0.2
-// --decimate 8
+// $ cargo pmr lowpass --taps 41 --decimate 4
 //
 // Optimal Lowpass FIR Weights:
 // =========================================================
-// Filter length: 97
-// Band frequencies are normalized to sample rate of 1.0
+// Filter length: 41
+// decimation: 4x
+// output rate:    0.2500  (target Nyquist 0.1250)
 //
-// passband:   0.0-0.0312 (guarded to 0.0375)
-// stopband:   0.0938-0.5 (guarded from 0.0813)
-// transition: 0.0625 wide, 0.0438 after guards
+// All fractions in cycles/sample of the input rate (Nyquist = 0.5).
+// passband:   0.0-0.0625 (guarded through 0.0688)
+// shoulder:   0.0688-0.1250 (lands in unread band)
+// fold:       0.1250-0.1812 (folds into unread band)
+// stopband:   0.1812-0.5 (folds into passband)
+// transition: 0.1125 wide
+// weighting:  non-terminal (DC ripple relaxed)
 //
 // Design Results
 // =========================================================
-//   weighted error: 0.02150317
-//   flatness: 0.00000692
-//   iterations: 8
+//   weighted error: 0.18469634
+//   flatness: 0.00000000
+//   iterations: 13
 //
 // Gain Testing
 // =========================================================
-//   deep pass band:                            0.99958384
-//   pass band:                                 0.99975669
-//   new Nyquist:                               0.34913528
-//   upper passband fold mirror:                0.00014459
-//   deep passband fold mirror:                 0.00005380
-//   stop band:                                 0.00014459
-//   deep stop band:                            0.00006923
-pub(crate) const DOWN_EIGHT: [f32; 97] = [
-    f32::from_bits(0xb8b975e0), // -8.843443356e-5
-    f32::from_bits(0xb9145ef5), // -1.414975413e-4
-    f32::from_bits(0xb93e3b79), // -1.814196730e-4
-    f32::from_bits(0xb953d40f), // -2.020152606e-4
-    f32::from_bits(0xb93a561a), // -1.777041762e-4
-    f32::from_bits(0xb8c38469), // -9.322987898e-5
-    f32::from_bits(0x3881b9a4), // +6.185777602e-5
-    f32::from_bits(0x3993bdb4), // +2.817936474e-4
-    f32::from_bits(0x3a0edf38), // +5.450132303e-4
-    f32::from_bits(0x3a5460cb), // +8.101581479e-4
-    f32::from_bits(0x3a85e08b), // +1.021401375e-3
-    f32::from_bits(0x3a9202a4), // +1.113970298e-3
-    f32::from_bits(0x3a869d08), // +1.027018763e-3
-    f32::from_bits(0x3a3bc7f6), // +7.163280388e-4
-    f32::from_bits(0x3931e25f), // +1.696436520e-4
-    f32::from_bits(0xba18b7e5), // -5.825742264e-4
-    f32::from_bits(0xbabf68b8), // -1.460335217e-3
-    f32::from_bits(0xbb192993), // -2.337072743e-3
-    f32::from_bits(0xbb47f40d), // -3.051045584e-3
-    f32::from_bits(0xbb60a254), // -3.427644260e-3
-    f32::from_bits(0xbb58d0b3), // -3.308337880e-3
-    f32::from_bits(0xbb295f9b), // -2.584433882e-3
-    f32::from_bits(0xbaa101b5), // -1.228383393e-3
-    f32::from_bits(0x3a32bcc0), // +6.818287075e-4
-    f32::from_bits(0x3b41827f), // +2.952724462e-3
-    f32::from_bits(0x3bad1c5a), // +5.282920785e-3
-    f32::from_bits(0x3beeeff9), // +7.291790564e-3
-    f32::from_bits(0x3c0c5c34), // +8.566904813e-3
-    f32::from_bits(0x3c0efb5b), // +8.726920001e-3
-    f32::from_bits(0x3bf57720), // +7.491007447e-3
-    f32::from_bits(0x3b9b8212), // +4.745730199e-3
-    f32::from_bits(0x3a1c8bcb), // +5.971758510e-4
-    f32::from_bits(0xbb96c542), // -4.601151682e-3
-    f32::from_bits(0xbc27fe7f), // -1.025354769e-2
-    f32::from_bits(0xbc7efd93), // -1.556338649e-2
-    f32::from_bits(0xbca0a522), // -1.960999146e-2
-    f32::from_bits(0xbcafbf0e), // -2.145340666e-2
-    f32::from_bits(0xbca5efef), // -2.025601082e-2
-    f32::from_bits(0xbc7c6408), // -1.540470868e-2
-    f32::from_bits(0xbbd8d691), // -6.617375184e-3
-    f32::from_bits(0x3bc41099), // +5.983423907e-3
-    f32::from_bits(0x3cb2ed08), // +2.184154093e-2
-    f32::from_bits(0x3d23cde2), // +3.999126703e-2
-    f32::from_bits(0x3d72367d), // +5.913399532e-2
-    f32::from_bits(0x3d9f4153), // +7.776131481e-2
-    f32::from_bits(0x3dc125b4), // +9.431019425e-2
-    f32::from_bits(0x3ddbd10c), // +1.073323190e-1
-    f32::from_bits(0x3decdce0), // +1.156556606e-1
-    f32::from_bits(0x3df2b9ac), // +1.185182035e-1
-    f32::from_bits(0x3decdce0), // +1.156556606e-1
-    f32::from_bits(0x3ddbd10c), // +1.073323190e-1
-    f32::from_bits(0x3dc125b4), // +9.431019425e-2
-    f32::from_bits(0x3d9f4153), // +7.776131481e-2
-    f32::from_bits(0x3d72367d), // +5.913399532e-2
-    f32::from_bits(0x3d23cde2), // +3.999126703e-2
-    f32::from_bits(0x3cb2ed08), // +2.184154093e-2
-    f32::from_bits(0x3bc41099), // +5.983423907e-3
-    f32::from_bits(0xbbd8d691), // -6.617375184e-3
-    f32::from_bits(0xbc7c6408), // -1.540470868e-2
-    f32::from_bits(0xbca5efef), // -2.025601082e-2
-    f32::from_bits(0xbcafbf0e), // -2.145340666e-2
-    f32::from_bits(0xbca0a522), // -1.960999146e-2
-    f32::from_bits(0xbc7efd93), // -1.556338649e-2
-    f32::from_bits(0xbc27fe7f), // -1.025354769e-2
-    f32::from_bits(0xbb96c542), // -4.601151682e-3
-    f32::from_bits(0x3a1c8bcb), // +5.971758510e-4
-    f32::from_bits(0x3b9b8212), // +4.745730199e-3
-    f32::from_bits(0x3bf57720), // +7.491007447e-3
-    f32::from_bits(0x3c0efb5b), // +8.726920001e-3
-    f32::from_bits(0x3c0c5c34), // +8.566904813e-3
-    f32::from_bits(0x3beeeff9), // +7.291790564e-3
-    f32::from_bits(0x3bad1c5a), // +5.282920785e-3
-    f32::from_bits(0x3b41827f), // +2.952724462e-3
-    f32::from_bits(0x3a32bcc0), // +6.818287075e-4
-    f32::from_bits(0xbaa101b5), // -1.228383393e-3
-    f32::from_bits(0xbb295f9b), // -2.584433882e-3
-    f32::from_bits(0xbb58d0b3), // -3.308337880e-3
-    f32::from_bits(0xbb60a254), // -3.427644260e-3
-    f32::from_bits(0xbb47f40d), // -3.051045584e-3
-    f32::from_bits(0xbb192993), // -2.337072743e-3
-    f32::from_bits(0xbabf68b8), // -1.460335217e-3
-    f32::from_bits(0xba18b7e5), // -5.825742264e-4
-    f32::from_bits(0x3931e25f), // +1.696436520e-4
-    f32::from_bits(0x3a3bc7f6), // +7.163280388e-4
-    f32::from_bits(0x3a869d08), // +1.027018763e-3
-    f32::from_bits(0x3a9202a4), // +1.113970298e-3
-    f32::from_bits(0x3a85e08b), // +1.021401375e-3
-    f32::from_bits(0x3a5460cb), // +8.101581479e-4
-    f32::from_bits(0x3a0edf38), // +5.450132303e-4
-    f32::from_bits(0x3993bdb4), // +2.817936474e-4
-    f32::from_bits(0x3881b9a4), // +6.185777602e-5
-    f32::from_bits(0xb8c38469), // -9.322987898e-5
-    f32::from_bits(0xb93a561a), // -1.777041762e-4
-    f32::from_bits(0xb953d40f), // -2.020152606e-4
-    f32::from_bits(0xb93e3b79), // -1.814196730e-4
-    f32::from_bits(0xb9145ef5), // -1.414975413e-4
-    f32::from_bits(0xb8b975e0), // -8.843443356e-5
+//   deep pass band:                            1.00190087     +0.02 dB
+//   pass band:                                 1.00177958     +0.02 dB
+//   new Nyquist:                               0.18469634    -14.67 dB
+//   upper passband fold mirror:                0.00001640    -95.70 dB
+//   deep passband fold mirror:                 0.00001187    -98.51 dB
+//   stop band:                                 0.00001848    -94.67 dB
+//   deep stop band:                            0.00001780    -94.99 dB
+//
+const DOWN_FOUR_TAPS: [f32; 41] = [
+    f32::from_bits(0xb90a37e9), // -1.318153372e-4
+    f32::from_bits(0xba136d02), // -5.623848410e-4
+    f32::from_bits(0xbabb8a7e), // -1.430824166e-3
+    f32::from_bits(0xbb29cf4f), // -2.591091907e-3
+    f32::from_bits(0xbb608f86), // -3.426523414e-3
+    f32::from_bits(0xbb409d97), // -2.939080587e-3
+    f32::from_bits(0xb9919558), // -2.776782494e-4
+    f32::from_bits(0x3b911e8d), // +4.428690765e-3
+    f32::from_bits(0x3c1a5fcf), // +9.422256611e-3
+    f32::from_bits(0x3c3c4087), // +1.148999389e-2
+    f32::from_bits(0x3befb4d7), // +7.315258961e-3
+    f32::from_bits(0xbb8d9335), // -4.320526961e-3
+    f32::from_bits(0xbca85d3d), // -2.055227198e-2
+    f32::from_bits(0xbd0b51dc), // -3.401361406e-2
+    f32::from_bits(0xbd0eac8e), // -3.483252972e-2
+    f32::from_bits(0xbc70c20e), // -1.469470374e-2
+    f32::from_bits(0x3ceac9b0), // +2.866062522e-2
+    f32::from_bits(0x3db5cb9b), // +8.876725286e-2
+    f32::from_bits(0x3e1aecf8), // +1.512945890e-1
+    f32::from_bits(0x3e4b5b7b), // +1.985911578e-1
+    f32::from_bits(0x3e5d6659), // +2.162107378e-1
+    f32::from_bits(0x3e4b5b7b), // +1.985911578e-1
+    f32::from_bits(0x3e1aecf8), // +1.512945890e-1
+    f32::from_bits(0x3db5cb9b), // +8.876725286e-2
+    f32::from_bits(0x3ceac9b0), // +2.866062522e-2
+    f32::from_bits(0xbc70c20e), // -1.469470374e-2
+    f32::from_bits(0xbd0eac8e), // -3.483252972e-2
+    f32::from_bits(0xbd0b51dc), // -3.401361406e-2
+    f32::from_bits(0xbca85d3d), // -2.055227198e-2
+    f32::from_bits(0xbb8d9335), // -4.320526961e-3
+    f32::from_bits(0x3befb4d7), // +7.315258961e-3
+    f32::from_bits(0x3c3c4087), // +1.148999389e-2
+    f32::from_bits(0x3c1a5fcf), // +9.422256611e-3
+    f32::from_bits(0x3b911e8d), // +4.428690765e-3
+    f32::from_bits(0xb9919558), // -2.776782494e-4
+    f32::from_bits(0xbb409d97), // -2.939080587e-3
+    f32::from_bits(0xbb608f86), // -3.426523414e-3
+    f32::from_bits(0xbb29cf4f), // -2.591091907e-3
+    f32::from_bits(0xbabb8a7e), // -1.430824166e-3
+    f32::from_bits(0xba136d02), // -5.623848410e-4
+    f32::from_bits(0xb90a37e9), // -1.318153372e-4
+];
+
+// $ cargo pmr lowpass --taps 81 --decimate 8
+// Optimal Lowpass FIR Weights:
+// =========================================================
+// Filter length: 81
+// decimation: 8x
+// output rate:    0.1250  (target Nyquist 0.0625)
+//
+// All fractions in cycles/sample of the input rate (Nyquist = 0.5).
+// passband:   0.0-0.0312 (guarded through 0.0344)
+// shoulder:   0.0344-0.0625 (lands in unread band)
+// fold:       0.0625-0.0906 (folds into unread band)
+// stopband:   0.0906-0.5 (folds into passband)
+// transition: 0.0562 wide
+// weighting:  non-terminal (DC ripple relaxed)
+//
+// Design Results
+// =========================================================
+//   weighted error: 0.20429698
+//   flatness: 0.00000000
+//   iterations: 18
+//
+// Gain Testing
+// =========================================================
+//   deep pass band:                            1.00164373     +0.01 dB
+//   pass band:                                 1.00198054     +0.02 dB
+//   new Nyquist:                               0.20429697    -13.79 dB
+//   upper passband fold mirror:                0.00001973    -94.10 dB
+//   deep passband fold mirror:                 0.00001806    -94.86 dB
+//   stop band:                                 0.00002044    -93.79 dB
+//   deep stop band:                            0.00001192    -98.47 dB
+//
+const DOWN_EIGHT_TAPS: [f32; 81] = [
+    f32::from_bits(0xb81d07f1), // -3.743911293e-5
+    f32::from_bits(0xb8c14437), // -9.215663158e-5
+    f32::from_bits(0xb9485f9a), // -1.910910069e-4
+    f32::from_bits(0xb9b26e11), // -3.403281153e-4
+    f32::from_bits(0xba0e0eae), // -5.419057561e-4
+    f32::from_bits(0xba4e41a8), // -7.868059911e-4
+    f32::from_bits(0xba89d0ee), // -1.051453641e-3
+    f32::from_bits(0xbaa9e09a), // -1.296061324e-3
+    f32::from_bits(0xbac02423), // -1.465920708e-3
+    f32::from_bits(0xbac4246a), // -1.496446552e-3
+    f32::from_bits(0xbaad4e5e), // -1.322220778e-3
+    f32::from_bits(0xba692dab), // -8.895049687e-4
+    f32::from_bits(0xb9331a9e), // -1.708068594e-4
+    f32::from_bits(0x3a57272d), // +8.207436767e-4
+    f32::from_bits(0x3b0462bb), // +2.020044951e-3
+    f32::from_bits(0x3b5893e6), // +3.304713871e-3
+    f32::from_bits(0x3b9367f1), // +4.498474766e-3
+    f32::from_bits(0x3bb07453), // +5.384960677e-3
+    f32::from_bits(0x3bbbd504), // +5.732180551e-3
+    f32::from_bits(0x3bae8695), // +5.326102022e-3
+    f32::from_bits(0x3b83656a), // +4.009892233e-3
+    f32::from_bits(0x3ae1ee62), // +1.723718131e-3
+    f32::from_bits(0xbabf818f), // -1.461075502e-3
+    f32::from_bits(0xbbae51e2), // -5.319819786e-3
+    f32::from_bits(0xbc1b282f), // -9.470029734e-3
+    f32::from_bits(0xbc5b5ae2), // -1.338836737e-2
+    f32::from_bits(0xbc86c28a), // -1.645018533e-2
+    f32::from_bits(0xbc935eca), // -1.798953488e-2
+    f32::from_bits(0xbc8e5479), // -1.737426408e-2
+    f32::from_bits(0xbc66d0f9), // -1.408790890e-2
+    f32::from_bits(0xbbffdbd1), // -7.808186579e-3
+    f32::from_bits(0x3ac86038), // +1.528746448e-3
+    f32::from_bits(0x3c604461), // +1.368817780e-2
+    f32::from_bits(0x3ce66d7d), // +2.812837996e-2
+    f32::from_bits(0x3d345648), // +4.402759671e-2
+    f32::from_bits(0x3d772d31), // +6.034583226e-2
+    f32::from_bits(0x3d9b79e1), // +7.591605932e-2
+    f32::from_bits(0x3db768d1), // +8.955539018e-2
+    f32::from_bits(0x3dcd2d0f), // +1.001835987e-1
+    f32::from_bits(0x3ddb00ba), // +1.069349796e-1
+    f32::from_bits(0x3ddfbe6e), // +1.092499346e-1
+    f32::from_bits(0x3ddb00ba), // +1.069349796e-1
+    f32::from_bits(0x3dcd2d0f), // +1.001835987e-1
+    f32::from_bits(0x3db768d1), // +8.955539018e-2
+    f32::from_bits(0x3d9b79e1), // +7.591605932e-2
+    f32::from_bits(0x3d772d31), // +6.034583226e-2
+    f32::from_bits(0x3d345648), // +4.402759671e-2
+    f32::from_bits(0x3ce66d7d), // +2.812837996e-2
+    f32::from_bits(0x3c604461), // +1.368817780e-2
+    f32::from_bits(0x3ac86038), // +1.528746448e-3
+    f32::from_bits(0xbbffdbd1), // -7.808186579e-3
+    f32::from_bits(0xbc66d0f9), // -1.408790890e-2
+    f32::from_bits(0xbc8e5479), // -1.737426408e-2
+    f32::from_bits(0xbc935eca), // -1.798953488e-2
+    f32::from_bits(0xbc86c28a), // -1.645018533e-2
+    f32::from_bits(0xbc5b5ae2), // -1.338836737e-2
+    f32::from_bits(0xbc1b282f), // -9.470029734e-3
+    f32::from_bits(0xbbae51e2), // -5.319819786e-3
+    f32::from_bits(0xbabf818f), // -1.461075502e-3
+    f32::from_bits(0x3ae1ee62), // +1.723718131e-3
+    f32::from_bits(0x3b83656a), // +4.009892233e-3
+    f32::from_bits(0x3bae8695), // +5.326102022e-3
+    f32::from_bits(0x3bbbd504), // +5.732180551e-3
+    f32::from_bits(0x3bb07453), // +5.384960677e-3
+    f32::from_bits(0x3b9367f1), // +4.498474766e-3
+    f32::from_bits(0x3b5893e6), // +3.304713871e-3
+    f32::from_bits(0x3b0462bb), // +2.020044951e-3
+    f32::from_bits(0x3a57272d), // +8.207436767e-4
+    f32::from_bits(0xb9331a9e), // -1.708068594e-4
+    f32::from_bits(0xba692dab), // -8.895049687e-4
+    f32::from_bits(0xbaad4e5e), // -1.322220778e-3
+    f32::from_bits(0xbac4246a), // -1.496446552e-3
+    f32::from_bits(0xbac02423), // -1.465920708e-3
+    f32::from_bits(0xbaa9e09a), // -1.296061324e-3
+    f32::from_bits(0xba89d0ee), // -1.051453641e-3
+    f32::from_bits(0xba4e41a8), // -7.868059911e-4
+    f32::from_bits(0xba0e0eae), // -5.419057561e-4
+    f32::from_bits(0xb9b26e11), // -3.403281153e-4
+    f32::from_bits(0xb9485f9a), // -1.910910069e-4
+    f32::from_bits(0xb8c14437), // -9.215663158e-5
+    f32::from_bits(0xb81d07f1), // -3.743911293e-5
+];
+
+// $ cargo pmr lowpass --taps 161 --decimate 16 --terminal
+//
+// Optimal Lowpass FIR Weights:
+// =========================================================
+// Filter length: 161
+// decimation: 16x
+// output rate:    0.0625  (target Nyquist 0.0312)
+//
+// All fractions in cycles/sample of the input rate (Nyquist = 0.5).
+// passband:   0.0-0.0156 (guarded through 0.0172)
+// shoulder:   0.0172-0.0312 (lands in unread band)
+// fold:       0.0312-0.0453 (folds into unread band)
+// stopband:   0.0453-0.5 (folds into passband)
+// transition: 0.0281 wide
+// weighting:  terminal (flat down to DC)
+//
+// Design Results
+// =========================================================
+//   weighted error: 0.22646222
+//   flatness: 0.00000000
+//   iterations: 14
+//
+// Gain Testing
+// =========================================================
+//   deep pass band:                            1.00080161     +0.01 dB
+//   pass band:                                 1.00250371     +0.02 dB
+//   new Nyquist:                               0.22646221    -12.90 dB
+//   upper passband fold mirror:                0.00002263    -92.91 dB
+//   deep passband fold mirror:                 0.00002265    -92.90 dB
+//   stop band:                                 0.00002264    -92.90 dB
+//   deep stop band:                            0.00001941    -94.24 dB
+//
+const DOWN_SIXTEEN_TAPS: [f32; 161] = [
+    f32::from_bits(0x362dc5e3), // +2.589419410e-6
+    f32::from_bits(0xb7956429), // -1.780882485e-5
+    f32::from_bits(0xb7c77ab3), // -2.377978490e-5
+    f32::from_bits(0xb81e039a), // -3.767348971e-5
+    f32::from_bits(0xb86e42c1), // -5.680579125e-5
+    f32::from_bits(0xb8aaab15), // -8.138098201e-5
+    f32::from_bits(0xb8ea813e), // -1.118206274e-4
+    f32::from_bits(0xb91b96b5), // -1.483809465e-4
+    f32::from_bits(0xb9485376), // -1.910457795e-4
+    f32::from_bits(0xb97b1612), // -2.394544717e-4
+    f32::from_bits(0xb9998837), // -2.928392205e-4
+    f32::from_bits(0xb9b77c95), // -3.499730083e-4
+    f32::from_bits(0xb9d680d4), // -4.091324518e-4
+    f32::from_bits(0xb9f568b0), // -4.680803977e-4
+    f32::from_bits(0xba0961ef), // -5.240728497e-4
+    f32::from_bits(0xba167160), // -5.738940090e-4
+    f32::from_bits(0xba20efa1), // -6.139223115e-4
+    f32::from_bits(0xba27d520), // -6.402302533e-4
+    f32::from_bits(0xba2a0ea2), // -6.487165811e-4
+    f32::from_bits(0xba26885c), // -6.352716591e-4
+    f32::from_bits(0xba1c3af4), // -5.959712435e-4
+    f32::from_bits(0xba0a3a22), // -5.272944691e-4
+    f32::from_bits(0xb9df88dc), // -4.263584269e-4
+    f32::from_bits(0xb998a707), // -2.911614429e-4
+    f32::from_bits(0xb8fd62a4), // -1.208235335e-4
+    f32::from_bits(0x38b08d88), // +8.418696234e-5
+    f32::from_bits(0x39a8be70), // +3.218534403e-4
+    f32::from_bits(0x3a1a4243), // +5.884507555e-4
+    f32::from_bits(0x3a6646f3), // +8.784375968e-4
+    f32::from_bits(0x3a9b3e4d), // +1.184412860e-3
+    f32::from_bits(0x3ac43bf4), // +1.497148070e-3
+    f32::from_bits(0x3aecad4c), // +1.805701759e-3
+    f32::from_bits(0x3b09784d), // +2.097624587e-3
+    f32::from_bits(0x3b1a9db9), // +2.359254519e-3
+    f32::from_bits(0x3b28d3d8), // +2.576103434e-3
+    f32::from_bits(0x3b3321a0), // +2.733327448e-3
+    f32::from_bits(0x3b389138), // +2.816272900e-3
+    f32::from_bits(0x3b383a2c), // +2.811084501e-3
+    f32::from_bits(0x3b314c54), // +2.705355175e-3
+    f32::from_bits(0x3b231b21), // +2.488799626e-3
+    f32::from_bits(0x3b0d28e2), // +2.153926063e-3
+    f32::from_bits(0x3ade630a), // +1.696677180e-3
+    f32::from_bits(0x3a9268db), // +1.117016538e-3
+    f32::from_bits(0x39dbe6ba), // +4.194283974e-4
+    f32::from_bits(0xb9cabd2e), // -3.866939223e-4
+    f32::from_bits(0xbaa8a9c1), // -1.286797342e-3
+    f32::from_bits(0xbb142e97), // -2.261077752e-3
+    f32::from_bits(0xbb5741e0), // -3.284566104e-3
+    f32::from_bits(0xbb8dcce2), // -4.327402450e-3
+    f32::from_bits(0xbbaf7b91), // -5.355306435e-3
+    f32::from_bits(0xbbcf6de7), // -6.330240052e-3
+    f32::from_bits(0xbbec4c65), // -7.211255375e-3
+    f32::from_bits(0xbc0257d7), // -7.955512963e-3
+    f32::from_bits(0xbc0b9523), // -8.519443683e-3
+    f32::from_bits(0xbc1129a7), // -8.860028349e-3
+    f32::from_bits(0xbc1268f0), // -8.936151862e-3
+    f32::from_bits(0xbc0eb463), // -8.709999733e-3
+    f32::from_bits(0xbc05810d), // -8.148443885e-3
+    f32::from_bits(0xbbecba66), // -7.224368863e-3
+    f32::from_bits(0xbbc1eafb), // -5.917904433e-3
+    f32::from_bits(0xbb8a32ed), // -4.217496607e-3
+    f32::from_bits(0xbb0afcf7), // -2.120790770e-3
+    f32::from_bits(0x39bf37fe), // +3.647207632e-4
+    f32::from_bits(0x3b531cb9), // +3.221316496e-3
+    f32::from_bits(0x3bd266e2), // +6.420955993e-3
+    f32::from_bits(0x3c229e8b), // +9.925494902e-3
+    f32::from_bits(0x3c604056), // +1.368721388e-2
+    f32::from_bits(0x3c909601), // +1.764965244e-2
+    f32::from_bits(0x3cb22a67), // +2.174873464e-2
+    f32::from_bits(0x3cd449f1), // +2.591416426e-2
+    f32::from_bits(0x3cf6578d), // +3.007104434e-2
+    f32::from_bits(0x3d0bd827), // +3.414168581e-2
+    f32::from_bits(0x3d1bd7bf), // +3.804754838e-2
+    f32::from_bits(0x3d2ad969), // +4.171124473e-2
+    f32::from_bits(0x3d388f5b), // +4.505858943e-2
+    f32::from_bits(0x3d44b136), // +4.802056402e-2
+    f32::from_bits(0x3d4efdfd), // +5.053519085e-2
+    f32::from_bits(0x3d573dda), // +5.254922062e-2
+    f32::from_bits(0x3d5d43af), // +5.401962623e-2
+    f32::from_bits(0x3d60ee51), // +5.491477624e-2
+    f32::from_bits(0x3d622977), // +5.521532521e-2
+    f32::from_bits(0x3d60ee51), // +5.491477624e-2
+    f32::from_bits(0x3d5d43af), // +5.401962623e-2
+    f32::from_bits(0x3d573dda), // +5.254922062e-2
+    f32::from_bits(0x3d4efdfd), // +5.053519085e-2
+    f32::from_bits(0x3d44b136), // +4.802056402e-2
+    f32::from_bits(0x3d388f5b), // +4.505858943e-2
+    f32::from_bits(0x3d2ad969), // +4.171124473e-2
+    f32::from_bits(0x3d1bd7bf), // +3.804754838e-2
+    f32::from_bits(0x3d0bd827), // +3.414168581e-2
+    f32::from_bits(0x3cf6578d), // +3.007104434e-2
+    f32::from_bits(0x3cd449f1), // +2.591416426e-2
+    f32::from_bits(0x3cb22a67), // +2.174873464e-2
+    f32::from_bits(0x3c909601), // +1.764965244e-2
+    f32::from_bits(0x3c604056), // +1.368721388e-2
+    f32::from_bits(0x3c229e8b), // +9.925494902e-3
+    f32::from_bits(0x3bd266e2), // +6.420955993e-3
+    f32::from_bits(0x3b531cb9), // +3.221316496e-3
+    f32::from_bits(0x39bf37fe), // +3.647207632e-4
+    f32::from_bits(0xbb0afcf7), // -2.120790770e-3
+    f32::from_bits(0xbb8a32ed), // -4.217496607e-3
+    f32::from_bits(0xbbc1eafb), // -5.917904433e-3
+    f32::from_bits(0xbbecba66), // -7.224368863e-3
+    f32::from_bits(0xbc05810d), // -8.148443885e-3
+    f32::from_bits(0xbc0eb463), // -8.709999733e-3
+    f32::from_bits(0xbc1268f0), // -8.936151862e-3
+    f32::from_bits(0xbc1129a7), // -8.860028349e-3
+    f32::from_bits(0xbc0b9523), // -8.519443683e-3
+    f32::from_bits(0xbc0257d7), // -7.955512963e-3
+    f32::from_bits(0xbbec4c65), // -7.211255375e-3
+    f32::from_bits(0xbbcf6de7), // -6.330240052e-3
+    f32::from_bits(0xbbaf7b91), // -5.355306435e-3
+    f32::from_bits(0xbb8dcce2), // -4.327402450e-3
+    f32::from_bits(0xbb5741e0), // -3.284566104e-3
+    f32::from_bits(0xbb142e97), // -2.261077752e-3
+    f32::from_bits(0xbaa8a9c1), // -1.286797342e-3
+    f32::from_bits(0xb9cabd2e), // -3.866939223e-4
+    f32::from_bits(0x39dbe6ba), // +4.194283974e-4
+    f32::from_bits(0x3a9268db), // +1.117016538e-3
+    f32::from_bits(0x3ade630a), // +1.696677180e-3
+    f32::from_bits(0x3b0d28e2), // +2.153926063e-3
+    f32::from_bits(0x3b231b21), // +2.488799626e-3
+    f32::from_bits(0x3b314c54), // +2.705355175e-3
+    f32::from_bits(0x3b383a2c), // +2.811084501e-3
+    f32::from_bits(0x3b389138), // +2.816272900e-3
+    f32::from_bits(0x3b3321a0), // +2.733327448e-3
+    f32::from_bits(0x3b28d3d8), // +2.576103434e-3
+    f32::from_bits(0x3b1a9db9), // +2.359254519e-3
+    f32::from_bits(0x3b09784d), // +2.097624587e-3
+    f32::from_bits(0x3aecad4c), // +1.805701759e-3
+    f32::from_bits(0x3ac43bf4), // +1.497148070e-3
+    f32::from_bits(0x3a9b3e4d), // +1.184412860e-3
+    f32::from_bits(0x3a6646f3), // +8.784375968e-4
+    f32::from_bits(0x3a1a4243), // +5.884507555e-4
+    f32::from_bits(0x39a8be70), // +3.218534403e-4
+    f32::from_bits(0x38b08d88), // +8.418696234e-5
+    f32::from_bits(0xb8fd62a4), // -1.208235335e-4
+    f32::from_bits(0xb998a707), // -2.911614429e-4
+    f32::from_bits(0xb9df88dc), // -4.263584269e-4
+    f32::from_bits(0xba0a3a22), // -5.272944691e-4
+    f32::from_bits(0xba1c3af4), // -5.959712435e-4
+    f32::from_bits(0xba26885c), // -6.352716591e-4
+    f32::from_bits(0xba2a0ea2), // -6.487165811e-4
+    f32::from_bits(0xba27d520), // -6.402302533e-4
+    f32::from_bits(0xba20efa1), // -6.139223115e-4
+    f32::from_bits(0xba167160), // -5.738940090e-4
+    f32::from_bits(0xba0961ef), // -5.240728497e-4
+    f32::from_bits(0xb9f568b0), // -4.680803977e-4
+    f32::from_bits(0xb9d680d4), // -4.091324518e-4
+    f32::from_bits(0xb9b77c95), // -3.499730083e-4
+    f32::from_bits(0xb9998837), // -2.928392205e-4
+    f32::from_bits(0xb97b1612), // -2.394544717e-4
+    f32::from_bits(0xb9485376), // -1.910457795e-4
+    f32::from_bits(0xb91b96b5), // -1.483809465e-4
+    f32::from_bits(0xb8ea813e), // -1.118206274e-4
+    f32::from_bits(0xb8aaab15), // -8.138098201e-5
+    f32::from_bits(0xb86e42c1), // -5.680579125e-5
+    f32::from_bits(0xb81e039a), // -3.767348971e-5
+    f32::from_bits(0xb7c77ab3), // -2.377978490e-5
+    f32::from_bits(0xb7956429), // -1.780882485e-5
+    f32::from_bits(0x362dc5e3), // +2.589419410e-6
 ];
