@@ -21,40 +21,40 @@
                             "name": "first_window_center",
                             "type": {
                                 "kind": "array",
-                                "elementCount": 3,
+                                "elementCount": 4,
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
                                 "uniformStride": 4
                             },
-                            "binding": {"kind": "uniform", "offset": 8, "size": 12, "elementStride": 4}
+                            "binding": {"kind": "uniform", "offset": 8, "size": 16, "elementStride": 4}
                         },
                         {
                             "name": "first_output_slot",
                             "type": {
                                 "kind": "array",
-                                "elementCount": 3,
+                                "elementCount": 4,
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
                                 "uniformStride": 4
                             },
-                            "binding": {"kind": "uniform", "offset": 20, "size": 12, "elementStride": 4}
+                            "binding": {"kind": "uniform", "offset": 24, "size": 16, "elementStride": 4}
                         },
                         {
                             "name": "output_count",
                             "type": {
                                 "kind": "array",
-                                "elementCount": 3,
+                                "elementCount": 4,
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
                                 "uniformStride": 4
                             },
-                            "binding": {"kind": "uniform", "offset": 32, "size": 12, "elementStride": 4}
+                            "binding": {"kind": "uniform", "offset": 40, "size": 16, "elementStride": 4}
                         }
                     ]
                 },
@@ -78,44 +78,44 @@
                                 "name": "first_window_center",
                                 "type": {
                                     "kind": "array",
-                                    "elementCount": 3,
+                                    "elementCount": 4,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "uint32"
                                     },
                                     "uniformStride": 4
                                 },
-                                "binding": {"kind": "uniform", "offset": 8, "size": 12, "elementStride": 4}
+                                "binding": {"kind": "uniform", "offset": 8, "size": 16, "elementStride": 4}
                             },
                             {
                                 "name": "first_output_slot",
                                 "type": {
                                     "kind": "array",
-                                    "elementCount": 3,
+                                    "elementCount": 4,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "uint32"
                                     },
                                     "uniformStride": 4
                                 },
-                                "binding": {"kind": "uniform", "offset": 20, "size": 12, "elementStride": 4}
+                                "binding": {"kind": "uniform", "offset": 24, "size": 16, "elementStride": 4}
                             },
                             {
                                 "name": "output_count",
                                 "type": {
                                     "kind": "array",
-                                    "elementCount": 3,
+                                    "elementCount": 4,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "uint32"
                                     },
                                     "uniformStride": 4
                                 },
-                                "binding": {"kind": "uniform", "offset": 32, "size": 12, "elementStride": 4}
+                                "binding": {"kind": "uniform", "offset": 40, "size": 16, "elementStride": 4}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 44, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 56, "elementStride": 0}
                 }
             }
         }
