@@ -84,11 +84,39 @@
 // any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
 // NEXT Run time of the bin generation test (not reflective of actual sample rates and Q) is about
 // 50ms on a Zen2+ part.  This affects CWT startup time.
+// NEXT We must do a very fine frequency sweep on a resulting filter bank sampling edge to really
+// have an idea of the correctness of the gain peak location.  If there is a bias, it probably is
+// consistent, but if the design bias doesn't remain consistent across the resampling edges, we will
+// start to see bands in the results.
+// NOTE Unit L2 per bin.  Steady tones brighten toward the bottom of the display by 1/√f.  Unit L2
+// at the decimated rate results in physical gain lower than full rate by exactly √2 per halving.
+// NOTE Zero phase. Conjugate-symmetric taps give a real, even frequency response and no group delay,
+// Reassignment's time offset is therefore measured from tap center with no correction term.
 
 // 🤖 Heavy generation.  Should be pretty standard academic stuff, so not expecting a lot of
 // surprises.  We will, for the most part, swiftly and knowingly eat shit if the wavelet is busted.
-// Well-formalized work doesn't have a lot of wiggle room to violate the consistency of the
+// Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
 // formalism.
+//
+// === RESPONSE (Q = 3, eps = 1e-8, target rel width 0.33334) ===
+//
+// fc    1000 sr   8000  taps    79  w0 0.785398
+//   peak at 0.785398  offset -9.932e-9 rel
+//   rel width 0.33256  want 0.33334  ratio 0.9977
+//   negative-freq max  -153.88 dB
+//   stopband floor     -118.01 dB
+//
+// fc     250 sr   8000  taps   311  w0 0.196350
+//   peak at 0.196350  offset -5.128e-9 rel
+//   rel width 0.33256  want 0.33334  ratio 0.9977
+//   negative-freq max  -154.55 dB
+//   stopband floor     -118.49 dB
+//
+// fc   12000 sr  48000  taps    41  w0 1.570796
+//   peak at 1.570796  offset -3.471e-9 rel
+//   rel width 0.33256  want 0.33334  ratio 0.9977
+//   negative-freq max  -118.52 dB
+//   stopband floor     -118.02 dB
 
 /// A center frequency resolved against a plan and a sample rate.
 #[derive(Clone, Copy)]
@@ -151,6 +179,27 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Builds the shape shared by every voice at this `q`.
+    ///
+    /// `q` is the quality factor on the -3 dB energy width. Higher `q` narrows
+    /// the band and costs proportionally more taps at a given center frequency.
+    ///
+    /// `gamma` sets the exponent of the spectral envelope. It trades time
+    /// symmetry against frequency skew; 3.0 is the usual choice and the only one
+    /// with a closed-form peak here. Below 3 the time envelope skews, above 3 the
+    /// spectrum grows heavier flanks.
+    ///
+    /// `eps` is the spectral truncation floor relative to the peak. It sets how
+    /// far the baked grid extends, and through that the tap count, but not the
+    /// shape. 1e-8 lands near the f32 noise floor of the output taps.
+    ///
+    /// `tail_a` scales the algebraic-tail branch of the half-width estimate,
+    /// which dominates the Gaussian core at low `q`. Raise it to buy more tail at
+    /// the cost of taps; 1.0 is the calibrated value and the one every response
+    /// measurement in this module was taken with.
+    ///
+    /// Lower center frequencies mean longer bins, so the lowest bin you intend to
+    /// bake sets necessary scratch size.
     pub fn new(q: f64, gamma: f64, eps: f64, tail_a: f64) -> Self {
         let shape = Shape::from_q(q, gamma);
         let peak = shape.peak();
@@ -234,8 +283,14 @@ impl Plan {
         self.transform(bin, buf);
         Self::center_l2(buf);
 
-        // NOTE this fiddly code was generated while scanning for low-hanging sources of error.  The
         let n = bin.len;
+        // NOTE this fiddly code was generated while scanning for low-hanging sources of floating
+        // point error.  Exploiting symmetry is just too good to pass up.  Here's what was said:
+        //
+        // Noise-shaping the real part's f32 rounding error forward along i, weighting the
+        // center tap once and the mirrored pairs twice, so the residual DC after quantization is
+        // minimized rather than accumulating as a random walk. The imaginary part is left alone
+        // because DC removal only touched the real part.
         let half = n / 2;
         let mut err = 0.0f64;
         for i in half..n {
@@ -476,75 +531,60 @@ mod test {
         (re * re + im * im).sqrt()
     }
 
-    #[test]
-    fn print_tap_energy() {
-        for eps in [1e-4f64, 1e-6, 1e-8] {
-            let plan = plan(3.0, eps);
-            for (fc, sr) in [(1000.0f64, 8000.0f64), (500.0, 8000.0), (250.0, 8000.0)] {
-                let bin = plan.bin(fc, sr);
-                let t = taps(&plan, bin);
-
-                // Edge magnitude relative to center: what the truncation actually costs.
-                println!(
-                    "eps {:.0e}  fc {:>6.0}  omega0 {:.4}  m {:>4}  taps {:>4}  edge/peak {:.3e}",
-                    eps,
-                    fc,
-                    bin.velocity(),
-                    plan.psi.len(),
-                    bin.len(),
-                    mag(t[0]) / mag(t[bin.len() / 2])
-                );
-            }
+    /// |H(w)| of centered taps, w in rad/sample.
+    fn dtft(taps: &[(f32, f32)], w: f64) -> f64 {
+        let half = (taps.len() / 2) as isize;
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (j, &(r, i)) in taps.iter().enumerate() {
+            let (s, c) = (w * (j as isize - half) as f64).sin_cos();
+            let (r, i) = (r as f64, i as f64);
+            re += r * c + i * s;
+            im += -r * s + i * c;
         }
+        (re * re + im * im).sqrt()
     }
 
-    #[test]
-    fn print_taps() {
-        let plan = plan(3.0, 1e-8);
-        let bin = plan.bin(1000.0, 8000.0);
-        let t = taps(&plan, bin);
-        let n = bin.len();
-
-        let max = t.iter().copied().map(mag).fold(0.0f64, f64::max);
-
-        println!(
-            "\n=== TAPS ({} complex, omega0 {:.4}) ===",
-            n,
-            bin.velocity()
-        );
-        println!(
-            "{:>4} {:>10} {:>10} {:>10}  real",
-            "n", "real", "imag", "|w|"
-        );
-        for (j, &(re, im)) in t.iter().enumerate() {
-            let col = ((re as f64 / max) * 20.0).round() as isize;
-            let bar = if col >= 0 {
-                format!("{}{}", " ".repeat(20), "#".repeat(col as usize))
+    /// Bisect for |H| = target on [a, b], target bracketed.
+    fn crossing(taps: &[(f32, f32)], mut a: f64, mut b: f64, target: f64) -> f64 {
+        let above = dtft(taps, a) > target;
+        for _ in 0..60 {
+            let m = 0.5 * (a + b);
+            if (dtft(taps, m) > target) == above {
+                a = m;
             } else {
-                format!(
-                    "{}{}",
-                    " ".repeat((20 + col) as usize),
-                    "#".repeat((-col) as usize)
-                )
-            };
+                b = m;
+            }
+        }
+        0.5 * (a + b)
+    }
+
+    /// Signed bar, zero at column `cols`.
+    fn bar(v: f64, max: f64, cols: usize) -> String {
+        let col = ((v / max) * cols as f64).round() as isize;
+        let (pad, fill) = if col >= 0 {
+            (cols, col as usize)
+        } else {
+            ((cols as isize + col) as usize, (-col) as usize)
+        };
+        format!("{}{}", " ".repeat(pad), "#".repeat(fill))
+    }
+
+    /// Real part of `taps`, centered, scaled to the largest magnitude present.
+    fn print_wave(label: &str, taps: &[(f32, f32)], cols: usize) {
+        let n = taps.len();
+        let max = taps
+            .iter()
+            .map(|&(r, _)| (r as f64).abs())
+            .fold(0.0, f64::max);
+        println!("\n=== {label} ({n} taps) ===");
+        for (j, &(re, _)) in taps.iter().enumerate() {
             println!(
-                "{:>4} {:>10.5} {:>10.5} {:>10.5}  {}",
+                "{:>6} {:>12.7} {}",
                 j as isize - (n / 2) as isize,
                 re,
-                im,
-                mag((re, im)),
-                bar
+                bar(re as f64, max, cols)
             );
         }
-
-        let e: f64 = t
-            .iter()
-            .map(|&(r, i)| (r as f64).powi(2) + (i as f64).powi(2))
-            .sum();
-        let (sr, si) = t.iter().fold((0.0f64, 0.0f64), |a, s| {
-            (a.0 + s.0 as f64, a.1 + s.1 as f64)
-        });
-        println!("energy {:.7}  sum ({:.3e}, {:.3e})", e, sr, si);
     }
 
     #[test]
@@ -554,7 +594,7 @@ mod test {
             let plan = Plan::new(2.4, gamma, 1e-8, 1.0);
             let bin = plan.bin(1000.0, 8000.0);
             let t = taps(&plan, bin);
-            let n = bin.len();
+            let n = bin.taps();
 
             let mags: Vec<f64> = t.iter().copied().map(mag).collect();
             let max = mags.iter().fold(0.0f64, |a, &b| a.max(b));
@@ -579,6 +619,7 @@ mod test {
                     "#".repeat((v / max * 40.0).round() as usize)
                 );
             }
+            assert!((m / e).abs() < 1e-3, "gamma {gamma} centroid {:+.4}", m / e);
         }
     }
 
@@ -613,40 +654,53 @@ mod test {
         let pk = (1..plan.spec.len())
             .max_by(|&a, &b| plan.spec[a][0].total_cmp(&plan.spec[b][0]))
             .unwrap();
-        println!("peak at u = {:.4}, wanted 1.0", pk as f64 * plan.du);
-    }
+        let upk = pk as f64 * plan.du;
+        println!("peak at u = {:.4}, wanted 1.0", upk);
 
-    #[test]
-    fn print_reassignment() {
-        let plan = plan(3.0, 1e-6).with_reassignment();
-        let bin = plan.bin(1000.0, 8000.0);
-        let mut s = plan.scratch(bin);
-        let n = bin.len();
-        let (mut psi, mut d, mut t) = (
-            vec![(0.0, 0.0); n],
-            vec![(0.0, 0.0); n],
-            vec![(0.0, 0.0); n],
+        // The grid is sampled, so the argmax can only land within half a step of 1.0.
+        assert!(
+            (upk - 1.0).abs() <= plan.du,
+            "peak u {upk:.6} du {:.6}",
+            plan.du
         );
-        plan.taps_into(bin, &mut s, &mut psi, &mut d, &mut t);
 
-        println!("\n=== REASSIGNMENT ({} taps) ===", n);
-        println!("{:>4} {:>12} {:>12} {:>12}", "n", "|psi|", "|d|", "|t|");
-        for j in 0..n {
-            println!(
-                "{:>4} {:>12.6} {:>12.6} {:>12.6}",
-                j as isize - (n / 2) as isize,
-                mag(psi[j]),
-                mag(d[j]),
-                mag(t[j])
-            );
+        // d = w*psi exactly
+        for j in 1..plan.spec.len() {
+            let [p, d, _] = plan.spec[j];
+            let w = plan.peak * j as f64 * plan.du;
+            assert!((d - p * w).abs() <= 1e-12 * (p * w).abs(), "d at {j}");
         }
+
+        // t = dpsi/dw, checked by central difference.  This catches sign and
+        // factor errors, not small ones.
+        let dw = plan.peak * plan.du;
+        let pmax = plan.spec.iter().map(|s| s[0]).fold(0.0f64, f64::max);
+        let tmax = plan.spec.iter().map(|s| s[2].abs()).fold(0.0f64, f64::max);
+
+        let mut checked = 0;
+        for j in 1..plan.spec.len() - 1 {
+            let t = plan.spec[j][2];
+            if plan.spec[j][0] < 0.5 * pmax {
+                continue;
+            }
+            let fd = (plan.spec[j + 1][0] - plan.spec[j - 1][0]) / (2.0 * dw);
+            assert!(
+                (t - fd).abs() < 0.10 * tmax,
+                "t at {j}: analytic {t:.6e} finite-diff {fd:.6e}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 3, "only {checked} points above half-peak");
     }
 
-    /// Bakes the full bank at production scale. Ignored by default; run with
+    /// Bakes the full bank at production-ish scale.
     ///
     /// ```text
     /// cargo test --release wavelet::test::bake_bank -- --ignored --nocapture
     /// ```
+    // NEXT this should be a benchmark, but we don't have any set up.  Most of our GPU driven world
+    // will not care about the host code.  But faster, less UI delay, and lower power is always
+    // better.
     #[test]
     #[ignore]
     fn bake_bank() {
@@ -666,7 +720,7 @@ mod test {
         // bins are ascending, so the first voice is the longest.
         let mut scratch = plan.scratch(voices[0]);
 
-        let total: usize = voices.iter().map(|b| b.len()).sum();
+        let total: usize = voices.iter().map(|b| b.taps()).sum();
         let mut taps = vec![(0.0f32, 0.0f32); total];
         let mut offsets = Vec::with_capacity(voices.len());
 
@@ -674,7 +728,7 @@ mod test {
 
         let start = std::time::Instant::now();
         for &bin in &voices {
-            let n = bin.len();
+            let n = bin.taps();
             offsets.push(cursor);
             plan.taps_into(bin, &mut scratch, &mut taps[cursor..cursor + n]);
             cursor += n;
@@ -684,42 +738,31 @@ mod test {
             .iter()
             .map(|&(r, i)| (r as f64) * (r as f64) + (i as f64) * (i as f64))
             .sum();
-        let elapsed = start.elapsed();
-
-        let n = voices[0].len();
-        let lo = &taps[..n];
-        let max = lo
-            .iter()
-            .map(|&(r, _)| (r as f64).abs())
-            .fold(0.0, f64::max);
-
-        println!(
-            "\n=== LOWEST BIN ({:.0}Hz, {} taps, omega0 {:.5}) ===",
-            bins[0].center,
-            n,
-            voices[0].velocity()
+        assert!(
+            (e / voices.len() as f64 - 1.0).abs() < 1e-4,
+            "mean energy {:.6}",
+            e / voices.len() as f64
         );
-        for (j, &(re, _)) in lo.iter().enumerate() {
-            let col = ((re as f64 / max) * 30.0).round() as isize;
-            let bar = if col >= 0 {
-                format!("{}{}", " ".repeat(30), "#".repeat(col as usize))
-            } else {
-                format!(
-                    "{}{}",
-                    " ".repeat((30 + col) as usize),
-                    "#".repeat((-col) as usize)
-                )
-            };
-            println!("{:>6} {:>12.7} {}", j as isize - (n / 2) as isize, re, bar);
-        }
+
+        let elapsed = start.elapsed();
+        let n = voices[0].taps();
+        print_wave(
+            &format!(
+                "LOWEST BIN ({:.0}Hz, omega0 {:.5})",
+                bins[0].center,
+                voices[0].velocity()
+            ),
+            &taps[..n],
+            30,
+        );
 
         println!(
             "voices {} of {}  taps {}  longest {}  shortest {}  mean energy {:.6}",
             voices.len(),
             BINS,
             total,
-            voices[0].len(),
-            voices[voices.len() - 1].len(),
+            voices[0].taps(),
+            voices[voices.len() - 1].taps(),
             e / voices.len() as f64,
         );
 
