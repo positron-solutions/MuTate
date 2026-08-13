@@ -8,36 +8,39 @@
 // host-aligned for their target type and add directly to a device address.
 // NOTE 🤖 Human designed and then re-generated.  The scheme takes advantage of
 // a lot of symmetry.  The lane-filter geometry was intentionally designed to
-// basically let most cards complete the downsample in a few cycles without any
-// tails.  Lanes have approximately level work per output sample.  The log index
-// coincidences were found by the LLM and left to be exploited.  Will clean up
-// the comments later.
+// basically let most devices complete the downsample in a few cycles without
+// any tails.  Lanes have approximately level work per output sample.  The log
+// index coincidences were found by the LLM and left to be exploited.  Will
+// clean up the comments later.
 
 // Symmetric FIR, folded: a filter of L taps costs (L+1)/2 multiply-adds.  Tap
 // counts are chosen so that cost, divided across the lanes cooperating on one
 // output, is the same at every level:
 //
-//   level  decimation  taps  folds  lanes/output  folds/lane  outputs/warp
-//   ────────────────────────────────────────────────────────────────────────
-//     0        2x       25     13        1            13           32
-//     1        4x       49     25        2            13           16
-//     2        8x       97     49        4            13            8
+// level  decimation  taps  pairs  lanes/output  pairs/lane  outputs/warp
+// -----  ----------  ----  -----  ------------  ----------  ------------
+//   0        2x       21     10        1            10           32
+//   1        4x       41     20        2            10           16
+//   2        8x       81     40        4            10            8
+//   3       16x      161     80        8            10            4
 //
-// Every lane in the dispatch runs the same 13-iteration loop.  Twelve of those
-// iterations are unconditionally a folded tap pair; only the thirteenth is
-// partial, and it belongs to the lane holding the unpaired center tap.
+// Every lane in the dispatch runs the same 10-iteration loop, then cooperating
+// lanes reduce to a single lane, which folds in the center tap.
 //
 // A workgroup is WARPS * LANES = 256 threads and emits 256 / lanes_per_output
-// outputs -- 256, 128, or 64 -- which is exactly the yield of 512 input samples
-// at that level.  So workgroup g covers input span [g*512, (g+1)*512) at every
-// level, and one rectangular grid serves all three.
+// outputs -- 256, 128, 64, or 32 -- which is exactly the yield of 512 input
+// samples at that level.  So workgroup g covers input span [g*512, (g+1)*512)
+// at every level, and one rectangular grid serves all four.
+//
+// NOTE The 16x downsample workgroup has so few outputs that it is instead
+// beginning to use masking heavily.  Fine at this scale, but a bit sloppy
 
 static const uint LANES = 32;
 static const uint WARPS = 8;
-static const uint LEVELS = 3;
+static const uint LEVELS = 4;
 
-/// Folded multiply-adds per lane.  Uniform across levels by construction.
-static const uint FOLDS_PER_LANE = 13;
+/// Folded multiply-adds per lane, excluding the center tap.
+static const uint PAIRS_PER_LANE = 10;
 
 struct Config {
     uint64_t input_base;
@@ -71,14 +74,14 @@ struct LevelConfig {
     uint weights_offset;
 
     /// Half-width of the filter support, in input samples.  Also the index of
-    /// the center weight, and the fold count minus one.  12 / 24 / 48.
+    /// the center weight, and the fold count minus one.  10 / 20 / 40 / 80.
     uint radius;
 
-    /// Input samples between consecutive outputs: 2 / 4 / 8.  A stride in the
-    /// sample domain.
+    /// Input samples between consecutive outputs: 2 / 4 / 8 / 16.  A stride in
+    /// the sample domain.
     uint decimation_log2;
 
-    /// Lanes cooperating on one output: 1 / 2 / 4.  A fanout in the lane
+    /// Lanes cooperating on one output: 1 / 2 / 4 / 8.  A fanout in the lane
     /// domain.  Equal to decimation/2 today, but they are different kinds of
     /// quantity and the shader keeps them apart.
     uint lanes_per_output_log2;
@@ -149,21 +152,21 @@ void main(uint3 group_id : SV_GroupID, uint3 thread_id : SV_GroupThreadID) {
     // wrap composed with a power-of-two mask is the ring wrap.
     let window_center = pc.first_window_center[level] + output_index * decimation;
 
-    // Twelve unconditional folded pairs.  Each lane walks its own arithmetic
+    // Ten unconditional folded pairs.  Each lane walks its own arithmetic
     // progression of tap indexes, striding by the fanout so the outermost (and
     // smallest) weights land in every accumulator first.
     float sum = 0.0f;
     [ForceUnroll]
-    for (uint fold = 0; fold < FOLDS_PER_LANE - 1; ++fold) {
+    for (uint fold = 0; fold < PAIRS_PER_LANE; ++fold) {
         let tap = tap_slice + fold * lanes_per_output;
         let lower = (window_center - radius + tap) & input_view.mask;
         let upper = (window_center + radius - tap) & input_view.mask;
         sum = mad(weights[tap], input_ring[lower] + input_ring[upper], sum);
     }
 
-    // The unpaired center tap.  `radius` is 12 / 24 / 48, all divisible by the
-    // fanout, so it always falls to slice zero -- the same lane the reduction
-    // below converges on, and the same lane that stores.
+    // The unpaired center tap.  `radius` is 10 / 20 / 40 / 80, all divisible by
+    // the fanout, so it always falls to slice zero -- the same lane the
+    // reduction below converges on, and the same lane that stores.
     if (tap_slice == 0) {
         sum = mad(weights[radius], input_ring[window_center & input_view.mask], sum);
     }

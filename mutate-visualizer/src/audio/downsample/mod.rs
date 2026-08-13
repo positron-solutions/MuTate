@@ -10,60 +10,83 @@
 //! > - Frederick Allan Moranis
 //!
 //! Long filter windows cost a lot.  Downsampling reduces the cost.  We FIR low-pass and decimate to
-//! save on cost.  Savings taper off (fewer bins affected and less absolute input length reduction)
-//! while delay goes up for extreme downsampling, so we eat the cost in the lowest octaves.  High
-//! pitch samples are incidentally attenuated with a safety margin that makes the output signal
+//! save on cost.  Savings taper off (fewer bins affected and less absolute input rate reduction)
+//! while delay goes up for extreme downsampling, so we eat the rate cost in the lowest octaves.
+//! High pitch samples are incidentally attenuated with a safety margin that makes the output signal
 //! cleaner than it was if the same bins are filtering the full-rate input.
 //!
-//! - 8x downsampling for use below 1/32 Nyquist input
-//! - 4x downsampling for use below 1/16 Nyquist input
-//! - 2x downsampling for use below 1/8 Nyquist input
+//! - 2x downsampling for use below 1/4 Nyquist input
+//! - 4x downsampling for use below 1/8 Nyquist input
+//! - 8x downsampling for use below 1/16 Nyquist input
+//! - 16x downsampling for use below 1/32 Nyquist input down to DC
 //!
-//! Biggest savings for the longest bins basically achieved.
+//! Biggest savings for the longest bins basically achieved already, so no 32x downsampling is
+//! planned, although the GPU will happily crunch it in dozens of cycles at most.
 //!
-//! This is a fairly naive implementation, using several lanes per frame, just to get going. Feel
-//! free to look for other techniques, but the main on-device constraint for FIR downsampling seems
-//! to be that serial dependencies across warps are absolutely terrible, so going directly from
-//! signal to output is almost always going to win.
+//! ## The Slang
+//!
+//! The shader is built around single-stage, direct FIR from full rate to target rate for every
+//! downsampling level.  While the filters are long, the data sharing is minimal and we use several
+//! lanes per frame, more lanes for longer filters to level the load across warps.  At usually 1k
+//! lanes, the chip barely wakes up before the filtering is done.
+//!
+//! Feel free to look for other techniques, but the main on-device constraint for FIR downsampling
+//! seems to be that serial dependencies across warps are absolutely terrible, so going directly
+//! from signal to output is almost always going to win.  The device has enough lanes that a single
+//! audio server tick will struggle to make use of the full width.
 //!
 //! ## The Weights
 //!
-//! There is a trick of the down-sample folding used to achieve a really big transition band.  We
-//! guarantee attenuation of noise from folding rather than no folded noise at all.  Input at the
-//! new sample rate Nyquist, reach about 0.35 on a peak detector post filter, or about -9dB, leaving
-//! a net of about -3dB for folded noise.  We don't use the area right at the new Nyquist, so this
-//! is fine?  In theory, but maybe not practice.  We will defer to the opinions of long-time DSP
-//! professionals through an open source development process.
-//!
-//! ⚠️ As a result of this design feature, bins should be very careful to **not let their main lobe
-//! get into the transition band.** The transition band will be corrupted.  Use a higher sample rate
-//! and the transition will be nowhere near where you are analyzing 😼.
-//!
-//! Pre-decimation FIR low-pass that crushes everything above 1/2 input Nyquist, using a wide 1/4 to
+//! Pre-decimation FIR low-pass that crushes everything above 3/4 input Nyquist, using a wide 1/4 to
 //! 3/4 Nyquist as the transition band.  Parks McClellan Remez weight generation.  With the wide
 //! transition, we get:
 //!
 //! - Low ripple in the pass so signal we want is unchanged.
-//! - Post-fold transition noise is at last -6dB dampened, so it will net attenuate post-fold and be
+//! - Post-fold transition noise is at least -6dB dampened, so it will net attenuate post-fold and be
 //!   easier to filter from the pass band.
 //! - Some extra stop band cushion so that bins at the top of the new pass band won't see folded
 //!   transition.
 //! - Some extra pass band cushion so that bins at the top of the pass can perform reassignment of
 //!   their full main lobe.
-//! - About 80dB stop band attenuation so our bins in the pass aren't seeing the folded noise.
-//! - Odd weights fitted to make decent use of warps.
+//! - About -90dB stop band attenuation so our bins in the pass aren't seeing the folded signals.
+//! - Odd numbers of taps, fitted to neatly level the load across warps.
 //!
-//! We can obtain sufficient transition attenuation with a lower number of taps.  This trades delay,
-//! which would become significant at higher downsampling rates.
+//! There is a **trick** of the down-sample folding used to achieve a really big transition band.
+//! We guarantee *attenuation* of folded regions rather than setting the stop band to the new
+//! Nyquist.  The ripple continues beyond the new Nyquist, all the way up to the folding mirror of
+//! the pass band edge.
+//!
+//! We can obtain sufficient transition attenuation with a lower number of taps.  This would buy us
+//! some delay reduction at the cost of more ripple, likely in the pass band, or less noise floor
+//! margin.
+//!
+//! ### Filter Sharp Edges
+//!
+//! Input at the new sample rate Nyquist is not *amplified* from the source signal or noise, but
+//! it would be evident within the usable *dynamic ranges* of the pass band (not the pitch ranges).
+//! We don't use the area right at the new Nyquist, so this is fine?  In theory, but maybe not
+//! practice.  We will defer to the opinions of long-time DSP professionals through an open source
+//! development process.
+//!
+//! ⚠️ As a result of the transition admitting some folding, especially near the new Nyquist, bins
+//! should be very careful to **not let their main lobe get into the transition band.** Beyond the
+//! transition band guard, folded signals and noise begin ramping all the way to the new Nyquist.
+//! Use a higher sample rate and the transition will be nowhere near where you are analyzing 😼.
+//!
+//! ⚠️ Filter bank design should be aware that the transition contains extreme grooves and undefined
+//! attenuation that may scallop main lobes or obliterate side lobes.  This may lead to grooves in
+//! the overall response if not calibrated.  Again, use a higher sample rate if there's a problem!
 //!
 //! ## Delay
 //!
-//! A uniform group delay per octave was chosen just to be tidy.  This kind of nicety on the output
-//! may have usage for others.  The filters use 25/49/97 taps for a delay of 6 between each "stage"
-//! (they are direct, not cascaded).
+//! A uniform group delay per octave was chosen just to be tidy.  21/41/81/161 taps give 5 output
+//! samples of relative delay at each successive level.
 
 // DEBT I keep writing const generics for the channels.  At some point let's reverse this to runtime
 // configuration.
+// NEXT There is a group delay introduced by INPUT_QUANTUM that needs to be either carried forward
+// or removed by making each filter's quantum independent.  Implementation will likely involve
+// passing LEVELS indexes via push constants.  Related, the shader
 
 mod weights;
 
@@ -127,13 +150,26 @@ pub struct DownsampleDispatch<const CHANNELS: usize = 2> {
     pub consumed: u32,
 }
 
-pub const LEVELS: usize = 3;
+pub const LEVELS: usize = 4;
 
-/// Folded weight counts: `radius + 1` for 25/49/97 taps.
-const RADIUS: [u32; LEVELS] = [12, 24, 48];
-const _: () = assert!(weights::DOWN_TWO.len() as u32 == RADIUS[0] * 2 + 1);
-const _: () = assert!(weights::DOWN_FOUR.len() as u32 == RADIUS[1] * 2 + 1);
-const _: () = assert!(weights::DOWN_EIGHT.len() as u32 == RADIUS[2] * 2 + 1);
+/// Folded weight counts: `radius + 1` for 21/41/81/161 taps.
+const RADIUS: [u32; LEVELS] = [
+    weights::DOWN_TWO.radius(),
+    weights::DOWN_FOUR.radius(),
+    weights::DOWN_EIGHT.radius(),
+    weights::DOWN_SIXTEEN.radius(),
+];
+
+/// Must match `PAIRS_PER_LANE` in audio/downsample.slang.
+const PAIRS_PER_LANE: u32 = 10;
+
+const _: () = {
+    let mut level = 0;
+    while level < LEVELS {
+        assert!(RADIUS[level] == PAIRS_PER_LANE << level);
+        level += 1;
+    }
+};
 
 /// Header of the static base.
 #[repr(C)]
@@ -171,29 +207,32 @@ struct LevelConfig {
     lanes_per_output_log2: u32,
 }
 
+// XXX first_window_center is identical.  We can use this to perhaps let each level decouple from
+// the input quantum at the cost of a bit more state shadowing on the host.  Probably worth it to
+// get rid of the group delay.
 #[compute_pipeline(
     compute = stage!("audio/downsample", Compute, c"main"),
     push = push!(PushConstants {
         /// Coerces to `Config` in slang.  Static data offsets use this base.
         static_base: DeviceAddress,
         /// Physical index of the center sample where the first downsample filter will be applied.
-        first_window_center: [UInt; 3],
+        first_window_center: [UInt; 4],
         /// Physical index of the first output slot
-        first_output_slot: [UInt; 3],
+        first_output_slot: [UInt; 4],
         /// How many outputs write,
-        output_count: [UInt; 3],
+        output_count: [UInt; 4],
     }),
 )]
 pub struct Pipeline;
 
 /// LCM of the decimation factors.  The scheduling quantum, in input samples.
-const INPUT_QUANTUM: u64 = 1 << LEVELS; // 8
+const INPUT_QUANTUM: u64 = 1 << LEVELS; // 16
 /// Level-0 outputs per quantum.  `count[0]` is always a multiple of this.
-const OUTPUT_QUANTUM: u64 = INPUT_QUANTUM / 2; // 4
-/// Deepest lookahead demanded by any level.  Level 2 binds.
-const MAX_RADIUS: u64 = RADIUS[LEVELS - 1] as u64; // 48
+const OUTPUT_QUANTUM: u64 = INPUT_QUANTUM / 2; // 8
+/// Deepest lookahead demanded by any level.  Level 3 binds at 80 input samples.
+const MAX_RADIUS: u64 = RADIUS[LEVELS - 1] as u64;
 
-// The levels saturate their output rings together: 4096 >> L == LEVEL_SAMPLES[L].
+// The levels saturate their output rings together: 8192 >> L == LEVEL_SAMPLES[L].
 
 pub struct Downsample<const CHANNELS: usize = 2> {
     allocation: MappedAllocation<u8>,
@@ -212,7 +251,7 @@ pub struct Downsample<const CHANNELS: usize = 2> {
     next_center: u64,
 }
 
-const LEVEL_SAMPLES: [u32; LEVELS] = [4096, 2048, 1024];
+const LEVEL_SAMPLES: [u32; LEVELS] = [8192, 4096, 2048, 1024];
 
 impl<const CHANNELS: usize> Downsample<CHANNELS> {
     pub fn new(device: &Device, ring_layout: RingLayout<CHANNELS>) -> Result<Self, MutateError> {
@@ -273,26 +312,11 @@ impl<const CHANNELS: usize> Downsample<CHANNELS> {
             },
         );
 
-        // Folded, outward-in: index 0 is the outermost tap, index `radius` is the center.
-        // Symmetry is asserted above, so the leading half is the whole story.
-        plan::put_slice(
-            stat,
-            weights_offsets[0],
-            &weights::DOWN_TWO[..=RADIUS[0] as usize],
-        );
-        plan::put_slice(
-            stat,
-            weights_offsets[1],
-            &weights::DOWN_FOUR[..=RADIUS[1] as usize],
-        );
-        plan::put_slice(
-            stat,
-            weights_offsets[2],
-            &weights::DOWN_EIGHT[..=RADIUS[2] as usize],
-        );
-
-        // TODO
-        // Host state tracking data...
+        // Weights are symmetric, so we store half.
+        plan::put_slice(stat, weights_offsets[0], weights::DOWN_TWO.folded());
+        plan::put_slice(stat, weights_offsets[1], weights::DOWN_FOUR.folded());
+        plan::put_slice(stat, weights_offsets[2], weights::DOWN_EIGHT.folded());
+        plan::put_slice(stat, weights_offsets[3], weights::DOWN_SIXTEEN.folded());
 
         // Input views: upstream ring, per channel.
         for ch in 0..CHANNELS {
