@@ -42,6 +42,7 @@ use std::sync::{
 
 use ash::vk;
 use mutate_lib::{self as utate, audio, prelude::*};
+use utate::audio::timing::AudioTiming;
 
 pub struct CallbackResources {
     /// How far have we read into the data so far?
@@ -64,7 +65,7 @@ pub struct AudioOutputs {
     pub downsample: downsample::DownsampleOutput,
     // Dynamic range gain factor location (on device)
     // Timing data for downstream buffered tracking
-    // XXX isn't the timing daata available for clone?
+    pub timing: Option<AudioTiming>,
 }
 
 pub struct Audio {
@@ -143,7 +144,7 @@ impl Audio {
             // Drive the audio pipeline (◕‿◕)♡
             let outputs = &callback_outputs;
             let device = &callback_device;
-            let timing = state.timing;
+
             let res = unsafe { &mut *(addr as *mut CallbackResources) };
 
             if res.dead.load(Ordering::Acquire) {
@@ -223,6 +224,7 @@ impl Audio {
             *outputs.lock().unwrap() = Some(AudioOutputs {
                 dft: dft_out,
                 downsample: downsample_out,
+                timing: state.timing,
             });
 
             // XXX Super hack here, but consistent.  We should catch up a bit differently to try and
