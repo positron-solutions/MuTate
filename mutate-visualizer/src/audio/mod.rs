@@ -47,12 +47,12 @@ pub struct CallbackResources {
     /// How far have we read into the data so far?
     // NOTE unbuffered, same clock
     consume_head: u64,
+    dead: AtomicBool, // Hacky tombstone to stop dispatches faster.
+    last_consumed: u32,
+    outputs: Arc<Mutex<Option<AudioOutputs>>>,
     pool_ring: PoolRing<Graphics, 4>,
     dft: dft::Dft,
     downsample: downsample::Downsample,
-    outputs: Arc<Mutex<Option<AudioOutputs>>>,
-    last_consumed: u32,
-    dead: AtomicBool, // Hacky tombstone to stop dispatches faster.
 }
 
 /// Until some kind of reactive parameter design is done, cram outputs onto this struct so that each
@@ -128,12 +128,13 @@ impl Audio {
         let dft = dft::Dft::new(device, downsample.level_layout(2))?;
         let resources = Box::into_raw(Box::new(CallbackResources {
             consume_head: 0,
+            dead: false.into(),
+            last_consumed: 0,
+            outputs: outputs.clone(),
             pool_ring,
             dft,
+
             downsample,
-            outputs: outputs.clone(),
-            last_consumed: 0,
-            dead: false.into(),
         }));
 
         // Pass resources address into the callback.  Ownership and cleanup remain with us.
