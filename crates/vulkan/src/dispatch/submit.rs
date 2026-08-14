@@ -42,6 +42,7 @@
 // that are laid out in order already, matching Vulkan's use of slices when assembling the
 // submission for the C API.
 // NEXT protected support can likely inherit from the queue or command buffer.
+// MAYBE get rid of fences on most submissions?
 
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;

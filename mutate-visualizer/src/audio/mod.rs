@@ -11,25 +11,16 @@
 //!
 //! Audio and video will basically never tick on the same clock or at the same rate, and VRR
 //! displays and other frontends will just further expose the independence.  The tracking & slew and
-//! re-sampling are all unavoidable and consumers **must** be built these dynamics in mind.
+//! re-sampling are all unavoidable and consumers **must** be built with these dynamics in mind.
 //!
 //! Eventually the audio side will become a runtime component that can drive an audio graph and
-//! manage pushing values to reactive dependents (pointer swaps, read/write heads etc).
+//! manage pushing values to reactive dependents (pointer swaps, parameter pull,
+//! read/write heads etc).
 
-// DEBT Reactive updates.  Keep modularizing audio pipelines for downstreams.  Dispatching a bunch
-// of IIRs and other audio processing will parallelize easily and the output addresses can just be
-// exposed to video pipelines without dynamic resolution for now.
-// NEXT Extend vk::Device for things that don't require the wrapped Device.  Then &Device grows
-// those methods via Deref.
-// MAYBE get rid of fences on most submissions?
-// NOTE resource reactivity for audio pipelines is interesting.  The signal to resize the screen for
-// example might trigger resource recreation.  The resource change notifications then need to be
-// sent to the thread and finally pulled by.. the caller during the callback.
-// NEXT automatically promote u32 -> UInt32 and newtypes thereof
-// XXX DeviceAddress and vk::DeviceAddress are too redundant.
 // NOTE Like the visualizer, support for a dynamic set of audio pipelines is necessary.  Lacking
-// that, the RMS pipeline was fully removed to add the DFT.  See blame.  We would like support for
-// mixtures of pipelines, and the resource runtime will need to orchestrate this.
+// that, for example, the RMS pipeline was fully removed to add the CWT pipeline.  We can't really
+// turn them on and off at runtime.  See blame.  We would like support for mixtures of pipelines,
+// and the resource runtime will need to orchestrate this.
 
 pub mod dft;
 pub mod downsample;
