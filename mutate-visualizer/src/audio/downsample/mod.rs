@@ -68,10 +68,11 @@
 //! practice.  We will defer to the opinions of long-time DSP professionals through an open source
 //! development process.
 //!
-//! ⚠️ As a result of the transition admitting some folding, especially near the new Nyquist, bins
-//! should be very careful to **not let their main lobe get into the transition band.** Beyond the
-//! transition band guard, folded signals and noise begin ramping all the way to the new Nyquist.
-//! Use a higher sample rate and the transition will be nowhere near where you are analyzing 😼.
+//! ⚠️ As a result of the transition admitting reflected signal, especially near the new Nyquist,
+//! bins should be very careful to **not let their main lobe get into the transition band.** Beyond
+//! the transition band guard, folded signals and noise begin ramping all the way to the new
+//! Nyquist.  Use a higher sample rate and the transition will be nowhere near where you are
+//! analyzing 😼.
 //!
 //! ⚠️ Filter bank design should be aware that the transition contains extreme grooves and undefined
 //! attenuation that may scallop main lobes or obliterate side lobes.  This may lead to grooves in
@@ -82,105 +83,108 @@
 //! A uniform group delay per octave was chosen just to be tidy.  21/41/81/161 taps give 5 output
 //! samples of relative delay at each successive level.
 
-// DEBT I keep writing const generics for the channels.  At some point let's reverse this to runtime
-// configuration.
 // NEXT There is a group delay introduced by INPUT_QUANTUM that needs to be either carried forward
 // or removed by making each filter's quantum independent.  Implementation will likely involve
 // passing LEVELS indexes via push constants.  Related, the shader
+// NEXT Write the LEVELS output ring offset data to a header so that the host side of sharing
+// downstream is dynamic state only.  We will need to start doing slang libraries, but we absolutely
+// should!
 
 mod weights;
 
 use ash::vk;
-use mutate_lib::{self as utate, audio::import::RingLayout, prelude::*};
+use mutate_lib::{self as utate, audio::import::DeviceAudioView, prelude::*};
 
 use super::plan;
 
-#[derive(Clone, Copy, Debug)]
-pub struct LevelOutput<const CHANNELS: usize = 2> {
-    /// Absolute base of each channel's ring.
-    pub channels: [DeviceAddress; CHANNELS],
-    /// Ring capacity in samples.  PoT; mask is `sample_count - 1`.
-    pub sample_count: u32,
-    /// Monotonic count of samples written at *this level's* rate.
-    /// Physical slot is `write_head & (sample_count - 1)`.
-    pub write_head: u64,
-    /// `1 << (level + 1)`.  Input samples per output sample at this level.
-    pub decimation: u32,
-}
+/// LCM of the decimation factors.  The scheduling quantum, in input samples.
+const INPUT_QUANTUM: u64 = 1 << LEVELS; // 16
+/// Level-0 outputs per quantum.  `count[0]` is always a multiple of this.
+const OUTPUT_QUANTUM: u64 = INPUT_QUANTUM / 2; // 8
 
-impl<const CHANNELS: usize> LevelOutput<CHANNELS> {
-    pub fn mask(&self) -> u32 {
-        self.sample_count - 1
-    }
-    pub fn write_slot(&self) -> u32 {
-        self.write_head as u32 & self.mask()
-    }
-}
-
-/// Geometry, location, and tracking for downstream consumers of all levels.
-#[derive(Clone, Copy, Debug)]
-pub struct DownsampleOutput<const CHANNELS: usize = 2> {
-    base: DeviceAddress,
-    ring_offsets: [[u32; CHANNELS]; LEVELS],
-    /// Logical input index of the next window center.  The whole clock lives here:
-    /// level `L`'s write head is `next_center >> (L + 1)`.
-    pub next_center: u64,
-    /// Oldest input sample still readable by this module.  Import honors this.
-    pub retain_floor: u64,
-    /// Signaled once this dispatch's writes are visible.
-    pub data_ready: WaitValue,
-}
-
-impl<const CHANNELS: usize> DownsampleOutput<CHANNELS> {
-    pub fn level(&self, level: usize) -> LevelOutput<CHANNELS> {
-        LevelOutput {
-            channels: std::array::from_fn(|ch| {
-                (self.base.raw() + self.ring_offsets[level][ch] as u64).into()
-            }),
-            sample_count: LEVEL_SAMPLES[level],
-            write_head: self.next_center >> (level + 1),
-            decimation: 1 << (level + 1),
-        }
-    }
-}
-
-pub struct DownsampleDispatch<const CHANNELS: usize = 2> {
-    pub output: DownsampleOutput<CHANNELS>,
-    pub ready: SignalIntent,
-    pub consumed: u32,
-}
-
-pub const LEVELS: usize = 4;
-
-/// Folded weight counts: `radius + 1` for 21/41/81/161 taps.
-const RADIUS: [u32; LEVELS] = [
-    weights::DOWN_TWO.radius(),
-    weights::DOWN_FOUR.radius(),
-    weights::DOWN_EIGHT.radius(),
-    weights::DOWN_SIXTEEN.radius(),
+const LEVELS: usize = 4;
+pub const FILTERS: [weights::Lowpass; LEVELS] = [
+    weights::DOWN_TWO,
+    weights::DOWN_FOUR,
+    weights::DOWN_EIGHT,
+    weights::DOWN_SIXTEEN,
 ];
+
+const LEVEL_SAMPLES: [u32; LEVELS] = [8192, 4096, 2048, 1024];
 
 /// Must match `PAIRS_PER_LANE` in audio/downsample.slang.
 const PAIRS_PER_LANE: u32 = 10;
 
+/// Deepest lookahead demanded by any level.
+const MAX_RADIUS: u64 = FILTERS[LEVELS - 1].radius() as u64;
+
 const _: () = {
     let mut level = 0;
     while level < LEVELS {
-        assert!(RADIUS[level] == PAIRS_PER_LANE << level);
+        assert!(FILTERS[level].radius() == PAIRS_PER_LANE << level);
+        assert!(FILTERS[level].decimation == 1 << (level + 1));
         level += 1;
     }
 };
 
+/// One level of downsampling.  A set of `Rings` and metadata about the decimation and cutoff
+/// frequency.
+#[derive(Clone, Copy, Debug)]
+pub struct LevelOutput {
+    /// Offset from the output base.
+    pub offset: u32,
+    /// Logical center?
+    pub write_head: u64,
+    /// Number of channels
+    pub channel_count: u32,
+    /// Number of samples in each channel
+    pub sample_count: u32,
+    /// Input samples per output sample.
+    pub decimation: u32,
+    /// Highest frequency (Hz) a bin center may sit at.
+    pub cutoff: f32,
+    /// Group delay in input samples.
+    pub delay: u32,
+}
+
+impl LevelOutput {
+    pub fn mask(&self) -> u32 {
+        self.sample_count - 1
+    }
+}
+
+/// Location,
+#[derive(Clone, Copy, Debug)]
+pub struct DownsampleOutput {
+    /// All channels in the payload are based 🥷🏿.
+    pub base_address: DeviceAddress,
+    /// Each output level has metadata and channels.
+    pub levels: [LevelOutput; LEVELS],
+    /// Oldest input sample this module may still read.
+    pub retain_floor: u64,
+}
+
+impl DownsampleOutput {
+    // XXX pass sample rate.  Make level sample-rate normalized
+    /// Deepest level whose read band covers `center_hz`.  `None` means the frequency belongs to
+    /// the full-rate stream.  Assumes the last level is terminal, so nothing falls out the bottom.
+    pub fn level_for(&self, center_hz: f32) -> Option<usize> {
+        (0..LEVELS)
+            .rev()
+            .find(|&l| center_hz <= self.levels[l].cutoff)
+    }
+}
+
+pub struct DownsampleDispatch {
+    pub output: DownsampleOutput,
+    pub consumed: u32,
+}
+
 /// Header of the static base.
 #[repr(C)]
 struct Config {
-    /// Base of the *input* rings.  Upstream's allocation, not ours.
-    input_base: DeviceAddress,
     /// Base of our dynamic section.  Written after allocation; see `new`.
     output_base: DeviceAddress,
-
-    /// -> `RingView[CHANNELS]`, from `static_base`.
-    input_views_offset: u32,
     /// -> `RingView[LEVELS * CHANNELS]`, from `static_base`.
     output_views_offset: u32,
     /// Major stride of the output view table.  == CHANNELS.
@@ -189,9 +193,10 @@ struct Config {
     level_configs_offset: u32,
 }
 
+// XXX maybe not actually pub
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct RingView {
+pub struct RingView {
     /// Offset from the relevant base, in *bytes*.
     offset: u32,
     /// Index wrap mask, in *samples*.
@@ -213,8 +218,15 @@ struct LevelConfig {
 #[compute_pipeline(
     compute = stage!("audio/downsample", Compute, c"main"),
     push = push!(PushConstants {
+        /// Base of the *input* rings.  Upstream's allocation, not ours.
+        input_base: DeviceAddress,
         /// Coerces to `Config` in slang.  Static data offsets use this base.
         static_base: DeviceAddress,
+        /// Bytes between input rings
+        input_stride: UInt,
+        /// Index wrapping mask for input ring, in samples
+        input_mask: UInt,
+
         /// Physical index of the center sample where the first downsample filter will be applied.
         first_window_center: [UInt; 4],
         /// Physical index of the first output slot
@@ -225,60 +237,53 @@ struct LevelConfig {
 )]
 pub struct Pipeline;
 
-/// LCM of the decimation factors.  The scheduling quantum, in input samples.
-const INPUT_QUANTUM: u64 = 1 << LEVELS; // 16
-/// Level-0 outputs per quantum.  `count[0]` is always a multiple of this.
-const OUTPUT_QUANTUM: u64 = INPUT_QUANTUM / 2; // 8
-/// Deepest lookahead demanded by any level.  Level 3 binds at 80 input samples.
-const MAX_RADIUS: u64 = RADIUS[LEVELS - 1] as u64;
-
-// The levels saturate their output rings together: 8192 >> L == LEVEL_SAMPLES[L].
-
-pub struct Downsample<const CHANNELS: usize = 2> {
+pub struct Downsample {
     allocation: MappedAllocation<u8>,
 
     /// Bases are handed to the device every dispatch via push constants
     static_base: DeviceAddress,
     output_base: DeviceAddress,
 
-    output_ring_offsets: [[u32; CHANNELS]; LEVELS],
-    pipeline: ComputePipeline<Pipeline>,
+    output_channel_count: u32,
+    output_level_count: u32,
 
+    /// Byte offset from `output_base` to each level's channel 0.
+    output_level_offsets: [u32; LEVELS],
+
+    pipeline: ComputePipeline<Pipeline>,
     timeline: TimelineSemaphore,
 
     /// For now, we might get away with a very specific rate of advance.  Given that downsample
     /// frames never tick downstream except on certain inputs, this might actually work.
     next_center: u64,
+
+    /// Upstream sample rate.
+    sample_rate: u32,
 }
 
-const LEVEL_SAMPLES: [u32; LEVELS] = [8192, 4096, 2048, 1024];
-
-impl<const CHANNELS: usize> Downsample<CHANNELS> {
-    pub fn new(device: &Device, ring_layout: RingLayout<CHANNELS>) -> Result<Self, MutateError> {
+impl Downsample {
+    pub fn new(device: &Device, channels: u32, sample_rate: u32) -> Result<Self, MutateError> {
         // NOTE The big idea is no different for any of these pipelines.  We plan the layout, grab
         // the allocation, initialize it, and set up our local state shadows we'll need for later
-        // dispatch.
+        // dispatch.  Return a dispatch that tells downstream how to use what we wrote.
 
         // plan static
         let mut c = plan::Cursor::default();
         let config_offset = c.push::<Config>(1);
-        let input_views_offset = c.push::<RingView>(CHANNELS as u32);
-        let output_views_offset = c.push::<RingView>((LEVELS * CHANNELS) as u32);
+        let output_views_offset = c.push::<RingView>((LEVELS as u32 * channels));
         let level_configs_offset = c.push::<LevelConfig>(LEVELS as u32);
 
         let mut weights_offsets = [0u32; LEVELS];
         for level in 0..LEVELS {
-            weights_offsets[level] = c.push::<f32>(RADIUS[level] + 1);
+            weights_offsets[level] = c.push::<f32>(FILTERS[level].radius() + 1);
         }
         let static_bytes = c.align_to(256);
 
         // plan outputs
         let mut c = plan::Cursor::default();
-        let mut output_ring_offsets = [[0u32; CHANNELS]; LEVELS];
+        let mut output_level_offsets = [0u32; LEVELS];
         for level in 0..LEVELS {
-            for ch in 0..CHANNELS {
-                output_ring_offsets[level][ch] = c.push::<f32>(LEVEL_SAMPLES[level]);
-            }
+            output_level_offsets[level] = c.push::<f32>(LEVEL_SAMPLES[level] * channels);
         }
         let dynamic_bytes = c.len();
 
@@ -303,42 +308,27 @@ impl<const CHANNELS: usize> Downsample<CHANNELS> {
             stat,
             config_offset,
             Config {
-                input_base: ring_layout.base_address.into(),
                 output_base,
-                input_views_offset,
                 output_views_offset,
-                output_views_stride: CHANNELS as u32,
+                output_views_stride: channels,
                 level_configs_offset,
             },
         );
 
         // Weights are symmetric, so we store half.
-        plan::put_slice(stat, weights_offsets[0], weights::DOWN_TWO.folded());
-        plan::put_slice(stat, weights_offsets[1], weights::DOWN_FOUR.folded());
-        plan::put_slice(stat, weights_offsets[2], weights::DOWN_EIGHT.folded());
-        plan::put_slice(stat, weights_offsets[3], weights::DOWN_SIXTEEN.folded());
-
-        // Input views: upstream ring, per channel.
-        for ch in 0..CHANNELS {
-            plan::put(
-                stat,
-                input_views_offset + ch as u32 * size_of::<RingView>() as u32,
-                RingView {
-                    offset: ring_layout.channel_offsets[ch],
-                    mask: ring_layout.sample_count - 1,
-                },
-            );
+        for level in 0..LEVELS {
+            plan::put_slice(stat, weights_offsets[level], FILTERS[level].folded());
         }
 
         // Output views: [level][channel], stride == CHANNELS.
         for level in 0..LEVELS {
-            for ch in 0..CHANNELS {
-                let i = (level * CHANNELS + ch) as u32;
+            for ch in 0..channels {
+                let i = level as u32 * channels + ch;
                 plan::put(
                     stat,
                     output_views_offset + i * size_of::<RingView>() as u32,
                     RingView {
-                        offset: output_ring_offsets[level][ch],
+                        offset: output_level_offsets[level] + ch * LEVEL_SAMPLES[level] * 4,
                         mask: LEVEL_SAMPLES[level] - 1,
                     },
                 );
@@ -351,7 +341,7 @@ impl<const CHANNELS: usize> Downsample<CHANNELS> {
                 level_configs_offset + level as u32 * size_of::<LevelConfig>() as u32,
                 LevelConfig {
                     weights_offset: weights_offsets[level],
-                    radius: RADIUS[level],
+                    radius: FILTERS[level].radius(),
                     decimation_log2: level as u32 + 1,
                     lanes_per_output_log2: level as u32,
                 },
@@ -362,11 +352,13 @@ impl<const CHANNELS: usize> Downsample<CHANNELS> {
             allocation,
             static_base,
             output_base,
-            output_ring_offsets,
-            timeline: device.make_timeline_semaphore()?,
-            // NEXT Just...emit an alias already.
+            output_level_offsets,
+            output_channel_count: channels,
+            output_level_count: LEVELS as u32,
             pipeline: ComputePipeline::<Pipeline>::new(device)?,
+            timeline: device.make_timeline_semaphore()?,
             next_center: 0,
+            sample_rate,
         })
     }
 
@@ -375,13 +367,17 @@ impl<const CHANNELS: usize> Downsample<CHANNELS> {
         &mut self,
         device: &ash::Device,
         cb: &RecordingBuffer<Graphics, OneTime>,
-        input: &DeviceRingView<CHANNELS>,
-    ) -> Result<DownsampleDispatch<CHANNELS>, MutateError> {
+        input: &DeviceAudioView,
+    ) -> Result<DownsampleDispatch, MutateError> {
         // Calculate the downsampler advances from the upstream write head.
         let count = self.ready_outputs(input.write_head);
-        let input_mask = input.ring_layout.sample_count - 1;
+        let input_mask = input.sample_count - 1;
         let constants = PushConstants {
+            input_base: input.base_address,
             static_base: self.static_base,
+            input_stride: (input.sample_count * 4).into(),
+            input_mask: input_mask.into(),
+
             first_window_center: std::array::from_fn(|_| {
                 ((self.next_center as u32) & input_mask).into()
             }),
@@ -395,24 +391,14 @@ impl<const CHANNELS: usize> Downsample<CHANNELS> {
         let groups_x = count.div_ceil(256);
         unsafe {
             device.cmd_bind_pipeline(**cb, vk::PipelineBindPoint::COMPUTE, *self.pipeline);
-            device.cmd_dispatch(**cb, groups_x, LEVELS as u32, CHANNELS as u32);
+            device.cmd_dispatch(**cb, groups_x, LEVELS as u32, self.output_channel_count);
         }
 
         self.next_center += count as u64 * 2;
         debug_assert_eq!(self.next_center % INPUT_QUANTUM, 0);
 
-        let ready = self.timeline.next_signal();
-        let output = DownsampleOutput {
-            base: self.output_base,
-            ring_offsets: self.output_ring_offsets,
-            next_center: self.next_center, // already advanced above
-            retain_floor: self.retain_floor(),
-            data_ready: ready.wait_value(),
-        };
-
         Ok(DownsampleDispatch {
-            output,
-            ready,
+            output: self.view(),
             consumed: count,
         })
     }
@@ -452,12 +438,26 @@ impl<const CHANNELS: usize> Downsample<CHANNELS> {
         self.next_center.saturating_sub(MAX_RADIUS)
     }
 
-    /// Returns on-device geometry for a single level of downsampling outputs.
-    pub fn level_layout(&self, level: usize) -> RingLayout<CHANNELS> {
-        RingLayout {
-            base_address: self.output_base.raw(),
-            channel_offsets: self.output_ring_offsets[level],
-            sample_count: LEVEL_SAMPLES[level],
+    /// Return the state and layout information independent of dispatching.  Useful for initializing
+    /// downstreams.
+    pub fn view(&self) -> DownsampleOutput {
+        let sample_rate = self.sample_rate as f32;
+        DownsampleOutput {
+            base_address: self.output_base,
+            levels: std::array::from_fn(|l| {
+                let rate = self.sample_rate as f32 / (1 << (l + 1)) as f32;
+                let f = &FILTERS[l];
+                LevelOutput {
+                    offset: self.output_level_offsets[l],
+                    channel_count: self.output_channel_count,
+                    sample_count: LEVEL_SAMPLES[l],
+                    decimation: 1 << (l + 1),
+                    cutoff: f.cutoff(sample_rate),
+                    delay: f.radius(),
+                    write_head: self.next_center >> (l + 1),
+                }
+            }),
+            retain_floor: self.retain_floor(),
         }
     }
 }

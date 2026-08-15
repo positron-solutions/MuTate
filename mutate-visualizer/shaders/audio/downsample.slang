@@ -43,11 +43,7 @@ static const uint LEVELS = 4;
 static const uint PAIRS_PER_LANE = 10;
 
 struct Config {
-    uint64_t input_base;
     uint64_t output_base;
-
-    /// -> RingView[channels].  Indexed by channel.
-    uint input_views_offset;
     /// -> RingView[LEVELS * channels].  Indexed by
     /// `level * output_views_stride + channel`.
     uint output_views_offset;
@@ -59,7 +55,7 @@ struct Config {
     uint level_configs_offset;
 }
 
-/// Input ring and wrapping mask.
+/// Output ring and wrapping mask.
 struct RingView {
     /// Offset from input device address.  Coerce to `float*`.
     uint offset;
@@ -88,7 +84,13 @@ struct LevelConfig {
 }
 
 struct PushConstants {
+    uint64_t input_base;
     uint64_t static_base;
+
+    /// Bytes between consecutive channels in the input ring.
+    uint input_stride;
+    /// Index wrapping mask for the input ring, in samples.
+    uint input_mask;
 
     /// Physical index, already reduced against the input view's mask, of the
     /// window center for this dispatch's first output at each level.
@@ -121,13 +123,13 @@ void main(uint3 group_id : SV_GroupID, uint3 thread_id : SV_GroupThreadID) {
     LevelConfig level_config =
         ((Ptr<LevelConfig>)(pc.static_base + config.level_configs_offset))[level];
 
-    RingView input_view =
-        ((Ptr<RingView>)(pc.static_base + config.input_views_offset))[channel];
+    Ptr<float> input_ring =
+        (Ptr<float>)(pc.input_base + (uint64_t)(channel * pc.input_stride));
+
     RingView output_view =
         ((Ptr<RingView>)(pc.static_base + config.output_views_offset))
             [level * config.output_views_stride + channel];
 
-    Ptr<float> input_ring  = (Ptr<float>)(config.input_base  + (uint64_t)input_view.offset);
     Ptr<float> output_ring = (Ptr<float>)(config.output_base + (uint64_t)output_view.offset);
     Ptr<float> weights = (Ptr<float>)(pc.static_base + level_config.weights_offset);
 
@@ -162,8 +164,8 @@ void main(uint3 group_id : SV_GroupID, uint3 thread_id : SV_GroupThreadID) {
     [ForceUnroll]
     for (uint fold = 0; fold < PAIRS_PER_LANE; ++fold) {
         let tap = tap_slice + fold * lanes_per_output;
-        let lower = (window_center - radius + tap) & input_view.mask;
-        let upper = (window_center + radius - tap) & input_view.mask;
+        let lower = (window_center - radius + tap) & pc.input_mask;
+        let upper = (window_center + radius - tap) & pc.input_mask;
         sum = mad(weights[tap], input_ring[lower] + input_ring[upper], sum);
     }
 
@@ -171,7 +173,7 @@ void main(uint3 group_id : SV_GroupID, uint3 thread_id : SV_GroupThreadID) {
     // the fanout, so it always falls to slice zero -- the same lane the
     // reduction below converges on, and the same lane that stores.
     if (tap_slice == 0) {
-        sum = mad(weights[radius], input_ring[window_center & input_view.mask], sum);
+        sum = mad(weights[radius], input_ring[window_center & pc.input_mask], sum);
     }
 
     // Collapse the cooperating lanes onto slice zero.  Zero-trip at 2x.

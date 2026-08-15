@@ -24,25 +24,25 @@
 // NEXT Document frequencies at usual input rate!  I can't read 0.03123445 in a hurry!!
 
 /// Low pass filter.  Odd.  Symmetric.
-pub(crate) struct Lowpass<const N: usize> {
-    read_band: f64,
-    guard_band: f64,
+pub(crate) struct Lowpass {
+    read_band: f32,
+    guard_band: f32,
     /// Input samples consumed per output sample.
     pub decimation: u32,
     /// Raw weights.
-    pub taps: [f32; N],
+    pub taps: &'static [f32],
 }
 
-impl<const N: usize> Lowpass<N> {
+impl Lowpass {
     /// Use as an iteration count from the outside in.
     pub const fn radius(&self) -> u32 {
-        (N as u32 - 1) / 2
+        (self.taps.len() as u32 - 1) / 2
     }
 
     /// Outward-in half of weights, center inclusive.  Works as a zero-to-center or backwards
     /// iterated end-to-center array of weights.
-    pub fn folded(&self) -> &[f32] {
-        &self.taps[..=self.radius() as usize]
+    pub const fn folded(&self) -> &'static [f32] {
+        self.taps.split_at(self.radius() as usize + 1).0
     }
 
     /// Group delay in *input* samples.  Linear phase, so it's just the center tap index.
@@ -58,7 +58,7 @@ impl<const N: usize> Lowpass<N> {
     /// Cutoff frequency for analysis.  `rate_in` is the pre-decimation sample rate.  Upper passband
     /// edge in cycles/sample of the *input* rate.  Main lobes of filters must not be centered above
     /// this cutoff.
-    pub fn cutoff(&self, rate_in: f64) -> f64 {
+    pub fn cutoff(&self, rate_in: f32) -> f32 {
         self.read_band * rate_in
     }
 
@@ -66,7 +66,7 @@ impl<const N: usize> Lowpass<N> {
     /// pre-decimation sample rate.  Upper edge of the guarded (solver configuration) band in
     /// cycles/sample of the *input* rate.  Filter lobes that exceed this band will begin to see
     /// folded noise.
-    pub fn guarded_cutoff(&self, rate_in: f64) -> f64 {
+    pub fn guarded_cutoff(&self, rate_in: f32) -> f32 {
         self.guard_band * rate_in
     }
 }
@@ -75,32 +75,32 @@ impl<const N: usize> Lowpass<N> {
 // Nyquist is half.  New Nyquist is a quarter.  Half of a quarter is an eighth.  All subsequent
 // filters provide read bands below half that down to the next filter.
 
-pub(crate) const DOWN_TWO: Lowpass<21> = Lowpass {
+pub(crate) const DOWN_TWO: Lowpass = Lowpass {
     read_band: 0.125,
     guard_band: 0.1375,
     decimation: 2,
-    taps: DOWN_TWO_TAPS,
+    taps: &DOWN_TWO_TAPS,
 };
 
-pub(crate) const DOWN_FOUR: Lowpass<41> = Lowpass {
+pub(crate) const DOWN_FOUR: Lowpass = Lowpass {
     read_band: 0.0625,
     guard_band: 0.06875,
     decimation: 4,
-    taps: DOWN_FOUR_TAPS,
+    taps: &DOWN_FOUR_TAPS,
 };
 
-pub(crate) const DOWN_EIGHT: Lowpass<81> = Lowpass {
+pub(crate) const DOWN_EIGHT: Lowpass = Lowpass {
     read_band: 0.03125,
     guard_band: 0.034375,
     decimation: 8,
-    taps: DOWN_EIGHT_TAPS,
+    taps: &DOWN_EIGHT_TAPS,
 };
 
-pub(crate) const DOWN_SIXTEEN: Lowpass<161> = Lowpass {
+pub(crate) const DOWN_SIXTEEN: Lowpass = Lowpass {
     read_band: 0.015625,
     guard_band: 0.0171875,
     decimation: 16,
-    taps: DOWN_SIXTEEN_TAPS,
+    taps: &DOWN_SIXTEEN_TAPS,
 };
 
 // cargo pmr lowpass --taps 21 --decimate 2
