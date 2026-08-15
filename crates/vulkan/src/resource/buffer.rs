@@ -23,6 +23,12 @@
 // DEBT sub-allocation / resource runtime. 💸
 // NEXT hang buffer & image creation methods off of the device.memory.  Limit buffer & image module
 // scope to handling post-allocation.
+// DEBT DMA vs transfer abstraction.  The control data should be written device visible and then
+// copied / handed off into device-only memory.  We would initialize this lazily, only beginning
+// dispatches when the upload of control data is available and black-holing (later shared consumers
+// will need a concept of the reclaim owner) data to keep upstream ring slack available.  There's a
+// lot of runtime spec hydration and downstream dependency concepts in there.
+// NEXT separate static and dynamic data.  Use UBO buffer flags etc.
 
 use std::ptr::NonNull;
 

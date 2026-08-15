@@ -53,6 +53,9 @@
 // NOTE staging + transfer is an operation that can be abstracted over by a runtime as part of an
 // optionally two-step provision.  Explicit BAR is reported, but mainly so that applications
 // expecting it don't fall over.
+// NEXT Really wanted to switch to a byte based API for MappedAllocation, which feels too much like
+// an array style API.  That shape might work, but right now it's conflated with use of mapped
+// memory.  This module sucks.  Just punch it until it has the types it needs to.
 
 pub mod bar;
 
