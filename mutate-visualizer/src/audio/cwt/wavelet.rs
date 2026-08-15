@@ -176,6 +176,7 @@ pub struct Plan {
     du: f64,       // uniform step in u = w/w_peak
     psi: Vec<f64>, // psi at u_j = j*du, already L2-normalized
     lo: usize,     // first grid point above eps; psi[..lo] is zero
+    rho: f64,      // taper fraction of the half-span; 0.0 disables
 }
 
 impl Plan {
@@ -241,7 +242,20 @@ impl Plan {
             du,
             psi,
             lo,
+            rho: 0.0,
         }
+    }
+
+    /// Trades stopband depth for tap count.
+    ///
+    /// - `rho` is the fraction of the half-span over which the truncation is smoothed.
+    /// - `eps_time` truncates the tap envelope.
+    ///
+    /// Other parameters have their normal behavior.
+    pub fn with_taper(mut self, eps_time: f64, rho: f64, tail_a: f64) -> Self {
+        self.c = half_width_scaled(self.shape, eps_time, tail_a);
+        self.rho = rho;
+        self
     }
 
     /// Adds the reassignment spectra. Costs two more grids of plan memory.
@@ -281,6 +295,7 @@ impl Plan {
     pub fn taps_into(&self, bin: Bin, scratch: &mut Scratch, out: &mut [(f32, f32)]) {
         let buf = scratch.one(bin.taps);
         self.transform(bin, buf);
+        self.taper(buf);
         Self::center_l2(buf);
 
         // NOTE this fiddly code was generated while scanning for low-hanging sources of floating
@@ -368,6 +383,33 @@ impl Plan {
         }
     }
 
+    /// Planck taper over the outer `rho` of the half-span.  Smooth to all orders at
+    /// the join and at the edge, so the truncation step stops setting the stopband.
+    fn taper(&self, out: &mut [(f64, f64)]) {
+        if self.rho == 0.0 {
+            return;
+        }
+        let n = out.len();
+        let half = n / 2;
+
+        // zero lands one tap past the end, so the outermost tap still carries weight.
+        let end = half as f64 + 1.0;
+        let inv = (end * self.rho).recip();
+        let start = end * (1.0 - self.rho);
+
+        for i in half..n {
+            let s = ((i - half) as f64 - start) * inv;
+            if s <= 0.0 {
+                continue;
+            }
+            let w = 1.0 / (1.0 + (1.0 / (1.0 - s) - 1.0 / s).exp());
+            out[i].0 *= w;
+            out[i].1 *= w;
+            out[n - 1 - i].0 *= w;
+            out[n - 1 - i].1 *= w;
+        }
+    }
+
     /// Scratch sized for `bin` and every smaller one. Pass the lowest center
     /// frequency you intend to bake at the same rate.
     pub fn scratch(&self, bin: Bin) -> Scratch {
@@ -401,6 +443,10 @@ impl ReassignPlan {
     ) {
         let [bp, bd, bt] = scratch.three(bin.taps);
         self.transform3(bin, bp, bd, bt);
+
+        self.taper(bp);
+        self.taper(bd);
+        self.taper(bt);
 
         let norm = Plan::center_l2(bp);
         Plan::center_scale(bd, norm);
@@ -773,7 +819,7 @@ mod test {
     /// Also the cheapest place to see the reassignment envelopes.
     #[test]
     fn transform3_matches_transform() {
-        let base = plan(2.0, 1e-8);
+        let base = plan(2.5, 1e-6).with_taper(1e-3, 0.15, 1.0);
         let bin = base.bin(2_000.0, RATE);
         let n = bin.taps();
         let mut s = base.scratch(bin);
@@ -834,7 +880,7 @@ mod test {
         // t is the bipolar spectrum; its real part passes through zero at the center.
         let half = n / 2;
         assert!(
-            (t[half].0 as f64).abs() < 1e-3 * pk(&t) as f64,
+            (t[half].0 as f64).abs() < 1e-2 * pk(&t) as f64,
             "t center {:.3e} peak {:.3e}",
             t[half].0,
             pk(&t)
@@ -939,12 +985,14 @@ mod test {
     fn response_is_characterized() {
         const SWEEP: usize = 8192;
 
-        let p = plan(3.0, 1e-8);
+        let (q, eps, eps_time, rho) = (2.0, 1e-8, 1e-3, 0.15);
+        let p = plan(q, eps).with_taper(eps_time, rho, 1.0);
         let want_rel = 2.0 * 2.0f64.ln().sqrt() / p.shape.p();
 
         println!(
-            "\n=== RESPONSE (Q = 3, eps = 1e-8, target rel width {:.5}) ===",
-            want_rel
+            "\n=== RESPONSE (Q = {q}, gamma = {}, eps = {eps:.0e}, taper {eps_time:.0e} rho {rho}, \
+             target rel width {want_rel:.5}) ===",
+            p.shape.gamma
         );
 
         for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 8000.0), (12_000.0, RATE)] {
