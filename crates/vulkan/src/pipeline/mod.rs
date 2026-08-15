@@ -244,6 +244,10 @@ impl<S: ComputePipelineSpec> ComputePipeline<S> {
         }
     }
 
+    pub fn into_raw(self) -> vk::Pipeline {
+        self.pipeline
+    }
+
     pub fn destroy(self, device: &Device) {
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
