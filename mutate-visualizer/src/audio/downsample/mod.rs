@@ -388,7 +388,7 @@ impl Downsample {
         };
         self.pipeline.push(device, **cb, &constants);
 
-        let groups_x = count.div_ceil(256);
+        let groups_x = count.div_ceil(64);
         unsafe {
             device.cmd_bind_pipeline(**cb, vk::PipelineBindPoint::COMPUTE, *self.pipeline);
             device.cmd_dispatch(**cb, groups_x, LEVELS as u32, self.output_channel_count);

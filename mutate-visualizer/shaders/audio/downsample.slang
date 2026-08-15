@@ -36,7 +36,7 @@
 // beginning to use masking heavily.  Fine at this scale, but a bit sloppy
 
 static const uint LANES = 32;
-static const uint WARPS = 8;
+static const uint WARPS = 2;
 static const uint LEVELS = 4;
 
 /// Folded multiply-adds per lane, excluding the center tap.
