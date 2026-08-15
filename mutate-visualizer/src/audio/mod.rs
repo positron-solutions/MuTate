@@ -70,8 +70,6 @@ pub struct Audio {
     pub outputs: Arc<Mutex<Option<AudioOutputs>>>,
 }
 
-const EMPTY_SPAN: DeviceSpan = DeviceSpan { base: 0, len: 0 };
-
 impl Audio {
     // NOTE all of the audio processing can happen in compute queues, but the resources for hand-off
     // to graphics for presentation will need concurrent access since the ring buffers cannot be
