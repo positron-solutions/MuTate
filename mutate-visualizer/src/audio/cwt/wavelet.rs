@@ -47,17 +47,17 @@
 //! ## Usage
 //!
 //! One [`Plan`] per Q. It holds the spectrum in a normalized frequency variable, so it is
-//! independent of center frequency and sample rate, and every voice sharing that Q reuses it.
+//! independent of center frequency and sample rate, and every voice sharing that Q may reuse it.
 //!
 //! ```
 //! # use mutate::wavelet::Plan;
-//! let plan = Plan::new(2.4, 3.0, 1e-8, 1.0);
+//! let plan = Plan::new(2.5, 3.0, 1e-8, 1.0).with_taper(1e-3, 0.1, 1.0);
 //!
-//! // size scratch for the lowest bin; every higher one fits.
+//! // size scratch for the longest bin; every shorter one fits.
 //! let mut scratch = plan.scratch(plan.bin(50.0, 8000.0));
 //!
 //! let bin = plan.bin(1000.0, 8000.0);
-//! let mut taps = vec![(0.0, 0.0); bin.len()];
+//! let mut taps = vec![(0.0, 0.0); bin.taps()];
 //! plan.taps_into(bin, &mut scratch, &mut taps);
 //! ```
 //!
@@ -66,17 +66,23 @@
 //!
 //! ```
 //! # use mutate::wavelet::Plan;
-//! let plan = Plan::new(2.4, 3.0, 1e-8, 1.0).with_reassignment();
+//! let plan = Plan::new(2.5, 3.0, 1e-8, 1.0).with_reassignment();
 //!
-//! // size scratch for the lowest bin; every higher one fits.
 //! let mut scratch = plan.scratch(plan.bin(50.0, 8000.0));
 //!
 //! let bin = plan.bin(1000.0, 8000.0);
-//! let n = bin.len();
+//! let n = bin.taps();
 //! let (mut psi, mut d, mut t) = (vec![(0.0, 0.0); n], vec![(0.0, 0.0); n], vec![(0.0, 0.0); n]);
 //!
 //! // d and t are multiplied by i at use.
 //! plan.taps_into(bin, &mut scratch, &mut psi, &mut d, &mut t);
+//! ```
+//!
+//! Configure truncation to reduce the tap length and delay of each wavelet.
+//!
+//! ```
+//! # use mutate::wavelet::Plan;
+//! let plan = Plan::new(2.5, 3.0, 1e-8, 1.0).with_taper(1e-3, 0.1, 1.0);
 //! ```
 
 // NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
@@ -88,35 +94,41 @@
 // have an idea of the correctness of the gain peak location.  If there is a bias, it probably is
 // consistent, but if the design bias doesn't remain consistent across the resampling edges, we will
 // start to see bands in the results.
-// NOTE Unit L2 per bin.  Steady tones brighten toward the bottom of the display by 1/√f.  Unit L2
-// at the decimated rate results in physical gain lower than full rate by exactly √2 per halving.
+// NOTE Unit L1 per bin.  Steady tones are flat, but the noise floor is amplified towards higher
+// frequencies.
+// NOTE Peak gain 2 per bin (demodulated L1 = 2), so a unit real tone reads |W| = 1.
+// Steady tones are flat across the bank; the broadband noise floor rises as sqrt(f)
+// because tap count falls with center frequency.
 // NOTE Zero phase. Conjugate-symmetric taps give a real, even frequency response and no group delay,
 // Reassignment's time offset is therefore measured from tap center with no correction term.
-
 // 🤖 Heavy generation.  Should be pretty standard academic stuff, so not expecting a lot of
 // surprises.  We will, for the most part, swiftly and knowingly eat shit if the wavelet is busted.
 // Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
 // formalism.
 //
-// === RESPONSE (Q = 3, eps = 1e-8, target rel width 0.33334) ===
+// === RESPONSE (Q = 2.5, gamma = 3, eps = 1e-8, taper 1e-3 rho 0.1, target rel width 0.40000) ===
 //
-// fc    1000 sr   8000  taps    79  w0 0.785398
-//   peak at 0.785398  offset -9.932e-9 rel
-//   rel width 0.33256  want 0.33334  ratio 0.9977
-//   negative-freq max  -153.88 dB
-//   stopband floor     -118.01 dB
+// fc    1000 sr   6000  taps    31  w0 1.047198
+//   peak at 1.047149  offset -4.646e-5 rel
+//   rel width 0.39875  want 0.40000  ratio 0.9969
+//   negative-freq max   -83.56 dB
+//   stopband floor      -85.86 dB
 //
-// fc     250 sr   8000  taps   311  w0 0.196350
-//   peak at 0.196350  offset -5.128e-9 rel
-//   rel width 0.33256  want 0.33334  ratio 0.9977
-//   negative-freq max  -154.55 dB
-//   stopband floor     -118.49 dB
+// fc     250 sr   3000  taps    61  w0 0.523599
+//   peak at 0.523562  offset -6.931e-5 rel
+//   rel width 0.39883  want 0.40000  ratio 0.9971
+//   negative-freq max   -78.37 dB
+//   stopband floor      -80.65 dB
 //
-// fc   12000 sr  48000  taps    41  w0 1.570796
-//   peak at 1.570796  offset -3.471e-9 rel
-//   rel width 0.33256  want 0.33334  ratio 0.9977
-//   negative-freq max  -118.52 dB
-//   stopband floor     -118.02 dB
+// fc   12000 sr  48000  taps    21  w0 1.570796
+//   peak at 1.570756  offset -2.590e-5 rel
+//   rel width 0.39870  want 0.40000  ratio 0.9967
+//   negative-freq max   -80.34 dB
+//   stopband floor      -80.34 dB
+
+/// Filter peak gain. Analytic taps see half a real tone's amplitude,
+/// so |H| = 2 makes a unit tone read |W| = 1.
+const PEAK_GAIN: f64 = 2.0;
 
 /// A center frequency resolved against a plan and a sample rate.
 #[derive(Clone, Copy)]
@@ -174,7 +186,7 @@ pub struct Plan {
     peak: f64,     // argmax of w^beta e^{-w^gamma}
     c: f64,        // half_width_scaled; taps = 2*ceil(c/omega0)+1
     du: f64,       // uniform step in u = w/w_peak
-    psi: Vec<f64>, // psi at u_j = j*du, already L2-normalized
+    psi: Vec<f64>, // psi at u_j = j*du, peak 1
     lo: usize,     // first grid point above eps; psi[..lo] is zero
     rho: f64,      // taper fraction of the half-span; 0.0 disables
 }
@@ -230,11 +242,6 @@ impl Plan {
         let mut psi = vec![0.0; m];
         fill_grid(&shape, du, lo, &mut psi);
 
-        let inv = psi.iter().map(|v| v * v).sum::<f64>().sqrt().recip();
-        for v in psi.iter_mut() {
-            *v *= inv;
-        }
-
         Plan {
             shape,
             peak,
@@ -264,6 +271,9 @@ impl Plan {
         let (beta, gamma) = (self.shape.beta, self.shape.gamma);
         let mut spec = vec![[0.0; 3]; m];
 
+        // NOTE d and t are on the Morse axis (peak at self.peak), not rad/sample.
+        // rad/sample = w * bin.w0 / self.peak, so consumers owe d a factor of
+        // w0/peak and t a factor of peak/w0. Unpinned; nothing enforces it.
         for j in 1..m {
             let w = self.peak * j as f64 * self.du;
             let wg = w.powf(gamma);
@@ -291,12 +301,12 @@ impl Plan {
         }
     }
 
-    /// Writes `bin.len()` complex taps, centered, unit L2, DC removed.
+    /// Writes bin.len() complex taps, centered, peak gain 2, DC removed.
     pub fn taps_into(&self, bin: Bin, scratch: &mut Scratch, out: &mut [(f32, f32)]) {
         let buf = scratch.one(bin.taps);
         self.transform(bin, buf);
         self.taper(buf);
-        Self::center_l2(buf);
+        Self::center_scale(buf, self.scale(bin));
 
         // NOTE this fiddly code was generated while scanning for low-hanging sources of floating
         // point error.  Exploiting symmetry is just too good to pass up.  Here's what was said:
@@ -348,30 +358,6 @@ impl Plan {
         }
     }
 
-    /// DC removal, then unit L2. Returns the scale applied, which the
-    /// reassignment taps need in order to share psi's normalization.
-    fn center_l2(out: &mut [(f64, f64)]) -> f64 {
-        let n = out.len();
-        let half = n / 2;
-        let len = n as f64;
-
-        // Hermitian: pairs contribute 2*re, center once, imag cancels.
-        let mr = (2.0 * out[half + 1..].iter().map(|s| s.0).sum::<f64>() + out[half].0) / len;
-
-        let mut e = 0.0;
-        for s in out.iter_mut() {
-            s.0 -= mr;
-            e += s.0 * s.0 + s.1 * s.1;
-        }
-
-        let inv = e.sqrt().recip();
-        for s in out.iter_mut() {
-            s.0 *= inv;
-            s.1 *= inv;
-        }
-        inv
-    }
-
     /// DC removal on psi's scale.
     fn center_scale(out: &mut [(f64, f64)], norm: f64) {
         let n = out.len();
@@ -381,6 +367,12 @@ impl Plan {
             s.0 = (s.0 - mr) * norm;
             s.1 *= norm;
         }
+    }
+
+    /// Output scale for unit peak gain. The rotor sum is an inverse DTFT
+    /// missing its dw/2pi; du is fixed by the plan, so only w0 varies.
+    fn scale(&self, bin: Bin) -> f64 {
+        PEAK_GAIN * self.du * bin.w0 / core::f64::consts::TAU
     }
 
     /// Planck taper over the outer `rho` of the half-span.  Smooth to all orders at
@@ -410,8 +402,9 @@ impl Plan {
         }
     }
 
-    /// Scratch sized for `bin` and every smaller one. Pass the lowest center
-    /// frequency you intend to bake at the same rate.
+    /// Scratch sized for `bin` and every shorter one. Pass the bin with the
+    /// largest rate/center ratio you intend to bake; under decimation that is
+    /// the bin just above a cutoff, not the lowest center frequency.
     pub fn scratch(&self, bin: Bin) -> Scratch {
         Scratch::with_len(bin.taps)
     }
@@ -432,6 +425,8 @@ impl ReassignPlan {
     /// Writes psi, pitch weights, and time weights for `bin`. All three output
     /// slices must be `bin.len()`.
     ///
+    /// Centered, peak gain 2, DC removed.
+    ///
     /// `d` and `t` are to be multiplied by `i` at use.
     pub fn taps_into(
         &self,
@@ -448,7 +443,8 @@ impl ReassignPlan {
         self.taper(bd);
         self.taper(bt);
 
-        let norm = Plan::center_l2(bp);
+        let norm = self.scale(bin);
+        Plan::center_scale(bp, norm);
         Plan::center_scale(bd, norm);
         Plan::center_scale(bt, norm);
 
@@ -780,15 +776,12 @@ mod test {
             cursor += n;
         }
 
-        let e: f64 = taps
+        let worst = voices
             .iter()
-            .map(|&(r, i)| (r as f64) * (r as f64) + (i as f64) * (i as f64))
-            .sum();
-        assert!(
-            (e / voices.len() as f64 - 1.0).abs() < 1e-4,
-            "mean energy {:.6}",
-            e / voices.len() as f64
-        );
+            .zip(offsets.iter())
+            .map(|(b, &o)| (dtft(&taps[o..o + b.taps()], b.velocity()) - PEAK_GAIN).abs())
+            .fold(0.0f64, f64::max);
+        assert!(worst < 1e-3, "worst peak gain error {worst:.3e}");
 
         let elapsed = start.elapsed();
         let n = voices[0].taps();
@@ -803,13 +796,12 @@ mod test {
         );
 
         println!(
-            "voices {} of {}  taps {}  longest {}  shortest {}  mean energy {:.6}",
+            "voices {} of {}  taps {}  longest {}  shortest {}",
             voices.len(),
             BINS,
             total,
             voices[0].taps(),
             voices[voices.len() - 1].taps(),
-            e / voices.len() as f64,
         );
 
         println!("bin filling time: {:?}µs", elapsed.as_micros());
@@ -971,11 +963,10 @@ mod test {
                 assert_eq!(a.1, -b.1);
             }
 
-            let (dc, e) = t.iter().fold((0.0f64, 0.0f64), |(d, e), &(r, i)| {
-                (d + r as f64, e + (r as f64).powi(2) + (i as f64).powi(2))
-            });
-            assert!(dc.abs() < 1e-5, "fc {fc} dc {dc:.3e}");
-            assert!((e - 1.0).abs() < 1e-5, "fc {fc} energy {e:.6}");
+            let g = dtft(&t, bin.velocity());
+            let dc = t.iter().map(|&(r, _)| r as f64).sum::<f64>();
+            assert!((g - PEAK_GAIN).abs() < 1e-3, "fc {fc} peak gain {g:.6}");
+            assert!(dc.abs() < 1e-5 * g, "fc {fc} dc {dc:.3e}");
         }
     }
 
@@ -1028,6 +1019,7 @@ mod test {
             }
             let wpk = 0.5 * (a + b);
             let hpk = dtft(&t, wpk);
+            assert!((hpk - PEAK_GAIN).abs() < 1e-3, "fc {fc} peak gain {hpk:.6}");
 
             let half = hpk / 2.0f64.sqrt();
             let lo = crossing(&t, wpk - w0, wpk, half);
@@ -1062,6 +1054,28 @@ mod test {
             );
             println!("  negative-freq max {:>8.2} dB", db(neg));
             println!("  stopband floor    {:>8.2} dB", db(floor));
+        }
+    }
+
+    /// A real unit tone reads |W| = 1 even though |H| = 2: the analytic taps
+    /// see only the +w half of the cosine.
+    #[test]
+    fn unit_tone_reads_unity() {
+        let p = plan(3.0, 1e-8);
+        let bin = p.bin(1000.0, 8000.0);
+        let t = taps(&p, bin);
+        let (n, w0) = (bin.taps(), bin.velocity());
+
+        // taps are centered, so m is the sample under tap index n/2.
+        for m in 0..8 {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (j, &(r, i)) in t.iter().enumerate() {
+                let x = (w0 * (m as isize + (n / 2) as isize - j as isize) as f64).cos();
+                re += x * r as f64;
+                im += x * i as f64;
+            }
+            let env = (re * re + im * im).sqrt();
+            assert!((env - 1.0).abs() < 1e-3, "phase {m} envelope {env:.6}");
         }
     }
 }
