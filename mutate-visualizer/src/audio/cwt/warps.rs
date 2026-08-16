@@ -19,10 +19,16 @@ mod test {
 
     use mutate_lib::dsp::{self, bank, MIN_FREQ_CHEAP_DRIVERS};
 
-    use crate::audio::{cwt::wavelet::Plan, downsample::FILTERS};
+    use crate::audio::{
+        cwt::wavelet::{Spec, Taper},
+        downsample::FILTERS,
+    };
 
-    fn plan() -> Plan {
-        Plan::new(2.5, 3.0, 1e-8, 1.0).with_taper(1e-3, 0.1, 1.0)
+    fn spec() -> Spec {
+        Spec::default().taper(Taper {
+            eps_time: 1e-3,
+            rho: 0.1,
+        })
     }
 
     fn bins() -> Vec<bank::Bin> {
@@ -75,7 +81,7 @@ mod test {
         let bins = bins();
         let cutoffs = cutoffs();
 
-        let p = plan();
+        let p = spec().plan();
 
         // Bins above all cutoffs use the full sampling rate.
         let mut buckets = vec![0usize; usize::BITS as usize];
@@ -115,7 +121,7 @@ mod test {
         let bins = bins();
         let cutoffs = cutoffs();
 
-        let p = plan();
+        let p = spec().plan();
 
         // Bins above all cutoffs use the full sampling rate.
         let mut buckets = vec![0usize; usize::BITS as usize];
