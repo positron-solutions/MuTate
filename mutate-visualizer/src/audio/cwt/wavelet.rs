@@ -985,7 +985,7 @@ mod test {
     fn response_is_characterized() {
         const SWEEP: usize = 8192;
 
-        let (q, eps, eps_time, rho) = (2.0, 1e-8, 1e-3, 0.15);
+        let (q, eps, eps_time, rho) = (2.5, 1e-8, 1e-3, 0.1);
         let p = plan(q, eps).with_taper(eps_time, rho, 1.0);
         let want_rel = 2.0 * 2.0f64.ln().sqrt() / p.shape.p();
 
@@ -995,7 +995,7 @@ mod test {
             p.shape.gamma
         );
 
-        for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 8000.0), (12_000.0, RATE)] {
+        for (fc, sr) in [(1000.0f64, 6000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
             let bin = p.bin(fc, sr);
             let t = taps(&p, bin);
             let w0 = bin.velocity();

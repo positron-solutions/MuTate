@@ -10,22 +10,19 @@
 // DEBT slang libraries so we can put this and associated code into lib and import them into the
 // visualizer.
 
+use super::{BINS, COLA, MAX_FREQ, SAMPLE_RATE};
+
 #[cfg(test)]
 mod test {
+
+    use super::*;
 
     use mutate_lib::dsp::{self, bank, MIN_FREQ_CHEAP_DRIVERS};
 
     use crate::audio::{cwt::wavelet::Plan, downsample::FILTERS};
 
-    const BINS: u32 = 4096;
-    const MAX_FREQ: f64 = 18_000.0;
-    const SAMPLE_RATE: f32 = 48_000.0;
-
-    /// Overlap factor for COLA.  Hop is `length / COLA`.
-    const COLA: f64 = 8.0;
-
     fn plan() -> Plan {
-        Plan::new(8.0, 3.0, 1e-8, 1.0).with_taper(1e-3, 0.15, 1.0)
+        Plan::new(2.5, 3.0, 1e-8, 1.0).with_taper(1e-3, 0.1, 1.0)
     }
 
     fn bins() -> Vec<bank::Bin> {
