@@ -351,27 +351,7 @@ impl Plan {
             self.transform(bin, buf);
             self.taper(buf);
             Self::center_scale(buf, self.scale(bin));
-
-            // NOTE this fiddly code was generated while scanning for low-hanging sources of
-            // floating point error.  Exploiting symmetry is just too good to pass up.  Here's what
-            // was said:
-            //
-            // Noise-shaping the real part's f32 rounding error forward along i, weighting the
-            // center tap once and the mirrored pairs twice, so the residual DC after quantization
-            // is minimized rather than accumulating as a random walk. The imaginary part is left
-            // alone because DC removal only touched the real part.
-            let n = bin.taps;
-            let half = n / 2;
-            let mut err = 0.0f64;
-            for i in half..n {
-                let (r, im) = buf[i];
-                let w = if i == half { 1.0 } else { 2.0 };
-                let rr = (r + err / w) as f32;
-                err += w * (r - rr as f64);
-                let ii = im as f32;
-                out[i] = (rr, ii);
-                out[n - 1 - i] = (rr, -ii);
-            }
+            Self::quantize(buf, out);
         }
         self.buf = buf;
     }
@@ -459,6 +439,25 @@ impl Plan {
         buf.resize(k * n, (0.0, 0.0));
         buf
     }
+
+    /// Real part quantized with error feedback along i, weighting the center tap
+    /// once and the mirrored pairs twice, so residual DC after rounding is
+    /// minimized rather than accumulating as a random walk. The imaginary part is
+    /// left alone because DC removal only touched the real part.
+    fn quantize(src: &[(f64, f64)], out: &mut [(f32, f32)]) {
+        let n = src.len();
+        let half = n / 2;
+        let mut err = 0.0f64;
+        for i in half..n {
+            let (r, im) = src[i];
+            let w = if i == half { 1.0 } else { 2.0 };
+            let rr = (r + err / w) as f32;
+            err += w * (r - rr as f64);
+            let ii = im as f32;
+            out[i] = (rr, ii);
+            out[n - 1 - i] = (rr, -ii);
+        }
+    }
 }
 
 /// A [`Plan`] carrying the two reassignment spectra.
@@ -505,9 +504,7 @@ impl ReassignPlan {
             Plan::center_scale(bt, norm / axis);
 
             for (out, src) in [(&mut *psi, &*bp), (&mut *d, &*bd), (&mut *t, &*bt)] {
-                for (o, &(r, i)) in out.iter_mut().zip(src.iter()) {
-                    *o = (r as f32, i as f32);
-                }
+                Plan::quantize(src, out);
             }
         }
         self.plan.buf = buf;
@@ -925,9 +922,14 @@ mod test {
         let peak = pk(&plain);
         println!("peak plain {:.7}  peak psi {:.7}", peak, pk(&psi));
 
-        // Both rotors agree in f64; the only spread is f32 rounding at the output.
-        let ulp = (peak as f64) * f64::from(f32::EPSILON);
-        assert!(skew <= 2.0 * ulp, "skew {skew:.3e} ulp {ulp:.3e}");
+        let differing = plain.iter().zip(psi.iter()).filter(|(a, b)| a != b).count();
+        let dc = |v: &[(f32, f32)]| v.iter().map(|&(r, _)| r as f64).sum::<f64>();
+        println!(
+            "differing taps {differing} of {n}  dc plain {:.3e}  dc psi {:.3e}",
+            dc(&plain),
+            dc(&psi)
+        );
+        assert_eq!(plain, psi.as_slice(), "psi paths diverge");
 
         // t is the bipolar spectrum; its real part passes through zero at the center.
         let half = n / 2;
@@ -937,6 +939,12 @@ mod test {
             t[half].0,
             pk(&t)
         );
+
+        for (label, v) in [("d", &d), ("t", &t)] {
+            let pk = v.iter().map(|&(r, _)| r.abs()).fold(0.0f32, f32::max) as f64;
+            let dc = v.iter().map(|&(r, _)| r as f64).sum::<f64>();
+            assert!(dc.abs() < 1e-5 * pk, "{label} dc {dc:.3e} peak {pk:.3e}");
+        }
     }
 
     /// Both rotors against direct evaluation. Agreement with each other follows.
