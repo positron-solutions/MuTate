@@ -51,17 +51,13 @@
 //!
 //! ```
 //! # use mutate::wavelet::{Spec, Taper};
-//! let plan = Spec::default()
+//! let mut plan = Spec::default()
 //!     .taper(Taper{eps_time: 1e-3, rho: 0.1})
 //!     .plan();
 //!
-//! // size scratch for the longest bin, which depends on the center frequency and sample rate of
-//! // the most expensive bin.
-//! let mut scratch = plan.scratch(plan.bin(50.0, 8000.0));
-//!
 //! let bin = plan.bin(1000.0, 8000.0);
 //! let mut taps = vec![(0.0, 0.0); bin.taps()];
-//! plan.taps_into(bin, &mut scratch, &mut taps);
+//! plan.taps_into(bin, &mut taps);
 //! ```
 //!
 //! Reassignment consumes the plan and adds the two derivative spectra. The `d` and `t` taps
@@ -69,18 +65,16 @@
 //!
 //! ```
 //! # use mutate::wavelet::{Spec, Taper};
-//! let plan = Spec::default()
+//! let mut plan = Spec::default()
 //!     .taper(Taper{eps_time: 1e-3, rho: 0.1})
 //!     .plan_with_reassignment();
-//!
-//! let mut scratch = plan.scratch(plan.bin(50.0, 8000.0));
 //!
 //! let bin = plan.bin(1000.0, 8000.0);
 //! let n = bin.taps();
 //! let (mut psi, mut d, mut t) = (vec![(0.0, 0.0); n], vec![(0.0, 0.0); n], vec![(0.0, 0.0); n]);
 //!
 //! // d and t are multiplied by i at use.
-//! plan.taps_into(bin, &mut scratch, &mut psi, &mut d, &mut t);
+//! plan.taps_into(bin, &mut psi, &mut d, &mut t);
 //! ```
 
 // NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
@@ -148,33 +142,42 @@ impl Bin {
     }
 }
 
-/// Baking scratch for cleanups before writing out f32s.
-pub struct Scratch {
-    buf: Box<[(f64, f64)]>,
-    max: usize,
+/// Controls Q and other critical tradeoffs of the wavelets.
+#[derive(Clone, Copy)]
+pub struct Shape {
+    /// `gamma` sets the exponent of the spectral envelope. It trades time symmetry against
+    /// frequency skew; 3.0 is the usual choice and the only one with a closed-form peak here. Below
+    /// 3 the time envelope skews, above 3 the spectrum grows heavier flanks.
+    pub gamma: f64,
+    /// Adjusting beta at fixed gamma is adjusting Q.
+    pub beta: f64,
 }
 
-impl Scratch {
-    fn with_len(max: usize) -> Self {
-        Scratch {
-            buf: vec![(0.0, 0.0); 3 * max].into_boxed_slice(),
-            max,
+impl Shape {
+    // XXX IIRC the sensing of Q depends on peak 1 vs peak 2?
+    ///
+    /// Q by the -3 dB energy width: dF/F = 2*sqrt(ln2)/P.
+    ///
+    /// `q` is the quality factor on the -3 dB energy width. Higher `q` narrows the band and costs
+    /// proportionally more taps at a given center frequency.
+    pub fn from_q(q: f64, gamma: f64) -> Self {
+        let p = 1.6651 * q;
+        Shape {
+            gamma,
+            beta: p * p / gamma,
         }
     }
 
-    /// Longest bin this scratch can bake.
-    pub fn capacity(&self) -> usize {
-        self.max
+    pub fn p(&self) -> f64 {
+        (self.beta * self.gamma).sqrt()
     }
 
-    fn one(&mut self, n: usize) -> &mut [(f64, f64)] {
-        &mut self.buf[..n]
-    }
-
-    fn three(&mut self, n: usize) -> [&mut [(f64, f64)]; 3] {
-        let (a, rest) = self.buf.split_at_mut(self.max);
-        let (b, c) = rest.split_at_mut(self.max);
-        [&mut a[..n], &mut b[..n], &mut c[..n]]
+    pub fn peak(&self) -> f64 {
+        if self.gamma == 3.0 {
+            (self.beta / 3.0).cbrt()
+        } else {
+            (self.beta / self.gamma).powf(1.0 / self.gamma)
+        }
     }
 }
 
@@ -192,28 +195,11 @@ pub struct Taper {
     pub rho: f64,
 }
 
-/// Builds the shape shared by every voice at this `q`.
-///
-/// `q` is the quality factor on the -3 dB energy width. Higher `q` narrows the band and costs
-/// proportionally more taps at a given center frequency.
-///
-/// `eps` is the spectral truncation floor relative to the peak. It sets how far the baked grid
-/// extends, and through that the tap count, but not the shape. 1e-8 lands near the f32 noise floor
-/// of the output taps.  Never use `eps_time` lower than `eps` because it means avoiding truncation
-/// of what is already inexact.
-///
-/// `tail_a` scales the algebraic-tail branch of the half-width estimate, which dominates the
-/// Gaussian core at low `q`. Raise it to buy more tail at the cost of taps; 1.0 is the calibrated
-/// value and the one every response measurement in this module was taken with.
-///
-/// Lower center frequencies mean longer bins, so the lowest bin you intend to
-/// bake sets necessary scratch size.
-///
-/// `gamma` sets the exponent of the spectral envelope. It trades time symmetry against frequency
-/// skew; 3.0 is the usual choice and the only one with a closed-form peak here. Below 3 the time
-/// envelope skews, above 3 the spectrum grows heavier flanks.
+/// A builder struct for configuring a plan to build wavelets with a given shape.
 ///
 /// ```
+/// # use mutate::wavelet::{Spec, Taper};
+///
 /// let spec = Spec::default()
 ///    .taper(Taper { eps_time: 1e-3, rho: 0.1 });
 /// ```
@@ -223,6 +209,7 @@ pub struct Spec {
     eps: f64,
     tail_a: f64,
     taper: Option<Taper>,
+    max_taps: usize,
 }
 
 impl Default for Spec {
@@ -232,23 +219,30 @@ impl Default for Spec {
             eps: 1e-8,
             tail_a: 1.0,
             taper: None,
+            max_taps: 0,
         }
     }
 }
 
 impl Spec {
-    /// Set shape.
+    /// Set mother wavelet [`Shape`].
     pub fn shape(mut self, shape: Shape) -> Self {
         self.shape = shape;
         self
     }
 
-    /// Set error tolerance.
+    /// `eps` is the spectral truncation floor relative to the peak. It sets how far the baked grid
+    /// extends, and through that the tap count, but not the shape. 1e-8 lands near the f32 noise
+    /// floor of the output taps.  Never use `eps_time` (on [`Taper`]) lower than `eps` because it
+    /// means avoiding truncation of what is already inexact.
     pub fn eps(mut self, eps: f64) -> Self {
         self.eps = eps;
         self
     }
-    // XXX set what?
+
+    /// `tail_a` scales the algebraic-tail branch of the half-width estimate, which dominates the
+    /// Gaussian core at low `q`. Raise it to buy more tail at the cost of taps; 1.0 is the
+    /// calibrated value and the one every response measurement in this module was taken with.
     pub fn tail_a(mut self, tail_a: f64) -> Self {
         self.tail_a = tail_a;
         self
@@ -256,6 +250,13 @@ impl Spec {
     /// Set taper and error tolerance
     pub fn taper(mut self, taper: Taper) -> Self {
         self.taper = Some(taper);
+        self
+    }
+
+    /// `max_taps` is a **hint** to allocate a larger scratch `Vec`, which will of course resize if
+    /// necessary.  Uses [`Vec::with_capacity`](std::vec::Vec::with_capacity).
+    pub fn max_taps(mut self, max_taps: usize) -> Self {
+        self.max_taps = max_taps;
         self
     }
 
@@ -288,6 +289,7 @@ impl Spec {
             psi,
             lo,
             rho: self.taper.map_or(0.0, |t| t.rho),
+            buf: Vec::with_capacity(3 * self.max_taps),
         }
     }
 
@@ -299,12 +301,13 @@ impl Spec {
 /// Shape-only. Everything here is independent of center frequency and rate.
 pub struct Plan {
     shape: Shape,
-    peak: f64,     // argmax of w^beta e^{-w^gamma}
-    c: f64,        // half_width_scaled; taps = 2*ceil(c/omega0)+1
-    du: f64,       // uniform step in u = w/w_peak
-    psi: Vec<f64>, // psi at u_j = j*du, peak 1
-    lo: usize,     // first grid point above eps; psi[..lo] is zero
-    rho: f64,      // taper fraction of the half-span; 0.0 disables
+    peak: f64,            // argmax of w^beta e^{-w^gamma}
+    c: f64,               // half_width_scaled; taps = 2*ceil(c/omega0)+1
+    du: f64,              // uniform step in u = w/w_peak
+    psi: Vec<f64>,        // psi at u_j = j*du, peak 1
+    lo: usize,            // first grid point above eps; psi[..lo] is zero
+    rho: f64,             // taper fraction of the half-span; 0.0 disables
+    buf: Vec<(f64, f64)>, // bake scratch, 3 * longest bin seen
 }
 
 impl Plan {
@@ -344,32 +347,37 @@ impl Plan {
         }
     }
 
-    /// Writes bin.len() complex taps, centered, peak gain 2, DC removed.
-    pub fn taps_into(&self, bin: Bin, scratch: &mut Scratch, out: &mut [(f32, f32)]) {
-        let buf = scratch.one(bin.taps);
-        self.transform(bin, buf);
-        self.taper(buf);
-        Self::center_scale(buf, self.scale(bin));
+    /// Writes bin.taps() complex taps, centered, peak gain 2, DC removed.
+    pub fn taps_into(&mut self, bin: Bin, out: &mut [(f32, f32)]) {
+        let mut buf = self.take_buf(1, bin.taps);
+        {
+            let buf = &mut buf[..];
+            self.transform(bin, buf);
+            self.taper(buf);
+            Self::center_scale(buf, self.scale(bin));
 
-        // NOTE this fiddly code was generated while scanning for low-hanging sources of floating
-        // point error.  Exploiting symmetry is just too good to pass up.  Here's what was said:
-        //
-        // Noise-shaping the real part's f32 rounding error forward along i, weighting the
-        // center tap once and the mirrored pairs twice, so the residual DC after quantization is
-        // minimized rather than accumulating as a random walk. The imaginary part is left alone
-        // because DC removal only touched the real part.
-        let n = bin.taps;
-        let half = n / 2;
-        let mut err = 0.0f64;
-        for i in half..n {
-            let (r, im) = buf[i];
-            let w = if i == half { 1.0 } else { 2.0 };
-            let rr = (r + err / w) as f32;
-            err += w * (r - rr as f64);
-            let ii = im as f32;
-            out[i] = (rr, ii);
-            out[n - 1 - i] = (rr, -ii);
+            // NOTE this fiddly code was generated while scanning for low-hanging sources of
+            // floating point error.  Exploiting symmetry is just too good to pass up.  Here's what
+            // was said:
+            //
+            // Noise-shaping the real part's f32 rounding error forward along i, weighting the
+            // center tap once and the mirrored pairs twice, so the residual DC after quantization
+            // is minimized rather than accumulating as a random walk. The imaginary part is left
+            // alone because DC removal only touched the real part.
+            let n = bin.taps;
+            let half = n / 2;
+            let mut err = 0.0f64;
+            for i in half..n {
+                let (r, im) = buf[i];
+                let w = if i == half { 1.0 } else { 2.0 };
+                let rr = (r + err / w) as f32;
+                err += w * (r - rr as f64);
+                let ii = im as f32;
+                out[i] = (rr, ii);
+                out[n - 1 - i] = (rr, -ii);
+            }
         }
+        self.buf = buf;
     }
 
     /// Single-spectrum rotor walk over psi.  Takes advantage of odd symmetry.
@@ -445,16 +453,16 @@ impl Plan {
         }
     }
 
-    /// Scratch sized for `bin` and every shorter one. Pass the bin with the
-    /// largest rate/center ratio you intend to bake; under decimation that is
-    /// the bin just above a cutoff, not the lowest center frequency.
-    pub fn scratch(&self, bin: Bin) -> Scratch {
-        Scratch::with_len(bin.taps)
-    }
-
     /// Per-tap advance for a rotor seeded at grid index `base`.
     fn seed_step(step: f64, base: usize) -> (f64, f64) {
         (step * base as f64).sin_cos()
+    }
+
+    /// Takes the bake buffer out, sized for `k` spans of `n`. Caller puts it back.
+    fn take_buf(&mut self, k: usize, n: usize) -> Vec<(f64, f64)> {
+        let mut buf = core::mem::take(&mut self.buf);
+        buf.resize(k * n, (0.0, 0.0));
+        buf
     }
 }
 
@@ -466,42 +474,47 @@ pub struct ReassignPlan {
 
 impl ReassignPlan {
     /// Writes psi, pitch weights, and time weights for `bin`. All three output
-    /// slices must be `bin.len()`.
+    /// slices must be `bin.taps()`.
     ///
     /// Centered, peak gain 2, DC removed.
     ///
     /// `d` and `t` are to be multiplied by `i` at use.
     pub fn taps_into(
-        &self,
+        &mut self,
         bin: Bin,
-        scratch: &mut Scratch,
         psi: &mut [(f32, f32)],
         d: &mut [(f32, f32)],
         t: &mut [(f32, f32)],
     ) {
-        let [bp, bd, bt] = scratch.three(bin.taps);
-        self.transform3(bin, bp, bd, bt);
+        let n = bin.taps;
+        let mut buf = self.plan.take_buf(3, n);
+        {
+            let (bp, rest) = buf.split_at_mut(n);
+            let (bd, bt) = rest.split_at_mut(n);
+            self.transform3(bin, bp, bd, bt);
 
-        // d and t are re-weightings of psi.  Taper each on its own:
-        // windowing in time convolves each spectrum with the taper kernel, so d = w*psi holds to
-        // the kernel's second moment.  Differentiating tapered taps instead would add a
-        // product-rule term carrying the taper's derivative, a first-order bump sitting exactly
-        // where the reassignment weights should be going quiet.
-        self.taper(bp);
-        self.taper(bd);
-        self.taper(bt);
+            // d and t are re-weightings of psi.  Taper each on its own:
+            // windowing in time convolves each spectrum with the taper kernel, so d = w*psi holds to
+            // the kernel's second moment.  Differentiating tapered taps instead would add a
+            // product-rule term carrying the taper's derivative, a first-order bump sitting exactly
+            // where the reassignment weights should be going quiet.
+            self.taper(bp);
+            self.taper(bd);
+            self.taper(bt);
 
-        let norm = self.scale(bin);
-        let axis = bin.w0 / self.peak;
-        Plan::center_scale(bp, norm);
-        Plan::center_scale(bd, norm * axis);
-        Plan::center_scale(bt, norm / axis);
+            let norm = self.scale(bin);
+            let axis = bin.w0 / self.peak;
+            Plan::center_scale(bp, norm);
+            Plan::center_scale(bd, norm * axis);
+            Plan::center_scale(bt, norm / axis);
 
-        for (out, src) in [(&mut *psi, &*bp), (&mut *d, &*bd), (&mut *t, &*bt)] {
-            for (o, &(r, i)) in out.iter_mut().zip(src.iter()) {
-                *o = (r as f32, i as f32);
+            for (out, src) in [(&mut *psi, &*bp), (&mut *d, &*bd), (&mut *t, &*bt)] {
+                for (o, &(r, i)) in out.iter_mut().zip(src.iter()) {
+                    *o = (r as f32, i as f32);
+                }
             }
         }
+        self.plan.buf = buf;
     }
 
     /// Rotor walk over the interleaved spectra, one pass for all three outputs.
@@ -555,34 +568,6 @@ impl core::ops::Deref for ReassignPlan {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Shape {
-    pub gamma: f64,
-    pub beta: f64,
-}
-
-impl Shape {
-    /// Q by the -3 dB energy width: dF/F = 2*sqrt(ln2)/P.
-    pub fn from_q(q: f64, gamma: f64) -> Self {
-        let p = 1.6651 * q;
-        Shape {
-            gamma,
-            beta: p * p / gamma,
-        }
-    }
-    pub fn p(&self) -> f64 {
-        (self.beta * self.gamma).sqrt()
-    }
-
-    pub fn peak(&self) -> f64 {
-        if self.gamma == 3.0 {
-            (self.beta / 3.0).cbrt()
-        } else {
-            (self.beta / self.gamma).powf(1.0 / self.gamma)
-        }
-    }
-}
-
 /// Grid indices bracketing the spectrum above `eps`: `[lo, m)`.
 /// g(u) = beta*ln(u) - (beta/gamma)*u^gamma, normalized so g(1) = 0.
 fn support(shape: Shape, du: f64, eps: f64) -> (usize, usize) {
@@ -628,10 +613,9 @@ mod test {
         Spec::default().shape(Shape::from_q(q, 3.0)).eps(eps)
     }
 
-    fn taps(plan: &Plan, bin: Bin) -> Vec<(f32, f32)> {
-        let mut s = plan.scratch(bin);
+    fn taps(plan: &mut Plan, bin: Bin) -> Vec<(f32, f32)> {
         let mut t = vec![(0.0, 0.0); bin.taps()];
-        plan.taps_into(bin, &mut s, &mut t);
+        plan.taps_into(bin, &mut t);
         t
     }
 
@@ -699,10 +683,17 @@ mod test {
     #[test]
     fn print_gamma_sweep() {
         println!("\n=== ENVELOPE vs GAMMA (Q = 2.4) ===");
+        // P = 4.0 is Q = 2.4; holding it fixed keeps the -3 dB width constant across gamma.
+        let p = 4.0;
         for gamma in [1.0f64, 2.0, 3.0, 6.0] {
-            let plan = Spec::default().plan();
+            let mut plan = Spec::default()
+                .shape(Shape {
+                    gamma,
+                    beta: p * p / gamma,
+                })
+                .plan();
             let bin = plan.bin(1000.0, 8000.0);
-            let t = taps(&plan, bin);
+            let t = taps(&mut plan, bin);
             let n = bin.taps();
 
             let mags: Vec<f64> = t.iter().copied().map(mag).collect();
@@ -734,7 +725,7 @@ mod test {
 
     #[test]
     fn print_spectrum() {
-        let plan = spec(3.0, 1e-6).plan_with_reassignment();
+        let mut plan = spec(3.0, 1e-6).plan_with_reassignment();
 
         println!(
             "\n=== SPECTRUM ({} grid points, u = w/w_peak) ===",
@@ -816,7 +807,10 @@ mod test {
         use mutate_lib::dsp::bank;
 
         let start = std::time::Instant::now();
-        let plan = Spec::default().shape(Shape::from_q(20.0, 3.0)).plan();
+        let mut plan = Spec::default()
+            .max_taps(4096)
+            .shape(Shape::from_q(20.0, 3.0))
+            .plan();
         let bins = bank::bins(2_000.0, 20_000.0, BINS);
         println!("planning time: {:?}µs", start.elapsed().as_micros());
 
@@ -825,9 +819,6 @@ mod test {
             .map(|b| b.center)
             .map(|c| plan.bin(c, RATE))
             .collect();
-
-        // bins are ascending, so the first voice is the longest.
-        let mut scratch = plan.scratch(voices[0]);
 
         let total: usize = voices.iter().map(|b| b.taps()).sum();
         let mut taps = vec![(0.0f32, 0.0f32); total];
@@ -839,7 +830,7 @@ mod test {
         for &bin in &voices {
             let n = bin.taps();
             offsets.push(cursor);
-            plan.taps_into(bin, &mut scratch, &mut taps[cursor..cursor + n]);
+            plan.taps_into(bin, &mut taps[cursor..cursor + n]);
             cursor += n;
         }
 
@@ -878,21 +869,22 @@ mod test {
     /// Also the cheapest place to see the reassignment envelopes.
     #[test]
     fn transform3_matches_transform() {
-        let base = spec(2.5, 1e-6).plan();
-        let bin = base.bin(2_000.0, RATE);
+        let base = spec(2.5, 1e-6);
+        let mut plain_plan = base.plan();
+        let bin = plain_plan.bin(2_000.0, RATE);
         let n = bin.taps();
-        let mut s = base.scratch(bin);
 
         let mut plain = vec![(0.0f32, 0.0f32); n];
-        base.taps_into(bin, &mut s, &mut plain);
+        plain_plan.taps_into(bin, &mut plain);
 
-        let plan = base.with_reassignment();
+        let mut plan = base.plan_with_reassignment();
+
         let (mut psi, mut d, mut t) = (
             vec![(0.0f32, 0.0f32); n],
             vec![(0.0f32, 0.0f32); n],
             vec![(0.0f32, 0.0f32); n],
         );
-        plan.taps_into(bin, &mut s, &mut psi, &mut d, &mut t);
+        plan.taps_into(bin, &mut psi, &mut d, &mut t);
 
         print_wave("PSI (transform3)", &psi, 30);
         print_wave("D = w*psi", &d, 30);
@@ -954,7 +946,7 @@ mod test {
         let n = bin.taps();
         let (half, step) = (n / 2, p.du * bin.w0);
 
-        let plan = p.with_reassignment();
+        let mut plan = p.with_reassignment();
 
         let mut want = [
             vec![(0.0f64, 0.0f64); n],
@@ -1018,10 +1010,10 @@ mod test {
     /// Smoke test.  Hermitian, DC-free, unit L2.
     #[test]
     fn taps_are_conditioned() {
-        let p = spec(3.0, 1e-8).plan();
+        let mut p = spec(3.0, 1e-8).plan();
         for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 8000.0), (12_000.0, RATE)] {
             let bin = p.bin(fc, sr);
-            let t = taps(&p, bin);
+            let t = taps(&mut p, bin);
             let n = bin.taps();
 
             for j in 0..n / 2 {
@@ -1044,7 +1036,7 @@ mod test {
         const SWEEP: usize = 8192;
 
         let (q, eps, eps_time, rho) = (2.5, 1e-8, 1e-3, 0.1);
-        let p = spec(q, eps)
+        let mut p = spec(q, eps)
             .taper(Taper {
                 eps_time: 1e-3,
                 rho: 0.1,
@@ -1060,7 +1052,7 @@ mod test {
 
         for (fc, sr) in [(1000.0f64, 6000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
             let bin = p.bin(fc, sr);
-            let t = taps(&p, bin);
+            let t = taps(&mut p, bin);
             let w0 = bin.velocity();
 
             // Coarse sweep: peak location, negative-frequency leakage.
@@ -1133,9 +1125,9 @@ mod test {
     /// see only the +w half of the cosine.
     #[test]
     fn unit_tone_reads_unity() {
-        let p = spec(3.0, 1e-8).plan();
+        let mut p = spec(3.0, 1e-8).plan();
         let bin = p.bin(1000.0, 8000.0);
-        let t = taps(&p, bin);
+        let t = taps(&mut p, bin);
         let (n, w0) = (bin.taps(), bin.velocity());
 
         // taps are centered, so m is the sample under tap index n/2.
