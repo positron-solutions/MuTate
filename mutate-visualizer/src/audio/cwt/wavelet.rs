@@ -354,9 +354,11 @@ impl Plan {
         let mut buf = self.take_buf(1, bin.taps);
         {
             let buf = &mut buf[..];
+
             self.transform(bin, buf);
             self.taper(buf);
-            Self::center_scale(buf, self.scale(bin));
+            Self::center(buf);
+            Self::scale_by(buf, PEAK_GAIN / Self::gain_at(buf, bin.w0));
             Self::quantize(buf, out);
         }
         self.buf = buf;
@@ -391,20 +393,21 @@ impl Plan {
         }
     }
 
-    /// DC removal on psi's scale.
-    fn center_scale(out: &mut [(f64, f64)], norm: f64) {
+    /// DC removal only. Hermitian: pairs contribute 2*re, center once.
+    fn center(out: &mut [(f64, f64)]) {
         let n = out.len();
         let half = n / 2;
         let mr = (2.0 * out[half + 1..].iter().map(|s| s.0).sum::<f64>() + out[half].0) / n as f64;
         for s in out.iter_mut() {
-            s.0 = (s.0 - mr) * norm;
-            s.1 *= norm;
+            s.0 -= mr;
         }
     }
 
-    /// Output scale for PEAK_GAIN. The rotor sum is an inverse DTFT
-    fn scale(&self, bin: Bin) -> f64 {
-        PEAK_GAIN * self.du * bin.w0 / core::f64::consts::TAU
+    fn scale_by(out: &mut [(f64, f64)], norm: f64) {
+        for s in out.iter_mut() {
+            s.0 *= norm;
+            s.1 *= norm;
+        }
     }
 
     /// Planck taper over the outer `rho` of the half-span.  Smooth to all orders at
@@ -464,6 +467,22 @@ impl Plan {
             out[n - 1 - i] = (rr, -ii);
         }
     }
+
+    /// H(w0) of centered Hermitian taps. Real by symmetry.
+    fn gain_at(out: &[(f64, f64)], w0: f64) -> f64 {
+        let n = out.len();
+        let half = n / 2;
+        let (s, c) = w0.sin_cos();
+        let (mut cr, mut ci) = (1.0f64, 0.0f64);
+        let mut acc = out[half].0;
+        for &(r, im) in &out[half + 1..] {
+            let (nr, ni) = (cr * c - ci * s, cr * s + ci * c);
+            cr = nr;
+            ci = ni;
+            acc += 2.0 * (r * cr + im * ci);
+        }
+        acc
+    }
 }
 
 /// A [`Plan`] carrying the two reassignment spectra.
@@ -502,12 +521,16 @@ impl ReassignPlan {
             self.plan.taper(bd);
             self.plan.taper(bt);
 
-            let norm = self.plan.scale(bin);
+            Plan::center(bp);
+            Plan::center(bd);
+            Plan::center(bt);
+
+            let norm = PEAK_GAIN / Plan::gain_at(bp, bin.w0);
             let axis = bin.w0 / self.plan.peak;
 
-            Plan::center_scale(bp, norm);
-            Plan::center_scale(bd, norm * axis);
-            Plan::center_scale(bt, norm / axis);
+            Plan::scale_by(bp, norm);
+            Plan::scale_by(bd, norm * axis);
+            Plan::scale_by(bt, norm / axis);
 
             for (out, src) in [(&mut *psi, &*bp), (&mut *d, &*bd), (&mut *t, &*bt)] {
                 Plan::quantize(src, out);
