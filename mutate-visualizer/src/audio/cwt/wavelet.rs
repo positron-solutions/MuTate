@@ -83,7 +83,7 @@
 // will be used are not particularly aware, so it's not expected that we can re-use exact bins in
 // any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
 // NEXT Run time of the bin generation test (not reflective of actual sample rates and Q) is about
-// 50ms on a Zen2+ part.  This affects CWT startup time.
+// 33ms on a Zen2+ part.  This affects CWT startup time.
 // NEXT We must do a very fine frequency sweep on a resulting filter bank sampling edge to really
 // have an idea of the correctness of the gain peak location.  If there is a bias, it probably is
 // consistent, but if the design bias doesn't remain consistent across the resampling edges, we will
@@ -97,25 +97,31 @@
 // Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
 // formalism.
 //
-// === RESPONSE (Q = 2.5, gamma = 3, eps = 1e-8, taper 1e-3 rho 0.1, target rel width 0.40000) ===
+// === RESPONSE (Q = 2.5, gamma = 3, eps = 1e-8, taper 1e-3 rho 0.1, rel width exact 0.39865 gaussian 0.40000) ===
 //
 // fc    1000 sr   6000  taps    31  w0 1.047198
-//   peak at 1.047149  offset -4.646e-5 rel
-//   rel width 0.39875  want 0.40000  ratio 0.9969
+//   peak gain 2.000000060  dev +2.978e-8 rel
+//   rel width 0.39875  exact 0.39865  ratio 1.00026
+//   peak -0.0804 cents  -2.33e-4 of half-width
 //   negative-freq max   -83.56 dB
 //   stopband floor      -85.86 dB
+//   peak gain 2.00000  analytic 2.00000  ratio 1.00000
 //
 // fc     250 sr   3000  taps    61  w0 0.523599
-//   peak at 0.523562  offset -6.931e-5 rel
-//   rel width 0.39883  want 0.40000  ratio 0.9971
+//   peak gain 2.000000073  dev +3.642e-8 rel
+//   rel width 0.39883  exact 0.39865  ratio 1.00045
+//   peak -0.1200 cents  -3.48e-4 of half-width
 //   negative-freq max   -78.37 dB
 //   stopband floor      -80.65 dB
+//   peak gain 2.00000  analytic 2.00000  ratio 1.00000
 //
 // fc   12000 sr  48000  taps    21  w0 1.570796
-//   peak at 1.570756  offset -2.590e-5 rel
-//   rel width 0.39870  want 0.40000  ratio 0.9967
+//   peak gain 1.999999972  dev -1.424e-8 rel
+//   rel width 0.39870  exact 0.39865  ratio 1.00012
+//   peak -0.0448 cents  -1.30e-4 of half-width
 //   negative-freq max   -80.34 dB
 //   stopband floor      -80.34 dB
+//   peak gain 2.00000  analytic 2.00000  ratio 1.00000
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude,
 /// so |H| = 2 makes a unit tone read |W| = 1.
@@ -289,7 +295,7 @@ impl Spec {
         }
     }
 
-    fn plan_with_reassignment(self) -> ReassignPlan {
+    pub fn plan_with_reassignment(self) -> ReassignPlan {
         self.plan().with_reassignment()
     }
 }
@@ -602,6 +608,8 @@ fn half_width_scaled(s: Shape, eps: f64, tail_a: f64) -> f64 {
 
 #[cfg(test)]
 mod test {
+    use core::f64::consts::{LN_2, PI};
+
     use super::*;
 
     const BINS: usize = 1024;
@@ -832,6 +840,7 @@ mod test {
             cursor += n;
         }
 
+        let elapsed = start.elapsed();
         let worst = voices
             .iter()
             .zip(offsets.iter())
@@ -839,7 +848,6 @@ mod test {
             .fold(0.0f64, f64::max);
         assert!(worst < 1e-3, "worst peak gain error {worst:.3e}");
 
-        let elapsed = start.elapsed();
         let n = voices[0].taps();
         print_wave(
             &format!(
@@ -1045,17 +1053,36 @@ mod test {
         const SWEEP: usize = 8192;
 
         let (q, eps, eps_time, rho) = (2.5, 1e-8, 1e-3, 0.1);
-        let mut p = spec(q, eps)
-            .taper(Taper {
-                eps_time: 1e-3,
-                rho: 0.1,
-            })
-            .plan();
-        let want_rel = 2.0 * 2.0f64.ln().sqrt() / p.shape.p();
+        let mut p = spec(q, eps).taper(Taper { eps_time, rho }).plan();
+
+        fn ref_rel_width(s: Shape) -> f64 {
+            let (beta, gamma) = (s.beta, s.gamma);
+            let g = |x: f64| beta * x - (beta / gamma) * ((gamma * x).exp() - 1.0);
+            let target = -LN_2 / 2.0;
+            // Lol.. we'll just solve that real quick eh?
+            let root = |mut a: f64, mut b: f64| {
+                for _ in 0..80 {
+                    let m = 0.5 * (a + b);
+                    if g(m) > target {
+                        a = m
+                    } else {
+                        b = m
+                    }
+                }
+                0.5 * (a + b)
+            };
+            root(0.0, 2.0).exp() - root(0.0, -2.0).exp()
+        }
+
+        let omega = |k: usize| -PI + 2.0 * PI * k as f64 / SWEEP as f64;
+
+        let want_rel = 2.0 * LN_2.sqrt() / p.shape.p();
+        let exact_rel = ref_rel_width(p.shape);
+        let mut widths = Vec::new();
 
         println!(
             "\n=== RESPONSE (Q = {q}, gamma = {}, eps = {eps:.0e}, taper {eps_time:.0e} rho {rho}, \
-             target rel width {want_rel:.5}) ===",
+             rel width exact {exact_rel:.5} gaussian {want_rel:.5}) ===",
             p.shape.gamma
         );
 
@@ -1064,12 +1091,19 @@ mod test {
             let t = taps(&mut p, bin);
             let w0 = bin.velocity();
 
+            println!(
+                "\nfc {:>7.0} sr {:>6.0}  taps {:>5}  w0 {:.6}",
+                fc,
+                sr,
+                bin.taps(),
+                w0
+            );
+
             // Coarse sweep: peak location, negative-frequency leakage.
             let mut peak = (0.0f64, 0.0f64);
             let mut neg = 0.0f64;
             for k in 0..=SWEEP {
-                let w =
-                    -core::f64::consts::PI + 2.0 * core::f64::consts::PI * k as f64 / SWEEP as f64;
+                let w = omega(k);
                 let h = dtft(&t, w);
                 if w < 0.0 {
                     neg = neg.max(h);
@@ -1080,7 +1114,7 @@ mod test {
             }
 
             // Refine the peak on the coarse cell, then the half-power edges.
-            let cell = 2.0 * core::f64::consts::PI / SWEEP as f64;
+            let cell = 2.0 * PI / SWEEP as f64;
             let (mut a, mut b) = (peak.0 - cell, peak.0 + cell);
             for _ in 0..80 {
                 let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
@@ -1092,42 +1126,69 @@ mod test {
             }
             let wpk = 0.5 * (a + b);
             let hpk = dtft(&t, wpk);
-            assert!((hpk - PEAK_GAIN).abs() < 1e-3, "fc {fc} peak gain {hpk:.6}");
+            println!(
+                "  peak gain {:.9}  dev {:+.3e} rel",
+                hpk,
+                hpk / PEAK_GAIN - 1.0
+            );
 
             let half = hpk / 2.0f64.sqrt();
             let lo = crossing(&t, wpk - w0, wpk, half);
-            let hi = crossing(&t, wpk, (wpk + w0).min(core::f64::consts::PI), half);
+            let hi = crossing(&t, wpk, (wpk + w0).min(PI), half);
             let rel = (hi - lo) / wpk;
 
             // Stopband: everything past three half-power widths from the peak.
             let guard = 3.0 * (hi - lo);
             let mut floor = 0.0f64;
             for k in 0..=SWEEP {
-                let w =
-                    -core::f64::consts::PI + 2.0 * core::f64::consts::PI * k as f64 / SWEEP as f64;
+                let w = omega(k);
                 if (w - wpk).abs() > guard {
                     floor = floor.max(dtft(&t, w));
                 }
             }
 
-            let db = |v: f64| 20.0 * (v / hpk).log10();
+            // Detuning in cents against w0, and as a fraction of the half-power half-width.
+            // Both are yardsticks: 1 cent is inaudible, and 1.0 here would put the argmax
+            // on the -3 dB edge.
+            let cents = 1200.0 * (wpk / w0).log2();
+            let detune = (wpk - w0) / (0.5 * rel * wpk);
             println!(
-                "\nfc {:>7.0} sr {:>6.0}  taps {:>5}  w0 {:.6}",
-                fc,
-                sr,
-                bin.taps(),
-                w0
-            );
-            println!("  peak at {:.6}  offset {:+.3e} rel", wpk, (wpk - w0) / w0);
-            println!(
-                "  rel width {:.5}  want {:.5}  ratio {:.4}",
+                "  rel width {:.5}  exact {:.5}  ratio {:.5}",
                 rel,
-                want_rel,
-                rel / want_rel
+                exact_rel,
+                rel / exact_rel
             );
+            println!("  peak {:+.4} cents  {:+.2e} of half-width", cents, detune);
+            widths.push(rel);
+
+            let db = |v: f64| 20.0 * (v / hpk).log10();
+
             println!("  negative-freq max {:>8.2} dB", db(neg));
             println!("  stopband floor    {:>8.2} dB", db(floor));
+            println!(
+                "  peak gain {:.5}  analytic {:.5}  ratio {:.5}",
+                hpk,
+                PEAK_GAIN,
+                hpk / PEAK_GAIN
+            );
+
+            assert!(
+                (hpk / PEAK_GAIN - 1.0).abs() < 1e-5,
+                "fc {fc} peak gain {hpk:.9}"
+            );
+
+            assert!(
+                cents.abs() < 1.0,
+                "fc {fc} peak {cents:+.4} cents off center"
+            );
         }
+
+        let lo = widths.iter().copied().fold(f64::MAX, f64::min);
+        let hi = widths.iter().copied().fold(0.0f64, f64::max);
+        assert!(
+            hi / lo - 1.0 < 2e-3,
+            "rel width varies across rates: {lo:.5} to {hi:.5}"
+        );
     }
 
     /// A real unit tone reads |W| = 1 even though |H| = 2: the analytic taps
@@ -1149,6 +1210,51 @@ mod test {
             }
             let env = (re * re + im * im).sqrt();
             assert!((env - 1.0).abs() < 1e-3, "phase {m} envelope {env:.6}");
+        }
+    }
+
+    /// Peak-normalized constant-Q puts noise gain proportional to center
+    /// frequency: length goes as 1/w0, amplitude as 1/N, so energy tracks w0.
+    /// White noise therefore floors at a fixed level per bin once w0 is divided out.
+    #[test]
+    fn noise_gain_tracks_center() {
+        // Tap count is an integer, so envelope truncation loses O(1/N) of the
+        // energy, worst at the top of the range. Anchored mid-range so the
+        // deviation splits either side.
+        const NOISE_GAIN: f64 = 0.224814;
+        const TOL: f64 = 1e-3;
+
+        let mut p = spec(3.0, 1e-8)
+            .taper(Taper {
+                eps_time: 1e-3,
+                rho: 0.1,
+            })
+            .plan();
+
+        println!("\n=== NOISE GAIN (Q = 3, sr = {RATE}) ===");
+
+        for fc in [500.0f64, 1000.0, 2000.0, 4000.0, 8000.0] {
+            let bin = p.bin(fc, RATE);
+            let t = taps(&mut p, bin);
+            let e: f64 = t
+                .iter()
+                .map(|&(r, i)| (r as f64).powi(2) + (i as f64).powi(2))
+                .sum();
+            let ratio = e / bin.velocity();
+
+            println!(
+                "  fc {:>6.0}  taps {:>5}  energy {:.6}  e/w0 {:.6}  dev {:+.2e}",
+                fc,
+                bin.taps(),
+                e,
+                ratio,
+                ratio / NOISE_GAIN - 1.0
+            );
+
+            assert!(
+                (ratio / NOISE_GAIN - 1.0).abs() < TOL,
+                "fc {fc} noise gain {ratio:.6}"
+            );
         }
     }
 }
