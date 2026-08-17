@@ -77,6 +77,8 @@
 //! plan.taps_into(bin, &mut psi, &mut d, &mut t);
 //! ```
 
+// NEXT ReassignPlan and Plan are too similar.  Go ahead and re-combine them over the 1-vs-3 weights
+// axis.
 // NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
 // will be used are not particularly aware, so it's not expected that we can re-use exact bins in
 // any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
@@ -491,12 +493,13 @@ impl ReassignPlan {
             // the kernel's second moment.  Differentiating tapered taps instead would add a
             // product-rule term carrying the taper's derivative, a first-order bump sitting exactly
             // where the reassignment weights should be going quiet.
-            self.taper(bp);
-            self.taper(bd);
-            self.taper(bt);
+            self.plan.taper(bp);
+            self.plan.taper(bd);
+            self.plan.taper(bt);
 
-            let norm = self.scale(bin);
-            let axis = bin.w0 / self.peak;
+            let norm = self.plan.scale(bin);
+            let axis = bin.w0 / self.plan.peak;
+
             Plan::center_scale(bp, norm);
             Plan::center_scale(bd, norm * axis);
             Plan::center_scale(bt, norm / axis);
@@ -551,13 +554,18 @@ impl ReassignPlan {
             si = ni;
         }
     }
-}
 
-/// ReassignPlan is basically also a Plan and has access to its methods.
-impl core::ops::Deref for ReassignPlan {
-    type Target = Plan;
-    fn deref(&self) -> &Plan {
-        &self.plan
+    /// See [`Plan::bin`].
+    pub fn bin(&self, center: f64, rate: f64) -> Bin {
+        self.plan.bin(center, rate)
+    }
+
+    fn du(&self) -> f64 {
+        self.plan.du
+    }
+
+    fn peak(&self) -> f64 {
+        self.plan.peak
     }
 }
 
@@ -732,12 +740,12 @@ mod test {
             if p < 1e-7 {
                 continue;
             }
-            let u = j as f64 * plan.du;
+            let u = j as f64 * plan.du();
             println!(
                 "{:>4} {:>8.4} {:>8.4} {:>12.6} {:>12.6} {:>12.6}",
                 j,
                 u,
-                plan.peak * u,
+                plan.peak() * u,
                 p,
                 pd,
                 pt
@@ -747,26 +755,26 @@ mod test {
         let pk = (1..plan.spec.len())
             .max_by(|&a, &b| plan.spec[a][0].total_cmp(&plan.spec[b][0]))
             .unwrap();
-        let upk = pk as f64 * plan.du;
+        let upk = pk as f64 * plan.du();
         println!("peak at u = {:.4}, wanted 1.0", upk);
 
         // The grid is sampled, so the argmax can only land within half a step of 1.0.
         assert!(
-            (upk - 1.0).abs() <= plan.du,
+            (upk - 1.0).abs() <= plan.du(),
             "peak u {upk:.6} du {:.6}",
-            plan.du
+            plan.du()
         );
 
         // d = w*psi exactly
         for j in 1..plan.spec.len() {
             let [p, d, _] = plan.spec[j];
-            let w = plan.peak * j as f64 * plan.du;
+            let w = plan.peak() * j as f64 * plan.du();
             assert!((d - p * w).abs() <= 1e-12 * (p * w).abs(), "d at {j}");
         }
 
         // t = dpsi/dw, checked by central difference.  This catches sign and
         // factor errors, not small ones.
-        let dw = plan.peak * plan.du;
+        let dw = plan.peak() * plan.du();
         let pmax = plan.spec.iter().map(|s| s[0]).fold(0.0f64, f64::max);
         let tmax = plan.spec.iter().map(|s| s[2].abs()).fold(0.0f64, f64::max);
 
@@ -934,12 +942,11 @@ mod test {
     /// Both rotors against direct evaluation. Agreement with each other follows.
     #[test]
     fn rotor_vs_reference() {
-        let p = spec(20.0, 1e-8).plan();
-        let bin = p.bin(12_000.0, RATE);
-        let n = bin.taps();
-        let (half, step) = (n / 2, p.du * bin.w0);
+        let mut plan = spec(20.0, 1e-8).plan_with_reassignment();
 
-        let mut plan = p.with_reassignment();
+        let bin = plan.bin(12_000.0, RATE);
+        let n = bin.taps();
+        let (half, step) = (n / 2, plan.du() * bin.w0);
 
         let mut want = [
             vec![(0.0f64, 0.0f64); n],
@@ -969,7 +976,8 @@ mod test {
         };
 
         let mut got = vec![(0.0f64, 0.0f64); n];
-        plan.transform(bin, &mut got);
+        // 🤮 Anyway...
+        plan.plan.transform(bin, &mut got);
         assert!(
             e(&want[0], &got) < 1e-9,
             "transform {:.3e}",
