@@ -77,6 +77,9 @@
 //! plan.taps_into(bin, &mut psi, &mut d, &mut t);
 //! ```
 
+// NEXT More deliberate taper shaping, using taper shape to ceiling and distribute any halo the
+// taper introduces.  Shape-aware taper.  Length padding-aware truncation & taper.
+// MAYBE Integrate late quantization to bias rounding towards filter precision.
 // NEXT ReassignPlan and Plan are too similar.  Go ahead and re-combine them over the 1-vs-3 weights
 // axis.
 // NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
@@ -394,13 +397,15 @@ impl Plan {
     }
 
     /// DC removal only. Hermitian: pairs contribute 2*re, center once.
-    fn center(out: &mut [(f64, f64)]) {
+    /// Returns the constant removed from the real part.
+    fn center(out: &mut [(f64, f64)]) -> f64 {
         let n = out.len();
         let half = n / 2;
         let mr = (2.0 * out[half + 1..].iter().map(|s| s.0).sum::<f64>() + out[half].0) / n as f64;
         for s in out.iter_mut() {
             s.0 -= mr;
         }
+        mr
     }
 
     fn scale_by(out: &mut [(f64, f64)], norm: f64) {
@@ -521,9 +526,7 @@ impl ReassignPlan {
             self.plan.taper(bd);
             self.plan.taper(bt);
 
-            Plan::center(bp);
-            Plan::center(bd);
-            Plan::center(bt);
+            let mr = Plan::center(bp);
 
             let norm = PEAK_GAIN / Plan::gain_at(bp, bin.w0);
             let axis = bin.w0 / self.plan.peak;
@@ -531,6 +534,8 @@ impl ReassignPlan {
             Plan::scale_by(bp, norm);
             Plan::scale_by(bd, norm * axis);
             Plan::scale_by(bt, norm / axis);
+
+            Self::recenter_t(bt, norm * mr);
 
             for (out, src) in [(&mut *psi, &*bp), (&mut *d, &*bd), (&mut *t, &*bt)] {
                 Plan::quantize(src, out);
@@ -578,6 +583,21 @@ impl ReassignPlan {
             let (nr, ni) = (sr * sc - si * ss, sr * ss + si * sc);
             sr = nr;
             si = ni;
+        }
+    }
+
+    /// t is the tap-index weighting of psi: tau = -i * nu * psi, so tau_i = -nu * psi_r.  When psi
+    /// loses `mr` off its real part, t loses nu*mr off its imaginary part.  Independently
+    /// DC-removing t instead injects a constant that survives into W_t/W_psi wherever |W_psi| is
+    /// small, which is everywhere off-ridge.  Expects `mr` in the same scale as the taps it is
+    /// applied to.
+    fn recenter_t(out: &mut [(f64, f64)], mr: f64) {
+        let n = out.len();
+        let half = n / 2;
+        for i in half..n {
+            let v = (i - half) as f64 * mr;
+            out[i].1 += v;
+            out[n - 1 - i].1 -= v;
         }
     }
 
@@ -970,12 +990,6 @@ mod test {
             t[half].0,
             pk(&t)
         );
-
-        for (label, v) in [("d", &d), ("t", &t)] {
-            let pk = v.iter().map(|&(r, _)| r.abs()).fold(0.0f32, f32::max) as f64;
-            let dc = v.iter().map(|&(r, _)| r as f64).sum::<f64>();
-            assert!(dc.abs() < 1e-5 * pk, "{label} dc {dc:.3e} peak {pk:.3e}");
-        }
     }
 
     /// Both rotors against direct evaluation. Agreement with each other follows.
@@ -1278,6 +1292,76 @@ mod test {
                 (ratio / NOISE_GAIN - 1.0).abs() < TOL,
                 "fc {fc} noise gain {ratio:.6}"
             );
+        }
+    }
+
+    /// The two signals whose reassignment answers are known exactly.
+    /// Tone: W_d/W_psi = w, real.  Impulse at k0: W_t/W_psi = -i(m - k0).
+    #[test]
+    fn reassignment_is_unbiased() {
+        let mut plan = spec(2.5, 1e-8)
+            .taper(Taper {
+                eps_time: 1e-3,
+                rho: 0.1,
+            })
+            .plan_with_reassignment();
+
+        for (fc, sr) in [(2_000.0f64, RATE), (250.0, 3000.0), (12_000.0, RATE)] {
+            let bin = plan.bin(fc, sr);
+            let (n, half, w0) = (bin.taps(), bin.taps() / 2, bin.velocity());
+            let (mut psi, mut d, mut t) = (
+                vec![(0.0f32, 0.0f32); n],
+                vec![(0.0f32, 0.0f32); n],
+                vec![(0.0f32, 0.0f32); n],
+            );
+            plan.taps_into(bin, &mut psi, &mut d, &mut t);
+
+            // W(m) = sum_j x[m + half - j] * h[j], matching unit_tone_reads_unity.
+            let conv = |h: &[(f32, f32)], x: &dyn Fn(isize) -> f64, m: isize| {
+                let (mut re, mut im) = (0.0f64, 0.0f64);
+                for (j, &(r, i)) in h.iter().enumerate() {
+                    let s = x(m + half as isize - j as isize);
+                    re += s * r as f64;
+                    im += s * i as f64;
+                }
+                (re, im)
+            };
+            let div = |a: (f64, f64), b: (f64, f64)| {
+                let q = b.0 * b.0 + b.1 * b.1;
+                ((a.0 * b.0 + a.1 * b.1) / q, (a.1 * b.0 - a.0 * b.1) / q)
+            };
+
+            println!("\n=== REASSIGN fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6} ===");
+
+            for cents in [-600.0f64, -300.0, 0.0, 300.0, 600.0] {
+                let w = w0 * (cents / 1200.0).exp2();
+                let tone = |k: isize| (w * k as f64).cos();
+                let (mut worst, mut quad) = (0.0f64, 0.0f64);
+                for m in 0..8 {
+                    let (re, im) = div(conv(&d, &tone, m), conv(&psi, &tone, m));
+                    worst = worst.max((1200.0 * (re / w).log2()).abs());
+                    quad = quad.max((im / w).abs());
+                }
+                println!("  detune {cents:+6.0}c  bias {worst:.4}c  quad {quad:.2e}");
+                assert!(worst < 2.0, "fc {fc} detune {cents} bias {worst:.4}c");
+                assert!(quad < 1e-3, "fc {fc} detune {cents} quad {quad:.3e}");
+            }
+
+            let imp = |k: isize| if k == 0 { 1.0 } else { 0.0 };
+            let env0 = (psi[half].0 as f64).hypot(psi[half].1 as f64);
+            let (mut worst, mut real) = (0.0f64, 0.0f64);
+            for m in -(half as isize)..=(half as isize) {
+                let wp = conv(&psi, &imp, m);
+                if wp.0.hypot(wp.1) < 1e-2 * env0 {
+                    continue;
+                }
+                let (re, im) = div(conv(&t, &imp, m), wp);
+                worst = worst.max((m as f64 + im).abs());
+                real = real.max(re.abs());
+            }
+            println!("  impulse: worst t_hat {worst:.4} samples  real leak {real:.2e}");
+            assert!(worst < 0.05, "fc {fc} t_hat off by {worst:.4} samples");
+            assert!(real < 1e-2, "fc {fc} t real leak {real:.3e}");
         }
     }
 }
