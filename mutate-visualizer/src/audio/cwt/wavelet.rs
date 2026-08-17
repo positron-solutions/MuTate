@@ -86,13 +86,10 @@
 // have an idea of the correctness of the gain peak location.  If there is a bias, it probably is
 // consistent, but if the design bias doesn't remain consistent across the resampling edges, we will
 // start to see bands in the results.
-// NOTE Unit L1 per bin.  Steady tones are flat, but the noise floor is amplified towards higher
-// frequencies.
 // NOTE Peak gain 2 per bin (demodulated L1 = 2), so a unit real tone reads |W| = 1.
-// Steady tones are flat across the bank; the broadband noise floor rises as sqrt(f)
-// because tap count falls with center frequency.
-// NOTE Zero phase. Conjugate-symmetric taps give a real, even frequency response and no group delay,
-// Reassignment's time offset is therefore measured from tap center with no correction term.
+// Steady tones are flat across the bank.  Noise floor rises as sqrt(f).
+// NOTE Zero phase. Conjugate-symmetric taps give a real (one-sided, not even) frequency response
+// and no group delay.
 // 🤖 Heavy generation.  Should be pretty standard academic stuff, so not expecting a lot of
 // surprises.  We will, for the most part, swiftly and knowingly eat shit if the wavelet is busted.
 // Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
@@ -145,19 +142,14 @@ impl Bin {
 /// Controls Q and other critical tradeoffs of the wavelets.
 #[derive(Clone, Copy)]
 pub struct Shape {
-    /// `gamma` sets the exponent of the spectral envelope. It trades time symmetry against
-    /// frequency skew; 3.0 is the usual choice and the only one with a closed-form peak here. Below
-    /// 3 the time envelope skews, above 3 the spectrum grows heavier flanks.
+    /// `gamma` sets the exponent of the spectral envelope, trading Gaussian core against flank
+    /// weight. Taps are zero-phase, so the time envelope stays even for any gamma.
     pub gamma: f64,
     /// Adjusting beta at fixed gamma is adjusting Q.
     pub beta: f64,
 }
 
 impl Shape {
-    // XXX IIRC the sensing of Q depends on peak 1 vs peak 2?
-    ///
-    /// Q by the -3 dB energy width: dF/F = 2*sqrt(ln2)/P.
-    ///
     /// `q` is the quality factor on the -3 dB energy width. Higher `q` narrows the band and costs
     /// proportionally more taps at a given center frequency.
     pub fn from_q(q: f64, gamma: f64) -> Self {
@@ -168,10 +160,12 @@ impl Shape {
         }
     }
 
+    /// P = sqrt(beta*gamma), the -3 dB width parameter.  Q = P/1.6651.
     pub fn p(&self) -> f64 {
         (self.beta * self.gamma).sqrt()
     }
 
+    /// Argmax of the spectral envelope, in rad/sample.
     pub fn peak(&self) -> f64 {
         if self.gamma == 3.0 {
             (self.beta / 3.0).cbrt()
@@ -293,7 +287,7 @@ impl Spec {
         }
     }
 
-    pub fn plan_with_reassignment(self) -> ReassignPlan {
+    fn plan_with_reassignment(self) -> ReassignPlan {
         self.plan().with_reassignment()
     }
 }
@@ -312,7 +306,7 @@ pub struct Plan {
 
 impl Plan {
     /// Adds the reassignment spectra. Costs two more grids of plan memory.
-    pub fn with_reassignment(self) -> ReassignPlan {
+    fn with_reassignment(self) -> ReassignPlan {
         let m = self.psi.len();
 
         // g(u) = beta*ln(u) - (beta/gamma)*u^gamma, g(1) = -beta/gamma.
@@ -336,9 +330,9 @@ impl Plan {
     pub fn bin(&self, center: f64, rate: f64) -> Bin {
         let nyquist = rate / 2.0;
         debug_assert!(
-            (center < nyquist),
-            "Center: {center:.1}Hz must be less than sample rate: {rate:.0}Hz and its Nyquist:
-            {nyquist:.0}"
+            center < rate / 2.0,
+            "center {center:.1}Hz above Nyquist {:.0}Hz",
+            rate / 2.0
         );
         let w0 = core::f64::consts::TAU * center / rate;
         Bin {
@@ -420,8 +414,7 @@ impl Plan {
         }
     }
 
-    /// Output scale for unit peak gain. The rotor sum is an inverse DTFT
-    /// missing its dw/2pi; du is fixed by the plan, so only w0 varies.
+    /// Output scale for PEAK_GAIN. The rotor sum is an inverse DTFT
     fn scale(&self, bin: Bin) -> f64 {
         PEAK_GAIN * self.du * bin.w0 / core::f64::consts::TAU
     }
@@ -596,7 +589,7 @@ fn fill_grid(shape: &Shape, du: f64, lo: usize, psi: &mut [f64]) {
 }
 
 /// Half width in samples, times omega0. Pure function of shape and leakage.
-pub fn half_width_scaled(s: Shape, eps: f64, tail_a: f64) -> f64 {
+fn half_width_scaled(s: Shape, eps: f64, tail_a: f64) -> f64 {
     let core = (2.0 * eps.recip().ln()).sqrt() * s.p();
     let tail = (tail_a / eps).powf(1.0 / (2.0 * s.beta + 1.0));
     core.max(tail)
@@ -1007,7 +1000,7 @@ mod test {
         }
     }
 
-    /// Smoke test.  Hermitian, DC-free, unit L2.
+    /// Smoke test.  Hermitian, DC-free.
     #[test]
     fn taps_are_conditioned() {
         let mut p = spec(3.0, 1e-8).plan();
