@@ -12,7 +12,7 @@
 //! Long filter windows cost a lot.  Downsampling reduces the cost.  We FIR low-pass and decimate to
 //! save on cost.  Savings taper off (fewer bins affected and less absolute input rate reduction)
 //! while delay goes up for extreme downsampling, so we eat the rate cost in the lowest octaves.
-//! High pitch samples are incidentally attenuated with a safety margin that makes the output signal
+//! High pitches are incidentally attenuated, providing a safety margin that makes the output signal
 //! cleaner than it was if the same bins are filtering the full-rate input.
 //!
 //! - 2x downsampling for use below 1/4 Nyquist input
@@ -27,13 +27,20 @@
 //!
 //! The shader is built around single-stage, direct FIR from full rate to target rate for every
 //! downsampling level.  While the filters are long, the data sharing is minimal and we use several
-//! lanes per frame, more lanes for longer filters to level the load across warps.  At usually 1k
-//! lanes, the chip barely wakes up before the filtering is done.
+//! lanes per frame, more lanes for longer filters to level the load across warps.  For an audio
+//! tick of 512 samples and two channels, there's about 80k MACs, barely enough to occupy all SMs
+//! before the entire filter is already done.  The output sample rate goes down as fast as the
+//! filter size increases, so this solution remains linear.
 //!
 //! Feel free to look for other techniques, but the main on-device constraint for FIR downsampling
 //! seems to be that serial dependencies across warps are absolutely terrible, so going directly
-//! from signal to output is almost always going to win.  The device has enough lanes that a single
-//! audio server tick will struggle to make use of the full width.
+//! from signal to output without any kind of cascading is almost always going to win.  The device
+//! has enough lanes that a single audio server tick will struggle to make use of the full width
+//! available anyway.
+//!
+//! The whole problem fits in L1, and there are barely enough outputs to issue on every warp as it
+//! is, so hiding latency and leveling tails is probably best done with more workgroups rather than
+//! LDS or pipelining outputs.
 //!
 //! ## The Weights
 //!
@@ -62,11 +69,11 @@
 //!
 //! ### Filter Sharp Edges
 //!
-//! Input at the new sample rate Nyquist is not *amplified* from the source signal or noise, but
-//! it would be evident within the usable *dynamic ranges* of the pass band (not the pitch ranges).
-//! We don't use the area right at the new Nyquist, so this is fine?  In theory, but maybe not
-//! practice.  We will defer to the opinions of long-time DSP professionals through an open source
-//! development process.
+//! Output at the new sample rate Nyquist is only guaranteed to be *attenuated* from the source
+//! signal or noise, but not attenuated as deeply as the true stop band, and would still be evident
+//! within the usable *dynamic ranges* of the pass band (not the pitch ranges).  We don't use the
+//! area right at the new Nyquist, so this is fine?  In theory, but maybe not practice.  We will
+//! defer to the opinions of long-time DSP professionals through an open source development process.
 //!
 //! ⚠️ As a result of the transition admitting reflected signal, especially near the new Nyquist,
 //! bins should be very careful to **not let their main lobe get into the transition band.** Beyond
@@ -80,15 +87,25 @@
 //!
 //! ## Delay
 //!
-//! A uniform group delay per octave was chosen just to be tidy.  21/41/81/161 taps give 5 output
-//! samples of relative delay at each successive level.
+//! A uniform group delay per octave was chosen just to be tidy.  21/41/81/161 taps give 5
+//! **output** samples of relative delay at each successive level.
 
-// NEXT There is a group delay introduced by INPUT_QUANTUM that needs to be either carried forward
-// or removed by making each filter's quantum independent.  Implementation will likely involve
-// passing LEVELS indexes via push constants.  Related, the shader
+// MAYBE Publish a semaphore value to readback for the host to be able to decide how much input
+// dispatched upon is now ready for producer reclaim.
 // NEXT Write the LEVELS output ring offset data to a header so that the host side of sharing
 // downstream is dynamic state only.  We will need to start doing slang libraries, but we absolutely
 // should!
+// NEXT Upstream bursts and downstream read floor contracts require one solution.  We should
+// consider the oldest half of the output ring always ready for reclaim.  We should clamp the read
+// onto the *newest* data on the input ring, adjusting our indexes and the consumed counts so that
+// subsequent reads will properly jump ahead and skip our old data.  The audio graph dispatch cycle
+// guarantees that this *effective double buffering* is good enough.  A follow-on plan for the audio
+// import ring is to swallow such bursts using a triple-buffer with rotation so that, in the worst
+// case, we see 1/3 of the ring size of fresh data when we come back around.  Downsampler will then
+// fill half of its rings with fresh data and the audio graph will consume only that on the tick.
+// Either the import or the downsampler should tell downtreams to flush the discontinuity by setting
+// reclaim indexes.  Output rings will require a second triple-buffering fixup to account for
+// consumers in flight.  Ring buffers man!
 
 mod weights;
 
@@ -97,10 +114,13 @@ use mutate_lib::{self as utate, audio::import::DeviceAudioView, prelude::*};
 
 use super::plan;
 
-/// LCM of the decimation factors.  The scheduling quantum, in input samples.
-const INPUT_QUANTUM: u64 = 1 << LEVELS; // 16
-/// Level-0 outputs per quantum.  `count[0]` is always a multiple of this.
-const OUTPUT_QUANTUM: u64 = INPUT_QUANTUM / 2; // 8
+/// Must match `LANES`/`WARPS` in audio/downsample.slang.
+const LANES: u32 = 32;
+const WARPS: u32 = 2;
+/// Outputs a workgroup emits at `level`: 64 / 32 / 16 / 8.
+const fn outputs_per_workgroup(level: usize) -> u32 {
+    WARPS * (LANES >> level)
+}
 
 const LEVELS: usize = 4;
 pub const FILTERS: [weights::Lowpass; LEVELS] = [
@@ -110,19 +130,27 @@ pub const FILTERS: [weights::Lowpass; LEVELS] = [
     weights::DOWN_SIXTEEN,
 ];
 
-const LEVEL_SAMPLES: [u32; LEVELS] = [8192, 4096, 2048, 1024];
+/// Output rings are implicitly longer in time, enough to accommodate the longest spans any
+/// downstream filter wants to read.  Low pitch filters will sometimes want to reach back in time,
+/// and this storage is cheap, so we just keep it available.
+// NOTE scaled back to input rate: 8192, 8192, 16384, 32768, almost 1s of 48kHz input.
+const LEVEL_SAMPLES: [u32; LEVELS] = [4096, 2048, 2048, 2048];
+
+/// How far back in *input* samples each level's ring reaches.  No longer uniform across levels
+/// and not derivable from any other level -- downstream must read this rather than shift.
+const fn level_span(level: usize) -> u64 {
+    LEVEL_SAMPLES[level] as u64 * FILTERS[level].decimation as u64
+}
 
 /// Must match `PAIRS_PER_LANE` in audio/downsample.slang.
 const PAIRS_PER_LANE: u32 = 10;
-
-/// Deepest lookahead demanded by any level.
-const MAX_RADIUS: u64 = FILTERS[LEVELS - 1].radius() as u64;
 
 const _: () = {
     let mut level = 0;
     while level < LEVELS {
         assert!(FILTERS[level].radius() == PAIRS_PER_LANE << level);
         assert!(FILTERS[level].decimation == 1 << (level + 1));
+        assert!(LEVEL_SAMPLES[level].is_power_of_two());
         level += 1;
     }
 };
@@ -131,9 +159,9 @@ const _: () = {
 /// frequency.
 #[derive(Clone, Copy, Debug)]
 pub struct LevelOutput {
-    /// Offset from the output base.
+    /// Offset from the output base address.
     pub offset: u32,
-    /// Logical center?
+    /// Output samples ever written at this level.
     pub write_head: u64,
     /// Number of channels
     pub channel_count: u32,
@@ -145,6 +173,9 @@ pub struct LevelOutput {
     pub cutoff: f32,
     /// Group delay in input samples.
     pub delay: u32,
+    /// Oldest input-domain sample still resident in this level's ring, relative to `write_head`
+    /// scaled to input rate.  Reach-back budget for downstream filters.
+    pub span_input_samples: u64,
 }
 
 impl LevelOutput {
@@ -160,8 +191,6 @@ pub struct DownsampleOutput {
     pub base_address: DeviceAddress,
     /// Each output level has metadata and channels.
     pub levels: [LevelOutput; LEVELS],
-    /// Oldest input sample this module may still read.
-    pub retain_floor: u64,
 }
 
 impl DownsampleOutput {
@@ -177,6 +206,11 @@ impl DownsampleOutput {
 
 pub struct DownsampleDispatch {
     pub output: DownsampleOutput,
+    // NEXT make the upstream DeviceAudioImport accept an absolute head rather than relative
+    // "consumed".
+    /// Oldest input sample still needed.  Import may reclaim strictly below.
+    pub retain_floor: u64,
+    /// Floor delta.
     pub consumed: u32,
 }
 
@@ -212,9 +246,6 @@ struct LevelConfig {
     lanes_per_output_log2: u32,
 }
 
-// XXX first_window_center is identical.  We can use this to perhaps let each level decouple from
-// the input quantum at the cost of a bit more state shadowing on the host.  Probably worth it to
-// get rid of the group delay.
 #[compute_pipeline(
     compute = stage!("audio/downsample", Compute, c"main"),
     push = push!(PushConstants {
@@ -253,24 +284,28 @@ pub struct Downsample {
     pipeline: ComputePipeline<Pipeline>,
     timeline: TimelineSemaphore,
 
-    /// For now, we might get away with a very specific rate of advance.  Given that downsample
-    /// frames never tick downstream except on certain inputs, this might actually work.
-    next_center: u64,
+    /// Next window center per level, in input samples.  Levels advance independently; each is a
+    /// multiple of its own decimation, so `next_center[l] >> (l + 1)` is that level's output
+    /// write head.
+    next_centers: [u64; LEVELS],
 
     /// Upstream sample rate.
     sample_rate: u32,
+
+    /// Tracking floor delta to report consumed.
+    prev_retain_floor: u64,
 }
 
 impl Downsample {
     pub fn new(device: &Device, channels: u32, sample_rate: u32) -> Result<Self, MutateError> {
         // NOTE The big idea is no different for any of these pipelines.  We plan the layout, grab
         // the allocation, initialize it, and set up our local state shadows we'll need for later
-        // dispatch.  Return a dispatch that tells downstream how to use what we wrote.
+        // dispatch.
 
         // plan static
         let mut c = plan::Cursor::default();
         let config_offset = c.push::<Config>(1);
-        let output_views_offset = c.push::<RingView>((LEVELS as u32 * channels));
+        let output_views_offset = c.push::<RingView>(LEVELS as u32 * channels);
         let level_configs_offset = c.push::<LevelConfig>(LEVELS as u32);
 
         let mut weights_offsets = [0u32; LEVELS];
@@ -292,17 +327,13 @@ impl Downsample {
             (static_bytes + dynamic_bytes) as usize,
         )?;
 
-        // Address first: an immutable borrow that ends here, before the split below takes the
-        // allocation mutably for the rest of the function.
         let base = allocation.device_address(device)?;
         let static_base: DeviceAddress = base.into();
+        // FIXME Output belongs in a separate allocation.  We can use device-only memory after the
+        // transfer-initializaiton dance is set supported.
         let output_base: DeviceAddress = (base + static_bytes as u64).into();
 
-        // XXX isn't the "dynamic" address the output address?  Where else would we enable writes if
-        // we later do a static-dynamic allocation split?
-        let (stat, _dynam) = allocation
-            .as_mut_slice()
-            .split_at_mut(static_bytes as usize);
+        let stat = allocation.as_mut_slice();
 
         plan::put(
             stat,
@@ -357,12 +388,12 @@ impl Downsample {
             output_level_count: LEVELS as u32,
             pipeline: ComputePipeline::<Pipeline>::new(device)?,
             timeline: device.make_timeline_semaphore()?,
-            next_center: 0,
+            next_centers: std::array::from_fn(|l| FILTERS[l].radius() as u64),
             sample_rate,
+            prev_retain_floor: 0,
         })
     }
 
-    // NOTE The dft.rs accepts a layout on new and stores it in the config.  This shader
     pub fn dispatch(
         &mut self,
         device: &ash::Device,
@@ -370,7 +401,7 @@ impl Downsample {
         input: &DeviceAudioView,
     ) -> Result<DownsampleDispatch, MutateError> {
         // Calculate the downsampler advances from the upstream write head.
-        let count = self.ready_outputs(input.write_head);
+        let counts: [u32; LEVELS] = std::array::from_fn(|l| self.ready_at(l, input.write_head));
         let input_mask = input.sample_count - 1;
         let constants = PushConstants {
             input_base: input.base_address,
@@ -378,28 +409,40 @@ impl Downsample {
             input_stride: (input.sample_count * 4).into(),
             input_mask: input_mask.into(),
 
-            first_window_center: std::array::from_fn(|_| {
-                ((self.next_center as u32) & input_mask).into()
+            first_window_center: std::array::from_fn(|l| {
+                ((self.next_centers[l] as u32) & input_mask).into()
             }),
             first_output_slot: std::array::from_fn(|l| {
-                (((self.next_center >> (l + 1)) as u32) & (LEVEL_SAMPLES[l] - 1)).into()
+                (((self.next_centers[l] >> (l + 1)) as u32) & (LEVEL_SAMPLES[l] - 1)).into()
             }),
-            output_count: std::array::from_fn(|l| (count >> l).into()),
+            output_count: std::array::from_fn(|l| counts[l].into()),
         };
         self.pipeline.push(device, **cb, &constants);
 
-        let groups_x = count.div_ceil(64);
+        // Counts ragged, so the grid covers the hungriest level and the shader's existing
+        // `output_index >= output_count[level]` guard retires the rest.
+        let groups_x = (0..LEVELS)
+            .map(|l| counts[l].div_ceil(outputs_per_workgroup(l)))
+            .max()
+            .unwrap();
+
         unsafe {
             device.cmd_bind_pipeline(**cb, vk::PipelineBindPoint::COMPUTE, *self.pipeline);
             device.cmd_dispatch(**cb, groups_x, LEVELS as u32, self.output_channel_count);
         }
 
-        self.next_center += count as u64 * 2;
-        debug_assert_eq!(self.next_center % INPUT_QUANTUM, 0);
+        for l in 0..LEVELS {
+            self.next_centers[l] += counts[l] as u64 * FILTERS[l].decimation as u64;
+        }
+
+        let retain_floor = self.retain_floor();
+        let consumed = (retain_floor - self.prev_retain_floor) as u32;
+        self.prev_retain_floor = retain_floor;
 
         Ok(DownsampleDispatch {
             output: self.view(),
-            consumed: count,
+            retain_floor,
+            consumed,
         })
     }
 
@@ -410,32 +453,34 @@ impl Downsample {
         self.pipeline.destroy(device);
     }
 
-    /// How many level-0 outputs are ready, given total samples ever written to the
-    /// input ring.  Level `L` gets `count >> L`.
-    ///
-    /// An output centered at logical index `c` reads `[c - radius, c + radius]`.
-    /// Lockstep scheduling means every level waits on `MAX_RADIUS` of lookahead,
-    /// so the newest center we may close is `written - 1 - MAX_RADIUS`.
-    fn ready_outputs(&self, written: u64) -> u32 {
-        let Some(newest_center) = written.checked_sub(1 + MAX_RADIUS) else {
-            return 0; // ring hasn't filled the first window yet
+    /// Outputs ready at `level`, given total samples ever written upstream.  An output centered at
+    /// `c` reads `[c - radius, c + radius]`, so the newest closable center is `written - 1 -
+    /// radius`, floored onto the level's lattice.
+    fn ready_at(&self, level: usize, written: u64) -> u32 {
+        let radius = FILTERS[level].radius() as u64;
+        let decimation = FILTERS[level].decimation as u64;
+
+        let Some(newest) = written.checked_sub(1 + radius) else {
+            return 0;
         };
-        if newest_center < self.next_center {
+        let newest = newest & !(decimation - 1);
+        let next = self.next_centers[level];
+        if newest < next {
             return 0;
         }
 
-        // Centers are `next_center, next_center + 2, ..` up to and including newest.
-        let count = (newest_center - self.next_center) / 2 + 1;
-
-        // Floor to the quantum so every level gets a whole number of outputs, and
-        // clamp so no level laps its output ring in a single dispatch.
-        let count = count & !(OUTPUT_QUANTUM - 1);
-        count.min(LEVEL_SAMPLES[0] as u64 / 2) as u32
+        // NOTE During underruns, it would be preferred to consume the newest output and discard the
+        // older output.  More details about double buffering at the mod doc trailer.
+        let count = (newest - next) / decimation + 1;
+        count.min(LEVEL_SAMPLES[level] as u64 / 2) as u32
     }
 
     /// Oldest input sample this module may still read.  Import must not reclaim below this.
     pub fn retain_floor(&self) -> u64 {
-        self.next_center.saturating_sub(MAX_RADIUS)
+        (0..LEVELS)
+            .map(|l| self.next_centers[l].saturating_sub(FILTERS[l].radius() as u64))
+            .min()
+            .unwrap()
     }
 
     /// Return the state and layout information independent of dispatching.  Useful for initializing
@@ -445,7 +490,6 @@ impl Downsample {
         DownsampleOutput {
             base_address: self.output_base,
             levels: std::array::from_fn(|l| {
-                let rate = self.sample_rate as f32 / (1 << (l + 1)) as f32;
                 let f = &FILTERS[l];
                 LevelOutput {
                     offset: self.output_level_offsets[l],
@@ -454,10 +498,10 @@ impl Downsample {
                     decimation: 1 << (l + 1),
                     cutoff: f.cutoff(sample_rate),
                     delay: f.radius(),
-                    write_head: self.next_center >> (l + 1),
+                    write_head: self.next_centers[l] >> (l + 1),
+                    span_input_samples: level_span(l),
                 }
             }),
-            retain_floor: self.retain_floor(),
         }
     }
 }

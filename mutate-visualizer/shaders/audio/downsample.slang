@@ -108,7 +108,7 @@ struct PushConstants {
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 
-// dispatch = (ceil(output_count[0] / 256), LEVELS, channels)
+// dispatch = (max over l of ceil(output_count[l] / outputs_per_workgroup(l)), LEVELS, channels)
 [WaveSize(LANES)]
 [numthreads(LANES, WARPS, 1)]
 void main(uint3 group_id : SV_GroupID, uint3 thread_id : SV_GroupThreadID) {
