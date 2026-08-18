@@ -114,12 +114,12 @@ use mutate_lib::{self as utate, audio::import::DeviceAudioView, prelude::*};
 
 use super::plan;
 
-/// Must match `LANES`/`WARPS` in audio/downsample.slang.
+/// Must match `LANES` in audio/downsample.slang.
 const LANES: u32 = 32;
-const WARPS: u32 = 2;
-/// Outputs a workgroup emits at `level`: 64 / 32 / 16 / 8.
+
+/// Outputs a workgroup emits at `level`: 16 / 8 / 4 / 2.
 const fn outputs_per_workgroup(level: usize) -> u32 {
-    WARPS * (LANES >> level)
+    LANES / lanes_per_output(level)
 }
 
 const LEVELS: usize = 4;
@@ -129,6 +129,24 @@ pub const FILTERS: [weights::Lowpass; LEVELS] = [
     weights::DOWN_EIGHT,
     weights::DOWN_SIXTEEN,
 ];
+
+/// Input samples per output sample.  A stride in the sample domain, and a
+/// property of the filter, not the level's position in the table.
+const fn decimation_log2(level: usize) -> u32 {
+    FILTERS[level].decimation.trailing_zeros()
+}
+
+/// Lanes cooperating on one output: 2 / 4 / 8 / 16.  A fanout in the lane
+/// domain -- exactly the lanes needed to cover `radius` taps at
+/// `PAIRS_PER_LANE` each.  Must stay <= LANES: above that the reduction
+/// crosses the wave and `WaveShuffle` no longer reaches.
+const fn lanes_per_output(level: usize) -> u32 {
+    FILTERS[level].radius() / PAIRS_PER_LANE
+}
+
+const fn lanes_per_output_log2(level: usize) -> u32 {
+    lanes_per_output(level).trailing_zeros()
+}
 
 /// Output rings are implicitly longer in time, enough to accommodate the longest spans any
 /// downstream filter wants to read.  Low pitch filters will sometimes want to reach back in time,
@@ -143,13 +161,19 @@ const fn level_span(level: usize) -> u64 {
 }
 
 /// Must match `PAIRS_PER_LANE` in audio/downsample.slang.
-const PAIRS_PER_LANE: u32 = 10;
+const PAIRS_PER_LANE: u32 = 5;
 
 const _: () = {
     let mut level = 0;
     while level < LEVELS {
-        assert!(FILTERS[level].radius() == PAIRS_PER_LANE << level);
-        assert!(FILTERS[level].decimation == 1 << (level + 1));
+        // The fold divides exactly: every cooperating lane gets PAIRS_PER_LANE
+        // pairs and the center lands on slice zero.
+        assert!(FILTERS[level].radius() % PAIRS_PER_LANE == 0);
+        // Fanout must be PoT for the mask/shift split and the butterfly.
+        assert!(lanes_per_output(level).is_power_of_two());
+        assert!(lanes_per_output(level) <= LANES);
+        // Decimation must be PoT for the shift in write_head / first_output_slot.
+        assert!(FILTERS[level].decimation.is_power_of_two());
         assert!(LEVEL_SAMPLES[level].is_power_of_two());
         level += 1;
     }
@@ -194,7 +218,6 @@ pub struct DownsampleOutput {
 }
 
 impl DownsampleOutput {
-    // XXX pass sample rate.  Make level sample-rate normalized
     /// Deepest level whose read band covers `center_hz`.  `None` means the frequency belongs to
     /// the full-rate stream.  Assumes the last level is terminal, so nothing falls out the bottom.
     pub fn level_for(&self, center_hz: f32) -> Option<usize> {
@@ -285,8 +308,8 @@ pub struct Downsample {
     timeline: TimelineSemaphore,
 
     /// Next window center per level, in input samples.  Levels advance independently; each is a
-    /// multiple of its own decimation, so `next_center[l] >> (l + 1)` is that level's output
-    /// write head.
+    /// multiple of its own decimation, so `next_centers[l] >> decimation_log2(l)` is that level's
+    /// output write head.
     next_centers: [u64; LEVELS],
 
     /// Upstream sample rate.
@@ -330,7 +353,7 @@ impl Downsample {
         let base = allocation.device_address(device)?;
         let static_base: DeviceAddress = base.into();
         // FIXME Output belongs in a separate allocation.  We can use device-only memory after the
-        // transfer-initializaiton dance is set supported.
+        // transfer-initialization dance is set supported.
         let output_base: DeviceAddress = (base + static_bytes as u64).into();
 
         let stat = allocation.as_mut_slice();
@@ -373,10 +396,11 @@ impl Downsample {
                 LevelConfig {
                     weights_offset: weights_offsets[level],
                     radius: FILTERS[level].radius(),
-                    decimation_log2: level as u32 + 1,
-                    lanes_per_output_log2: level as u32,
+                    decimation_log2: decimation_log2(level),
+                    lanes_per_output_log2: lanes_per_output_log2(level),
                 },
             );
+            debug_assert!(lanes_per_output_log2(level) == decimation_log2(level));
         }
 
         Ok(Self {
@@ -401,7 +425,9 @@ impl Downsample {
         input: &DeviceAudioView,
     ) -> Result<DownsampleDispatch, MutateError> {
         // Calculate the downsampler advances from the upstream write head.
-        let counts: [u32; LEVELS] = std::array::from_fn(|l| self.ready_at(l, input.write_head));
+        let counts: [u32; LEVELS] =
+            std::array::from_fn(|l| self.ready_at(l, input.write_head, input.sample_count as u64));
+
         let input_mask = input.sample_count - 1;
         let constants = PushConstants {
             input_base: input.base_address,
@@ -413,18 +439,20 @@ impl Downsample {
                 ((self.next_centers[l] as u32) & input_mask).into()
             }),
             first_output_slot: std::array::from_fn(|l| {
-                (((self.next_centers[l] >> (l + 1)) as u32) & (LEVEL_SAMPLES[l] - 1)).into()
+                (((self.next_centers[l] >> decimation_log2(l)) as u32) & (LEVEL_SAMPLES[l] - 1))
+                    .into()
             }),
             output_count: std::array::from_fn(|l| counts[l].into()),
         };
         self.pipeline.push(device, **cb, &constants);
 
-        // Counts ragged, so the grid covers the hungriest level and the shader's existing
-        // `output_index >= output_count[level]` guard retires the rest.
+        // NOTE Width covers the hungriest level.  Shallower levels over-provision no-op workgroups.
+        // The upstream callback already early returns on zero-sized audio server ticks.
         let groups_x = (0..LEVELS)
             .map(|l| counts[l].div_ceil(outputs_per_workgroup(l)))
             .max()
-            .unwrap();
+            .unwrap()
+            .max(1);
 
         unsafe {
             device.cmd_bind_pipeline(**cb, vk::PipelineBindPoint::COMPUTE, *self.pipeline);
@@ -453,10 +481,11 @@ impl Downsample {
         self.pipeline.destroy(device);
     }
 
-    /// Outputs ready at `level`, given total samples ever written upstream.  An output centered at
-    /// `c` reads `[c - radius, c + radius]`, so the newest closable center is `written - 1 -
-    /// radius`, floored onto the level's lattice.
-    fn ready_at(&self, level: usize, written: u64) -> u32 {
+    /// Clamps maximum advance to last eligible center.
+    ///
+    /// An output centered at `c` reads `[c - radius, c + radius]`, so the newest eligible center
+    /// is: `written - 1 - radius`, clamped before wrap or exhausting fresh input samples.
+    fn ready_at(&self, level: usize, written: u64, input_samples: u64) -> u32 {
         let radius = FILTERS[level].radius() as u64;
         let decimation = FILTERS[level].decimation as u64;
 
@@ -472,7 +501,10 @@ impl Downsample {
         // NOTE During underruns, it would be preferred to consume the newest output and discard the
         // older output.  More details about double buffering at the mod doc trailer.
         let count = (newest - next) / decimation + 1;
-        count.min(LEVEL_SAMPLES[level] as u64 / 2) as u32
+        let by_output = LEVEL_SAMPLES[level] as u64 / 2;
+        // Window for the last center reaches `next - radius` .. `next + (n-1)*dec + radius`.
+        let by_input = (input_samples / 2).saturating_sub(2 * radius) / decimation;
+        count.min(by_output).min(by_input) as u32
     }
 
     /// Oldest input sample this module may still read.  Import must not reclaim below this.
@@ -495,10 +527,10 @@ impl Downsample {
                     offset: self.output_level_offsets[l],
                     channel_count: self.output_channel_count,
                     sample_count: LEVEL_SAMPLES[l],
-                    decimation: 1 << (l + 1),
+                    decimation: f.decimation,
                     cutoff: f.cutoff(sample_rate),
                     delay: f.radius(),
-                    write_head: self.next_centers[l] >> (l + 1),
+                    write_head: self.next_centers[l] >> decimation_log2(l),
                     span_input_samples: level_span(l),
                 }
             }),
