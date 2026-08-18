@@ -9,61 +9,104 @@
 //! >                  to comb the desert, so we're combing it.
 //!
 //! The world is too full of blocky FFTs, DFTs, STFTs, Constant-Q Transforms, and other ideas based
-//! on making little phasors shaped like wavelets.  The wavelet is by comparison pre-multiplied.
-//! This cuts out the awful serial dependency of spinning that little phasor for every single bin.
-//! We can of course parallelize the phasor, but why keep generating the same numbers at all?
+//! on using windows to make little phasors shaped like wavelets.  The wavelet is by comparison
+//! pre-multiplied.  This cuts out the awful serial dependency of spinning that little phasor for
+//! every single bin.  We can of course parallelize the phasor, but why keep generating the same
+//! numbers at all?
 //!
 //! Meet the wavelet transform.  It's cheap.  We basically just multiply the input by a comb with a
-//! lot of teeth.  Some of the teeth are longer, so we run them on multiple lanes to balance waves
-//! and then just shuffle-add reduce at end.  Because it's so cheap and embarrassingly parallel, we
-//! can afford a whole lot of teeth.  Using downsampled inputs further helps level and reduce work.
+//! lot of teeth. Because it's so cheap and embarrassingly parallel, we can afford a whole lot of
+//! teeth.  Using downsampled inputs further helps level and reduce work.
 //!
 //! ## Problem Symmetry & Similarity
 //!
-//! Unlike the downsampling, not everything fits in L1.  Reading one-weight-per-lane would likely
-//! amplify reads, so we need to better take advantage of regularities.
+//! Unlike the downsampling, not everything fits in L1.  The COLA creates potential for really bad
+//! read amplification if we don't efficiently combine and re-use loads.
 //!
-//! - All bins have a computation cost proportionate to their sample rate alone.  If bins are
-//!   padded, this only slightly perturbs this relation.  This allows us to balance work groups over
-//!   the sample rate alone!
-//! - All three weights are Hermitian in time.  This is exploited for reducing storage and read.
-//!   The multiply add also gets to add two input samples per weight multiply.
-//! - Weights are re-used on each window.  The phase of the output requires correction, but this
-//!   amortizes well over the window cost.
+//! - All bins have a computation cost proportionate to their sample rate alone.  This allows us to
+//!   balance work groups over the sample rate alone!
+//! - Weights or their conjugates have symmetry, enabling some storage and register savings.
+//! - Weights are re-used on each hop of each wavelet.  The phase of the output requires correction,
+//!   but this amortizes well over the window cost.
 //! - To use weights contiguously, the number of unique bins in flight and the cache line for each
 //!   weight read is shared by many lanes.  Faster waves complete more windows and their workgroups
-//!   move on to the next bin.
+//!   move on to the next voice.
 //! - The same audio is read heavily by each workgroup, so it is stored in LDS.
 //! - Most bin weights fit within a similar range of lengths thanks to the (coincidental but
 //!   natural) octave structure of the downsampling.
 //!
 //! ## Outputs
 //!
-//! Most importantly, outputs are complex and laid out source-bin-contiguous.  During integration,
-//! the complex values can be interpreted along with `BinConfig` to
+//! Most importantly, outputs are complex.  During integration, the complex values can be
+//! interpreted along with `BinConfig` to perform reassignment and synchrosqueezing.
 //!
 //! Each bin has a delay, hop size, center frequency, sample rate, and gain normalization factor.
 //! There is a table of values to assist downstream calculations.
 //!
+//! **We would do one-ring-per-voice, but voices hop at different rates.**.  The plan **for now** is
+//! to start using some tiling in the output.  In high-frequency output bins, their rings are more
+//! contiguous in time.  For low-pitch bins that don't retire windows frequently we begin to
+//! interleave bins so that loads in time are somewhat contiguous but overlap with bins in pitch,
+//! reflecting the likely read pattern and compacting more voices per row in the output buffer,
+//! squaring the triangle.
+//!
 //! ## Implementation Tradeoffs
 //!
 //! - Voices use downsampled input where available.  Small group delay.  Massive COLA cost
-//!   improvement.  Some complexity.
-//! - Constant Q.  Back to the world of different lengths of windows and different sized hops,
-//!   reading from different sample rates.  Outputs per input quantum vary per bin.
-//! - Batched output? Any output ring for windows with varying hop sizes would just lead to one
-//!   independent ring per bin.  The gathers would be neither time nor bin contiguous and the
-//!   indexing would the extremely tricky.  Reading across time is difficult without a gather
-//!   operation.  ꙰H̷͙̱̼̫̑̿̈́̈́͗̓͑͝ë̸̜̜́̓̽̔̎͛͌͝l̶͍̗̽̎̓͌̄͝͠p̴̯̺̠̈́͊̐͆̅̓꙰
+//!   improvement.  Some control logic complexity.
+//! - Constant Q.  We gain minimum voice precision we must have.  The cost is moving back to the
+//!   world of different lengths of windows and different sized hops, reading from different sample
+//!   rates.  Outputs per input quantum vary per bin.
 //!
 //! ### The Slang
 //!
-//! - Workgroups target a single sampling rate to make use of LDS.
-//! - Wavelets are mapped across several lanes to level their wavelet length-per-lane but cache
-//!   behavior and avoiding read amplification is also taken into consideration.
+//! Unlike past implementations, this solution approach does not have any partial accumulation state
+//! between dispatches.  Hops fully retire or are not started at all.  This greatly aids uniformity.
+//!
+//! The naive solutions are instructive.  If we did one-voice-per-lane with no hop pipelining, there
+//! are often not enough hops in some voices, so lanes would be idle.  Weight re-use is good, but
+//! each lane will be loading completely unique audio from an unrelated hop, so we starve on load
+//! bandwidth or LDS bank contention.
+//!
+//! We must re-use loads.  We can either re-use weight loads by loading more audio or re-use audio
+//! loads by loading more weights.  Weights use more bytes and are uniform across audio, so we
+//! re-use weight loads across more audio by pipelining hops, loading different pieces of audio for
+//! which we can re-use weights and paying some registers to store the accumulating hops.
+//!
+//! To give loads greater memory locality and reduce the LDS pressure, we group `L` lanes by voice
+//! and pay a small reduction cost at the close of each hope, which is continuously reduced in the
+//! hop pipeline rather than shuffled only at the end.  The weight re-use and hop pipelining
+//! together keep load latency hidden while greatly reducing the number of loads compared to the
+//! naive solution.
+//!
+//! Now let's formalize a bit to expose the important relations:
+//!
+//! - `L` lanes per voice.
+//! - `P` pipeline depth, in-flight hops for `L` lanes.
+//!
+//! The rest of the geometry will fall out by deduction.
+//!
+//! - `K` weights for a given filter.
+//! - `h` hop length is about `K/8` for ~8x COLA.
+//! - `K/2` is the number of pairs per fold.
+//! - `T` tap-pairs per lane = `K / 2L`.
+//! - `G` groups per warp ~= `32 / L`
+//! - `U` weight block unroll size.
+//!
+//! The chosen sweet spots are T = ~16, P = 4, L = 2-32 (longest wavelets!), and U = 4.  Let's see
+//! how that goes.
+//!
+//! We aim for two workgroups per SM/CU, but that will require knowledge of the device that we don't
+//! have convenient yet.  It's okay to launch more, and they will use atomics to carve up the
+//! voices-hop area.
+//!
+//! - Workgroups target a single sampling rate at a time to make use of LDS.
 //! - Workgroups overlap over bins to enable the scheduler to level hop noise.
+//!
+//! Some secondary ideas that may wind up implemented or not:
+//!
 //! - Lanes spiral inward on weights (using symmetry) to accumulate from smallest to largest.
-//! - Shuffle gather and reduce to accumulate with the final center weight.
+//! - Weights may be stored in a compacted form that trades ALU for load bandwidth / geometry.
 //!
 //! ## Memory Layout
 //!
@@ -99,7 +142,7 @@ use num_traits::One;
 use mutate_lib::{self as utate, prelude::*};
 use utate::dsp::{self, bank};
 
-use crate::audio::downsample::DownsampleOutput;
+use super::downsample::{DownsampleOutput, FILTERS};
 
 use super::downsample;
 use super::plan;
@@ -158,6 +201,19 @@ impl Cwt {
     pub fn new(device: &Device, input: DownsampleOutput) -> Result<Self, MutateError> {
         // Obtain a set of log spaced bin centers across the audible / prettily drawing range.
         let bins = bank::bins(dsp::MIN_FREQ_CHEAP_DRIVERS, 15_000.00, BINS as usize);
+
+        // Every bin has a load that depends only on the sample rate.  First, count the bins at each
+        // sample rate to decide the workgroup density across bin ranges.
+        let cutoffs = FILTERS
+            .iter()
+            .map(|f| f.cutoff(SAMPLE_RATE))
+            .collect::<Vec<f32>>();
+
+        // Every bin has unique weights, tuned for their exact omega.  Some octave structure reuse
+        // opportunities are left alone for now.  We create a flexible allocation for the weights
+        // since we cannot predict the truncation and alignment without generating the wavelets,
+        // meaning we're not sure how much device memory we need until we have all the weights in
+        // memory.
 
         // Laying out the memory is essentially just walking the sizes and offsets of everything we
         // want to put in it, remembering those values to later populate the memory, and allocating
