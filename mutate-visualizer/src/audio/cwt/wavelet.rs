@@ -8,33 +8,43 @@
 //! >
 //! > - Anthony L. Ray
 //!
-//!               #
-//!               #
-//!               #
-//!
-//!                ###
-//!                ######
-//!                ######
-//!
-//!       #########
-//! ###############
-//!    ############
-//!
-//!                ##############
-//!                ####################
-//!                ##############
-//!
-//!    ############
-//! ###############
-//!       #########
-//!
-//!                ######
-//!                ######
-//!                ###
-//!
-//!               #
-//!               #
-//!               #
+//!                ·
+//!                ·•
+//!                 ••
+//!                 ∘∘
+//!                 ···
+//!              •••···
+//!            •••••
+//!             ∘∘∘∘
+//!          ·······
+//!           ······••••••
+//!                 ••••••••••
+//!                 ∘∘∘∘∘∘∘∘
+//!                 ············
+//!       ••••••••••··········
+//!  •••••••••••••••
+//!      ∘∘∘∘∘∘∘∘∘∘∘
+//! ················
+//!     ············••••••••••••
+//!                 •••••••••••••••••
+//!                 ∘∘∘∘∘∘∘∘∘∘∘∘
+//!                 ················
+//!      •••••••••••···········
+//!  •••••••••••••••
+//!       ∘∘∘∘∘∘∘∘∘∘
+//!     ············
+//!         ········••••••••
+//!                 ••••••••••
+//!                 ∘∘∘∘∘∘
+//!                 ·······
+//!             ••••····
+//!            •••••
+//!              ∘∘∘
+//!              ···
+//!               ··••
+//!                 ••
+//!                 ∘
+//!                 ·
 //!
 //! This module generates our wavelet tables. Morse wavelet is the first chosen implementation.
 //!
@@ -700,31 +710,48 @@ mod test {
         0.5 * (a + b)
     }
 
-    /// Signed bar, zero at column `cols`.
-    fn bar(v: f64, max: f64, cols: usize) -> String {
-        let col = ((v / max) * cols as f64).round() as isize;
-        let (pad, fill) = if col >= 0 {
-            (cols, col as usize)
-        } else {
-            ((cols as isize + col) as usize, (-col) as usize)
+    /// Signed bars for `re` and `im` overlaid on one axis, zero between cells `cols / 2 - 1` and
+    /// `cols / 2`. Caller guarantees `max >= |re|` and `max >= |im|`, which keeps both spans inside
+    /// the `cols` field.
+    fn bar(re: f64, im: f64, max: f64, cols: usize) -> String {
+        let (cr, ci, cb) = ('•', '·', '∘');
+        let half = cols / 2;
+        let span = |v: f64| {
+            let col = ((v / max) * half as f64).round() as isize;
+            let end = (half as isize + col) as usize;
+            if col >= 0 {
+                half..end
+            } else {
+                end..half
+            }
         };
-        format!("{}{}", " ".repeat(pad), "#".repeat(fill))
+        let (r, i) = (span(re), span(im));
+        let cells: String = (0..cols)
+            .map(|c| match (r.contains(&c), i.contains(&c)) {
+                (true, true) => cb,
+                (true, false) => cr,
+                (false, true) => ci,
+                (false, false) => ' ',
+            })
+            .collect();
+        cells.trim_end().to_string()
     }
 
-    /// Real part of `taps`, centered, scaled to the largest magnitude present.
+    /// Real and imaginary parts of `taps`, centered, on a shared scale.
     fn print_wave(label: &str, taps: &[(f32, f32)], cols: usize) {
         let n = taps.len();
         let max = taps
             .iter()
-            .map(|&(r, _)| (r as f64).abs())
+            .map(|&(r, i)| (r as f64).abs().max((i as f64).abs()))
             .fold(0.0, f64::max);
-        println!("\n=== {label} ({n} taps) ===");
-        for (j, &(re, _)) in taps.iter().enumerate() {
+
+        for (j, &(re, im)) in taps.iter().enumerate() {
             println!(
-                "{:>6} {:>12.7} {}",
+                "{:>6} {:>12.7} {:>12.7} {}",
                 j as isize - (n / 2) as isize,
                 re,
-                bar(re as f64, max, cols)
+                im,
+                bar(re as f64, im as f64, max, cols)
             );
         }
     }
@@ -918,9 +945,9 @@ mod test {
     /// Also the cheapest place to see the reassignment envelopes.
     #[test]
     fn transform3_matches_transform() {
-        let base = spec(2.5, 1e-6);
+        let base = spec(3.5, 1e-6);
         let mut plain_plan = base.plan();
-        let bin = plain_plan.bin(2_000.0, RATE);
+        let bin = plain_plan.bin(6_000.0, RATE);
         let n = bin.taps();
 
         let mut plain = vec![(0.0f32, 0.0f32); n];
@@ -935,14 +962,14 @@ mod test {
         );
         plan.taps_into(bin, &mut psi, &mut d, &mut t);
 
-        print_wave("PSI (transform3)", &psi, 30);
-        print_wave("D = w*psi", &d, 30);
+        print_wave("PSI (transform3)", &psi, 34);
+        print_wave("D = w*psi", &d, 34);
         print_wave(
             "T = dpsi/dw (bipolar spectrum, expect a node at center)",
             &t,
-            30,
+            34,
         );
-        print_wave("PLAIN (transform)", &plain, 30);
+        print_wave("PLAIN (transform)", &plain, 34);
 
         let skew = plain
             .iter()
