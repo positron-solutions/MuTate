@@ -82,6 +82,8 @@ This will also require the assets loader and the pipeline macros to learn how to
 
 Keep stuffing slang into the visualizer.  It's wrong.  The cost is mainly changing some paths later, but when we start to want libraries to pull together more common operations and newtypes, it will become more urgent to fix this.
 
+The existing hashing needs an update with `-depfile <path>` to store a list of dependencies.  Only if zero dependencies change can we skip a build.  We need an escape hatch env variable in case dependencies are based on some discovery change instead of file contents.  Use `-no-codegen` for faster re-generation.  We can possibly use cargo's `rerun-if-changed` a little better.
+
 ## Externally Synchronized
 
 We can't use [some Vulkan resources](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-threadingbehavior) concurrently with some other usages.  This isn't a huge concern yet.  Queue submission is a common case.  Each queue just uses a `Mutex` on the submissions.  De-aliasing overloaded queues was the harder problem than synchronizing them.
