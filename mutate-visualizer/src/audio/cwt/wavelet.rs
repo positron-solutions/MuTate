@@ -1701,4 +1701,40 @@ mod test {
             assert!(real < 1e-2, "fc {fc} t real leak {real:.3e}");
         }
     }
+
+    /// Truncation cost: response deviation of the tapered bake against a full-length one.
+    #[test]
+    fn truncation_is_predictable() {
+        let base = Spec::default()
+            .shape(Shape::from_q(4.0, 3.0))
+            .max_load_quantum(4);
+        let mut full = base.table_plan();
+        let mut cut = base
+            .taper(Taper {
+                eps_time: 1e-3,
+                rho: 0.1,
+            })
+            .table_plan();
+
+        println!("\n=== TRUNCATION (Q = 4, eps_time 1e-3 rho 0.1) ===");
+        for fc in [2_000.0f64, 4_000.0, 8_000.0, 16_000.0] {
+            let (bf, bc) = (full.bin(fc, RATE), cut.bin(fc, RATE));
+            let (nf, nc) = (bf.folded_taps(4), bc.folded_taps(4));
+            let (mut wf, mut wc) = (vec![[0.0f32; 4]; nf], vec![[0.0f32; 4]; nc]);
+            full.taps_into(bf, 4, &mut wf);
+            cut.taps_into(bc, 4, &mut wc);
+
+            // Worst |H| gap over the sweep, relative to peak.
+            let mut gap = 0.0f64;
+            for k in 0..=8192usize {
+                let w = -PI + 2.0 * PI * k as f64 / 8192.0;
+                gap = gap.max((dtft_folded(&wf, w, 0) - dtft_folded(&wc, w, 0)).abs());
+            }
+            println!(
+                "  fc {fc:>6.0}  weights {nc:>5} of {nf:>5} ({:.3})  gap {:>7.2} dB",
+                nc as f64 / nf as f64,
+                20.0 * (gap / PEAK_GAIN).log10()
+            );
+        }
+    }
 }
