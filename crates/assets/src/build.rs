@@ -67,7 +67,7 @@ pub fn build_shaders() {
                 let status = process::Command::new("slangc")
                     .arg(path.as_os_str())
                     .arg("-I")
-                    .arg("shaders/lib")
+                    .arg(src_root.join("lib"))
                     .arg("-fvk-use-scalar-layout")
                     .arg("-o")
                     .arg(out)
