@@ -8,43 +8,51 @@
 //! >
 //! > - Anthony L. Ray
 //!
-//!                ·
-//!                ·•
-//!                 ••
-//!                 ∘∘
-//!                 ···
-//!              •••···
-//!            •••••
-//!             ∘∘∘∘
-//!          ·······
-//!           ······••••••
-//!                 ••••••••••
-//!                 ∘∘∘∘∘∘∘∘
-//!                 ············
-//!       ••••••••••··········
-//!  •••••••••••••••
-//!      ∘∘∘∘∘∘∘∘∘∘∘
-//! ················
-//!     ············••••••••••••
-//!                 •••••••••••••••••
-//!                 ∘∘∘∘∘∘∘∘∘∘∘∘
-//!                 ················
-//!      •••••••••••···········
-//!  •••••••••••••••
-//!       ∘∘∘∘∘∘∘∘∘∘
-//!     ············
-//!         ········••••••••
-//!                 ••••••••••
-//!                 ∘∘∘∘∘∘
-//!                 ·······
-//!             ••••····
-//!            •••••
-//!              ∘∘∘
-//!              ···
-//!               ··••
-//!                 ••
-//!                 ∘
+//!                 ●
+//!                 ●
+//!                 •
 //!                 ·
+//!                ●··
+//!               ●●·
+//!              ●●●
+//!              ●••
+//!             ··••
+//!            ·····●
+//!            ·····●●●●●
+//!                ·●●●●●●●
+//!                 •••●●●●●
+//!                 ••••••··
+//!                 ···········
+//!          ●●●●●●●··········
+//!     ●●●●●●●●●●●●·····
+//!   ●●●●●●●●●●●•••
+//!      •••••••••••
+//! ·············•••
+//!  ···············●●●●●●
+//!        ·········●●●●●●●●●●●●●●
+//!                 ●●●●●●●●●●●●●●●●●
+//!                 •••••••••●●●●●
+//!                 ••••••·········
+//!              ●●●················
+//!      ●●●●●●●●●●●···········
+//!   ●●●●●●●●●●●●●●···
+//!     ●●●●●●●•••••
+//!       ···•••••••
+//!      ···········
+//!         ········●●●●●●
+//!              ···●●●●●●●●
+//!                 •●●●●●●
+//!                 •••••
+//!                 •····
+//!               ●●····
+//!              ●●●··
+//!              ●●●
+//!               ●•
+//!               ·•
+//!                ·
+//!                ·●
+//!                 ●
+//!                 ●
 //!
 //! This module generates our wavelet tables. Morse wavelet is the first chosen implementation.
 //!
@@ -721,7 +729,7 @@ mod test {
     /// `cols / 2`. Caller guarantees `max >= |re|` and `max >= |im|`, which keeps both spans inside
     /// the `cols` field.
     fn bar(re: f64, im: f64, max: f64, cols: usize) -> String {
-        let (cr, ci, cb) = ('•', '·', '∘');
+        let (cr, ci, cb) = ('●', '·', '•');
         let half = cols / 2;
         let span = |v: f64| {
             let col = ((v / max) * half as f64).round() as isize;
@@ -952,9 +960,9 @@ mod test {
     /// Also the cheapest place to see the reassignment envelopes.
     #[test]
     fn transform3_matches_transform() {
-        let base = spec(3.5, 1e-6);
+        let base = spec(3.0, 1e-6);
         let mut plain_plan = base.plan();
-        let bin = plain_plan.bin(6_000.0, RATE);
+        let bin = plain_plan.bin(4500.0, RATE);
         let n = bin.taps();
 
         let mut plain = vec![(0.0f32, 0.0f32); n];
@@ -969,14 +977,16 @@ mod test {
         );
         plan.taps_into(bin, &mut psi, &mut d, &mut t);
 
-        print_wave("PSI (transform3)", &psi, 34);
-        print_wave("D = w*psi", &d, 34);
+        const COLS: usize = 34;
+
+        print_wave("PSI (transform3)", &psi, COLS);
+        print_wave("D = w*psi", &d, COLS);
         print_wave(
             "T = dpsi/dw (bipolar spectrum, expect a node at center)",
             &t,
             34,
         );
-        print_wave("PLAIN (transform)", &plain, 34);
+        print_wave("PLAIN (transform)", &plain, COLS);
 
         let skew = plain
             .iter()
