@@ -225,6 +225,7 @@ pub struct Spec {
     tail_a: f64,
     taper: Option<Taper>,
     max_taps: usize,
+    max_load_quantum: usize,
 }
 
 impl Default for Spec {
@@ -235,6 +236,7 @@ impl Default for Spec {
             tail_a: 1.0,
             taper: None,
             max_taps: 0,
+            max_load_quantum: 1,
         }
     }
 }
@@ -282,6 +284,10 @@ impl Spec {
             Some(t) => half_width_scaled(self.shape, t.eps_time, self.tail_a),
             None => grid,
         };
+
+        // Quantum rounding pushes the half-span out by up to one block, worst at w0 = PI.  If the
+        // maximum omega is known, this could be calculated less conservatively.
+        let taps = taps + (self.max_load_quantum - 1).max(0) as f64 * core::f64::consts::PI;
         (taps, grid.max(taps))
     }
 
@@ -567,7 +573,8 @@ impl ReassignPlan {
         let half = n / 2;
         let step = self.plan.du * bin.w0;
 
-        let (ss, sc) = Plan::seed_step(step, 1);
+        let lo = self.plan.lo;
+        let (ss, sc) = Plan::seed_step(step, lo);
         let (mut sr, mut si) = (1.0f64, 0.0f64);
 
         for i in half..n {
@@ -576,7 +583,7 @@ impl ReassignPlan {
             let (mut cr, mut ci) = (sr, si);
             let (mut a0, mut a1, mut a2) = ((0.0f64, 0.0f64), (0.0f64, 0.0f64), (0.0f64, 0.0f64));
 
-            for &[sp, sd, st] in &self.spec[1..] {
+            for &[sp, sd, st] in &self.spec[lo..] {
                 a0 = (a0.0 + sp * cr, a0.1 + sp * ci);
                 a1 = (a1.0 + sd * cr, a1.1 + sd * ci);
                 a2 = (a2.0 + st * cr, a2.1 + st * ci);
