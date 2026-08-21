@@ -69,7 +69,7 @@
 //!
 //! ```
 //! # use mutate::wavelet::{Spec, Taper};
-//! const QUANTUM: usize = 4;
+//! const QUANTUM: usize = 8;
 //!
 //! let mut plan = Spec::default()
 //!     .taper(Taper { eps_time: 1e-3, rho: 0.0 })
@@ -136,12 +136,11 @@
 // MAYBE More deliberate taper shaping, using taper shape to ceiling and distribute any halo the
 // taper introduces.  Shape-aware taper.  Length padding-aware truncation & taper.  Try to land the
 // taper where it won't slice a half period?
-// MAYBE Integrate late quantization to bias rounding towards filter precision.
 // NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
 // will be used are not particularly aware, so it's not expected that we can re-use exact bins in
 // any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
 // NEXT Run time of the bin generation test (not reflective of actual sample rates and Q) is about
-// 17ms on a Zen2+ part.  This affects CWT startup time.
+// 12ms on a Zen2+ part in release.  This affects CWT startup time.
 // NEXT We must do a very fine frequency sweep on a resulting filter bank sampling edge to really
 // have an idea of the correctness of the gain peak location.  If there is a bias, it probably is
 // consistent, but if the design bias doesn't remain consistent across the resampling edges, we will
@@ -157,26 +156,26 @@
 //
 // === TABLE RESPONSE (Q = 3.5, quantum 4) ===
 //
-// fc    1000 sr   6000  weights    25 (unfolded    49)  w0 1.047198
-//   peak gain 1.999999982  dev -8.799e-9 rel
+// fc    1000 sr   6000 taps    47 weights    25 (unfolded    49)  w0 1.047198
+//   peak gain 2.000000009  dev +4.452e-9 rel
 //   rel width 0.28523
-//   peak -0.0047 cents
-//   negative-freq max  -104.02 dB
-//   stopband floor     -101.53 dB
+//   peak -0.0034 cents
+//   negative-freq max  -102.53 dB
+//   stopband floor     -102.53 dB
 //
-// fc     250 sr   3000  weights    49 (unfolded    97)  w0 0.523599
-//   peak gain 1.999999993  dev -3.306e-9 rel
-//   rel width 0.28524
-//   peak -0.0071 cents
-//   negative-freq max  -103.05 dB
-//   stopband floor      -98.91 dB
-//
-// fc   12000 sr  48000  weights    17 (unfolded    33)  w0 1.570796
-//   peak gain 2.000000014  dev +7.186e-9 rel
+// fc     250 sr   3000 taps    93 weights    49 (unfolded    97)  w0 0.523599
+//   peak gain 1.999999983  dev -8.570e-9 rel
 //   rel width 0.28523
-//   peak -0.0030 cents
-//   negative-freq max  -104.40 dB
-//   stopband floor     -104.40 dB
+//   peak -0.0042 cents
+//   negative-freq max  -101.01 dB
+//   stopband floor     -101.01 dB
+//
+// fc   12000 sr  48000 taps    33 weights    17 (unfolded    33)  w0 1.570796
+//   peak gain 2.000000045  dev +2.233e-8 rel
+//   rel width 0.28523
+//   peak -0.0029 cents
+//   negative-freq max  -104.27 dB
+//   stopband floor     -104.27 dB
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude,
 /// so |H| = 2 makes a unit tone read |W| = 1.
@@ -808,23 +807,30 @@ mod test {
     /// width change swamps any in-band ripple — the flanks are steep and the absolute gap there
     /// reports skirt motion, not fidelity. Stopband stays absolute, relative to peak, since
     /// that is what leakage means.
-    fn gap_split(a: &dyn Fn(f64) -> f64, b: &dyn Fn(f64) -> f64, lo: f64, hi: f64) -> (f64, f64) {
+    fn gap_split(
+        a: &dyn Fn(f64) -> f64,
+        b: &dyn Fn(f64) -> f64,
+        lo: f64,
+        hi: f64,
+    ) -> (f64, f64, f64) {
         const SWEEP: usize = 8192;
         // Core is the middle half of the -3 dB band, clear of the flanks.
         let (mid, quarter) = (0.5 * (lo + hi), 0.25 * (hi - lo));
         let (core_lo, core_hi) = (mid - quarter, mid + quarter);
 
-        let (mut pass, mut stop) = (0.0f64, 0.0f64);
+        let (mut pass, mut stop, mut dc) = (0.0f64, 0.0f64, 0.0f64);
         for k in 0..=SWEEP {
             let w = -PI + 2.0 * PI * k as f64 / SWEEP as f64;
             let (ra, rb) = (a(w), b(w));
             if (core_lo..=core_hi).contains(&w) {
                 pass = pass.max((ra - rb).abs() / ra);
+            } else if w.abs() < 0.25 * lo {
+                dc = dc.max(rb); // absolute, not a gap: this is what conditioning kills
             } else if !(lo..=hi).contains(&w) {
                 stop = stop.max((ra - rb).abs());
             }
         }
-        (pass, stop)
+        (pass, stop, dc)
     }
 
     /// Folded weights back to centered taps. Lane `c` selects psi (0) or d (2).
@@ -1112,7 +1118,7 @@ mod test {
         for quantum in [1usize, 4, 8] {
             let mut p = spec(3.0, 1e-8)
                 .taper(Taper {
-                    eps_time: 1e-3,
+                    eps_time: 2e-4,
                     rho: 0.00,
                 })
                 .max_load_quantum(quantum)
@@ -1247,8 +1253,8 @@ mod test {
                     worst = worst.max((1200.0 * (re / w).log2()).abs());
                     quad = quad.max((im / w).abs());
                 }
-                println!("  detune {cents:+6.0}c  bias {worst:.4}c  quad {quad:.2e}");
-                assert!(worst < 2.0, "fc {fc} detune {cents} bias {worst:.4}c");
+                println!("  detune {cents:+6.0}c  bias {worst:.5}c  quad {quad:.3e}");
+                assert!(worst < 2.0, "fc {fc} detune {cents} bias {worst:.3}c");
                 assert!(quad < 1e-3, "fc {fc} detune {cents} quad {quad:.3e}");
             }
 
@@ -1355,16 +1361,17 @@ mod test {
                 let pc = unfold(&wc, 0);
                 let hc = |w: f64| dtft(&pc, w);
 
-                let (pass, stop) = gap_split(&hf, &hc, rf.edges.0, rf.edges.1);
+                let (pass, stop, dc_leak) = gap_split(&hf, &hc, rf.edges.0, rf.edges.1);
                 let rc = characterize(&hc, w0);
                 let cents = 1200.0 * (rc.peak_w / rf.peak_w).log2();
 
                 println!(
                     "    eps_time {eps_time:>7.0e}  weights {nc:>5} ({:.3})  \
-                     pass {:>7.2} dB rel  stop {:>7.2} dB  peak {:+.4}c  width {:+.3}%",
+                     pass {:>7.2} dB rel  stop {:>7.2} dB  dc {:>7.2} dB  peak {:+.4}c  width {:+.3}%",
                     nc as f64 / nf as f64,
                     20.0 * pass.log10(),
                     20.0 * (stop / PEAK_GAIN).log10(),
+                    20.0 * (dc_leak / PEAK_GAIN).log10(),
                     cents,
                     100.0 * (rc.rel_width / rf.rel_width - 1.0)
                 );
@@ -1386,6 +1393,14 @@ mod test {
                     (rc.rel_width / rf.rel_width - 1.0).abs() < 0.02,
                     "fc {fc} eps_time {eps_time:e} width {:+.3}%",
                     100.0 * (rc.rel_width / rf.rel_width - 1.0)
+                );
+
+                // Turning off conditioning should break this, but the more heavily truncated
+                // filters also tend to trip it.
+                assert!(
+                    dc_leak < 1e-2 * PEAK_GAIN,
+                    "fc {fc} eps_time {eps_time:e} dc {:.2} dB",
+                    20.0 * (dc_leak / PEAK_GAIN).log10()
                 );
 
                 // Tighter eps_time truncates less, so it costs taps and buys stopband.  Taps may
@@ -1513,6 +1528,20 @@ mod test {
                 .sum::<f64>();
             // measured: fc 1000 first moment -1.123e-7
             assert!(m1.abs() < 1e-5 * g, "fc {fc} first moment {m1:.3e}");
+
+            let mom = |p: u32| {
+                psi.iter()
+                    .enumerate()
+                    .map(|(j, &(r, i))| {
+                        let nu = (j as isize - (psi.len() / 2) as isize) as f64;
+                        nu.powi(p as i32) * if p % 2 == 0 { r as f64 } else { i as f64 }
+                    })
+                    .sum::<f64>()
+            };
+            // H''(0) and H'''(0), the two the solve nulls that nothing measures.
+            let (m2, m3) = (mom(2), mom(3));
+            assert!(m2.abs() < 1e-3 * g, "fc {fc} second moment {m2:.3e}");
+            assert!(m3.abs() < 1e-3 * g, "fc {fc} third moment {m3:.3e}");
         }
     }
 }
