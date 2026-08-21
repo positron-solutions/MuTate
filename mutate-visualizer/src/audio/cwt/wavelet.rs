@@ -691,22 +691,6 @@ fn log_env(s: Shape) -> impl Fn(f64) -> f64 {
     move |u| s.beta * u.ln() - bg * u.powf(s.gamma) + bg
 }
 
-// /// Grid indices bracketing the spectrum above `eps`: `[lo, m)`.
-// fn support(shape: Shape, du: f64, eps: f64) -> (usize, usize) {
-//     let g = log_env(shape);
-//     let le = eps.ln();
-
-//     let mut j = 1usize;
-//     while g(j as f64 * du) < le {
-//         j += 1;
-//     }
-//     let lo = j;
-//     while g(j as f64 * du) >= le {
-//         j += 1;
-//     }
-//     (lo, j + 1)
-// }
-
 /// Half width in samples, times omega0. Pure function of shape and leakage.
 fn half_width_scaled(s: Shape, eps: f64, tail_a: f64) -> f64 {
     let core = (2.0 * eps.recip().ln()).sqrt() * s.p();
