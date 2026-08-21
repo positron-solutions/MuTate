@@ -805,7 +805,8 @@ mod test {
         // Measured vs full re-seed out to about -270dB of difference, so well below what our
         // eventual storage is losing to f32 truncation already.
         //
-        // Set RESEED to 1 for full seeding if this test device is under scrutiny.
+        // Set RESEED to 1 for full seeding if this test device is under scrutiny.  **Must be power
+        // of two for iteration mask.**
         const RESEED: usize = 512;
 
         let half = (taps.len() / 2) as f64;
@@ -832,39 +833,44 @@ mod test {
         (re * re + im * im).sqrt()
     }
 
-    /// Worst |H| gap between two responses, split at the reference filter's half-power
-    /// edges. Passband gap is what a tone's magnitude sees; stopband gap is the leakage
-    /// truncation bought.
-    ///
-    /// Truncation cost split by region. Passband is measured as relative error against the
-    /// reference and restricted to the band core, because at the half-power edges a sub-percent
-    /// width change swamps any in-band ripple — the flanks are steep and the absolute gap there
-    /// reports skirt motion, not fidelity. Stopband stays absolute, relative to peak, since
-    /// that is what leakage means.
-    fn gap_split(
-        a: &dyn Fn(f64) -> f64,
-        b: &dyn Fn(f64) -> f64,
-        lo: f64,
-        hi: f64,
-    ) -> (f64, f64, f64) {
-        const SWEEP: usize = 8192;
-        // Core is the middle half of the -3 dB band, clear of the flanks.
-        let (mid, quarter) = (0.5 * (lo + hi), 0.25 * (hi - lo));
-        let (core_lo, core_hi) = (mid - quarter, mid + quarter);
+    /// Max of `f` over `n` samples of [lo, hi].
+    fn sweep(lo: f64, hi: f64, n: usize, f: impl Fn(f64) -> f64) -> f64 {
+        (0..=n)
+            .map(|k| f(lo + (hi - lo) * k as f64 / n as f64))
+            .fold(0.0f64, f64::max)
+    }
 
-        let (mut pass, mut stop, mut dc) = (0.0f64, 0.0f64, 0.0f64);
-        for k in 0..=SWEEP {
-            let w = -PI + 2.0 * PI * k as f64 / SWEEP as f64;
-            let (ra, rb) = (a(w), b(w));
-            if (core_lo..=core_hi).contains(&w) {
-                pass = pass.max((ra - rb).abs() / ra);
-            } else if w.abs() < 0.25 * lo {
-                dc = dc.max(rb); // absolute, not a gap: this is what conditioning kills
-            } else if !(lo..=hi).contains(&w) {
-                stop = stop.max((ra - rb).abs());
-            }
+    /// Worst |H| gap over the middle half of the -3 dB band.
+    fn passband_gap(a: &[(f32, f32)], b: &[(f32, f32)], lo: f64, hi: f64) -> f64 {
+        let (mid, quarter) = (0.5 * (lo + hi), 0.25 * (hi - lo));
+        sweep(mid - quarter, mid + quarter, 2048, |w| {
+            (dtft(a, w) - dtft(b, w)).abs()
+        })
+    }
+
+    /// Truncation floor, swept two octaves starting three octaves off center. Far
+    /// enough out that the skirt is gone. Both sides when the upper band fits under
+    /// Nyquist, low side alone otherwise.
+    fn stopband(a: &[(f32, f32)], b: &[(f32, f32)], w0: f64) -> f64 {
+        let gap = |w: f64| (dtft(a, w) - dtft(b, w)).abs();
+        let low = sweep(w0 / 32.0, w0 / 8.0, 2048, gap);
+        if 32.0 * w0 < PI {
+            low.max(sweep(8.0 * w0, 32.0 * w0, 2048, gap))
+        } else {
+            low
         }
-        (pass, stop, dc)
+    }
+
+    /// Peak |H| from DC to 5% of center.
+    fn dc_leak(taps: &[(f32, f32)], peak_w: f64) -> f64 {
+        const STEPS: usize = 64;
+
+        let top = 0.05 * peak_w;
+        let mut peak = 0.0f64;
+        for k in 0..=STEPS {
+            peak = peak.max(dtft(taps, top * k as f64 / STEPS as f64));
+        }
+        peak
     }
 
     /// Folded weights back to centered taps. Lane `c` selects psi (0) or d (2).
@@ -893,11 +899,11 @@ mod test {
     }
 
     /// Bisect for |H| = target on [a, b], target bracketed.
-    fn crossing(h: &dyn Fn(f64) -> f64, mut a: f64, mut b: f64, target: f64) -> f64 {
-        let above = h(a) > target;
+    fn crossing(taps: &[(f32, f32)], mut a: f64, mut b: f64, target: f64) -> f64 {
+        let above = dtft(taps, a) > target;
         for _ in 0..60 {
             let m = 0.5 * (a + b);
-            if (h(m) > target) == above {
+            if (dtft(taps, m) > target) == above {
                 a = m;
             } else {
                 b = m;
@@ -905,6 +911,7 @@ mod test {
         }
         0.5 * (a + b)
     }
+
     /// Signed bars for `re` and `im` overlaid on one axis, zero between cells `cols / 2 - 1` and
     /// `cols / 2`. Caller guarantees `max >= |re|` and `max >= |im|`, which keeps both spans inside
     /// the `cols` field.
@@ -963,14 +970,14 @@ mod test {
 
     /// Peak location and gain, -3 dB relative width, negative-frequency max, and the
     /// floor outside three half-power widths. `w0` only sets the bracket for the edges.
-    fn characterize(h: &dyn Fn(f64) -> f64, w0: f64) -> Response {
+    fn characterize(taps: &[(f32, f32)], w0: f64) -> Response {
         const SWEEP: usize = 8192;
         let omega = |k: usize| -PI + 2.0 * PI * k as f64 / SWEEP as f64;
 
         let (mut peak, mut neg) = ((0.0f64, 0.0f64), 0.0f64);
         for k in 0..=SWEEP {
             let w = omega(k);
-            let v = h(w);
+            let v = dtft(taps, w);
             if w < 0.0 {
                 neg = neg.max(v);
             }
@@ -983,25 +990,25 @@ mod test {
         let (mut a, mut b) = (peak.0 - cell, peak.0 + cell);
         for _ in 0..80 {
             let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-            if h(m1) < h(m2) {
+            if dtft(taps, m1) < dtft(taps, m2) {
                 a = m1;
             } else {
                 b = m2;
             }
         }
         let peak_w = 0.5 * (a + b);
-        let peak_h = h(peak_w);
+        let peak_h = dtft(taps, peak_w);
 
         let half = peak_h / 2.0f64.sqrt();
-        let lo = crossing(h, peak_w - w0, peak_w, half);
-        let hi = crossing(h, peak_w, (peak_w + w0).min(PI), half);
+        let lo = crossing(taps, peak_w - w0, peak_w, half);
+        let hi = crossing(taps, peak_w, (peak_w + w0).min(PI), half);
 
         let guard = 3.0 * (hi - lo);
         let mut floor = 0.0f64;
         for k in 0..=SWEEP {
             let w = omega(k);
             if (w - peak_w).abs() > guard {
-                floor = floor.max(h(w));
+                floor = floor.max(dtft(taps, w));
             }
         }
 
@@ -1310,14 +1317,8 @@ mod test {
         }
     }
 
-    /// Truncation cost against a full-length bake, swept over `eps_time`.
-    ///
-    /// Also the only coverage of the untapered path: with `rho == 0` the taper is a no-op
-    /// and `center` folds against a flat window, so the full-length bake exercises branches
-    /// the tapered tests never reach.
-    ///
-    /// Cross-references: peak gain against `taps_are_conditioned` (which only sees tapered
-    /// bakes), and `rel_width` against `Shape::from_q`, which no other test measures.
+    /// Truncation cost against a full-length bake, swept over `eps_time`.  Stop band, DC leak,
+    /// ripple in the pass, width, and
     #[test]
     fn truncation_is_predictable() {
         const QUANTUM: usize = 4;
@@ -1327,10 +1328,10 @@ mod test {
 
         // Measured 0.9984 at Q = 3.5.
         const WIDTH_Q: f64 = 0.998;
-        const WIDTH_TOL: f64 = 0.03;
+        const WIDTH_TOL: f64 = 0.002;
 
         // Stopband gap relative to PEAK_GAIN, as a multiple of eps_time.
-        const LEAK_PER_EPS: f64 = 1.0;
+        const LEAK_PER_EPS: f64 = 0.05;
 
         // In-band relative error as a multiple of eps_time.
         const PASS_PER_EPS: f64 = 0.3;
@@ -1340,7 +1341,12 @@ mod test {
             .max_load_quantum(QUANTUM);
         let mut full = base.plan();
 
-        println!("\n=== TRUNCATION (Q = {Q}, rho 0.00, quantum {QUANTUM}) ===");
+        let db = |v: f64| 20.0 * (v / PEAK_GAIN).log10();
+
+        println!(
+            "\n=== TRUNCATION (Q = {Q}, quantum {QUANTUM}) ===\n\
+            dB reference peak gain {PEAK_GAIN:.1}; values except DC are dB relative to full-length bake"
+        );
 
         for fc in [2_000.0f64, 4_000.0, 8_000.0, 14_000.0] {
             let bf = full.bin(fc, RATE);
@@ -1348,10 +1354,9 @@ mod test {
             let mut wf = vec![[0.0f32; 4]; nf];
             full.taps_into(bf, QUANTUM, &mut wf);
             let pf = unfold(&wf, 0);
-            let hf = |w: f64| dtft(&pf, w);
 
             let w0 = bf.velocity();
-            let rf = characterize(&hf, w0);
+            let rf = characterize(&pf, w0);
 
             println!(
                 "\n  fc {fc:>6.0}  full weights {nf:>5}  peak {:.9}  rel width {:.5} \
@@ -1381,7 +1386,7 @@ mod test {
 
             let (mut prev_taps, mut prev_stop) = (0usize, f64::INFINITY);
 
-            for eps_time in [1e-2f64, 1e-3, 1e-4] {
+            for eps_time in [1e-2f64, 1e-3, 1e-4, 1e-5] {
                 let mut cut = base
                     .taper(Taper {
                         eps_time,
@@ -1393,19 +1398,21 @@ mod test {
                 let mut wc = vec![[0.0f32; 4]; nc];
                 cut.taps_into(bc, QUANTUM, &mut wc);
                 let pc = unfold(&wc, 0);
-                let hc = |w: f64| dtft(&pc, w);
 
-                let (pass, stop, dc_leak) = gap_split(&hf, &hc, rf.edges.0, rf.edges.1);
-                let rc = characterize(&hc, w0);
+                let pass = passband_gap(&pf, &pc, rf.edges.0, rf.edges.1);
+                let stop = stopband(&pf, &pc, w0);
+                let dc = dc_leak(&pc, w0);
+
+                let rc = characterize(&pc, w0);
                 let cents = 1200.0 * (rc.peak_w / rf.peak_w).log2();
 
                 println!(
                     "    eps_time {eps_time:>7.0e}  weights {nc:>5} ({:.3})  \
-                     pass {:>7.2} dB rel  stop {:>7.2} dB  dc {:>7.2} dB  peak {:+.4}c  width {:+.3}%",
+                    pass {:>7.2} dB  stop {:>7.2} dB  dc {:>7.2} dB  peak {:+.4}c  width {:+.3}%",
                     nc as f64 / nf as f64,
-                    20.0 * pass.log10(),
-                    20.0 * (stop / PEAK_GAIN).log10(),
-                    20.0 * (dc_leak / PEAK_GAIN).log10(),
+                    db(pass),
+                    db(stop),
+                    db(dc),
                     cents,
                     100.0 * (rc.rel_width / rf.rel_width - 1.0)
                 );
@@ -1432,9 +1439,9 @@ mod test {
                 // Turning off conditioning should break this, but the more heavily truncated
                 // filters also tend to trip it.
                 assert!(
-                    dc_leak < 1e-2 * PEAK_GAIN,
+                    dc < 1e-2 * PEAK_GAIN,
                     "fc {fc} eps_time {eps_time:e} dc {:.2} dB",
-                    20.0 * (dc_leak / PEAK_GAIN).log10()
+                    20.0 * (dc / PEAK_GAIN).log10()
                 );
 
                 // Tighter eps_time truncates less, so it costs taps and buys stopband.  Taps may
@@ -1482,14 +1489,14 @@ mod test {
 
                 let w0 = bin.velocity();
                 let psi = unfold(&w, 0);
-                let r = characterize(&|omega| dtft(&psi, omega), w0);
+                let r = characterize(&psi, w0);
 
                 let db = |v: f64| 20.0 * (v / r.peak_h).log10();
                 let taps = bin.taps;
 
                 println!(
-                    "\nfc {fc:>7.0} sr {sr:>6.0} taps {taps:>5} weights {n:>5} \
-                     (unfolded {:>5})  w0 {w0:.6}",
+                    "\nfc {fc:>5.0} sr {sr:>5.0}  w0 {w0:.6}  \
+                    N taps {taps:>3}  quantized {n:>3} (unfolded {:>3})",
                     bin.unfolded_taps(quantum)
                 );
                 println!(
