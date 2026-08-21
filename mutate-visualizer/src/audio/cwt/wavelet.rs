@@ -496,11 +496,46 @@ impl Plan {
             let norm = PEAK_GAIN / Self::gain_at(psi, bin.w0);
 
             Self::scale_by(psi, norm);
-            Self::scale_by(d, norm * bin.w0 / self.peak);
-
+            Self::align_d(psi, d, bin.w0, 700.0);
             Self::quantize(psi, d, out);
         }
         self.buf = buf;
+    }
+
+    /// Least-squares fit of H_d(w) = w*H_psi(w) over the intended detune range, using
+    /// d and nu^2*psi as the basis. nu^2 is even, so the fold and the derived t are
+    /// untouched; adding a multiple of nu^2*psi subtracts a multiple of H_psi'', which
+    /// is the curvature the ratio error is made of.
+    ///
+    /// Upstream owes a taper that leaves H_psi nonzero across the probe span. `cents`
+    /// should bracket the detune range the consumer will actually reassign over.
+    fn align_d(psi: &[(f64, f64)], d: &mut [(f64, f64)], w0: f64, cents: f64) {
+        let mut e = psi.to_vec();
+        for (j, s) in e.iter_mut().enumerate() {
+            let j2 = (j * j) as f64;
+            s.0 *= j2;
+            s.1 *= j2;
+        }
+
+        let (mut aa, mut ab, mut bb, mut ap, mut bp) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
+        for c in [-cents, 0.0, cents] {
+            let w = w0 * (c / 1200.0).exp2();
+            let hd = Self::gain_at(d, w);
+            let he = Self::gain_at(&e, w);
+            let hp = w * Self::gain_at(psi, w);
+            aa += hd * hd;
+            ab += hd * he;
+            bb += he * he;
+            ap += hd * hp;
+            bp += he * hp;
+        }
+        let det = aa * bb - ab * ab;
+        let (a, b) = ((bb * ap - ab * bp) / det, (aa * bp - ab * ap) / det);
+
+        for (s, c) in d.iter_mut().zip(&e) {
+            s.0 = a * s.0 + b * c.0;
+            s.1 = a * s.1 + b * c.1;
+        }
     }
 
     /// Rotor walk from the center outward, both spectra in one pass.
