@@ -19,20 +19,12 @@ mod test {
 
     use mutate_lib::dsp::{self, bank, MIN_FREQ_CHEAP_DRIVERS};
 
-    use crate::audio::{
-        cwt::wavelet::{Spec, Taper},
-        downsample::FILTERS,
-    };
+    use crate::audio::{cwt::wavelet::Spec, downsample::FILTERS};
 
     const LOAD_QUANTUM: usize = 8;
 
     fn spec() -> Spec {
-        Spec::default()
-            .taper(Taper {
-                eps_time: 5e-4,
-                rho: 0.05,
-            })
-            .max_load_quantum(4)
+        Spec::default().eps_time(5e-4).max_load_quantum(16)
     }
 
     fn bins() -> Vec<bank::Bin> {
@@ -99,7 +91,7 @@ mod test {
                 FILTERS[level - 1].decimation
             };
             let rate = SAMPLE_RATE / decimation as f32;
-            let taps = p.bin(b.center, rate as f64).unfolded_taps(LOAD_QUANTUM) as usize;
+            let taps = p.bin(b.center, rate as f64, LOAD_QUANTUM).unfolded_taps() as usize;
 
             buckets[usize::BITS as usize - 1 - taps.leading_zeros() as usize] += 1;
             total += taps;
@@ -140,7 +132,7 @@ mod test {
                 FILTERS[level - 1].decimation
             };
             let rate = SAMPLE_RATE / decimation as f32;
-            let taps = p.bin(b.center, rate as f64).unfolded_taps(LOAD_QUANTUM) as usize;
+            let taps = p.bin(b.center, rate as f64, LOAD_QUANTUM).unfolded_taps() as usize;
 
             // length cancels: (rate * COLA / taps) outputs/s * taps MAC/output
             let bin_mac_s = COLA * rate as f64;

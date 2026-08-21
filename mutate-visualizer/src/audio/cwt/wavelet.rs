@@ -68,17 +68,17 @@
 //! sharing that Q may reuse one `Plan`.
 //!
 //! ```
-//! # use mutate::wavelet::{Spec, Taper};
+//! # use mutate::wavelet::Spec;
 //! const QUANTUM: usize = 8;
 //!
 //! let mut plan = Spec::default()
-//!     .taper(Taper { eps_time: 1e-3, rho: 0.0 })
+//!     .eps_time(1e-3)
 //!     .max_load_quantum(QUANTUM)
 //!     .plan();
 //!
-//! let bin = plan.bin(1000.0, 8000.0);
-//! let mut weights = vec![[0.0f32; 4]; bin.folded_taps(QUANTUM)];
-//! plan.taps_into(bin, QUANTUM, &mut weights);
+//! let bin = plan.bin(1000.0, 8000.0, QUANTUM);
+//! let mut weights = vec![[0.0f32; 4]; bin.folded_taps()];
+//! plan.taps_into(bin, &mut weights);
 //! ```
 //!
 //! The `max_load_quantum` adjusts truncation and conditioning to land the mirrored tap length
@@ -91,19 +91,19 @@
 //! increasing precision and hopefully de-correlating some bias.
 //!
 //! ```
-//! # use mutate::wavelet::{Spec, Taper};
+//! # use mutate::wavelet::Spec;
 //! const QUANTUM: usize = 8;
 //!
 //! let mut plan = Spec::default()
-//!     .taper(Taper { eps_time: 1e-3, rho: 0.0 })
+//!     .eps_time(1e-3)
 //!     .max_load_quantum(QUANTUM)
 //!     .plan();
 //!
-//! let bin = plan.bin(1000.0, 8000.0);
-//! let mut weights = vec![[0.0f32; 4]; bin.folded_taps(QUANTUM)];
+//! let bin = plan.bin(1000.0, 8000.0, QUANTUM);
+//! let mut weights = vec![[0.0f32; 4]; bin.folded_taps()];
 //!
 //! // float4(Re ψ, Im ψ, Re d, Im d); index 0 is the center, with Re halved.
-//! plan.taps_into(bin, QUANTUM, &mut weights);
+//! plan.taps_into(bin, &mut weights);
 //! ```
 //!
 //! ## Weight Table Format
@@ -129,13 +129,17 @@
 //! temporaries.  Audio is 8 bytes per sample at two channels and each 8 bytes read can be re-used
 //! with `P` weights for each read.
 //!
-//! `d` carries `w0/peak` so its ratio against ψ reads in rad/sample. `t` derived this way
-//! reads in samples with no scaling.
+//! `d/ψ` reads in rad/sample and `t/ψ` in samples. No scaling required at the use site.
 
 // NEXT Offline SOCP oracle to see what we're leaving on the table with our approximations.
-// MAYBE More deliberate taper shaping, using taper shape to ceiling and distribute any halo the
-// taper introduces.  Shape-aware taper.  Length padding-aware truncation & taper.  Try to land the
-// taper where it won't slice a half period?
+// MAYBE No truncation shaping lacking deliberate design seems likely to accomplish more than
+// distorting the response at the target frequency and introducing a bunch or response at off
+// frequencies.  Only an engineered approach seems likely to succeed.  If possible, we would like to
+// achieve higher Q with lower noise floors and shorter N, but shorter N cannot avoid creating noise
+// floor without a principled approach to shaping the envelope, killing the truncation cliff and
+// using the body to kill what should not have been brought to life at a rate that we won't see it
+// as it breaks its zombie-like hand through the ground.  A lot of low hanging fruit has been beaten
+// out of the problem, and we are chasing the dust of f32 in some dimensions already.
 // NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
 // will be used are not particularly aware, so it's not expected that we can re-use exact bins in
 // any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
@@ -156,22 +160,22 @@
 //
 // === TABLE RESPONSE (Q = 3.5, quantum 4) ===
 //
-// fc  1000 sr  6000  w0 1.047198  N taps  47  quantized  25 (unfolded  49)
-//   peak gain 2.000000000  dev +1.052e-10 rel
+// fc  1000 sr  6000  w0 1.047198  quantized  29 (unfolded  57)
+//   peak gain 2.000000003  dev +1.600e-9 rel
 //   rel width 0.28523
-//   peak -0.0034 cents
-//   negative-freq max  -102.53 dB
-//   stopband floor     -102.53 dB
+//   peak -0.0002 cents
+//   negative-freq max  -142.30 dB
+//   stopband floor     -116.57 dB
 //
-// fc   250 sr  3000  w0 0.523599  N taps  93  quantized  49 (unfolded  97)
-//   peak gain 2.000000000  dev +1.234e-10 rel
-//   rel width 0.28523
-//   peak -0.0042 cents
-//   negative-freq max  -101.01 dB
-//   stopband floor     -101.01 dB
+// fc   250 sr  3000  w0 0.523599  quantized  45 (unfolded  89)
+//   peak gain 2.000000001  dev +6.697e-10 rel
+//   rel width 0.28527
+//   peak -0.0116 cents
+//   negative-freq max   -85.63 dB
+//   stopband floor      -85.63 dB
 //
-// fc 12000 sr 48000  w0 1.570796  N taps  33  quantized  17 (unfolded  33)
-//   peak gain 1.999999995  dev -2.326e-9 rel
+// fc 12000 sr 48000  w0 1.570796  quantized  17 (unfolded  33)
+//   peak gain 1.999999995  dev -2.563e-9 rel
 //   rel width 0.28523
 //   peak -0.0029 cents
 //   negative-freq max  -104.29 dB
@@ -181,12 +185,12 @@
 /// so |H| = 2 makes a unit tone read |W| = 1.
 const PEAK_GAIN: f64 = 2.0;
 
-/// A center frequency resolved against a plan and a sample rate.
+/// A center frequency resolved against a plan, a sample rate, and a load quantum.
 #[derive(Clone, Copy)]
 pub struct Bin {
-    // rad/sample at the decimated rate
     w0: f64,
-    taps: usize,
+    quantum: usize,
+    k: usize, // folded length incl. center
 }
 
 impl Bin {
@@ -195,16 +199,19 @@ impl Bin {
         self.w0
     }
 
-    /// Compute storage for folded taps with the center tap, rounding up for the load quantum.  If
-    /// your usage will load taps four at a time, the load quantum is four.
-    pub fn folded_taps(&self, load_quantum: usize) -> usize {
-        (self.taps / 2).div_ceil(load_quantum) * load_quantum + 1
+    pub fn quantum(&self) -> usize {
+        self.quantum
     }
 
-    /// Compute the effective taps after unfolding, including the center tap.  The effect of the
-    /// load quantum is doubled due to mirroring
-    pub fn unfolded_taps(&self, load_quantum: usize) -> usize {
-        2 * self.folded_taps(load_quantum) - 1
+    /// Folded weights including the center tap.  **Exactly** the length [`taps_into`] will write to
+    /// the destination.
+    pub fn folded_taps(&self) -> usize {
+        self.k
+    }
+
+    /// Effective taps after unfolding, including the center tap.
+    pub fn unfolded_taps(&self) -> usize {
+        2 * self.k - 1
     }
 }
 
@@ -245,37 +252,25 @@ impl Shape {
     }
 }
 
-/// Trades stopband depth for tap count.
-///
-/// - `rho` is the fraction of the half-span over which the truncation is smoothed.
-/// - `eps_time` truncates the tap envelope.
-///
-/// Other parameters have their normal behavior.
-#[derive(Clone, Copy)]
-pub struct Taper {
-    /// Error tolerance with respect to time truncation.
-    pub eps_time: f64,
-    /// Controls width of the taper.
-    pub rho: f64,
-}
-
 /// A builder struct for configuring a plan to build wavelets with a given shape.
 ///
 /// ```
-/// # use mutate::wavelet::{Spec, Taper};
+/// # use mutate::wavelet::Spec;
 ///
 /// let spec = Spec::default()
-///    .taper(Taper { eps_time: 1e-3, rho: 0.1 });
+///    .eps_time(1e-3);
 /// ```
 #[derive(Clone, Copy)]
 pub struct Spec {
     shape: Shape,
     // Error tolerance for the spectrum.
     eps: f64,
+    // Error tolerance for time truncation.
+    eps_time: f64,
     tail_a: f64,
-    taper: Option<Taper>,
     max_taps: usize,
     max_load_quantum: usize,
+    backoff: bool,
     sobolev: f64,
 }
 
@@ -284,10 +279,11 @@ impl Default for Spec {
         Spec {
             shape: Shape::from_q(3.0, 3.0),
             eps: 1e-10,
+            eps_time: 1e-10,
             tail_a: 1.0,
-            taper: None,
             max_taps: 0,
             max_load_quantum: 1,
+            backoff: true,
             sobolev: 2.0,
         }
     }
@@ -300,12 +296,26 @@ impl Spec {
         self
     }
 
+    /// Allow the emitted half-span one extra quantum when that lands the last tap nearer a
+    /// carrier zero. Off takes the shortest quantum-legal span.
+    pub fn backoff(mut self, backoff: bool) -> Self {
+        self.backoff = backoff;
+        self
+    }
+
     /// `eps` is the spectral truncation floor relative to the peak. It sets how far the baked grid
     /// extends, and through that the tap count, but not the shape. 1e-8 lands near the f32 noise
-    /// floor of the output taps.  Never use `eps_time` (on [`Taper`]) lower than `eps` because it
-    /// means avoiding truncation of what is already inexact.
+    /// floor of the output taps.
     pub fn eps(mut self, eps: f64) -> Self {
         self.eps = eps;
+        self
+    }
+
+    /// Truncation floor in the time domain, relative to the envelope peak. Sets the emitted
+    /// half-span and nothing else. Below `eps` it is avoiding truncation of what is already
+    /// inexact.
+    pub fn eps_time(mut self, eps_time: f64) -> Self {
+        self.eps_time = eps_time;
         self
     }
 
@@ -314,11 +324,6 @@ impl Spec {
     /// calibrated value and the one every response measurement in this module was taken with.
     pub fn tail_a(mut self, tail_a: f64) -> Self {
         self.tail_a = tail_a;
-        self
-    }
-    /// Set taper and error tolerance
-    pub fn taper(mut self, taper: Taper) -> Self {
-        self.taper = Some(taper);
         self
     }
 
@@ -349,14 +354,12 @@ impl Spec {
     /// Half-span that sets tap count, and the grid extent that feeds it.
     fn spans(&self) -> (f64, f64) {
         let grid = half_width_scaled(self.shape, self.eps, self.tail_a);
-        let taps = match self.taper {
-            Some(t) => half_width_scaled(self.shape, t.eps_time, self.tail_a),
-            None => grid,
-        };
+        let taps = half_width_scaled(self.shape, self.eps_time, self.tail_a);
 
         // Quantum rounding plus the center tap extend the emitted span by up to q+1 samples,
-        // worst at w0 = PI in scaled units.
-        let pad = (self.max_load_quantum + 1) as f64 * core::f64::consts::PI;
+        // worst at w0 = PI in scaled units. The phase snap can spend one more quantum.
+        let slots = if self.backoff { 2 } else { 1 };
+        let pad = (slots * self.max_load_quantum + 1) as f64 * core::f64::consts::PI;
 
         // Rectangle rule on a uniform grid aliases rather than truncates: the error is the
         // time-domain replica at period TAU/du. Placing it a full eps half-width past the
@@ -367,7 +370,6 @@ impl Spec {
     pub fn plan(self) -> Plan {
         let (c, du) = self.spans();
         let du = snap(du);
-        let peak = self.shape.peak();
         let (lo, m) = support(self.shape, du, self.eps);
 
         // d = w*psi shares psi's support, so lo bounds both.
@@ -376,129 +378,90 @@ impl Spec {
         for (j, s) in spec.iter_mut().enumerate().skip(lo) {
             let u = j as f64 * du;
             let p = env(u).exp();
-            *s = [p, p * peak * u];
+            *s = [p, p * u];
         }
 
         Plan {
-            peak,
             c,
             du,
             spec,
             lo,
-            rho: self.taper.map_or(0.0, |t| t.rho),
+            backoff: self.backoff,
             sobolev: self.sobolev,
-            buf: Vec::with_capacity(2 * (self.max_taps / 2 + self.max_load_quantum + 1)),
-        }
-    }
-}
-
-/// Taper produces a ramp from the design rho out.  Centering re-uses the ramp to avoid
-/// re-introducing what the ramp tapered away.
-#[derive(Clone, Copy)]
-struct Ramp {
-    start: f64,
-    inv: f64,
-}
-
-impl Ramp {
-    fn new(end: f64, width: f64) -> Self {
-        Ramp {
-            start: end - width,
-            inv: width.recip(),
-        }
-    }
-
-    /// Identity window; `x` pins to 0 for every index.
-    fn none() -> Self {
-        Ramp {
-            start: 0.0,
-            inv: 0.0,
-        }
-    }
-
-    fn at(&self, i: usize) -> f64 {
-        let x = (i as f64 - self.start) * self.inv;
-        if x <= 0.0 {
-            1.0
-        } else if x >= 1.0 {
-            0.0
-        } else {
-            1.0 / (1.0 + (1.0 / (1.0 - x) - 1.0 / x).exp())
-        }
-    }
-
-    fn apply(&self, out: &mut [(f64, f64)]) {
-        for (i, s) in out.iter_mut().enumerate() {
-            let w = self.at(i);
-            s.0 *= w;
-            s.1 *= w;
+            buf: Vec::with_capacity(3 * (self.max_taps / 2 + self.max_load_quantum + 1)),
+            max_load_quantum: self.max_load_quantum,
         }
     }
 }
 
 // CWT weight table generator.
 pub struct Plan {
-    peak: f64,            // argmax of w^beta e^{-w^gamma}
     c: f64,               // half_width_scaled
     du: f64,              // uniform step in u = w/w_peak
     spec: Vec<[f64; 2]>,  // [psi, d] at u_j = j*du
     lo: usize,            // first grid point above eps
-    rho: f64,             // taper fraction of the emitted half-span; 0.0 disables
     buf: Vec<(f64, f64)>, // bake scratch, 2 spans
     sobolev: f64,
+    backoff: bool,
+    max_load_quantum: usize,
 }
 
 impl Plan {
-    /// Angular velocity and tap count for a bin at `center`, sampled at `rate`.
-    /// `center` above Nyquist will panic in debug.
-    pub fn bin(&self, center: f64, rate: f64) -> Bin {
+    /// Geometry for a bin at `center`, sampled at `rate`, loaded `quantum` weights at a time.
+    pub fn bin(&self, center: f64, rate: f64, quantum: usize) -> Bin {
         debug_assert!(
             center < rate / 2.0,
             "center {center:.1}Hz above Nyquist {:.0}Hz",
             rate / 2.0
         );
+        debug_assert!(
+            quantum <= self.max_load_quantum,
+            "quantum {quantum} above plan ceiling {}",
+            self.max_load_quantum
+        );
 
         let w0 = core::f64::consts::TAU * center / rate;
+        let n = ((self.c / w0).ceil() as usize).div_ceil(quantum) * quantum;
+        let n = if self.backoff {
+            snap_phase(n, quantum, w0)
+        } else {
+            n
+        };
+
         Bin {
             w0,
-            taps: 2 * (self.c / w0).ceil() as usize + 1,
+            quantum,
+            k: n + 1,
         }
     }
 
-    /// Writes `bin.folded_taps(quantum)` folded weights. Peak gain 2, DC removed, tapered over
-    /// the quantized half-span. `out.len()` must be `bin.folded_taps(quantum)`.
-    pub fn taps_into(&mut self, bin: Bin, quantum: usize, out: &mut [[f32; 4]]) {
-        let k = out.len();
+    /// Writes `bin.folded_taps()` weights and returns that count. Peak gain 2, DC removed.
+    ///
+    /// Upstream owes an `out` at least that long.
+    pub fn taps_into(&mut self, bin: Bin, out: &mut [[f32; 4]]) -> usize {
+        let k = bin.k;
+        let out = &mut out[..k];
+
         let mut buf = core::mem::take(&mut self.buf);
-        buf.resize(2 * k, (0.0, 0.0));
+        buf.resize(3 * k, (0.0, 0.0));
         {
-            let (psi, d) = buf.split_at_mut(k);
+            let (psi, rest) = buf.split_at_mut(k);
+            let (d, e) = rest.split_at_mut(k);
 
             self.transform2(bin, psi, d);
-            // Ramp width comes from the design span, so it is one shape for every bin and
-            // quantum.
-            let ramp = match self.rho {
-                0.0 => Ramp::none(),
-                // Ramp size is calculated from the effective size,
-                rho => Ramp::new(out.len() as f64, rho * self.c / bin.w0),
-            };
 
-            // Taper ψ and d separately: windowing convolves each spectrum with the taper
-            // kernel, so d = w*ψ survives to the kernel's second moment. Tapering ψ and then
-            // deriving d would add a product-rule term exactly where d should be going quiet.
-            ramp.apply(psi);
-            ramp.apply(d);
+            self.condition(psi);
+            self.condition(d);
 
-            self.condition(psi, ramp);
-            self.condition(d, ramp);
+            // psi is final here. d is fit against w*H_psi, so its own scale is absorbed by
+            // the fit and it does not need normalizing.
+            Self::scale_by(psi, PEAK_GAIN / Self::gain_at(psi, bin.w0));
 
-            let norm = PEAK_GAIN / Self::gain_at(psi, bin.w0);
-
-            Self::scale_by(psi, norm);
-            Self::align_d(psi, d, bin.w0, 700.0);
+            Self::align_d(psi, d, e, bin.w0, 700.0);
             Self::quantize(psi, d, bin.w0, out);
         }
         self.buf = buf;
+        k
     }
 
     /// Least-squares fit of H_d(w) = w*H_psi(w) over the intended detune range, using
@@ -506,21 +469,30 @@ impl Plan {
     /// untouched; adding a multiple of nu^2*psi subtracts a multiple of H_psi'', which
     /// is the curvature the ratio error is made of.
     ///
-    /// Upstream owes a taper that leaves H_psi nonzero across the probe span. `cents`
-    /// should bracket the detune range the consumer will actually reassign over.
-    fn align_d(psi: &[(f64, f64)], d: &mut [(f64, f64)], w0: f64, cents: f64) {
-        let mut e = psi.to_vec();
-        for (j, s) in e.iter_mut().enumerate() {
+    /// `cents` brackets the detune range the consumer will reassign over, clamped so the
+    /// top probe stays clear of Nyquist: past it the fold-over dominates gain_at and the
+    /// fit chases the image instead of the band.
+    fn align_d(
+        psi: &[(f64, f64)],
+        d: &mut [(f64, f64)],
+        e: &mut [(f64, f64)],
+        w0: f64,
+        cents: f64,
+    ) {
+        const PROBES: usize = 9;
+
+        for (j, (s, &(pr, pi))) in e.iter_mut().zip(psi).enumerate() {
             let j2 = (j * j) as f64;
-            s.0 *= j2;
-            s.1 *= j2;
+            *s = (pr * j2, pi * j2);
         }
 
+        let cents = cents.min(1200.0 * (0.9 * core::f64::consts::PI / w0).log2());
+
         let (mut aa, mut ab, mut bb, mut ap, mut bp) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
-        for c in [-cents, 0.0, cents] {
+        for i in 0..PROBES {
+            let c = cents * (2.0 * i as f64 / (PROBES - 1) as f64 - 1.0);
             let w = w0 * (c / 1200.0).exp2();
-            let hd = Self::gain_at(d, w);
-            let he = Self::gain_at(&e, w);
+            let (hd, he) = (Self::gain_at(d, w), Self::gain_at(e, w));
             let hp = w * Self::gain_at(psi, w);
             aa += hd * hd;
             ab += hd * he;
@@ -528,10 +500,11 @@ impl Plan {
             ap += hd * hp;
             bp += he * hp;
         }
+
         let det = aa * bb - ab * ab;
         let (a, b) = ((bb * ap - ab * bp) / det, (aa * bp - ab * ap) / det);
 
-        for (s, c) in d.iter_mut().zip(&e) {
+        for (s, c) in d.iter_mut().zip(&*e) {
             s.0 = a * s.0 + b * c.0;
             s.1 = a * s.1 + b * c.1;
         }
@@ -580,30 +553,26 @@ impl Plan {
     }
 
     /// Zeroes H(0), H'(0), H''(0), H'''(0) with the minimum-norm correction under the metric
-    /// `(1 + (sigma·x)²)/window`, x = j/n. The window factor keeps the correction inside the
-    /// taper so the stopband survives; the Sobolev factor concentrates it near the center so
-    /// the correction contributes little slope to the error, which is what the reassignment
-    /// ratios divide through.
+    /// `1 + (sigma·x)²`, x = j/n. The correction lands as `shape(x)/(1 + (sigma·x)²)`, so
+    /// raising sigma pulls it toward the center tap and flattens the slope it contributes to
+    /// the error, which is what the reassignment ratios divide through.
     ///
     /// Parity splits the problem: the even taps carry the even derivatives at DC and the odd
     /// taps the odd ones, so this is two independent 2x2 solves sharing one moment table.
-    /// Assumes the taper leaves enough support for the Gram to stay invertible; a bin baked
-    /// down to a handful of weights with a large sigma will not.
-    fn condition(&self, out: &mut [(f64, f64)], ramp: Ramp) {
+    /// Sigma is de-rated by sqrt(n/64) below 64 weights: a short bake has too little support
+    /// to concentrate the correction and still keep the Gram invertible.
+    fn condition(&self, out: &mut [(f64, f64)]) {
         let n = out.len();
         let inv = (n as f64).recip();
 
         let s2 = {
-            // Correction span in taps, not in fraction of span. Short bins can't afford
-            // to concentrate the correction: the Gram goes soft and the flanks pay.
             let s = self.sobolev * (n as f64 / 64.0).sqrt().min(1.0);
             s * s
         };
 
-        // Correction shape, common to both parities.
         let g = |j: usize| {
             let x = j as f64 * inv;
-            (x, ramp.at(j) / (1.0 + s2 * x * x))
+            (x, 1.0 / (1.0 + s2 * x * x))
         };
 
         // Moments of the shape and the residuals in one pass. Pair multiplicity rides the
@@ -752,6 +721,17 @@ fn half_width_scaled(s: Shape, eps: f64, tail_a: f64) -> f64 {
 /// change to quantum or eps that doesn't cross a dyadic boundary leaves every u_j where it was.
 fn snap(du: f64) -> f64 {
     du.log2().floor().exp2()
+}
+
+/// Pick between the two shortest quantum-legal half-spans the one whose last tap sits nearer a
+/// carrier zero of the real lane. Costs at most one quantum.
+fn snap_phase(n: usize, quantum: usize, w0: f64) -> usize {
+    let cost = |m: usize| (w0 * m as f64).cos().abs();
+    if cost(n + quantum) < cost(n) {
+        n + quantum
+    } else {
+        n
+    }
 }
 
 /// Roots of g(u) = ln(eps). g rises to 0 at u = 1 and falls after, so Newton from each
@@ -1037,9 +1017,9 @@ mod test {
                 })
                 .max_load_quantum(QUANTUM)
                 .plan();
-            let bin = plan.bin(1000.0, 8000.0);
-            let mut w = vec![[0.0f32; 4]; bin.folded_taps(QUANTUM)];
-            plan.taps_into(bin, QUANTUM, &mut w);
+            let bin = plan.bin(1000.0, 8000.0, QUANTUM);
+            let mut w = vec![[0.0f32; 4]; bin.folded_taps()];
+            plan.taps_into(bin, &mut w);
 
             let t = unfold(&w, 0);
             let n = t.len();
@@ -1091,44 +1071,40 @@ mod test {
             .max_taps(1024)
             .shape(Shape::from_q(5.0, 3.0))
             .max_load_quantum(load_quantum)
-            .taper(Taper {
-                eps_time: 5e-3,
-                rho: 0.00,
-            })
+            .eps_time(5e-3)
             .plan();
         let bins = bank::bins(2_000.0, 20_000.0, BINS);
         println!("planning time: {:?}µs", start.elapsed().as_micros());
 
         let voices: Vec<Bin> = bins
             .iter()
-            .map(|b| b.center)
-            .map(|c| plan.bin(c, RATE))
+            .map(|b| plan.bin(b.center, RATE, load_quantum))
             .collect();
 
-        let mut offsets = Vec::with_capacity(voices.len());
-        let strides: Vec<usize> = voices.iter().map(|b| b.folded_taps(load_quantum)).collect();
-        let total: usize = strides.iter().sum();
+        let total: usize = voices.iter().map(Bin::folded_taps).sum();
         let mut weights = vec![[0.0f32; 4]; total];
 
+        let mut offsets = Vec::with_capacity(voices.len());
         let mut cursor = 0;
-        for (&bin, &n) in voices.iter().zip(&strides) {
+        for &bin in &voices {
             offsets.push(cursor);
-            plan.taps_into(bin, load_quantum, &mut weights[cursor..cursor + n]);
-            cursor += n;
+            cursor += plan.taps_into(bin, &mut weights[cursor..]);
         }
+
         let elapsed = start.elapsed();
 
         let worst = voices
             .iter()
-            .zip(offsets.iter().zip(&strides))
-            .map(|(b, (&o, &n))| {
+            .zip(&offsets)
+            .map(|(b, &o)| {
+                let n = b.folded_taps();
                 (dtft(&unfold(&weights[o..o + n], 0), b.velocity()) - PEAK_GAIN).abs()
             })
             .fold(0.0f64, f64::max);
         println!("worst peak gain error: {worst:.3e}");
         assert!(worst < 1e-3, "worst peak gain error {worst:.3e}");
 
-        let lowest = unfold(&weights[..strides[0]], 0);
+        let lowest = unfold(&weights[..voices[0].folded_taps()], 0);
         print_wave(
             &format!(
                 "LOWEST BIN ({:.0}Hz, omega0 {:.5})",
@@ -1144,31 +1120,27 @@ mod test {
             voices.len(),
             BINS,
             total,
-            strides[0],
-            strides[strides.len() - 1],
+            voices[0].folded_taps(),
+            voices[voices.len() - 1].folded_taps(),
         );
 
         println!("bin filling time: {:?}µs", elapsed.as_micros());
     }
 
     /// A real unit tone reads |W| = 1 even though |H| = 2: the analytic taps
-    /// see only the +w half of the cosine. Swept over the quantum because
-    /// padding moves the taper start and with it the emitted energy.
+    /// see only the +w half of the cosine. Swept over the quantum.
     #[test]
     fn unit_tone_reads_unity() {
         for quantum in [1usize, 4, 8] {
             let mut p = spec(3.0, 1e-8)
-                .taper(Taper {
-                    eps_time: 2e-4,
-                    rho: 0.00,
-                })
+                .eps_time(5e-3)
                 .max_load_quantum(quantum)
                 .plan();
 
             for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-                let bin = p.bin(fc, sr);
-                let mut w = vec![[0.0f32; 4]; bin.folded_taps(quantum)];
-                p.taps_into(bin, quantum, &mut w);
+                let bin = p.bin(fc, sr, quantum);
+                let mut w = vec![[0.0f32; 4]; bin.folded_taps()];
+                p.taps_into(bin, &mut w);
 
                 let psi = unfold(&w, 0);
                 let (n, w0) = (psi.len(), bin.velocity());
@@ -1197,30 +1169,26 @@ mod test {
     /// White noise therefore floors at a fixed level per bin once w0 is divided out.
     #[test]
     fn noise_gain_tracks_center() {
-        // Quantum rounding pads the emitted half-span, so the energy sum picks up
-        // whatever the taper leaves on the pad. Anchored at the shipping quantum.
+        // Quantum rounding pads the emitted half-span.
         const QUANTUM: usize = 4;
 
         // Tap count is an integer, so envelope truncation loses O(1/N) of the
         // energy, worst at the top of the range. Anchored to split the sweep
         // rather than to any one bin.
         const NOISE_GAIN: f64 = 0.224777;
-        const TOL: f64 = 5e-4;
+        const TOL: f64 = 2e-3;
 
         let mut p = spec(3.0, 1e-8)
-            .taper(Taper {
-                eps_time: 1e-3,
-                rho: 0.00,
-            })
+            .eps_time(5e-3)
             .max_load_quantum(QUANTUM)
             .plan();
 
         println!("\n=== NOISE GAIN (Q = 3, sr = {RATE}, quantum {QUANTUM}) ===");
 
         for fc in [500.0f64, 1000.0, 2000.0, 4000.0, 8000.0] {
-            let bin = p.bin(fc, RATE);
-            let mut w = vec![[0.0f32; 4]; bin.folded_taps(QUANTUM)];
-            p.taps_into(bin, QUANTUM, &mut w);
+            let bin = p.bin(fc, RATE, QUANTUM);
+            let mut w = vec![[0.0f32; 4]; bin.folded_taps()];
+            p.taps_into(bin, &mut w);
 
             let psi = unfold(&w, 0);
             let e: f64 = psi
@@ -1232,7 +1200,7 @@ mod test {
             println!(
                 "  fc {:>6.0}  taps {:>5}  energy {:.6}  e/w0 {:.6}  dev {:+.2e}",
                 fc,
-                bin.unfolded_taps(QUANTUM),
+                bin.unfolded_taps(),
                 e,
                 ratio,
                 ratio / NOISE_GAIN - 1.0
@@ -1250,18 +1218,16 @@ mod test {
     fn reassignment_is_unbiased() {
         const QUANTUM: usize = 4;
 
-        let mut plan = spec(3.5, 1e-8)
-            .taper(Taper {
-                eps_time: 1e-4,
-                rho: 0.00,
-            })
+        let mut plan = spec(3.5, 1e-10)
+            .eps_time(1e-4)
+            .backoff(false)
             .max_load_quantum(QUANTUM)
             .plan();
 
         for (fc, sr) in [(2_000.0f64, RATE), (250.0, 3000.0), (12_000.0, RATE)] {
-            let bin = plan.bin(fc, sr);
-            let mut w = vec![[0.0f32; 4]; bin.folded_taps(QUANTUM)];
-            plan.taps_into(bin, QUANTUM, &mut w);
+            let bin = plan.bin(fc, sr, QUANTUM);
+            let mut w = vec![[0.0f32; 4]; bin.folded_taps()];
+            plan.taps_into(bin, &mut w);
 
             let psi = unfold(&w, 0);
             let (d, t) = (unfold(&w, 2), derive_t(&psi));
@@ -1318,11 +1284,11 @@ mod test {
     }
 
     /// Truncation cost against a full-length bake, swept over `eps_time`.  Stop band, DC leak,
-    /// ripple in the pass, width, and
+    /// ripple in the pass, width, and gain are all compared.
     #[test]
     fn truncation_is_predictable() {
         const QUANTUM: usize = 4;
-        const Q: f64 = 4.0;
+        const Q: f64 = 3.5;
 
         // NOTE these are empirically discovered values stored to catch regressions.
 
@@ -1349,10 +1315,10 @@ mod test {
         );
 
         for fc in [2_000.0f64, 4_000.0, 8_000.0, 14_000.0] {
-            let bf = full.bin(fc, RATE);
-            let nf = bf.folded_taps(QUANTUM);
+            let bf = full.bin(fc, RATE, QUANTUM);
+            let nf = bf.folded_taps();
             let mut wf = vec![[0.0f32; 4]; nf];
-            full.taps_into(bf, QUANTUM, &mut wf);
+            full.taps_into(bf, &mut wf);
             let pf = unfold(&wf, 0);
 
             let w0 = bf.velocity();
@@ -1366,7 +1332,7 @@ mod test {
                 rf.rel_width * Q
             );
 
-            // The untapered bake is held to the same conditioning as the tapered ones.
+            // The full length bake is held to the same conditioning as the time-truncated ones.
             assert!(
                 (rf.peak_h / PEAK_GAIN - 1.0).abs() < 1e-5,
                 "fc {fc} full peak gain {:.9}",
@@ -1387,16 +1353,11 @@ mod test {
             let (mut prev_taps, mut prev_stop) = (0usize, f64::INFINITY);
 
             for eps_time in [1e-2f64, 1e-3, 1e-4, 1e-5] {
-                let mut cut = base
-                    .taper(Taper {
-                        eps_time,
-                        rho: 0.00,
-                    })
-                    .plan();
-                let bc = cut.bin(fc, RATE);
-                let nc = bc.folded_taps(QUANTUM);
+                let mut cut = base.eps_time(eps_time).plan();
+                let bc = cut.bin(fc, RATE, QUANTUM);
+                let nc = bc.folded_taps();
                 let mut wc = vec![[0.0f32; 4]; nc];
-                cut.taps_into(bc, QUANTUM, &mut wc);
+                cut.taps_into(bc, &mut wc);
                 let pc = unfold(&wc, 0);
 
                 let pass = passband_gap(&pf, &pc, rf.edges.0, rf.edges.1);
@@ -1468,36 +1429,33 @@ mod test {
     }
 
     /// Same four numbers as `response_is_characterized`, measured on the folded weight
-    /// table. Sweeps the load quantum, because the quantum pads the emitted half-span and moves
-    /// where the taper starts.
+    /// table. Sweeps the load quantum, because the quantum pads the emitted half-span.
     #[test]
     fn table_response_is_characterized() {
-        let (q, eps, eps_time, rho) = (3.5, 1e-8, 2e-4, 0.0);
+        let (q, eps, eps_time) = (3.5, 1e-10, 1e-3);
         for quantum in [1usize, 4, 8, 16] {
             let mut p = spec(q, eps)
-                .taper(Taper { eps_time, rho })
+                .eps_time(eps_time)
                 .max_load_quantum(quantum)
                 .plan();
 
             println!("\n=== TABLE RESPONSE (Q = {q}, quantum {quantum}) ===");
 
             for (fc, sr) in [(1000.0f64, 6000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-                let bin = p.bin(fc, sr);
-                let n = bin.folded_taps(quantum);
+                let bin = p.bin(fc, sr, quantum);
+                let n = bin.folded_taps();
                 let mut w = vec![[0.0f32; 4]; n];
-                p.taps_into(bin, quantum, &mut w);
+                p.taps_into(bin, &mut w);
 
                 let w0 = bin.velocity();
                 let psi = unfold(&w, 0);
                 let r = characterize(&psi, w0);
 
                 let db = |v: f64| 20.0 * (v / r.peak_h).log10();
-                let taps = bin.taps;
 
                 println!(
-                    "\nfc {fc:>5.0} sr {sr:>5.0}  w0 {w0:.6}  \
-                    N taps {taps:>3}  quantized {n:>3} (unfolded {:>3})",
-                    bin.unfolded_taps(quantum)
+                    "\nfc {fc:>5.0} sr {sr:>5.0}  w0 {w0:.6}  quantized {n:>3} (unfolded {:>3})",
+                    bin.unfolded_taps()
                 );
                 println!(
                     "  peak gain {:.9}  dev {:+.3e} rel",
@@ -1524,18 +1482,16 @@ mod test {
     fn taps_are_conditioned() {
         const QUANTUM: usize = 4;
 
-        let mut p = spec(3.0, 1e-8)
-            .taper(Taper {
-                eps_time: 1e-3,
-                rho: 0.0,
-            })
+        let mut p = spec(3.0, 1e-10)
+            .eps_time(1e-4)
+            .backoff(true)
             .max_load_quantum(QUANTUM)
             .plan();
 
         for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-            let bin = p.bin(fc, sr);
-            let mut w = vec![[0.0f32; 4]; bin.folded_taps(QUANTUM)];
-            p.taps_into(bin, QUANTUM, &mut w);
+            let bin = p.bin(fc, sr, QUANTUM);
+            let mut w = vec![[0.0f32; 4]; bin.folded_taps()];
+            p.taps_into(bin, &mut w);
 
             let (psi, d) = (unfold(&w, 0), unfold(&w, 2));
             let w0 = bin.velocity();
