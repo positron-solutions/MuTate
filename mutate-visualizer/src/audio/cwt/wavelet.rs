@@ -1402,9 +1402,10 @@ mod test {
                 let r = characterize(&|omega| dtft(&psi, omega), w0);
 
                 let db = |v: f64| 20.0 * (v / r.peak_h).log10();
+                let taps = bin.taps;
 
                 println!(
-                    "\nfc {fc:>7.0} sr {sr:>6.0}  weights {n:>5} \
+                    "\nfc {fc:>7.0} sr {sr:>6.0} taps {taps:>5} weights {n:>5} \
                      (unfolded {:>5})  w0 {w0:.6}",
                     bin.unfolded_taps(quantum)
                 );
