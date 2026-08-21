@@ -158,25 +158,25 @@
 // === TABLE RESPONSE (Q = 3.5, quantum 4) ===
 //
 // fc    1000 sr   6000  weights    25 (unfolded    49)  w0 1.047198
-//   peak gain 2.000000006  dev +3.185e-9 rel
-//   rel width 0.28523
-//   peak -0.0051 cents
-//   negative-freq max  -107.87 dB
-//   stopband floor     -102.33 dB
+//   peak gain 2.000000002  dev +1.059e-9 rel
+//   rel width 0.28524
+//   peak -0.0053 cents
+//   negative-freq max  -102.12 dB
+//   stopband floor     -101.16 dB
 //
 // fc     250 sr   3000  weights    45 (unfolded    89)  w0 0.523599
-//   peak gain 2.000000001  dev +7.216e-10 rel
-//   rel width 0.28529
-//   peak -0.0190 cents
-//   negative-freq max   -86.96 dB
-//   stopband floor      -86.64 dB
+//   peak gain 2.000000009  dev +4.637e-9 rel
+//   rel width 0.28530
+//   peak -0.0143 cents
+//   negative-freq max   -79.94 dB
+//   stopband floor      -79.94 dB
 //
 // fc   12000 sr  48000  weights    17 (unfolded    33)  w0 1.570796
-//   peak gain 2.000000006  dev +2.951e-9 rel
+//   peak gain 1.999999960  dev -1.977e-8 rel
 //   rel width 0.28523
-//   peak -0.0032 cents
-//   negative-freq max  -107.84 dB
-//   stopband floor     -106.66 dB
+//   peak -0.0033 cents
+//   negative-freq max  -103.31 dB
+//   stopband floor     -103.31 dB
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude,
 /// so |H| = 2 makes a unit tone read |W| = 1.
@@ -277,6 +277,7 @@ pub struct Spec {
     taper: Option<Taper>,
     max_taps: usize,
     max_load_quantum: usize,
+    sobolev: f64,
 }
 
 impl Default for Spec {
@@ -288,6 +289,7 @@ impl Default for Spec {
             taper: None,
             max_taps: 0,
             max_load_quantum: 1,
+            sobolev: 2.0,
         }
     }
 }
@@ -335,6 +337,16 @@ impl Spec {
         self
     }
 
+    /// Sobolev weight on the conditioning correction, dimensionless against the emitted
+    /// half-span. The correction minimizes `∫|E|² + λ|E'|²` of its own spectral footprint,
+    /// so raising this pulls the correction toward the center tap and flattens the error
+    /// slope that reassignment divides through. 0.0 is the plain minimum-norm correction.
+    /// Above roughly 8.0 the Gram solution gets soft and the stopband starts paying for it.
+    pub fn sobolev(mut self, sigma: f64) -> Self {
+        self.sobolev = sigma;
+        self
+    }
+
     /// Half-span that sets tap count, and the grid extent that feeds it.
     fn spans(&self) -> (f64, f64) {
         let grid = half_width_scaled(self.shape, self.eps, self.tail_a);
@@ -372,6 +384,7 @@ impl Spec {
             spec,
             lo,
             rho: self.taper.map_or(0.0, |t| t.rho),
+            sobolev: self.sobolev,
             buf: Vec::with_capacity(2 * (self.max_taps / 2 + self.max_load_quantum + 1)),
         }
     }
@@ -430,6 +443,7 @@ pub struct Plan {
     lo: usize,            // first grid point above eps
     rho: f64,             // taper fraction of the emitted half-span; 0.0 disables
     buf: Vec<(f64, f64)>, // bake scratch, 2 spans
+    sobolev: f64,
 }
 
 impl Plan {
@@ -473,8 +487,9 @@ impl Plan {
             ramp.apply(psi);
             ramp.apply(d);
 
-            self.center(psi, ramp);
-            self.center(d, ramp);
+            self.condition(psi, ramp);
+            self.condition(d, ramp);
+
             let norm = PEAK_GAIN / Self::gain_at(psi, bin.w0);
 
             Self::scale_by(psi, norm);
@@ -542,6 +557,69 @@ impl Plan {
             let w = ramp.at(i);
             s.0 -= a * w;
             s.1 -= b * i as f64 * w;
+        }
+    }
+
+    /// Zeroes H(0), H'(0), H''(0), H'''(0) with the minimum-norm correction under the metric
+    /// `(1 + (sigma·x)²)/window`, x = j/n. The window factor keeps the correction inside the
+    /// taper so the stopband survives; the Sobolev factor concentrates it near the center so
+    /// the correction contributes little slope to the error, which is what the reassignment
+    /// ratios divide through.
+    ///
+    /// Parity splits the problem: the even taps carry the even derivatives at DC and the odd
+    /// taps the odd ones, so this is two independent 2x2 solves sharing one moment table.
+    /// Assumes the taper leaves enough support for the Gram to stay invertible; a bin baked
+    /// down to a handful of weights with a large sigma will not.
+    fn condition(&self, out: &mut [(f64, f64)], ramp: Ramp) {
+        let n = out.len();
+        let inv = (n as f64).recip();
+
+        let s2 = {
+            // Correction span in taps, not in fraction of span. Short bins can't afford
+            // to concentrate the correction: the Gram goes soft and the flanks pay.
+            let s = self.sobolev * (n as f64 / 64.0).sqrt().min(1.0);
+            s * s
+        };
+
+        // Correction shape, common to both parities.
+        let g = |j: usize| {
+            let x = j as f64 * inv;
+            (x, ramp.at(j) / (1.0 + s2 * x * x))
+        };
+
+        // Moments of the shape and the residuals in one pass. Pair multiplicity rides the
+        // functionals, not the correction: it cancels out of the stationarity condition.
+        let (mut m0, mut m1, mut m2, mut m3) = (0.0f64, 0.0, 0.0, 0.0);
+        let (mut r0, mut r2, mut i1, mut i3) = (0.0f64, 0.0, 0.0, 0.0);
+        for (j, s) in out.iter().enumerate() {
+            let (x, w) = g(j);
+            let c = if j == 0 { 1.0 } else { 2.0 };
+            let (x2, cw) = (x * x, c * w);
+
+            m0 += cw;
+            m1 += cw * x2;
+            m2 += cw * x2 * x2;
+            m3 += cw * x2 * x2 * x2;
+
+            r0 += c * s.0;
+            r2 += c * x2 * s.0;
+            i1 += c * x * s.1;
+            i3 += c * x2 * x * s.1;
+        }
+
+        // [a b; b d] · coef = -[p; q]
+        let solve = |a: f64, b: f64, d: f64, p: f64, q: f64| {
+            let det = a * d - b * b;
+            ((b * q - d * p) / det, (b * p - a * q) / det)
+        };
+        let (ea, eb) = solve(m0, m1, m2, r0, r2); // even shapes {1, x²}
+        let (oa, ob) = solve(m1, m2, m3, i1, i3); // odd shapes {x, x³}
+
+        for (j, s) in out.iter_mut().enumerate() {
+            let (x, w) = g(j);
+            let x2 = x * x;
+            s.0 += (ea + eb * x2) * w;
+            s.1 += (oa + ob * x2) * x * w;
         }
     }
 
