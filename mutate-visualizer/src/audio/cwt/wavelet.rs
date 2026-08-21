@@ -72,7 +72,7 @@
 //! const QUANTUM: usize = 4;
 //!
 //! let mut plan = Spec::default()
-//!     .taper(Taper { eps_time: 1e-3, rho: 0.1 })
+//!     .taper(Taper { eps_time: 1e-3, rho: 0.0 })
 //!     .max_load_quantum(QUANTUM)
 //!     .plan();
 //!
@@ -95,7 +95,7 @@
 //! const QUANTUM: usize = 8;
 //!
 //! let mut plan = Spec::default()
-//!     .taper(Taper { eps_time: 1e-3, rho: 0.1 })
+//!     .taper(Taper { eps_time: 1e-3, rho: 0.0 })
 //!     .max_load_quantum(QUANTUM)
 //!     .plan();
 //!
@@ -133,7 +133,7 @@
 //! reads in samples with no scaling.
 
 // NEXT Offline SOCP oracle to see what we're leaving on the table with our approximations.
-// NEXT More deliberate taper shaping, using taper shape to ceiling and distribute any halo the
+// MAYBE More deliberate taper shaping, using taper shape to ceiling and distribute any halo the
 // taper introduces.  Shape-aware taper.  Length padding-aware truncation & taper.  Try to land the
 // taper where it won't slice a half period?
 // MAYBE Integrate late quantization to bias rounding towards filter precision.
@@ -1011,7 +1011,7 @@ mod test {
             .max_load_quantum(load_quantum)
             .taper(Taper {
                 eps_time: 5e-3,
-                rho: 0.08,
+                rho: 0.00,
             })
             .plan();
         let bins = bank::bins(2_000.0, 20_000.0, BINS);
@@ -1078,7 +1078,7 @@ mod test {
             let mut p = spec(3.0, 1e-8)
                 .taper(Taper {
                     eps_time: 1e-3,
-                    rho: 0.08,
+                    rho: 0.00,
                 })
                 .max_load_quantum(quantum)
                 .plan();
@@ -1128,7 +1128,7 @@ mod test {
         let mut p = spec(3.0, 1e-8)
             .taper(Taper {
                 eps_time: 1e-3,
-                rho: 0.08,
+                rho: 0.00,
             })
             .max_load_quantum(QUANTUM)
             .plan();
@@ -1168,10 +1168,10 @@ mod test {
     fn reassignment_is_unbiased() {
         const QUANTUM: usize = 4;
 
-        let mut plan = spec(2.5, 1e-8)
+        let mut plan = spec(3.5, 1e-8)
             .taper(Taper {
-                eps_time: 2e-4,
-                rho: 0.08,
+                eps_time: 1e-4,
+                rho: 0.00,
             })
             .max_load_quantum(QUANTUM)
             .plan();
@@ -1265,7 +1265,7 @@ mod test {
             .max_load_quantum(QUANTUM);
         let mut full = base.plan();
 
-        println!("\n=== TRUNCATION (Q = {Q}, rho 0.09, quantum {QUANTUM}) ===");
+        println!("\n=== TRUNCATION (Q = {Q}, rho 0.00, quantum {QUANTUM}) ===");
 
         for fc in [2_000.0f64, 4_000.0, 8_000.0, 14_000.0] {
             let bf = full.bin(fc, RATE);
@@ -1310,7 +1310,7 @@ mod test {
                 let mut cut = base
                     .taper(Taper {
                         eps_time,
-                        rho: 0.05,
+                        rho: 0.00,
                     })
                     .plan();
                 let bc = cut.bin(fc, RATE);
@@ -1381,8 +1381,7 @@ mod test {
     /// where the taper starts.
     #[test]
     fn table_response_is_characterized() {
-        let (q, eps, eps_time, rho) = (3.5, 1e-8, 2e-4, 0.08);
-
+        let (q, eps, eps_time, rho) = (3.5, 1e-8, 2e-4, 0.0);
         for quantum in [1usize, 4, 8, 16] {
             let mut p = spec(q, eps)
                 .taper(Taper { eps_time, rho })
@@ -1437,7 +1436,7 @@ mod test {
         let mut p = spec(3.0, 1e-8)
             .taper(Taper {
                 eps_time: 1e-3,
-                rho: 0.1,
+                rho: 0.0,
             })
             .max_load_quantum(QUANTUM)
             .plan();
