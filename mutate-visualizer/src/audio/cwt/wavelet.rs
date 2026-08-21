@@ -158,25 +158,25 @@
 // === TABLE RESPONSE (Q = 3.5, quantum 4) ===
 //
 // fc    1000 sr   6000  weights    25 (unfolded    49)  w0 1.047198
-//   peak gain 2.000000002  dev +1.059e-9 rel
-//   rel width 0.28524
-//   peak -0.0053 cents
-//   negative-freq max  -102.12 dB
-//   stopband floor     -101.16 dB
+//   peak gain 1.999999982  dev -8.799e-9 rel
+//   rel width 0.28523
+//   peak -0.0047 cents
+//   negative-freq max  -104.02 dB
+//   stopband floor     -101.53 dB
 //
-// fc     250 sr   3000  weights    45 (unfolded    89)  w0 0.523599
-//   peak gain 2.000000009  dev +4.637e-9 rel
-//   rel width 0.28530
-//   peak -0.0143 cents
-//   negative-freq max   -79.94 dB
-//   stopband floor      -79.94 dB
+// fc     250 sr   3000  weights    49 (unfolded    97)  w0 0.523599
+//   peak gain 1.999999993  dev -3.306e-9 rel
+//   rel width 0.28524
+//   peak -0.0071 cents
+//   negative-freq max  -103.05 dB
+//   stopband floor      -98.91 dB
 //
 // fc   12000 sr  48000  weights    17 (unfolded    33)  w0 1.570796
-//   peak gain 1.999999960  dev -1.977e-8 rel
+//   peak gain 2.000000014  dev +7.186e-9 rel
 //   rel width 0.28523
-//   peak -0.0033 cents
-//   negative-freq max  -103.31 dB
-//   stopband floor     -103.31 dB
+//   peak -0.0030 cents
+//   negative-freq max  -104.40 dB
+//   stopband floor     -104.40 dB
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude,
 /// so |H| = 2 makes a unit tone read |W| = 1.
@@ -356,16 +356,19 @@ impl Spec {
         };
 
         // Quantum rounding plus the center tap extend the emitted span by up to q+1 samples,
-        // worst at w0 = PI in scaled units. That only needs to keep the grid clear of the
-        // replica; the tap count does its own rounding in Bin::folded_taps.
+        // worst at w0 = PI in scaled units.
         let pad = (self.max_load_quantum + 1) as f64 * core::f64::consts::PI;
-        (taps, grid.max(taps) + pad)
+
+        // Rectangle rule on a uniform grid aliases rather than truncates: the error is the
+        // time-domain replica at period TAU/du. Placing it a full eps half-width past the
+        // emitted span puts the fold-back at eps.
+        (taps, core::f64::consts::TAU / (taps + pad + grid.max(taps)))
     }
 
     pub fn plan(self) -> Plan {
-        let (c, extent) = self.spans();
+        let (c, du) = self.spans();
+        let du = snap(du);
         let peak = self.shape.peak();
-        let du = 0.8 * core::f64::consts::PI / extent;
         let (lo, m) = support(self.shape, du, self.eps);
 
         // d = w*psi shares psi's support, so lo bounds both.
@@ -478,7 +481,7 @@ impl Plan {
             let ramp = match self.rho {
                 0.0 => Ramp::none(),
                 // Ramp size is calculated from the effective size,
-                rho => Ramp::new(out.len() as f64, rho * out.len() as f64),
+                rho => Ramp::new(out.len() as f64, rho * self.c / bin.w0),
             };
 
             // Taper ψ and d separately: windowing convolves each spectrum with the taper
@@ -539,24 +542,6 @@ impl Plan {
             let k = 0.5 * (3.0 - (nr * nr + ni * ni));
             sr = nr * k;
             si = ni * k;
-        }
-    }
-
-    /// DC and moment removal along the taper window.
-    fn center(&self, out: &mut [(f64, f64)], ramp: Ramp) {
-        let n = out.len();
-        let re = 2.0 * (1..n).map(|i| out[i].0).sum::<f64>() + out[0].0;
-        let win = 2.0 * (1..n).map(|i| ramp.at(i)).sum::<f64>() + ramp.at(0);
-        let a = re / win;
-
-        let m1: f64 = (1..n).map(|i| i as f64 * out[i].1).sum();
-        let g: f64 = (1..n).map(|i| (i * i) as f64 * ramp.at(i)).sum();
-        let b = m1 / g;
-
-        for (i, s) in out.iter_mut().enumerate() {
-            let w = ramp.at(i);
-            s.0 -= a * w;
-            s.1 -= b * i as f64 * w;
         }
     }
 
@@ -672,27 +657,59 @@ fn log_env(s: Shape) -> impl Fn(f64) -> f64 {
     move |u| s.beta * u.ln() - bg * u.powf(s.gamma) + bg
 }
 
-/// Grid indices bracketing the spectrum above `eps`: `[lo, m)`.
-fn support(shape: Shape, du: f64, eps: f64) -> (usize, usize) {
-    let g = log_env(shape);
-    let le = eps.ln();
+// /// Grid indices bracketing the spectrum above `eps`: `[lo, m)`.
+// fn support(shape: Shape, du: f64, eps: f64) -> (usize, usize) {
+//     let g = log_env(shape);
+//     let le = eps.ln();
 
-    let mut j = 1usize;
-    while g(j as f64 * du) < le {
-        j += 1;
-    }
-    let lo = j;
-    while g(j as f64 * du) >= le {
-        j += 1;
-    }
-    (lo, j + 1)
-}
+//     let mut j = 1usize;
+//     while g(j as f64 * du) < le {
+//         j += 1;
+//     }
+//     let lo = j;
+//     while g(j as f64 * du) >= le {
+//         j += 1;
+//     }
+//     (lo, j + 1)
+// }
 
 /// Half width in samples, times omega0. Pure function of shape and leakage.
 fn half_width_scaled(s: Shape, eps: f64, tail_a: f64) -> f64 {
     let core = (2.0 * eps.recip().ln()).sqrt() * s.p();
     let tail = (tail_a / eps).powf(1.0 / (2.0 * s.beta + 1.0));
     core.max(tail)
+}
+
+/// Largest power-of-two step at or below `du`. Grids at different steps are then nested, so a
+/// change to quantum or eps that doesn't cross a dyadic boundary leaves every u_j where it was.
+fn snap(du: f64) -> f64 {
+    du.log2().floor().exp2()
+}
+
+/// Roots of g(u) = ln(eps). g rises to 0 at u = 1 and falls after, so Newton from each
+/// asymptotic branch converges monotonically inward.
+fn roots(s: Shape, eps: f64) -> (f64, f64) {
+    let g = log_env(s);
+    let le = eps.ln();
+    let dg = |u: f64| s.beta / u - s.beta * u.powf(s.gamma - 1.0);
+
+    let solve = |mut u: f64| {
+        for _ in 0..40 {
+            u -= (g(u) - le) / dg(u);
+        }
+        u
+    };
+    (
+        solve(eps.powf(1.0 / s.beta)),
+        solve(1.0 + (2.0 * -le / s.beta).sqrt()),
+    )
+}
+
+/// Grid indices bracketing the spectrum above `eps`: `[lo, m)`.
+fn support(shape: Shape, du: f64, eps: f64) -> (usize, usize) {
+    let (u_lo, u_hi) = roots(shape, eps);
+    let lo = ((u_lo / du).ceil() as usize).max(1);
+    (lo, (u_hi / du).floor() as usize + 1)
 }
 
 #[cfg(test)]
@@ -994,7 +1011,7 @@ mod test {
             .max_load_quantum(load_quantum)
             .taper(Taper {
                 eps_time: 5e-3,
-                rho: 0.1,
+                rho: 0.08,
             })
             .plan();
         let bins = bank::bins(2_000.0, 20_000.0, BINS);
@@ -1061,7 +1078,7 @@ mod test {
             let mut p = spec(3.0, 1e-8)
                 .taper(Taper {
                     eps_time: 1e-3,
-                    rho: 0.1,
+                    rho: 0.08,
                 })
                 .max_load_quantum(quantum)
                 .plan();
@@ -1111,7 +1128,7 @@ mod test {
         let mut p = spec(3.0, 1e-8)
             .taper(Taper {
                 eps_time: 1e-3,
-                rho: 0.1,
+                rho: 0.08,
             })
             .max_load_quantum(QUANTUM)
             .plan();
@@ -1153,8 +1170,8 @@ mod test {
 
         let mut plan = spec(2.5, 1e-8)
             .taper(Taper {
-                eps_time: 1e-3,
-                rho: 0.09,
+                eps_time: 2e-4,
+                rho: 0.08,
             })
             .max_load_quantum(QUANTUM)
             .plan();
@@ -1248,7 +1265,7 @@ mod test {
             .max_load_quantum(QUANTUM);
         let mut full = base.plan();
 
-        println!("\n=== TRUNCATION (Q = {Q}, rho 0.1, quantum {QUANTUM}) ===");
+        println!("\n=== TRUNCATION (Q = {Q}, rho 0.09, quantum {QUANTUM}) ===");
 
         for fc in [2_000.0f64, 4_000.0, 8_000.0, 14_000.0] {
             let bf = full.bin(fc, RATE);
@@ -1290,7 +1307,12 @@ mod test {
             let (mut prev_taps, mut prev_stop) = (0usize, f64::INFINITY);
 
             for eps_time in [1e-2f64, 1e-3, 1e-4] {
-                let mut cut = base.taper(Taper { eps_time, rho: 0.1 }).plan();
+                let mut cut = base
+                    .taper(Taper {
+                        eps_time,
+                        rho: 0.05,
+                    })
+                    .plan();
                 let bc = cut.bin(fc, RATE);
                 let nc = bc.folded_taps(QUANTUM);
                 let mut wc = vec![[0.0f32; 4]; nc];
@@ -1359,7 +1381,7 @@ mod test {
     /// where the taper starts.
     #[test]
     fn table_response_is_characterized() {
-        let (q, eps, eps_time, rho) = (3.5, 1e-8, 5e-4, 0.08);
+        let (q, eps, eps_time, rho) = (3.5, 1e-8, 2e-4, 0.08);
 
         for quantum in [1usize, 4, 8, 16] {
             let mut p = spec(q, eps)
