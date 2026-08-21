@@ -156,26 +156,26 @@
 //
 // === TABLE RESPONSE (Q = 3.5, quantum 4) ===
 //
-// fc    1000 sr   6000 taps    47 weights    25 (unfolded    49)  w0 1.047198
-//   peak gain 2.000000009  dev +4.452e-9 rel
+// fc  1000 sr  6000  w0 1.047198  N taps  47  quantized  25 (unfolded  49)
+//   peak gain 2.000000000  dev +1.052e-10 rel
 //   rel width 0.28523
 //   peak -0.0034 cents
 //   negative-freq max  -102.53 dB
 //   stopband floor     -102.53 dB
 //
-// fc     250 sr   3000 taps    93 weights    49 (unfolded    97)  w0 0.523599
-//   peak gain 1.999999983  dev -8.570e-9 rel
+// fc   250 sr  3000  w0 0.523599  N taps  93  quantized  49 (unfolded  97)
+//   peak gain 2.000000000  dev +1.234e-10 rel
 //   rel width 0.28523
 //   peak -0.0042 cents
 //   negative-freq max  -101.01 dB
 //   stopband floor     -101.01 dB
 //
-// fc   12000 sr  48000 taps    33 weights    17 (unfolded    33)  w0 1.570796
-//   peak gain 2.000000045  dev +2.233e-8 rel
+// fc 12000 sr 48000  w0 1.570796  N taps  33  quantized  17 (unfolded  33)
+//   peak gain 1.999999995  dev -2.326e-9 rel
 //   rel width 0.28523
 //   peak -0.0029 cents
-//   negative-freq max  -104.27 dB
-//   stopband floor     -104.27 dB
+//   negative-freq max  -104.29 dB
+//   stopband floor     -104.29 dB
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude,
 /// so |H| = 2 makes a unit tone read |W| = 1.
@@ -283,7 +283,7 @@ impl Default for Spec {
     fn default() -> Self {
         Spec {
             shape: Shape::from_q(3.0, 3.0),
-            eps: 1e-8,
+            eps: 1e-10,
             tail_a: 1.0,
             taper: None,
             max_taps: 0,
@@ -496,7 +496,7 @@ impl Plan {
 
             Self::scale_by(psi, norm);
             Self::align_d(psi, d, bin.w0, 700.0);
-            Self::quantize(psi, d, out);
+            Self::quantize(psi, d, bin.w0, out);
         }
         self.buf = buf;
     }
@@ -663,23 +663,73 @@ impl Plan {
         acc
     }
 
-    /// Interleave into `float4`, with error feedback on both real parts. Pairs carry twice the
-    /// DC weight of the center, so the residual is minimized rather than random-walking.
-    fn quantize(psi: &[(f64, f64)], d: &[(f64, f64)], out: &mut [[f32; 4]]) {
-        let (mut ep, mut ed) = (0.0f64, 0.0f64);
-        for (i, (&(pr, pi), &(dr, di))) in psi.iter().zip(d).enumerate() {
-            let w = if i == 0 { 1.0 } else { 2.0 };
+    /// Rounding functionals. Even lane (real) carries H(0) and H(w0); odd lane (imag)
+    /// carries H'(0) and the w0 quadrature. Pair multiplicity rides the row, matching
+    /// `condition`. DC curvature was tried here and dropped: those rows go as x² and x³,
+    /// so they vanish near the center where the ulps are coarse enough to steer, and only
+    /// gain magnitude in the tail where the steps are decades too fine to move anything.
+    /// `condition` nulls those moments in f64 and the cast's perturbation clears
+    /// `taps_are_conditioned` with room.
+    fn rows(j: usize, inv: f64, w0: f64) -> ([f64; 2], [f64; 2]) {
+        let c = if j == 0 { 1.0 } else { 2.0 };
+        let (s, k) = (w0 * j as f64).sin_cos();
+        ([c, c * k], [c * j as f64 * inv, c * s])
+    }
 
-            let qp = (pr + ep / w) as f32;
-            ep += w * (pr - qp as f64);
-            let qd = (dr + ed / w) as f32;
-            ed += w * (dr - qd as f64);
+    /// Neighbor of `v` in f32 that leaves `e` smallest, residual folded back in.
+    /// Walked center-outward, so the coarse center ulps take the gross correction and
+    /// the tail grinds the remainder down with progressively finer steps.
+    fn round_shaped<const N: usize>(v: f64, row: [f64; N], w: [f64; N], e: &mut [f64; N]) -> f32 {
+        let lo = v as f32;
+        let hi = if (lo as f64) > v {
+            lo.next_down()
+        } else {
+            lo.next_up()
+        };
+        let cost = |c: f32| {
+            let r = v - c as f64;
+            (0..N)
+                .map(|k| {
+                    let t = e[k] + r * row[k];
+                    w[k] * t * t
+                })
+                .sum::<f64>()
+        };
+        let c = if cost(hi) < cost(lo) { hi } else { lo };
+        let r = v - c as f64;
+        for k in 0..N {
+            e[k] += r * row[k];
+        }
+        c
+    }
+
+    /// Interleave into `float4`, choosing each tap's rounding direction to keep a small
+    /// residual vector small rather than letting it random-walk. Four independent lanes:
+    /// ψ and d, real and imaginary.
+    fn quantize(psi: &[(f64, f64)], d: &[(f64, f64)], w0: f64, out: &mut [[f32; 4]]) {
+        // Commensurate weights. Over-weighting the peak-gain row (W[1]) made the greedy solution
+        // myopic: the coarse center taps chase H(w0) and push the DC residuals out where the fine
+        // tail taps can't retire them. Balanced residuals converge together and leave the tail
+        // enough freedom to land peak gain within an ulp.
+        const W: [f64; 2] = [1.0, 1.0];
+
+        let inv = (out.len() as f64).recip();
+        let (mut pr_e, mut pi_e) = ([0.0f64; 2], [0.0f64; 2]);
+        let (mut dr_e, mut di_e) = ([0.0f64; 2], [0.0f64; 2]);
+
+        for (i, (&(pr, pi), &(dr, di))) in psi.iter().zip(d).enumerate() {
+            let (even, odd) = Self::rows(i, inv, w0);
+
+            let qpr = Self::round_shaped(pr, even, W, &mut pr_e);
+            let qpi = Self::round_shaped(pi, odd, W, &mut pi_e);
+            let qdr = Self::round_shaped(dr, even, W, &mut dr_e);
+            let qdi = Self::round_shaped(di, odd, W, &mut di_e);
 
             out[i] = if i == 0 {
-                // Halving a rounded f32 is exact, so the feedback above stays consistent.
-                [0.5 * qp, 0.0, 0.5 * qd, 0.0]
+                // Halving a rounded f32 is exact, so the feedback stays consistent.
+                [0.5 * qpr, 0.0, 0.5 * qdr, 0.0]
             } else {
-                [qp, pi as f32, qd, di as f32]
+                [qpr, qpi, qdr, qdi]
             };
         }
     }
@@ -691,7 +741,7 @@ fn log_env(s: Shape) -> impl Fn(f64) -> f64 {
     move |u| s.beta * u.ln() - bg * u.powf(s.gamma) + bg
 }
 
-/// Half width in samples, times omega0. Pure function of shape and leakage.
+/// Half width in samples, times omega0. Pure function of shape, leakage, and tail weight.
 fn half_width_scaled(s: Shape, eps: f64, tail_a: f64) -> f64 {
     let core = (2.0 * eps.recip().ln()).sqrt() * s.p();
     let tail = (tail_a / eps).powf(1.0 / (2.0 * s.beta + 1.0));
