@@ -765,6 +765,11 @@ impl Plan {
         // enough freedom to land peak gain within an ulp.
         const W: [f64; 2] = [1.0, 1.0];
 
+        let round = |v: f64, row: [f64; 2], e: &mut [f64; 2]| Self::round_shaped(v, row, W, e);
+
+        // Disable weights and truncate naively.  Effect is not zero, not huge.
+        // let round = |v: f64, row: [f64; 2], e: &mut [f64; 2]| v as f32;
+
         let inv = (out.len() as f64).recip();
         let (mut pr_e, mut pi_e) = ([0.0f64; 2], [0.0f64; 2]);
         let (mut dr_e, mut di_e) = ([0.0f64; 2], [0.0f64; 2]);
@@ -772,10 +777,10 @@ impl Plan {
         for (i, (&(pr, pi), &(dr, di))) in psi.iter().zip(d).enumerate() {
             let (even, odd) = Self::rows(i, inv, w0);
 
-            let qpr = Self::round_shaped(pr, even, W, &mut pr_e);
-            let qpi = Self::round_shaped(pi, odd, W, &mut pi_e);
-            let qdr = Self::round_shaped(dr, even, W, &mut dr_e);
-            let qdi = Self::round_shaped(di, odd, W, &mut di_e);
+            let qpr = round(pr, even, &mut pr_e);
+            let qpi = round(pi, odd, &mut pi_e);
+            let qdr = round(dr, even, &mut dr_e);
+            let qdi = round(di, odd, &mut di_e);
 
             out[i] = if i == 0 {
                 // Halving a rounded f32 is exact, so the feedback stays consistent.
