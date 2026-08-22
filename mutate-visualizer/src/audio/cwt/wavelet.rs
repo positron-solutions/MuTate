@@ -134,9 +134,6 @@
 // Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
 // formalism.
 
-// NEXT Characterizing results needs a more stable benchmark test that is not configured with user
-// API independent knobs.  More automation of checking performance is pretty much required to
-// progress much farther.
 // NEXT Noise floor performance, which provides our dynamic range resolution, is very sensitive to
 // the number of taps for a given Q.  We would like to improve Q without raising N taps and we would
 // like to make more use of our padding quantum, but only an integrated design process, one that
@@ -1611,6 +1608,137 @@ mod test {
             let (m2, m3) = (mom(2), mom(3));
             assert!(m2.abs() < 1e-3 * g, "fc {fc} second moment {m2:.3e}");
             assert!(m3.abs() < 1e-3 * g, "fc {fc} third moment {m3:.3e}");
+        }
+    }
+
+    /// Fixed-aperture quality assurance™.  Deliberately circumvents load quantum & truncation phase
+    /// heuristics to provide a stable evaluation of wavelet shaping.
+    ///
+    /// ```text
+    /// cargo test --release wavelet::test::quality_sweep -- --nocapture
+    /// ```
+    // DEBT No assertions yet because there's almost always an edge case either very near DC or very
+    // near Nyquist.  The minimum Q kicking in at near-Nyquist values bites hard.
+    #[test]
+    fn quality_assurance() {
+        const Q: f64 = 3.5;
+        const GAMMA: f64 = 3.0;
+        const SOBOLEV: f64 = 0.0;
+        const EPS: f64 = 1e-14; // Using a really low grid floor.
+
+        // Omegas sweeping the edge cases, 20Hz at 3kHz sample rate to 15kHz at 48kHz sample rate.
+        // This is a fraction of the sample rate, so Nyquist is 0.5.  Multiplied by TAU to obtain
+        // radians.
+        //
+        // This is a Representation of the downsample ladder.  Decimated rates are only used below
+        // their own 1/4 band, so the 3kHz sample rate spans 20Hz up to 750Hz and the octave above
+        // each cutoff lands against the next rate up, topping out near 15kHz of the 48kHz input, a
+        // little over half Nyquist.
+        const OMEGAS: [f64; 8] = [0.00667, 0.0116, 0.02, 0.035, 0.060, 0.104, 0.180, 0.312];
+
+        // Emitted grid half-spans of replica clearance, a pad for TAU/(du*w0).  Putting the image
+        // this far out leaves truncation as the only error the stop band column reports.
+        const CLEARANCE: f64 = 4.0;
+
+        // Measured -3 dB width times Q
+        const WIDTH_Q: f64 = 0.998;
+        // Negative dB usually detaches from noise floor at around 5.5.  After 5.5, f32 truncation
+        // should be taking over.  7.5 to confirm if you're curious.
+        const SIGMAS: [f64; 6] = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5];
+
+        let shape = Shape::from_q(Q, GAMMA);
+        let env = log_env(shape);
+        let db = |v: f64| 20.0 * v.log10();
+
+        println!("\n=== QUALITY (Q {Q}, gamma {GAMMA}, sobolev {SOBOLEV}, eps {EPS:e}) ===");
+
+        for sigmas in SIGMAS {
+            println!("\n  truncation {sigmas} sigmas (bound {:.1} dB)\n  {:>7} {:>6} {:>10} {:>8} {:>8} \
+                {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>9}",
+                db((-0.5 * sigmas * sigmas).exp()),
+                "w/fs",
+                "taps",
+                "gain",
+                "center",
+                "width",
+                "neg dB",
+                "stop dB",
+                "dc dB",
+                "bias ct",
+                "t_hat",
+                "quad",
+                "t leak",
+            );
+
+            for nyq in OMEGAS {
+                let w0 = TAU * nyq;
+                // Half-span in samples is sigmas * P / w0. Rounding to an integer tap moves
+                // the achieved radius by up to w0/2P, which is under 0.15 sigma at the top of
+                // the sweep, so the request and the emission agree to well under a dB.
+                let n = (sigmas * shape.p() / w0).round() as usize;
+                let bin = Bin {
+                    w0,
+                    quantum: 1,
+                    k: n + 1,
+                    sigmas: n as f64 * w0 / shape.p(),
+                };
+
+                // Grid built by hand to bypass all the heuristics.
+                let du = snap(TAU / (CLEARANCE * w0 * bin.k as f64));
+                let (lo, m) = support(shape, du, EPS);
+                let mut spec = vec![[0.0; 2]; m];
+                for (j, s) in spec.iter_mut().enumerate().skip(lo) {
+                    let u = j as f64 * du;
+                    let p = env(u).exp();
+                    *s = [p, p * u];
+                }
+                let mut plan = Plan {
+                    shape,
+                    c: 0.0,
+                    du,
+                    spec,
+                    lo,
+                    buf: Vec::new(),
+                    sobolev: SOBOLEV,
+                    max_load_quantum: 1,
+                };
+
+                let mut w = vec![[0.0f32; 4]; bin.k];
+                plan.taps_into(bin, &mut w);
+
+                let psi = unfold(&w, 0);
+                let d = unfold(&w, 2);
+                let t = derive_t(&psi);
+
+                let r = characterize(&psi, w0);
+                let gain = r.peak_h / PEAK_GAIN - 1.0;
+                let cents = 1200.0 * (r.peak_w / w0).log2();
+                let width = r.rel_width * Q;
+                let (neg, floor) = (r.neg / r.peak_h, r.floor / r.peak_h);
+                let dc = dc_leak(&psi, w0) / r.peak_h;
+
+                let (mut bias, mut quad) = (0.0f64, 0.0f64);
+
+                let half_bw = 1200.0 * (1.0 + 0.5 / Q).log2();
+                let top = (1.5 * half_bw).min(1200.0 * (0.9 * PI / w0).log2());
+                for detune in [-top, -0.5 * top, 0.0, 0.5 * top, top] {
+                    let (a, q) = tone_bias(&psi, &d, w0, detune);
+                    bias = bias.max(a);
+                    quad = quad.max(q);
+                }
+                let (t_hat, t_leak) = impulse_delay(&psi, &t);
+
+                println!(
+                    "  {nyq:>7.4} {:>6} {gain:>+10.2e} {cents:>+8.4} {width:>8.5} \
+                     {:>8.2} {:>8.2} {:>8.2} {bias:>8.4} {t_hat:>8.4} {quad:>9.2e} {t_leak:>9.2e}",
+                    bin.k,
+                    db(neg),
+                    db(floor),
+                    db(dc),
+                );
+
+                let tag = format!("w0 {w0:.5} ({nyq:.4} nyq) sigmas {sigmas}");
+            }
         }
     }
 }
