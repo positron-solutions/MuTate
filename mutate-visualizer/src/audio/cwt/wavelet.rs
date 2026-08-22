@@ -72,7 +72,6 @@
 //! const QUANTUM: usize = 8;
 //!
 //! let mut plan = Spec::default()
-//!     .eps_time(1e-3)
 //!     .max_load_quantum(QUANTUM)
 //!     .plan();
 //!
@@ -95,7 +94,6 @@
 //! const QUANTUM: usize = 8;
 //!
 //! let mut plan = Spec::default()
-//!     .eps_time(1e-3)
 //!     .max_load_quantum(QUANTUM)
 //!     .plan();
 //!
@@ -139,11 +137,6 @@
 // NEXT Characterizing results needs a more stable benchmark test that is not configured with user
 // API independent knobs.  More automation of checking performance is pretty much required to
 // progress much farther.
-// NEXT Get rid of `time_eps` and instead design the user API around Q, noise floor, and other goal
-// metrics, not vague knobs.  Support tradeoffs and requirements.  The current quantum and phase
-// aware rounding will do what it can, and this causes a nice stair-step up in quality, but
-// `time_eps` is a blunt lever that must be tuned empirically to find a setting that *tends* to use
-// the phase and load quantum rounding as the user intends.
 // NEXT Noise floor performance, which provides our dynamic range resolution, is very sensitive to
 // the number of taps for a given Q.  We would like to improve Q without raising N taps and we would
 // like to make more use of our padding quantum, but only an integrated design process, one that
@@ -182,7 +175,7 @@
 //   negative-freq max  -105.28 dB
 //   stopband floor     -105.28 dB
 
-use core::f64::consts::{LN_2, PI, TAU};
+use core::f64::consts::{LN_10, LN_2, PI, TAU};
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude,
 /// so |H| = 2 makes a unit tone read |W| = 1.
@@ -193,7 +186,8 @@ const PEAK_GAIN: f64 = 2.0;
 pub struct Bin {
     w0: f64,
     quantum: usize,
-    k: usize, // folded length incl. center
+    sigmas: f64,
+    k: usize,
 }
 
 impl Bin {
@@ -215,6 +209,12 @@ impl Bin {
     /// Effective taps after unfolding, including the center tap.
     pub fn unfolded_taps(&self) -> usize {
         2 * self.k - 1
+    }
+
+    /// Truncation radius actually emitted, after the extremum snap and quantum rounding.
+    /// At or above what the plan asked for; the excess is free stopband.
+    pub fn sigmas(&self) -> f64 {
+        self.sigmas
     }
 }
 
@@ -259,25 +259,38 @@ impl Shape {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Truncation {
+    Sigmas(f64),
+    FloorDb(f64),
+}
+
+/// Truncation leakage is bounded by the envelope tail, `exp(-n²/2)` at `n` sigmas.
+/// `10/ln(10)` is the dB conversion, so a floor request and a sigma request are the
+/// same number in two units.
+impl Truncation {
+    fn sigmas(&self) -> f64 {
+        match *self {
+            Truncation::Sigmas(n) => n,
+            Truncation::FloorDb(db) => (db.abs() * LN_10 / 10.0).sqrt(),
+        }
+    }
+}
+
 /// A builder struct for configuring a plan to build wavelets with a given shape.
 ///
 /// ```
 /// # use mutate::wavelet::Spec;
 ///
-/// let spec = Spec::default()
-///    .eps_time(1e-3);
+/// let spec = Spec::default();
 /// ```
 #[derive(Clone, Copy)]
 pub struct Spec {
     shape: Shape,
     /// Error tolerance for the spectrum.
-    eps: f64,
-    /// Error tolerance for time truncation.
-    eps_time: f64,
-    // MAYBE kind of a fudge factor that has some influence on the grid generation, but effectively
-    // seems dead, if not already, given our preference for sizing tails for the load quantum and
-    // noise properties.
-    tail_a: f64,
+    grid_eps: f64,
+    /// Error tolerance for filter length truncation
+    truncation: Truncation,
     max_taps: usize,
     max_load_quantum: usize,
     sobolev: f64,
@@ -287,12 +300,11 @@ impl Default for Spec {
     fn default() -> Self {
         Spec {
             shape: Shape::from_q(3.0, 3.0),
-            eps: 1e-10,
-            eps_time: 1e-10,
-            tail_a: 1.0,
+            grid_eps: 1e-14,
+            truncation: Truncation::Sigmas(4.0),
             max_taps: 0,
             max_load_quantum: 1,
-            sobolev: 1.0,
+            sobolev: 0.0,
         }
     }
 }
@@ -306,29 +318,14 @@ impl Spec {
 
     /// `eps` is the spectral truncation floor relative to the peak. It sets how far the baked grid
     /// extends, and through that the tap count, but not the shape. 1e-8 lands near the f32 noise
-    /// floor of the output taps.
-    pub fn eps(mut self, eps: f64) -> Self {
-        self.eps = eps;
-        self
-    }
-
-    /// Truncation floor in the time domain, relative to the envelope peak. Sets the emitted
-    /// half-span and nothing else. Below `eps` it is avoiding truncation of what is already
-    /// inexact.
-    pub fn eps_time(mut self, eps_time: f64) -> Self {
-        self.eps_time = eps_time;
-        self
-    }
-
-    /// `tail_a` scales the algebraic-tail branch of the half-width estimate, which dominates the
-    /// Gaussian core at low `q`. Raise it to buy more tail at the cost of taps.
-    pub fn tail_a(mut self, tail_a: f64) -> Self {
-        self.tail_a = tail_a;
+    /// floor of the output taps.  1e-10 has measurable effects at 5.5sigmas.
+    pub fn grid_eps(mut self, eps: f64) -> Self {
+        self.grid_eps = eps;
         self
     }
 
     /// `max_taps` is a **hint** to allocate a larger scratch `Vec`, which will of course resize if
-    /// necessary.  Uses [`Vec::with_capacity`](std::vec::Vec::with_capacity).
+    /// necessary.  Uses [`Vec::with_capacity`](std::vec::Vec::with_capacity).  No effect on quality.
     pub fn max_taps(mut self, max_taps: usize) -> Self {
         self.max_taps = max_taps;
         self
@@ -351,15 +348,31 @@ impl Spec {
         self
     }
 
+    /// Set error tolerance by envelope geometry.  This will control the selected N taps for each
+    /// [`Bin`], so it's one of the most powerful knobs.  Values below 3.0 truncate too hard to
+    /// ship until a better numerical solver is available.  Values over 5.5 begin grinding up the
+    /// dust of departed f32s.
+    pub fn sigmas(mut self, sigmas: f64) -> Self {
+        self.truncation = Truncation::Sigmas(sigmas);
+        self
+    }
+
+    /// Set error tolerance by desired noise floor, which is **estimated** to an envelope geometry
+    /// and ultimately used to select a value for [`sigmas`].  A different way to attempt to say the
+    /// same thing.  State dB if you do not measure sigmas.
+    pub fn floor_db(mut self, db: f64) -> Self {
+        self.truncation = Truncation::FloorDb(db);
+        self
+    }
+
     /// Half-span that sets tap count, and the grid extent that feeds it.
     fn spans(&self) -> (f64, f64) {
-        let grid = half_width_scaled(self.shape, self.eps, self.tail_a);
-        let taps = half_width_scaled(self.shape, self.eps_time, self.tail_a);
+        let taps = self.truncation.sigmas() * self.shape.p();
+        let grid = half_width_scaled(self.shape, self.grid_eps);
 
         // Quantum rounding plus the center tap extend the emitted span by up to 2q+1 samples,
         // worst at w0 = PI in scaled units.
         let pad = (2 * self.max_load_quantum + 1) as f64 * PI;
-
         // Rectangle rule on a uniform grid aliases rather than truncates: the error is the
         // time-domain replica at period TAU/du. Placing it a full eps half-width past the
         // emitted span puts the fold-back at eps.
@@ -369,7 +382,7 @@ impl Spec {
     pub fn plan(self) -> Plan {
         let (c, du) = self.spans();
         let du = snap(du);
-        let (lo, m) = support(self.shape, du, self.eps);
+        let (lo, m) = support(self.shape, du, self.grid_eps);
 
         // d = w*psi shares psi's support, so lo bounds both.
         let env = log_env(self.shape);
@@ -389,7 +402,6 @@ impl Spec {
             sobolev: self.sobolev,
             buf: Vec::with_capacity(3 * (self.max_taps / 2 + self.max_load_quantum + 1)),
             max_load_quantum: self.max_load_quantum,
-            cycles: (c / TAU).ceil() as usize,
         }
     }
 }
@@ -404,7 +416,6 @@ pub struct Plan {
     buf: Vec<(f64, f64)>, // bake scratch, 2 spans
     sobolev: f64,
     max_load_quantum: usize,
-    cycles: usize,
 }
 
 impl Plan {
@@ -428,13 +439,14 @@ impl Plan {
         );
 
         let w0 = TAU * center / rate;
-        let span = self.cycles as f64 * TAU / w0;
+        let span = (self.c / PI).round() * PI / w0;
         let n = (span / quantum as f64).ceil() as usize * quantum;
 
         Bin {
             w0,
             quantum,
             k: n + 1,
+            sigmas: n as f64 * w0 / self.shape.p(),
         }
     }
 
@@ -455,6 +467,9 @@ impl Plan {
 
             Self::scale_by(psi, PEAK_GAIN / Self::gain_at(psi, bin.w0));
 
+            // Trades a bit of stop band depth for much lower DC.  Check the gains between 3.5 and
+            // 4.5 sigma.  Sometimes longer truncation beats conditioning, but it may depend on
+            // other knobs like the sobolev order.
             self.condition(psi, bin.w0, Some(0.5 * PEAK_GAIN));
 
             let half_bw_cents = 1200.0 * (1.0 + 0.5 / self.shape.q()).log2();
@@ -586,6 +601,7 @@ impl Plan {
             let x = j as f64 * inv;
             (x, 1.0 / (1.0 + s2 * x * x))
         };
+
         // Newton-corrected phasor, same walk as transform2.
         let (ws, wc) = w0.sin_cos();
         let step = |cr: &mut f64, ci: &mut f64| {
@@ -774,10 +790,10 @@ fn log_env(s: Shape) -> impl Fn(f64) -> f64 {
     move |u| s.beta * u.ln() - bg * u.powf(s.gamma) + bg
 }
 
-/// Half width in samples, times omega0. Pure function of shape, leakage, and tail weight.
-fn half_width_scaled(s: Shape, eps: f64, tail_a: f64) -> f64 {
+/// Half width in samples, times omega0. Pure function of shape and leakage.
+fn half_width_scaled(s: Shape, eps: f64) -> f64 {
     let core = (2.0 * eps.recip().ln()).sqrt() * s.p();
-    let tail = (tail_a / eps).powf(1.0 / (2.0 * s.beta + 1.0));
+    let tail = eps.recip().powf(1.0 / (2.0 * s.beta + 1.0));
     core.max(tail)
 }
 
@@ -821,7 +837,7 @@ mod test {
     const RATE: f64 = 48_000.0;
 
     fn spec(q: f64, eps: f64) -> Spec {
-        Spec::default().shape(Shape::from_q(q, 3.0)).eps(eps)
+        Spec::default().shape(Shape::from_q(q, 3.0)).grid_eps(eps)
     }
 
     // NOTE we have num_complex btw.  Just bing lazy.
@@ -1053,8 +1069,8 @@ mod test {
     /// Peak location and gain, -3 dB relative width, negative-frequency max, and the
     /// floor outside three half-power widths. `w0` only sets the bracket for the edges.
     fn characterize(taps: &[(f32, f32)], w0: f64) -> Response {
-        const SWEEP: usize = 8192;
-        let omega = |k: usize| -PI + 2.0 * PI * k as f64 / SWEEP as f64;
+        let sweep = (16 * taps.len()).next_power_of_two();
+        let omega = |k: usize| -PI + 2.0 * PI * k as f64 / sweep as f64;
 
         let (mut peak, mut neg) = ((0.0f64, 0.0f64), 0.0f64);
         for k in 0..=SWEEP {
@@ -1173,7 +1189,6 @@ mod test {
             .max_taps(1024)
             .shape(Shape::from_q(5.0, 3.0))
             .max_load_quantum(load_quantum)
-            .eps_time(5e-3)
             .plan();
         let bins = bank::bins(2_000.0, 20_000.0, BINS);
         println!("planning time: {:?}µs", start.elapsed().as_micros());
@@ -1234,10 +1249,7 @@ mod test {
     #[test]
     fn unit_tone_reads_unity() {
         for quantum in [1usize, 4, 8] {
-            let mut p = spec(3.0, 1e-8)
-                .eps_time(5e-3)
-                .max_load_quantum(quantum)
-                .plan();
+            let mut p = spec(3.0, 1e-8).max_load_quantum(quantum).plan();
 
             for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
                 let bin = p.bin(fc, sr, quantum);
@@ -1280,10 +1292,7 @@ mod test {
         const NOISE_GAIN: f64 = 0.224777;
         const TOL: f64 = 2e-3;
 
-        let mut p = spec(3.0, 1e-8)
-            .eps_time(5e-3)
-            .max_load_quantum(QUANTUM)
-            .plan();
+        let mut p = spec(3.0, 1e-8).max_load_quantum(QUANTUM).plan();
 
         println!("\n=== NOISE GAIN (Q = 3, sr = {RATE}, quantum {QUANTUM}) ===");
 
@@ -1320,10 +1329,7 @@ mod test {
     fn reassignment_is_unbiased() {
         const QUANTUM: usize = 4;
 
-        let mut plan = spec(3.5, 1e-10)
-            .eps_time(5e-3)
-            .max_load_quantum(QUANTUM)
-            .plan();
+        let mut plan = spec(3.5, 1e-10).max_load_quantum(QUANTUM).plan();
 
         for (fc, sr) in [(2_000.0f64, RATE), (250.0, 3000.0), (12_000.0, RATE)] {
             let bin = plan.bin(fc, sr, QUANTUM);
@@ -1351,7 +1357,7 @@ mod test {
         }
     }
 
-    /// Truncation cost against a full-length bake, swept over `eps_time`.  Stop band, DC leak,
+    /// Truncation cost against a full-length bake, swept over `sigmas`.  Stop band, DC leak,
     /// ripple in the pass, width, and gain are all compared.
     #[test]
     fn truncation_is_predictable() {
@@ -1362,16 +1368,17 @@ mod test {
 
         // Measured 0.9984 at Q = 3.5.
         const WIDTH_Q: f64 = 0.998;
-        const WIDTH_TOL: f64 = 0.002;
+        const WIDTH_TOL: f64 = 0.001;
 
-        // Stopband gap relative to PEAK_GAIN, as a multiple of eps_time.
-        const LEAK_PER_EPS: f64 = 0.005;
+        // Stopband gap relative to PEAK_GAIN, as a multiple of sigmas.
+        const LEAK_PER_SIGMA: f64 = 0.0001;
 
-        // In-band relative error as a multiple of eps_time.
-        const PASS_PER_EPS: f64 = 0.3;
+        // In-band relative error as a multiple of sigmas
+        const PASS_PER_SIGMA: f64 = 0.001;
 
         let base = Spec::default()
             .shape(Shape::from_q(Q, 3.0))
+            .sigmas(8.0)
             .max_load_quantum(QUANTUM);
         let mut full = base.plan();
 
@@ -1420,8 +1427,8 @@ mod test {
 
             let (mut prev_taps, mut prev_stop) = (0usize, f64::INFINITY);
 
-            for eps_time in [5e-2f64, 5e-3, 5e-4, 5e-5] {
-                let mut cut = base.eps_time(eps_time).plan();
+            for sigmas in [3.5, 4.5, 5.5, 6.5] {
+                let mut cut = base.sigmas(sigmas).plan();
                 let bc = cut.bin(fc, RATE, QUANTUM);
                 let nc = bc.folded_taps();
                 let mut wc = vec![[0.0f32; 4]; nc];
@@ -1436,7 +1443,7 @@ mod test {
                 let cents = 1200.0 * (rc.peak_w / rf.peak_w).log2();
 
                 println!(
-                    "    eps_time {eps_time:>7.0e}  weights (folded) {nc:>4} ({:.3})  \
+                    "    sigmas {sigmas:>3.2}  weights (folded) {nc:>4} ({:.3})  \
                     pass {:>7.2} dB  stop {:>7.2} dB  dc {:>7.2} dB  peak {:+.4}c  width {:+.3}%",
                     nc as f64 / nf as f64,
                     db(pass),
@@ -1449,19 +1456,19 @@ mod test {
                 // In-band magnitude is flat to well under the leakage budget. The peak is
                 // pinned by gain_at; this checks the core around it didn't tilt.
                 assert!(
-                    pass < PASS_PER_EPS * eps_time,
-                    "fc {fc} eps_time {eps_time:e} passband {:.2} dB rel",
+                    pass < PASS_PER_SIGMA * sigmas,
+                    "fc {fc} sigmas {sigmas:e} passband {:.2} dB rel",
                     20.0 * pass.log10()
                 );
 
                 // Peak gain survives truncation, and the band neither moves nor widens.
                 assert!(
-                    cents.abs() < 1.0,
-                    "fc {fc} eps_time {eps_time:e} peak moved {cents:+.4}c"
+                    cents.abs() < 8.0,
+                    "fc {fc} sigmas {sigmas:e} peak moved {cents:+.4}c"
                 );
                 assert!(
                     (rc.rel_width / rf.rel_width - 1.0).abs() < 0.02,
-                    "fc {fc} eps_time {eps_time:e} width {:+.3}%",
+                    "fc {fc} sigmas {sigmas:e} width {:+.3}%",
                     100.0 * (rc.rel_width / rf.rel_width - 1.0)
                 );
 
@@ -1469,25 +1476,25 @@ mod test {
                 // filters also tend to trip it.
                 assert!(
                     dc < 1e-2 * PEAK_GAIN,
-                    "fc {fc} eps_time {eps_time:e} dc {:.2} dB",
+                    "fc {fc} sigmas {sigmas:e} dc {:.2} dB",
                     20.0 * (dc / PEAK_GAIN).log10()
                 );
 
-                // Tighter eps_time truncates less, so it costs taps and buys stopband.  Taps may
-                // stay the same due to quantum rounding.
+                // More sigmas truncates less, so it uses more taps to buy stopband.  Taps may stay
+                // the same due to quantum rounding.
                 assert!(
                     nc >= prev_taps,
-                    "fc {fc} eps_time {eps_time:e} taps {nc} < {prev_taps}"
+                    "fc {fc} sigmas {sigmas:e} taps {nc} < {prev_taps}"
                 );
                 // If taps go up, stop band must go down.
                 assert!(
                     (nc >= prev_taps && stop >= prev_stop) || stop < prev_stop,
-                    "fc {fc} eps_time {eps_time:e} taps {prev_taps} -> {nc} without stopband gain"
+                    "fc {fc} sigmas {sigmas:e} taps {prev_taps} -> {nc} without stopband gain"
                 );
 
                 assert!(
-                    stop < LEAK_PER_EPS * eps_time * PEAK_GAIN,
-                    "fc {fc} eps_time {eps_time:e} stop {:.2} dB",
+                    stop < LEAK_PER_SIGMA * sigmas * PEAK_GAIN,
+                    "fc {fc} sigmas {sigmas:e} stop {:.2} dB",
                     20.0 * (stop / PEAK_GAIN).log10()
                 );
 
@@ -1500,10 +1507,10 @@ mod test {
     /// table. Sweeps the load quantum, because the quantum pads the emitted half-span.
     #[test]
     fn table_response_is_characterized() {
-        let (q, eps, eps_time) = (3.5, 1e-10, 5e-3);
+        let (q, grid_eps, sigmas) = (3.5, 1e-10, 4.0);
         for quantum in [2usize, 4, 8, 16] {
-            let mut p = spec(q, eps)
-                .eps_time(eps_time)
+            let mut p = spec(q, grid_eps)
+                .sigmas(sigmas)
                 .max_load_quantum(quantum)
                 .plan();
 
@@ -1550,10 +1557,7 @@ mod test {
     fn taps_are_conditioned() {
         const QUANTUM: usize = 4;
 
-        let mut p = spec(3.0, 1e-10)
-            .eps_time(1e-4)
-            .max_load_quantum(QUANTUM)
-            .plan();
+        let mut p = spec(3.0, 1e-10).max_load_quantum(QUANTUM).plan();
 
         for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
             let bin = p.bin(fc, sr, QUANTUM);
@@ -1602,7 +1606,8 @@ mod test {
                     })
                     .sum::<f64>()
             };
-            // H''(0) and H'''(0), the two the solve nulls that nothing measures.
+
+            // H''(0) and H'''(0), the two the solve nulls that nothing else measures.
             let (m2, m3) = (mom(2), mom(3));
             assert!(m2.abs() < 1e-3 * g, "fc {fc} second moment {m2:.3e}");
             assert!(m3.abs() < 1e-3 * g, "fc {fc} third moment {m3:.3e}");

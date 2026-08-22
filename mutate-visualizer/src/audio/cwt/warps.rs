@@ -24,7 +24,7 @@ mod test {
     const LOAD_QUANTUM: usize = 8;
 
     fn spec() -> Spec {
-        Spec::default().eps_time(5e-3).max_load_quantum(16)
+        Spec::default().sigmas(3.5).max_load_quantum(16)
     }
 
     fn bins() -> Vec<bank::Bin> {
