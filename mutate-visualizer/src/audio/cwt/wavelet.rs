@@ -134,6 +134,13 @@
 // Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
 // formalism.
 
+// FIXME t^ tests are pretty dead and need a better metric to stop lying about some coincidence we
+// don't care about.  Stress it!
+// NEXT High omega filters, starting at around 60% of Nyquist, begin to degrade at low Q.  The
+// carrier doesn't have enough detail to represent a fast-changing envelope.  A numerical solution
+// for these heavily aliased wavelets may succeed or we may use a Plan with a higher Q beyond some
+// empirical cutoff.  Larger sigmas can't help because the main lobe itself is dominating the
+// breakdown.
 // NEXT Noise floor performance, which provides our dynamic range resolution, is very sensitive to
 // the number of taps for a given Q.  We would like to improve Q without raising N taps and we would
 // like to make more use of our padding quantum, but only an integrated design process, one that
