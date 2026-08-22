@@ -182,7 +182,7 @@
 //   negative-freq max  -105.28 dB
 //   stopband floor     -105.28 dB
 
-use core::f64::consts::{PI, TAU};
+use core::f64::consts::{LN_2, PI, TAU};
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude,
 /// so |H| = 2 makes a unit tone read |W| = 1.
@@ -232,7 +232,7 @@ impl Shape {
     /// `q` is the quality factor on the -3 dB energy width. Higher `q` narrows the band and costs
     /// proportionally more taps at a given center frequency.
     pub fn from_q(q: f64, gamma: f64) -> Self {
-        let p = 1.6651 * q;
+        let p = 2.0 * LN_2.sqrt() * q;
         Shape {
             gamma,
             beta: p * p / gamma,
@@ -242,6 +242,10 @@ impl Shape {
     /// P = sqrt(beta*gamma), the -3 dB width parameter.  Q = P/1.6651.
     pub fn p(&self) -> f64 {
         (self.beta * self.gamma).sqrt()
+    }
+
+    pub fn q(&self) -> f64 {
+        self.p() / (2.0 * LN_2.sqrt())
     }
 
     /// Argmax of the spectral envelope, in rad/sample.
