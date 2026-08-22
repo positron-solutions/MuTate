@@ -182,6 +182,8 @@
 //   negative-freq max  -105.28 dB
 //   stopband floor     -105.28 dB
 
+use core::f64::consts::{PI, TAU};
+
 /// Filter peak gain. Analytic taps see half a real tone's amplitude,
 /// so |H| = 2 makes a unit tone read |W| = 1.
 const PEAK_GAIN: f64 = 2.0;
@@ -352,12 +354,12 @@ impl Spec {
 
         // Quantum rounding plus the center tap extend the emitted span by up to 2q+1 samples,
         // worst at w0 = PI in scaled units.
-        let pad = (2 * self.max_load_quantum + 1) as f64 * core::f64::consts::PI;
+        let pad = (2 * self.max_load_quantum + 1) as f64 * PI;
 
         // Rectangle rule on a uniform grid aliases rather than truncates: the error is the
         // time-domain replica at period TAU/du. Placing it a full eps half-width past the
         // emitted span puts the fold-back at eps.
-        (taps, core::f64::consts::TAU / (taps + pad + grid.max(taps)))
+        (taps, TAU / (taps + pad + grid.max(taps)))
     }
 
     pub fn plan(self) -> Plan {
@@ -382,7 +384,7 @@ impl Spec {
             sobolev: self.sobolev,
             buf: Vec::with_capacity(3 * (self.max_taps / 2 + self.max_load_quantum + 1)),
             max_load_quantum: self.max_load_quantum,
-            cycles: (c / core::f64::consts::TAU).ceil() as usize,
+            cycles: (c / TAU).ceil() as usize,
         }
     }
 }
@@ -419,8 +421,8 @@ impl Plan {
             self.max_load_quantum
         );
 
-        let w0 = core::f64::consts::TAU * center / rate;
-        let span = self.cycles as f64 * core::f64::consts::TAU / w0;
+        let w0 = TAU * center / rate;
+        let span = self.cycles as f64 * TAU / w0;
         let n = (span / quantum as f64).ceil() as usize * quantum;
 
         Bin {
@@ -479,7 +481,7 @@ impl Plan {
             *s = (pr * j2, pi * j2);
         }
 
-        let cents = cents.min(1200.0 * (0.9 * core::f64::consts::PI / w0).log2());
+        let cents = cents.min(1200.0 * (0.9 * PI / w0).log2());
 
         let (mut aa, mut ab, mut bb, mut ap, mut bp) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
         for i in 0..PROBES {
@@ -803,8 +805,6 @@ fn support(shape: Shape, du: f64, eps: f64) -> (usize, usize) {
 
 #[cfg(test)]
 mod test {
-    use core::f64::consts::PI;
-
     use super::*;
 
     const BINS: usize = 1024;
