@@ -131,55 +131,53 @@
 //!
 //! `d/ψ` reads in rad/sample and `t/ψ` in samples. No scaling required at the use site.
 
-// NEXT Offline SOCP oracle to see what we're leaving on the table with our approximations.
-// MAYBE No truncation shaping lacking deliberate design seems likely to accomplish more than
-// distorting the response at the target frequency and introducing a bunch or response at off
-// frequencies.  Only an engineered approach seems likely to succeed.  If possible, we would like to
-// achieve higher Q with lower noise floors and shorter N, but shorter N cannot avoid creating noise
-// floor without a principled approach to shaping the envelope, killing the truncation cliff and
-// using the body to kill what should not have been brought to life at a rate that we won't see it
-// as it breaks its zombie-like hand through the ground.  A lot of low hanging fruit has been beaten
-// out of the problem, and we are chasing the dust of f32 in some dimensions already.
-// NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
-// will be used are not particularly aware, so it's not expected that we can re-use exact bins in
-// any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
-// NEXT Run time of the bin generation test (not reflective of actual sample rates and Q) is about
-// 12ms on a Zen2+ part in release.  This affects CWT startup time.
-// NEXT We must do a very fine frequency sweep on a resulting filter bank sampling edge to really
-// have an idea of the correctness of the gain peak location.  If there is a bias, it probably is
-// consistent, but if the design bias doesn't remain consistent across the resampling edges, we will
-// start to see bands in the results.
-// NOTE Peak gain 2 per bin (demodulated L1 = 2), so a unit real tone reads |W| = 1.
-// Steady tones are flat across the bank.  Noise floor rises as sqrt(f).
-// NOTE Zero phase. Conjugate-symmetric taps give a real (one-sided, not even) frequency response
-// and no group delay.
 // 🤖 Heavy generation.  Should be pretty standard academic stuff, so not expecting a lot of
 // surprises.  We will, for the most part, swiftly and knowingly eat shit if the wavelet is busted.
 // Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
 // formalism.
-//
+
+// NEXT Get rid of `time_eps` and instead design the user API around Q, noise floor, and other goal
+// metrics, not vague knobs.  Support tradeoffs and requirements.  The current quantum and phase
+// aware rounding will do what it can, and this causes a nice stair-step up in quality, but
+// `time_eps` is a blunt lever that must be tuned empirically to find a setting that *tends* to use
+// the phase and load quantum rounding as the user intends.
+// NEXT Noise floor performance, which provides our dynamic range resolution, is very sensitive to
+// the number of taps for a given Q.  We would like to improve Q without raising N taps and we would
+// like to make more use of our padding quantum, but only an integrated design process, one that
+// solves for measured goals, such as noise floor and reassignment accuracy, is going to squeeze
+// more f32 pixie dust out.  Several tapering schemes ranging from Plank envelope to a higher order
+// solution were tried, but none consistently improved the result of simple truncation.
+// NEXT Offline SOCP oracle to see what we're leaving on the table with our approximations.
+// NOTE Peak gain 2 per bin (demodulated L1 = 2), so a unit real tone reads |W| = 1.
+// Steady tones are flat across the bank.  Noise floor rises as sqrt(f).
+// NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
+// will be used are not particularly aware, so it's not expected that we can re-use exact bins in
+// any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
+// NOTE Run time of the bin generation test (not reflective of actual sample rates and Q) is about
+// 12ms on a Zen2+ part in release.  This affects CWT startup time.
+
 // === TABLE RESPONSE (Q = 3.5, quantum 4) ===
 //
-// fc  1000 sr  6000  w0 1.047198  quantized  29 (unfolded  57)
-//   peak gain 2.000000003  dev +1.600e-9 rel
+// fc  1000 sr  6000  w0 1.047198  quantized  25 (unfolded  49)
+//   peak gain 2.000000001  dev +3.297e-10 rel
 //   rel width 0.28523
-//   peak -0.0002 cents
-//   negative-freq max  -142.30 dB
-//   stopband floor     -116.57 dB
+//   peak -0.0033 cents
+//   negative-freq max  -103.74 dB
+//   stopband floor     -103.69 dB
 //
-// fc   250 sr  3000  w0 0.523599  quantized  45 (unfolded  89)
-//   peak gain 2.000000001  dev +6.697e-10 rel
-//   rel width 0.28527
-//   peak -0.0116 cents
-//   negative-freq max   -85.63 dB
-//   stopband floor      -85.63 dB
+// fc   250 sr  3000  w0 0.523599  quantized  49 (unfolded  97)
+//   peak gain 2.000000000  dev +1.824e-10 rel
+//   rel width 0.28523
+//   peak -0.0041 cents
+//   negative-freq max  -102.57 dB
+//   stopband floor     -102.02 dB
 //
 // fc 12000 sr 48000  w0 1.570796  quantized  17 (unfolded  33)
-//   peak gain 1.999999995  dev -2.563e-9 rel
+//   peak gain 1.999999996  dev -2.022e-9 rel
 //   rel width 0.28523
-//   peak -0.0029 cents
-//   negative-freq max  -104.29 dB
-//   stopband floor     -104.29 dB
+//   peak -0.0028 cents
+//   negative-freq max  -105.28 dB
+//   stopband floor     -105.28 dB
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude,
 /// so |H| = 2 makes a unit tone read |W| = 1.
@@ -191,6 +189,7 @@ pub struct Bin {
     w0: f64,
     quantum: usize,
     k: usize, // folded length incl. center
+    last: usize,
 }
 
 impl Bin {
@@ -263,14 +262,16 @@ impl Shape {
 #[derive(Clone, Copy)]
 pub struct Spec {
     shape: Shape,
-    // Error tolerance for the spectrum.
+    /// Error tolerance for the spectrum.
     eps: f64,
-    // Error tolerance for time truncation.
+    /// Error tolerance for time truncation.
     eps_time: f64,
+    // MAYBE kind of a fudge factor that has some influence on the grid generation, but effectively
+    // seems dead, if not already, given our preference for sizing tails for the load quantum and
+    // noise properties.
     tail_a: f64,
     max_taps: usize,
     max_load_quantum: usize,
-    backoff: bool,
     sobolev: f64,
 }
 
@@ -283,8 +284,7 @@ impl Default for Spec {
             tail_a: 1.0,
             max_taps: 0,
             max_load_quantum: 1,
-            backoff: true,
-            sobolev: 2.0,
+            sobolev: 1.0,
         }
     }
 }
@@ -293,13 +293,6 @@ impl Spec {
     /// Set mother wavelet [`Shape`].
     pub fn shape(mut self, shape: Shape) -> Self {
         self.shape = shape;
-        self
-    }
-
-    /// Allow the emitted half-span one extra quantum when that lands the last tap nearer a
-    /// carrier zero. Off takes the shortest quantum-legal span.
-    pub fn backoff(mut self, backoff: bool) -> Self {
-        self.backoff = backoff;
         self
     }
 
@@ -320,8 +313,7 @@ impl Spec {
     }
 
     /// `tail_a` scales the algebraic-tail branch of the half-width estimate, which dominates the
-    /// Gaussian core at low `q`. Raise it to buy more tail at the cost of taps; 1.0 is the
-    /// calibrated value and the one every response measurement in this module was taken with.
+    /// Gaussian core at low `q`. Raise it to buy more tail at the cost of taps.
     pub fn tail_a(mut self, tail_a: f64) -> Self {
         self.tail_a = tail_a;
         self
@@ -356,10 +348,9 @@ impl Spec {
         let grid = half_width_scaled(self.shape, self.eps, self.tail_a);
         let taps = half_width_scaled(self.shape, self.eps_time, self.tail_a);
 
-        // Quantum rounding plus the center tap extend the emitted span by up to q+1 samples,
-        // worst at w0 = PI in scaled units. The phase snap can spend one more quantum.
-        let slots = if self.backoff { 2 } else { 1 };
-        let pad = (slots * self.max_load_quantum + 1) as f64 * core::f64::consts::PI;
+        // Quantum rounding plus the center tap extend the emitted span by up to 2q+1 samples,
+        // worst at w0 = PI in scaled units.
+        let pad = (2 * self.max_load_quantum + 1) as f64 * core::f64::consts::PI;
 
         // Rectangle rule on a uniform grid aliases rather than truncates: the error is the
         // time-domain replica at period TAU/du. Placing it a full eps half-width past the
@@ -386,10 +377,10 @@ impl Spec {
             du,
             spec,
             lo,
-            backoff: self.backoff,
             sobolev: self.sobolev,
             buf: Vec::with_capacity(3 * (self.max_taps / 2 + self.max_load_quantum + 1)),
             max_load_quantum: self.max_load_quantum,
+            cycles: (c / core::f64::consts::TAU).ceil() as usize,
         }
     }
 }
@@ -402,12 +393,18 @@ pub struct Plan {
     lo: usize,            // first grid point above eps
     buf: Vec<(f64, f64)>, // bake scratch, 2 spans
     sobolev: f64,
-    backoff: bool,
     max_load_quantum: usize,
+    cycles: usize,
 }
 
 impl Plan {
-    /// Geometry for a bin at `center`, sampled at `rate`, loaded `quantum` weights at a time.
+    /// Generate a bin definition at `center` frequency, sampled at `rate`, loaded `quantum` weights
+    /// at a time.
+    ///
+    /// Picks between the two shortest quantum-legal half-spans such that the last nonzero tap lands
+    /// on a carrier extremum: `m` whole cycles of aperture, `m` fixed by the plan, so every bin
+    /// sees the same scaled half-span and the same response. Quantum rounding pads past it with
+    /// zeros rather than aperture.
     pub fn bin(&self, center: f64, rate: f64, quantum: usize) -> Bin {
         debug_assert!(
             center < rate / 2.0,
@@ -421,17 +418,20 @@ impl Plan {
         );
 
         let w0 = core::f64::consts::TAU * center / rate;
-        let n = ((self.c / w0).ceil() as usize).div_ceil(quantum) * quantum;
-        let n = if self.backoff {
-            snap_phase(n, quantum, w0)
-        } else {
-            n
+        let cyc = core::f64::consts::TAU / w0;
+
+        let pick = |m: usize| {
+            let last = (m as f64 * cyc).round() as usize;
+            (last.div_ceil(quantum) * quantum - last, last)
         };
+        let (_, last) = pick(self.cycles).min(pick(self.cycles + 1));
+        let n = last.div_ceil(quantum) * quantum;
 
         Bin {
             w0,
             quantum,
             k: n + 1,
+            last,
         }
     }
 
@@ -440,26 +440,26 @@ impl Plan {
     /// Upstream owes an `out` at least that long.
     pub fn taps_into(&mut self, bin: Bin, out: &mut [[f32; 4]]) -> usize {
         let k = bin.k;
+        let live = bin.last + 1;
         let out = &mut out[..k];
 
         let mut buf = core::mem::take(&mut self.buf);
-        buf.resize(3 * k, (0.0, 0.0));
+        buf.resize(3 * live, (0.0, 0.0));
         {
-            let (psi, rest) = buf.split_at_mut(k);
-            let (d, e) = rest.split_at_mut(k);
+            let (psi, rest) = buf.split_at_mut(live);
+            let (d, e) = rest.split_at_mut(live);
 
-            self.transform2(bin, psi, d);
+            self.transform2(bin.w0, psi, d);
 
-            self.condition(psi);
-            self.condition(d);
-
-            // psi is final here. d is fit against w*H_psi, so its own scale is absorbed by
-            // the fit and it does not need normalizing.
             Self::scale_by(psi, PEAK_GAIN / Self::gain_at(psi, bin.w0));
 
+            self.condition(psi, bin.w0, Some(0.5 * PEAK_GAIN));
+            self.condition(d, bin.w0, None);
+
             Self::align_d(psi, d, e, bin.w0, 700.0);
-            Self::quantize(psi, d, bin.w0, out);
+            Self::quantize(psi, d, bin.w0, &mut out[..live]);
         }
+        out[live..].fill([0.0; 4]);
         self.buf = buf;
         k
     }
@@ -511,8 +511,8 @@ impl Plan {
     }
 
     /// Rotor walk from the center outward, both spectra in one pass.
-    fn transform2(&self, bin: Bin, psi: &mut [(f64, f64)], d: &mut [(f64, f64)]) {
-        let step = self.du * bin.w0;
+    fn transform2(&self, w0: f64, psi: &mut [(f64, f64)], d: &mut [(f64, f64)]) {
+        let step = self.du * w0;
 
         // NOTE implementation is a phasor walk with Newton's correction.  Got -270dB versus sin_cos
         // and on our very short filters, the phase error accumulates very slowly.  Tests run quite
@@ -524,6 +524,7 @@ impl Plan {
         let (mut dc, mut ds) = (1.0f64, 0.0f64);
         let (mut sr, mut si) = (1.0f64, 0.0f64);
 
+        // for i in 0..=bin.last {
         for i in 0..psi.len() {
             let (mut cr, mut ci) = (sr, si);
             let (mut a0, mut a1) = ((0.0f64, 0.0f64), (0.0f64, 0.0f64));
@@ -557,11 +558,17 @@ impl Plan {
     /// raising sigma pulls it toward the center tap and flattens the slope it contributes to
     /// the error, which is what the reassignment ratios divide through.
     ///
-    /// Parity splits the problem: the even taps carry the even derivatives at DC and the odd
-    /// taps the odd ones, so this is two independent 2x2 solves sharing one moment table.
-    /// Sigma is de-rated by sqrt(n/64) below 64 weights: a short bake has too little support
-    /// to concentrate the correction and still keep the Gram invertible.
-    fn condition(&self, out: &mut [(f64, f64)]) {
+    /// `pin` sets the carrier functionals E and O to a common target, which lands peak gain
+    /// and nulls the image in one solve. `None` holds them at their current values, so the
+    /// DC correction cannot tilt the band response; that is what `d` wants, since `align_d`
+    /// owns its scale.
+    ///
+    /// Parity splits the problem: the even taps carry the even derivatives at DC and the
+    /// carrier's cosine quadrature, the odd taps the odd derivatives and the sine quadrature.
+    /// Two independent 3x3 solves sharing one moment table. Sigma is de-rated by sqrt(n/64)
+    /// below 64 weights: a short bake has too little support to concentrate the correction
+    /// and still keep the Gram invertible.
+    fn condition(&self, out: &mut [(f64, f64)], w0: f64, pin: Option<f64>) {
         let n = out.len();
         let inv = (n as f64).recip();
 
@@ -574,11 +581,24 @@ impl Plan {
             let x = j as f64 * inv;
             (x, 1.0 / (1.0 + s2 * x * x))
         };
+        // Newton-corrected phasor, same walk as transform2.
+        let (ws, wc) = w0.sin_cos();
+        let step = |cr: &mut f64, ci: &mut f64| {
+            let (nr, ni) = (*cr * wc - *ci * ws, *cr * ws + *ci * wc);
+            let k = 0.5 * (3.0 - (nr * nr + ni * ni));
+            *cr = nr * k;
+            *ci = ni * k;
+        };
 
-        // Moments of the shape and the residuals in one pass. Pair multiplicity rides the
+        // Moments of the shapes and the residuals in one pass. Pair multiplicity rides the
         // functionals, not the correction: it cancels out of the stationarity condition.
         let (mut m0, mut m1, mut m2, mut m3) = (0.0f64, 0.0, 0.0, 0.0);
+        let (mut q0, mut q1, mut q2) = (0.0f64, 0.0, 0.0);
+        let (mut p0, mut p1, mut p2) = (0.0f64, 0.0, 0.0);
         let (mut r0, mut r2, mut i1, mut i3) = (0.0f64, 0.0, 0.0, 0.0);
+        let (mut e_car, mut o_car) = (0.0f64, 0.0);
+
+        let (mut cr, mut ci) = (1.0f64, 0.0f64);
         for (j, s) in out.iter().enumerate() {
             let (x, w) = g(j);
             let c = if j == 0 { 1.0 } else { 2.0 };
@@ -589,25 +609,64 @@ impl Plan {
             m2 += cw * x2 * x2;
             m3 += cw * x2 * x2 * x2;
 
+            q0 += cw * cr;
+            q1 += cw * x2 * cr;
+            q2 += cw * cr * cr;
+
+            p0 += cw * x * ci;
+            p1 += cw * x2 * x * ci;
+            p2 += cw * ci * ci;
+
             r0 += c * s.0;
             r2 += c * x2 * s.0;
             i1 += c * x * s.1;
             i3 += c * x2 * x * s.1;
+
+            e_car += c * s.0 * cr;
+            o_car += c * s.1 * ci;
+
+            step(&mut cr, &mut ci);
         }
 
-        // [a b; b d] · coef = -[p; q]
-        let solve = |a: f64, b: f64, d: f64, p: f64, q: f64| {
-            let det = a * d - b * b;
-            ((b * q - d * p) / det, (b * p - a * q) / det)
+        let (re, ro) = match pin {
+            Some(t) => (e_car - t, o_car - t),
+            None => (0.0, 0.0),
         };
-        let (ea, eb) = solve(m0, m1, m2, r0, r2); // even shapes {1, x²}
-        let (oa, ob) = solve(m1, m2, m3, i1, i3); // odd shapes {x, x³}
 
+        // Symmetric 3x3, upper triangle by entry. Solves M·coef = -rhs.
+        let solve = |a: [f64; 6], p: f64, q: f64, r: f64| {
+            let [a00, a01, a02, a11, a12, a22] = a;
+            let (c0, c1, c2) = (
+                a11 * a22 - a12 * a12,
+                a02 * a12 - a01 * a22,
+                a01 * a12 - a02 * a11,
+            );
+            let det = a00 * c0 + a01 * c1 + a02 * c2;
+            let (d0, d1, d2) = (
+                a00 * a22 - a02 * a02,
+                a02 * a01 - a00 * a12,
+                a00 * a11 - a01 * a01,
+            );
+
+            (
+                -(c0 * p + c1 * q + c2 * r) / det,
+                -(c1 * p + d0 * q + d1 * r) / det,
+                -(c2 * p + d1 * q + d2 * r) / det,
+            )
+        };
+
+        // even shapes {1, x², cos}
+        let (ea, eb, ec) = solve([m0, m1, q0, m2, q1, q2], r0, r2, re);
+        // odd shapes {x, x³, sin}
+        let (oa, ob, oc) = solve([m1, m2, p0, m3, p1, p2], i1, i3, ro);
+
+        let (mut cr, mut ci) = (1.0f64, 0.0f64);
         for (j, s) in out.iter_mut().enumerate() {
             let (x, w) = g(j);
             let x2 = x * x;
-            s.0 += (ea + eb * x2) * w;
-            s.1 += (oa + ob * x2) * x * w;
+            s.0 += (ea + eb * x2 + ec * cr) * w;
+            s.1 += ((oa + ob * x2) * x + oc * ci) * w;
+            step(&mut cr, &mut ci);
         }
     }
 
@@ -721,17 +780,6 @@ fn half_width_scaled(s: Shape, eps: f64, tail_a: f64) -> f64 {
 /// change to quantum or eps that doesn't cross a dyadic boundary leaves every u_j where it was.
 fn snap(du: f64) -> f64 {
     du.log2().floor().exp2()
-}
-
-/// Pick between the two shortest quantum-legal half-spans the one whose last tap sits nearer a
-/// carrier zero of the real lane. Costs at most one quantum.
-fn snap_phase(n: usize, quantum: usize, w0: f64) -> usize {
-    let cost = |m: usize| (w0 * m as f64).cos().abs();
-    if cost(n + quantum) < cost(n) {
-        n + quantum
-    } else {
-        n
-    }
 }
 
 /// Roots of g(u) = ln(eps). g rises to 0 at u = 1 and falls after, so Newton from each
@@ -1219,8 +1267,7 @@ mod test {
         const QUANTUM: usize = 4;
 
         let mut plan = spec(3.5, 1e-10)
-            .eps_time(1e-4)
-            .backoff(false)
+            .eps_time(5e-3)
             .max_load_quantum(QUANTUM)
             .plan();
 
@@ -1297,7 +1344,7 @@ mod test {
         const WIDTH_TOL: f64 = 0.002;
 
         // Stopband gap relative to PEAK_GAIN, as a multiple of eps_time.
-        const LEAK_PER_EPS: f64 = 0.05;
+        const LEAK_PER_EPS: f64 = 0.005;
 
         // In-band relative error as a multiple of eps_time.
         const PASS_PER_EPS: f64 = 0.3;
@@ -1352,7 +1399,7 @@ mod test {
 
             let (mut prev_taps, mut prev_stop) = (0usize, f64::INFINITY);
 
-            for eps_time in [1e-2f64, 1e-3, 1e-4, 1e-5] {
+            for eps_time in [5e-2f64, 5e-3, 5e-4, 5e-5] {
                 let mut cut = base.eps_time(eps_time).plan();
                 let bc = cut.bin(fc, RATE, QUANTUM);
                 let nc = bc.folded_taps();
@@ -1432,8 +1479,8 @@ mod test {
     /// table. Sweeps the load quantum, because the quantum pads the emitted half-span.
     #[test]
     fn table_response_is_characterized() {
-        let (q, eps, eps_time) = (3.5, 1e-10, 1e-3);
-        for quantum in [1usize, 4, 8, 16] {
+        let (q, eps, eps_time) = (3.5, 1e-10, 5e-3);
+        for quantum in [2usize, 4, 8, 16] {
             let mut p = spec(q, eps)
                 .eps_time(eps_time)
                 .max_load_quantum(quantum)
@@ -1484,7 +1531,6 @@ mod test {
 
         let mut p = spec(3.0, 1e-10)
             .eps_time(1e-4)
-            .backoff(true)
             .max_load_quantum(QUANTUM)
             .plan();
 
