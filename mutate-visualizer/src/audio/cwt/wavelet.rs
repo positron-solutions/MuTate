@@ -381,6 +381,7 @@ impl Spec {
         }
 
         Plan {
+            shape: self.shape,
             c,
             du,
             spec,
@@ -395,6 +396,7 @@ impl Spec {
 
 // CWT weight table generator.
 pub struct Plan {
+    shape: Shape,
     c: f64,               // half_width_scaled
     du: f64,              // uniform step in u = w/w_peak
     spec: Vec<[f64; 2]>,  // [psi, d] at u_j = j*du
@@ -454,7 +456,11 @@ impl Plan {
             Self::scale_by(psi, PEAK_GAIN / Self::gain_at(psi, bin.w0));
 
             self.condition(psi, bin.w0, Some(0.5 * PEAK_GAIN));
-            Self::align_d(psi, d, e, bin.w0, 700.0);
+
+            let half_bw_cents = 1200.0 * (1.0 + 0.5 / self.shape.q()).log2();
+            let fit_span_cents = 3.0 * half_bw_cents;
+            Self::align_d(psi, d, e, bin.w0, fit_span_cents);
+
             self.condition(d, bin.w0, None);
 
             Self::quantize(psi, d, bin.w0, out);
