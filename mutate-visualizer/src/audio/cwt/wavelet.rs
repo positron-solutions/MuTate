@@ -933,6 +933,57 @@ mod test {
         0.5 * (a + b)
     }
 
+    /// W(m) = sum_j x[m + half - j] * h[j], matching `unit_tone_reads_unity`.
+    fn conv(h: &[(f32, f32)], x: impl Fn(isize) -> f64, m: isize) -> (f64, f64) {
+        let half = (h.len() / 2) as isize;
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (j, &(r, i)) in h.iter().enumerate() {
+            let s = x(m + half - j as isize);
+            re += s * r as f64;
+            im += s * i as f64;
+        }
+        (re, im)
+    }
+
+    fn cdiv(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+        let q = b.0 * b.0 + b.1 * b.1;
+        ((a.0 * b.0 + a.1 * b.1) / q, (a.1 * b.0 - a.0 * b.1) / q)
+    }
+
+    /// Worst frequency bias in cents and worst quadrature leak of `d/psi` against a real tone
+    /// detuned `cents` from `w0`, over eight carrier phases.
+    fn tone_bias(psi: &[(f32, f32)], d: &[(f32, f32)], w0: f64, cents: f64) -> (f64, f64) {
+        let w = w0 * (cents / 1200.0).exp2();
+        let tone = |k: isize| (w * k as f64).cos();
+        let (mut bias, mut quad) = (0.0f64, 0.0f64);
+        for m in 0..8 {
+            let (re, im) = cdiv(conv(d, tone, m), conv(psi, tone, m));
+            bias = bias.max((1200.0 * (re / w).log2()).abs());
+            quad = quad.max((im / w).abs());
+        }
+        (bias, quad)
+    }
+
+    /// Worst group-delay error in samples and worst real leak of `t/psi` across the impulse
+    /// response, skipping positions where the envelope is too small to divide through.
+    fn impulse_delay(psi: &[(f32, f32)], t: &[(f32, f32)]) -> (f64, f64) {
+        let half = (psi.len() / 2) as isize;
+        let imp = |k: isize| if k == 0 { 1.0 } else { 0.0 };
+        let env0 = (psi[half as usize].0 as f64).hypot(psi[half as usize].1 as f64);
+
+        let (mut worst, mut leak) = (0.0f64, 0.0f64);
+        for m in -half..=half {
+            let wp = conv(psi, imp, m);
+            if wp.0.hypot(wp.1) < 1e-2 * env0 {
+                continue;
+            }
+            let (re, im) = cdiv(conv(t, imp, m), wp);
+            worst = worst.max((m as f64 + im).abs());
+            leak = leak.max(re.abs());
+        }
+        (worst, leak)
+    }
+
     /// Signed bars for `re` and `im` overlaid on one axis, zero between cells `cols / 2 - 1` and
     /// `cols / 2`. Caller guarantees `max >= |re|` and `max >= |im|`, which keeps both spans inside
     /// the `cols` field.
@@ -1268,55 +1319,22 @@ mod test {
             let bin = plan.bin(fc, sr, QUANTUM);
             let mut w = vec![[0.0f32; 4]; bin.folded_taps()];
             plan.taps_into(bin, &mut w);
-
             let psi = unfold(&w, 0);
             let (d, t) = (unfold(&w, 2), derive_t(&psi));
 
-            let (n, half, w0) = (psi.len(), psi.len() / 2, bin.velocity());
-
-            // W(m) = sum_j x[m + half - j] * h[j], matching unit_tone_reads_unity.
-            let conv = |h: &[(f32, f32)], x: &dyn Fn(isize) -> f64, m: isize| {
-                let (mut re, mut im) = (0.0f64, 0.0f64);
-                for (j, &(r, i)) in h.iter().enumerate() {
-                    let s = x(m + half as isize - j as isize);
-                    re += s * r as f64;
-                    im += s * i as f64;
-                }
-                (re, im)
-            };
-            let div = |a: (f64, f64), b: (f64, f64)| {
-                let q = b.0 * b.0 + b.1 * b.1;
-                ((a.0 * b.0 + a.1 * b.1) / q, (a.1 * b.0 - a.0 * b.1) / q)
-            };
-
+            let (n, w0) = (psi.len(), bin.velocity());
             println!("\n=== REASSIGN fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6} ===");
 
+            // Pitch reassignment
             for cents in [-600.0f64, -300.0, 0.0, 300.0, 600.0] {
-                let w = w0 * (cents / 1200.0).exp2();
-                let tone = |k: isize| (w * k as f64).cos();
-                let (mut worst, mut quad) = (0.0f64, 0.0f64);
-                for m in 0..8 {
-                    let (re, im) = div(conv(&d, &tone, m), conv(&psi, &tone, m));
-                    worst = worst.max((1200.0 * (re / w).log2()).abs());
-                    quad = quad.max((im / w).abs());
-                }
-                println!("  detune {cents:+6.0}c  bias {worst:.5}c  quad {quad:.3e}");
-                assert!(worst < 2.0, "fc {fc} detune {cents} bias {worst:.3}c");
+                let (bias, quad) = tone_bias(&psi, &d, w0, cents);
+                println!("  detune {cents:+6.0}c  bias {bias:.5}c  quad {quad:.3e}");
+                assert!(bias < 2.0, "fc {fc} detune {cents} bias {bias:.3}c");
                 assert!(quad < 1e-3, "fc {fc} detune {cents} quad {quad:.3e}");
             }
 
-            let imp = |k: isize| if k == 0 { 1.0 } else { 0.0 };
-            let env0 = (psi[half].0 as f64).hypot(psi[half].1 as f64);
-            let (mut worst, mut real) = (0.0f64, 0.0f64);
-            for m in -(half as isize)..=(half as isize) {
-                let wp = conv(&psi, &imp, m);
-                if wp.0.hypot(wp.1) < 1e-2 * env0 {
-                    continue;
-                }
-                let (re, im) = div(conv(&t, &imp, m), wp);
-                worst = worst.max((m as f64 + im).abs());
-                real = real.max(re.abs());
-            }
+            // Time reassignment
+            let (worst, real) = impulse_delay(&psi, &t);
             println!("  impulse: worst t_hat {worst:.4} samples  real leak {real:.2e}");
             assert!(worst < 0.05, "fc {fc} t_hat off by {worst:.4} samples");
             assert!(real < 1e-2, "fc {fc} t real leak {real:.3e}");
