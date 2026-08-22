@@ -1080,10 +1080,12 @@ mod test {
         let sweep = (16 * taps.len()).next_power_of_two();
         let omega = |k: usize| -PI + 2.0 * PI * k as f64 / sweep as f64;
 
+        let mut mag = Vec::with_capacity(sweep + 1);
         let (mut peak, mut neg) = ((0.0f64, 0.0f64), 0.0f64);
-        for k in 0..=SWEEP {
+        for k in 0..=sweep {
             let w = omega(k);
             let v = dtft(taps, w);
+            mag.push(v);
             if w < 0.0 {
                 neg = neg.max(v);
             }
@@ -1092,7 +1094,7 @@ mod test {
             }
         }
 
-        let cell = 2.0 * PI / SWEEP as f64;
+        let cell = 2.0 * PI / sweep as f64;
         let (mut a, mut b) = (peak.0 - cell, peak.0 + cell);
         for _ in 0..80 {
             let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
@@ -1111,10 +1113,9 @@ mod test {
 
         let guard = 3.0 * (hi - lo);
         let mut floor = 0.0f64;
-        for k in 0..=SWEEP {
-            let w = omega(k);
-            if (w - peak_w).abs() > guard {
-                floor = floor.max(dtft(taps, w));
+        for (k, &v) in mag.iter().enumerate() {
+            if (omega(k) - peak_w).abs() > guard {
+                floor = floor.max(v);
             }
         }
 
