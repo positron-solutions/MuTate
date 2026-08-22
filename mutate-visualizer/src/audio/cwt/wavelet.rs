@@ -595,10 +595,9 @@ impl Plan {
     fn condition(&self, out: &mut [(f64, f64)], w0: f64, pin: Option<f64>) {
         let n = out.len();
         let inv = (n as f64).recip();
-
         let s2 = {
             let s = self.sobolev * (n as f64 / 64.0).sqrt().min(1.0);
-            s * s
+            s * s.abs()
         };
 
         let g = |j: usize| {
