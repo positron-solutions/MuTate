@@ -134,8 +134,6 @@
 // Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
 // formalism.
 
-// FIXME t^ tests are pretty dead and need a better metric to stop lying about some coincidence we
-// don't care about.  Stress it!
 // NEXT High omega filters, starting at around 60% of Nyquist, begin to degrade at low Q.  The
 // carrier doesn't have enough detail to represent a fast-changing envelope.  A numerical solution
 // for these heavily aliased wavelets may succeed or we may use a Plan with a higher Q beyond some
@@ -942,12 +940,12 @@ mod test {
     }
 
     /// t_nu = -i*nu*psi_nu, matching what a consumer reconstructs per lane.
-    fn derive_t(psi: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    fn derive_t(psi: &[(f64, f64)]) -> Vec<(f64, f64)> {
         let half = (psi.len() / 2) as isize;
         psi.iter()
             .enumerate()
             .map(|(j, &(r, i))| {
-                let nu = (j as isize - half) as f32;
+                let nu = (j as isize - half) as f64;
                 (nu * i, -nu * r)
             })
             .collect()
@@ -967,14 +965,18 @@ mod test {
         0.5 * (a + b)
     }
 
+    fn widen(taps: &[(f32, f32)]) -> Vec<(f64, f64)> {
+        taps.iter().map(|&(r, i)| (r as f64, i as f64)).collect()
+    }
+
     /// W(m) = sum_j x[m + half - j] * h[j], matching `unit_tone_reads_unity`.
-    fn conv(h: &[(f32, f32)], x: impl Fn(isize) -> f64, m: isize) -> (f64, f64) {
+    fn conv(h: &[(f64, f64)], x: impl Fn(isize) -> f64, m: isize) -> (f64, f64) {
         let half = (h.len() / 2) as isize;
         let (mut re, mut im) = (0.0f64, 0.0f64);
         for (j, &(r, i)) in h.iter().enumerate() {
             let s = x(m + half - j as isize);
-            re += s * r as f64;
-            im += s * i as f64;
+            re += s * r;
+            im += s * i;
         }
         (re, im)
     }
@@ -986,7 +988,7 @@ mod test {
 
     /// Worst frequency bias in cents and worst quadrature leak of `d/psi` against a real tone
     /// detuned `cents` from `w0`, over eight carrier phases.
-    fn tone_bias(psi: &[(f32, f32)], d: &[(f32, f32)], w0: f64, cents: f64) -> (f64, f64) {
+    fn tone_bias(psi: &[(f64, f64)], d: &[(f64, f64)], w0: f64, cents: f64) -> (f64, f64) {
         let w = w0 * (cents / 1200.0).exp2();
         let tone = |k: isize| (w * k as f64).cos();
         let (mut bias, mut quad) = (0.0f64, 0.0f64);
@@ -998,22 +1000,69 @@ mod test {
         (bias, quad)
     }
 
-    /// Worst group-delay error in samples and worst real leak of `t/psi` across the impulse
-    /// response, skipping positions where the envelope is too small to divide through.
-    fn impulse_delay(psi: &[(f32, f32)], t: &[(f32, f32)]) -> (f64, f64) {
-        let half = (psi.len() / 2) as isize;
-        let imp = |k: isize| if k == 0 { 1.0 } else { 0.0 };
-        let env0 = (psi[half as usize].0 as f64).hypot(psi[half as usize].1 as f64);
+    /// Untruncated f64 taps from `plan`'s grid, unconditioned and unquantized: the estimator's
+    /// own answer, so a gap against the shipped table is ours and not the wavelet's.
+    ///
+    /// `k` folded weights must clear the replica `spans` placed for this plan.
+    fn reference(plan: &Plan, w0: f64, k: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+        let (mut psi, mut d) = (vec![(0.0, 0.0); k], vec![(0.0, 0.0); k]);
+        plan.transform2(w0, &mut psi, &mut d);
+        let g = Plan::gain_at(&psi, w0);
+        Plan::scale_by(&mut psi, PEAK_GAIN / g);
 
-        let (mut worst, mut leak) = (0.0f64, 0.0f64);
-        for m in -half..=half {
-            let wp = conv(psi, imp, m);
-            if wp.0.hypot(wp.1) < 1e-2 * env0 {
-                continue;
+        let mut out = vec![(0.0f64, 0.0); 2 * k - 1];
+        out[k - 1] = (psi[0].0, 0.0);
+        for (j, &(r, i)) in psi.iter().enumerate().skip(1) {
+            out[k - 1 + j] = (r, i);
+            out[k - 1 - j] = (r, -i);
+        }
+        let t = derive_t(&out);
+        (out, t)
+    }
+
+    /// Gaussian tone burst, carrier `w`, envelope sd in samples, centered at `p`.
+    fn burst(w: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
+        move |k| {
+            let z = (k as f64 - p) / sd;
+            (-0.5 * z * z).exp() * (w * (k as f64 - p)).cos()
+        }
+    }
+
+    /// Hop levels the buckets cumulate over, dB below the loudest hop.
+    const LEVELS: [f64; 3] = [-20.0, -40.0, -60.0];
+
+    /// Worst |t̂ − t̂_ref| in samples per level bucket, plus the worst real leak in the top
+    /// bucket. Cumulative, so the -60 dB entry contains the -20 dB one. Reassignment only has
+    /// to hold where the pixel is bright enough to see.
+    fn t_hat_profile(
+        table: (&[(f64, f64)], &[(f64, f64)]),
+        reference: (&[(f64, f64)], &[(f64, f64)]),
+        x: impl Fn(isize) -> f64,
+        span: isize,
+    ) -> ([f64; 3], f64) {
+        let ((psi, t), (rpsi, rt)) = (table, reference);
+
+        let hops: Vec<(f64, f64, f64)> = (-span..=span)
+            .map(|m| {
+                let wp = conv(psi, &x, m);
+                let (re, im) = cdiv(conv(t, &x, m), wp);
+                let r = cdiv(conv(rt, &x, m), conv(rpsi, &x, m));
+                (wp.0.hypot(wp.1), (im - r.1).abs(), (re - r.0).abs())
+            })
+            .collect();
+
+        let peak = hops.iter().fold(0.0f64, |a, h| a.max(h.0));
+        let (mut worst, mut leak) = ([0.0f64; 3], 0.0f64);
+        for (lvl, err, re) in hops {
+            let db = 20.0 * (lvl / peak).log10();
+            for (w, &l) in worst.iter_mut().zip(&LEVELS) {
+                if db >= l {
+                    *w = w.max(err);
+                }
             }
-            let (re, im) = cdiv(conv(t, imp, m), wp);
-            worst = worst.max((m as f64 + im).abs());
-            leak = leak.max(re.abs());
+            if db >= LEVELS[0] {
+                leak = leak.max(re);
+            }
         }
         (worst, leak)
     }
@@ -1333,7 +1382,7 @@ mod test {
         }
     }
 
-    /// Tests for bias correlation and magnitude in reassignment.
+    /// Pitch reassignment bias and quadrature leak against steady tones.
     #[test]
     fn reassignment_is_unbiased() {
         const QUANTUM: usize = 4;
@@ -1344,8 +1393,9 @@ mod test {
             let bin = plan.bin(fc, sr, QUANTUM);
             let mut w = vec![[0.0f32; 4]; bin.folded_taps()];
             plan.taps_into(bin, &mut w);
-            let psi = unfold(&w, 0);
-            let (d, t) = (unfold(&w, 2), derive_t(&psi));
+
+            let psi = widen(&unfold(&w, 0));
+            let d = widen(&unfold(&w, 2));
 
             let (n, w0) = (psi.len(), bin.velocity());
             println!("\n=== REASSIGN fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6} ===");
@@ -1357,12 +1407,6 @@ mod test {
                 assert!(bias < 2.0, "fc {fc} detune {cents} bias {bias:.3}c");
                 assert!(quad < 1e-3, "fc {fc} detune {cents} quad {quad:.3e}");
             }
-
-            // Time reassignment
-            let (worst, real) = impulse_delay(&psi, &t);
-            println!("  impulse: worst t_hat {worst:.4} samples  real leak {real:.2e}");
-            assert!(worst < 0.05, "fc {fc} t_hat off by {worst:.4} samples");
-            assert!(real < 1e-2, "fc {fc} t real leak {real:.3e}");
         }
     }
 
@@ -1652,6 +1696,9 @@ mod test {
         // this far out leaves truncation as the only error the stop band column reports.
         const CLEARANCE: f64 = 4.0;
 
+        // Untruncated enough that the reference t̂ is the estimator's own answer.
+        const REF_SIGMAS: f64 = 10.0;
+
         // Measured -3 dB width times Q
         const WIDTH_Q: f64 = 0.998;
         // Negative dB usually detaches from noise floor at around 5.5.  After 5.5, f32 truncation
@@ -1695,8 +1742,12 @@ mod test {
                     sigmas: n as f64 * w0 / shape.p(),
                 };
 
+                // Reference half-span, past every `sigmas` in the sweep so one grid serves all.
+                let kref = (REF_SIGMAS * shape.p() / w0).round() as usize + 1;
+
                 // Grid built by hand to bypass all the heuristics.
-                let du = snap(TAU / (CLEARANCE * w0 * bin.k as f64));
+                let du = snap(TAU / (CLEARANCE * w0 * kref as f64));
+
                 let (lo, m) = support(shape, du, EPS);
                 let mut spec = vec![[0.0; 2]; m];
                 for (j, s) in spec.iter_mut().enumerate().skip(lo) {
@@ -1719,8 +1770,10 @@ mod test {
                 plan.taps_into(bin, &mut w);
 
                 let psi = unfold(&w, 0);
-                let d = unfold(&w, 2);
-                let t = derive_t(&psi);
+                let psi64 = widen(&psi);
+                let d = widen(&unfold(&w, 2));
+                let t = derive_t(&psi64);
+                let (rpsi, rt) = reference(&plan, w0, kref);
 
                 let r = characterize(&psi, w0);
                 let gain = r.peak_h / PEAK_GAIN - 1.0;
@@ -1734,11 +1787,21 @@ mod test {
                 let half_bw = 1200.0 * (1.0 + 0.5 / Q).log2();
                 let top = (1.5 * half_bw).min(1200.0 * (0.9 * PI / w0).log2());
                 for detune in [-top, -0.5 * top, 0.0, 0.5 * top, top] {
-                    let (a, q) = tone_bias(&psi, &d, w0, detune);
+                    let (a, q) = tone_bias(&psi64, &d, w0, detune);
                     bias = bias.max(a);
                     quad = quad.max(q);
                 }
-                let (t_hat, t_leak) = impulse_delay(&psi, &t);
+
+                // One burst at a tenth of the aperture, fixed across the sweep so the column
+                // is comparable. The full profile is `t_hat_survives_transients`.
+                let half = (psi64.len() / 2) as isize;
+                let (t_err, t_leak) = t_hat_profile(
+                    (&psi64, &t),
+                    (&rpsi, &rt),
+                    burst(w0, 0.1 * half as f64, 0.0),
+                    2 * half,
+                );
+                let t_hat = t_err[2];
 
                 println!(
                     "  {nyq:>7.4} {:>6} {gain:>+10.2e} {cents:>+8.4} {width:>8.5} \
@@ -1750,6 +1813,76 @@ mod test {
                 );
 
                 let tag = format!("w0 {w0:.5} ({nyq:.4} nyq) sigmas {sigmas}");
+            }
+        }
+    }
+
+    /// t̂ against an untruncated bake, on transients short enough that the estimator has to
+    /// actually integrate the envelope. Swept from near-impulsive to comparable to the
+    /// wavelet's own support, which is where the pull toward the hop takes over.
+    #[test]
+    fn t_hat_survives_transients() {
+        const QUANTUM: usize = 4;
+        const REF_SIGMAS: f64 = 14.0;
+        const SIGMAS: f64 = 4.5;
+        // Samples, per level bucket. Calibrate from the first run; these are a starting bracket.
+        const TOL: [f64; 3] = [0.05; 3];
+
+        let mut plan = spec(3.5, 1e-10).max_load_quantum(QUANTUM).plan();
+        let long = spec(3.5, 1e-14)
+            .sigmas(REF_SIGMAS)
+            .max_load_quantum(QUANTUM)
+            .plan();
+
+        // NEXT adapt for same omegas as the quality assurance.
+        for (fc, sr) in [(40.0f64, 3000.0), (200.0, 3000.0), (800.0, 3000.0)] {
+            let bin = plan.bin(fc, sr, QUANTUM);
+            let mut w = vec![[0.0f32; 4]; bin.folded_taps()];
+            plan.taps_into(bin, &mut w);
+
+            let psi = widen(&unfold(&w, 0));
+            let t = derive_t(&psi);
+            let w0 = bin.velocity();
+
+            // The reference plan sized its own grid for this span, so the replica is clear.
+            let k = long.bin(fc, sr, QUANTUM).folded_taps();
+            let (rpsi, rt) = reference(&long, w0, k);
+
+            let half = (psi.len() / 2) as isize;
+            println!(
+                "\n=== T_HAT fc {fc:.0} sr {sr:.0} taps {} ref {} ({:.1}x) ===",
+                psi.len(),
+                rpsi.len(),
+                rpsi.len() as f64 / psi.len() as f64,
+            );
+
+            for frac in [0.02f64, 0.1, 0.35] {
+                let sd = (frac * half as f64).max(1.0);
+                for detune in [0.0f64, 400.0] {
+                    let w = w0 * (detune / 1200.0).exp2();
+                    let (err, leak) =
+                        t_hat_profile((&psi, &t), (&rpsi, &rt), burst(w, sd, 0.0), 2 * half);
+
+                    let pct = |v: f64| 100.0 * v / half as f64;
+                    println!(
+                        "  sd {sd:>7.2}  detune {detune:>4.0}c  err {:.4} / {:.4} / {:.4} \
+                         ({:.3} / {:.3} / {:.3} %sup)  skew {leak:.2e}",
+                        err[0],
+                        err[1],
+                        err[2],
+                        pct(err[0]),
+                        pct(err[1]),
+                        pct(err[2])
+                    );
+
+                    for (e, tol) in err.iter().zip(&TOL) {
+                        let frac = e / half as f64;
+                        assert!(
+                            frac < *tol,
+                            "fc {fc} sd {sd:.2} detune {detune} t_hat gap {e:.4} samples"
+                        );
+                    }
+                }
             }
         }
     }
