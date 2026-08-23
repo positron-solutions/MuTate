@@ -295,7 +295,6 @@ pub struct Spec {
     truncation: Truncation,
     max_taps: usize,
     max_load_quantum: usize,
-    sobolev: f64,
 }
 
 impl Default for Spec {
@@ -306,7 +305,6 @@ impl Default for Spec {
             truncation: Truncation::Sigmas(4.0),
             max_taps: 0,
             max_load_quantum: 1,
-            sobolev: 0.0,
         }
     }
 }
@@ -337,16 +335,6 @@ impl Spec {
     /// clear of the time-domain replica.
     pub fn max_load_quantum(mut self, q: usize) -> Self {
         self.max_load_quantum = q;
-        self
-    }
-
-    /// Sobolev weight on the conditioning correction, dimensionless against the emitted
-    /// half-span. The correction minimizes `∫|E|² + λ|E'|²` of its own spectral footprint,
-    /// so raising this pulls the correction toward the center tap and flattens the error
-    /// slope that reassignment divides through. 0.0 is the plain minimum-norm correction.
-    /// Above roughly 8.0 the Gram solution gets soft and the stopband starts paying for it.
-    pub fn sobolev(mut self, sigma: f64) -> Self {
-        self.sobolev = sigma;
         self
     }
 
@@ -401,11 +389,23 @@ impl Spec {
             du,
             spec,
             lo,
-            sobolev: self.sobolev,
-            buf: Vec::with_capacity(3 * (self.max_taps / 2 + self.max_load_quantum + 1)),
+            buf: Vec::with_capacity(2 * (self.max_taps / 2 + self.max_load_quantum + 1)),
             max_load_quantum: self.max_load_quantum,
+            floor: 0.0,
         }
     }
+}
+
+/// Probe set for one bake. Frequencies are absolute rad/sample, so the objective keeps its
+/// shape as w0 sweeps toward Nyquist instead of losing rows off the end of the band.
+struct Probes {
+    w: Vec<f64>,
+    /// Envelope at `w`, unit peak. Zero on rejection rows.
+    tgt: Vec<f64>,
+    wt: Vec<f64>,
+    /// Rows `[0, track)` track the envelope. The rest are rejection candidates, sorted by
+    /// frequency, so adjacency is a neighbor test.
+    track: usize,
 }
 
 // CWT weight table generator.
@@ -416,8 +416,9 @@ pub struct Plan {
     spec: Vec<[f64; 2]>,  // [psi, d] at u_j = j*du
     lo: usize,            // first grid point above eps
     buf: Vec<(f64, f64)>, // bake scratch, 2 spans
-    sobolev: f64,
     max_load_quantum: usize,
+    /// Worst probe residual from the last bake, relative to PEAK_GAIN.
+    pub floor: f64,
 }
 
 impl Plan {
@@ -460,76 +461,61 @@ impl Plan {
         let out = &mut out[..k];
 
         let mut buf = core::mem::take(&mut self.buf);
-        buf.resize(3 * k, (0.0, 0.0));
+        buf.resize(2 * k, (0.0, 0.0));
         {
-            let (psi, rest) = buf.split_at_mut(k);
-            let (d, e) = rest.split_at_mut(k);
+            let (psi, d) = buf.split_at_mut(k);
 
             self.transform2(bin.w0, psi, d);
 
-            Self::scale_by(psi, PEAK_GAIN / Self::gain_at(psi, bin.w0));
+            // d shares psi's normalizer; the extra w0 puts its ratio in rad/sample, so the
+            // fit only has to make a small correction rather than find the scale.
+            let g = PEAK_GAIN / Self::gain_at(psi, bin.w0);
+            Self::scale_by(psi, g);
+            Self::scale_by(d, g * bin.w0);
 
-            // Trades a bit of stop band depth for much lower DC.  Check the gains between 3.5 and
-            // 4.5 sigma.  Sometimes longer truncation beats conditioning, but it may depend on
-            // other knobs like the sobolev order.
-            self.condition(psi, bin.w0, Some(0.5 * PEAK_GAIN));
+            // println!(
+            //     "pre  psi[0] {:e} psi[1] {:e} psi[n-1] {:e}",
+            //     psi[0].0,
+            //     psi[1].0,
+            //     psi[k - 1].0
+            // );
+            // let f = self.fit(psi, bin.w0, 0.5 * PEAK_GAIN, false);
+            // println!(
+            //     "post psi[0] {:e} psi[1] {:e} psi[n-1] {:e}  floor {f:e}",
+            //     psi[0].0,
+            //     psi[1].0,
+            //     psi[k - 1].0
+            // );
 
-            let half_bw_cents = 1200.0 * (1.0 + 0.5 / self.shape.q()).log2();
-            let fit_span_cents = 3.0 * half_bw_cents;
-            Self::align_d(psi, d, e, bin.w0, fit_span_cents);
+            // let pr = self.probes_for(bin.w0);
+            // self.floor = self
+            //     .fit(psi, bin.w0, 0.5 * PEAK_GAIN, &pr, None)
+            //     .max(self.fit(d, bin.w0, 0.5 * PEAK_GAIN * bin.w0, &pr, Some(psi)));
 
-            self.condition(d, bin.w0, None);
+            let pr = self.probes_for(bin.w0, k);
+            let (f_psi, band) = self.fit(psi, bin.w0, 0.5 * PEAK_GAIN, &pr, None, None);
+            let (f_d, _) = self.fit(
+                d,
+                bin.w0,
+                0.5 * PEAK_GAIN * bin.w0,
+                &pr,
+                Some(psi),
+                Some(band),
+            );
+            self.floor = f_psi.max(f_d);
+
+            // println!("floor: {0}", self.floor);
 
             Self::quantize(psi, d, bin.w0, out);
+            // println!(
+            //     "out[0] {:?}  out[1] {:?}  out[k-1] {:?}",
+            //     out[0],
+            //     out[1],
+            //     out[k - 1]
+            // );
         }
         self.buf = buf;
         k
-    }
-
-    /// Least-squares fit of H_d(w) = w*H_psi(w) over the intended detune range, using
-    /// d and nu^2*psi as the basis. nu^2 is even, so the fold and the derived t are
-    /// untouched; adding a multiple of nu^2*psi subtracts a multiple of H_psi'', which
-    /// is the curvature the ratio error is made of.
-    ///
-    /// `cents` brackets the detune range the consumer will reassign over, clamped so the
-    /// top probe stays clear of Nyquist: past it the fold-over dominates gain_at and the
-    /// fit chases the image instead of the band.
-    fn align_d(
-        psi: &[(f64, f64)],
-        d: &mut [(f64, f64)],
-        e: &mut [(f64, f64)],
-        w0: f64,
-        cents: f64,
-    ) {
-        const PROBES: usize = 9;
-
-        for (j, (s, &(pr, pi))) in e.iter_mut().zip(psi).enumerate() {
-            let j2 = (j * j) as f64;
-            *s = (pr * j2, pi * j2);
-        }
-
-        let cents = cents.min(1200.0 * (0.9 * PI / w0).log2());
-
-        let (mut aa, mut ab, mut bb, mut ap, mut bp) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
-        for i in 0..PROBES {
-            let c = cents * (2.0 * i as f64 / (PROBES - 1) as f64 - 1.0);
-            let w = w0 * (c / 1200.0).exp2();
-            let (hd, he) = (Self::gain_at(d, w), Self::gain_at(e, w));
-            let hp = w * Self::gain_at(psi, w);
-            aa += hd * hd;
-            ab += hd * he;
-            bb += he * he;
-            ap += hd * hp;
-            bp += he * hp;
-        }
-
-        let det = aa * bb - ab * ab;
-        let (a, b) = ((bb * ap - ab * bp) / det, (aa * bp - ab * ap) / det);
-
-        for (s, c) in d.iter_mut().zip(&*e) {
-            s.0 = a * s.0 + b * c.0;
-            s.1 = a * s.1 + b * c.1;
-        }
     }
 
     /// Rotor walk from the center outward, both spectra in one pass.
@@ -575,121 +561,303 @@ impl Plan {
         }
     }
 
-    /// Zeroes H(0), H'(0), H''(0), H'''(0) with the minimum-norm correction under the metric
-    /// `1 + (sigma·x)²`, x = j/n. The correction lands as `shape(x)/(1 + (sigma·x)²)`, so
-    /// raising sigma pulls it toward the center tap and flattens the slope it contributes to
-    /// the error, which is what the reassignment ratios divide through.
-    ///
-    /// `pin` sets the carrier functionals E and O to a common target, which lands peak gain
-    /// and nulls the image in one solve. `None` holds them at their current values, so the
-    /// DC correction cannot tilt the band response; that is what `d` wants, since `align_d`
-    /// owns its scale.
-    ///
-    /// Parity splits the problem: the even taps carry the even derivatives at DC and the
-    /// carrier's cosine quadrature, the odd taps the odd derivatives and the sine quadrature.
-    /// Two independent 3x3 solves sharing one moment table. Sigma is de-rated by sqrt(n/64)
-    /// below 64 weights: a short bake has too little support to concentrate the correction
-    /// and still keep the Gram invertible.
-    fn condition(&self, out: &mut [(f64, f64)], w0: f64, pin: Option<f64>) {
+    /// `band` is ψ's demotion threshold, relative to its own peak. `None` measures it.
+    fn fit(
+        &self,
+        out: &mut [(f64, f64)],
+        w0: f64,
+        carrier: f64,
+        pr: &Probes,
+        psi: Option<&[(f64, f64)]>,
+        band: Option<f64>,
+    ) -> (f64, f64) {
+        /// Tikhonov bump on the Gram diagonal.
+        const RIDGE: f64 = 1e-4;
+        const RES: usize = SHAPES;
+
+        /// Ambition relative to what the unweighted solve reaches on the rejection rows.
+        const REACH: f64 = 0.15;
+        const PASSES: usize = 10;
+
+        let np = pr.w.len();
         let n = out.len();
         let inv = (n as f64).recip();
-        let s2 = {
-            let s = self.sobolev * (n as f64 / 64.0).sqrt().min(1.0);
-            s * s.abs()
-        };
+        let (cs, cc) = w0.sin_cos();
+        let peak = 2.0 * carrier;
 
-        let g = |j: usize| {
-            let x = j as f64 * inv;
-            (x, 1.0 / (1.0 + s2 * x * x))
-        };
+        let mut m = vec![[0.0f64; SHAPES + 1]; np + 4];
+        let mut tgt = vec![0.0f64; np + 4];
 
-        // Newton-corrected phasor, same walk as transform2.
-        let (ws, wc) = w0.sin_cos();
-        let step = |cr: &mut f64, ci: &mut f64| {
-            let (nr, ni) = (*cr * wc - *ci * ws, *cr * ws + *ci * wc);
-            let k = 0.5 * (3.0 - (nr * nr + ni * ni));
-            *cr = nr * k;
-            *ci = ni * k;
-        };
+        for (p, &w) in pr.w.iter().enumerate() {
+            let (ws, wc) = w.sin_cos();
+            let (mut ph, mut cq) = ((1.0f64, 0.0f64), (1.0f64, 0.0f64));
+            let r = &mut m[p];
 
-        // Moments of the shapes and the residuals in one pass. Pair multiplicity rides the
-        // functionals, not the correction: it cancels out of the stationarity condition.
-        let (mut m0, mut m1, mut m2, mut m3) = (0.0f64, 0.0, 0.0, 0.0);
-        let (mut q0, mut q1, mut q2) = (0.0f64, 0.0, 0.0);
-        let (mut p0, mut p1, mut p2) = (0.0f64, 0.0, 0.0);
-        let (mut r0, mut r2, mut i1, mut i3) = (0.0f64, 0.0, 0.0, 0.0);
-        let (mut e_car, mut o_car) = (0.0f64, 0.0);
+            for (j, &(re, im)) in out.iter().enumerate() {
+                let c = if j == 0 { 1.0 } else { 2.0 };
+                let x = j as f64 * inv;
+                let (cw, sw) = (c * ph.0, c * ph.1);
 
-        let (mut cr, mut ci) = (1.0f64, 0.0f64);
-        for (j, s) in out.iter().enumerate() {
-            let (x, w) = g(j);
+                let (ev, od) = shapes(x, cq);
+                r[RES] += re * cw + im * sw;
+                for i in 0..SHAPES {
+                    r[i] += ev[i] * cw + od[i] * sw;
+                }
+
+                rotate(&mut ph, ws, wc);
+                rotate(&mut cq, cs, cc);
+            }
+
+            // d's only promise is d/psi = w, and only where psi has something to divide by.
+            // Out in the rejection band the achieved psi is its own leakage ripple, so
+            // targeting it there would put d to work chasing noise.
+            tgt[p] = match psi {
+                Some(q) if p < pr.track => w * Self::gain_at(q, w),
+                Some(_) => 0.0,
+                None => peak * pr.tgt[p],
+            };
+        }
+
+        // Carrier pair and the first four moments. Parity splits these, so each touches one
+        // lane's shapes.
+        // let (e, o, m1) = (np, np + 1, np + 2);
+        // let (m0, m2, m3) = (np + 3, np + 4, np + 5);
+        let (e, o, m1, m0) = (np, np + 1, np + 2, np + 3);
+
+        let mut cq = (1.0f64, 0.0f64);
+        for (j, &(re, im)) in out.iter().enumerate() {
             let c = if j == 0 { 1.0 } else { 2.0 };
-            let (x2, cw) = (x * x, c * w);
+            let x = j as f64 * inv;
+            let (ev, od) = shapes(x, cq);
 
-            m0 += cw;
-            m1 += cw * x2;
-            m2 += cw * x2 * x2;
-            m3 += cw * x2 * x2 * x2;
+            for (row, wt, v, s) in [
+                (e, c * cq.0, re, ev),
+                (o, c * cq.1, im, od),
+                (m0, c, re, ev),
+                (m1, c * x, im, od),
+            ] {
+                let r = &mut m[row];
+                r[RES] += v * wt;
+                for i in 0..SHAPES {
+                    r[i] += s[i] * wt;
+                }
+            }
 
-            q0 += cw * cr;
-            q1 += cw * x2 * cr;
-            q2 += cw * cr * cr;
+            rotate(&mut cq, cs, cc);
+        }
+        (tgt[e], tgt[o]) = (carrier, carrier);
 
-            p0 += cw * x * ci;
-            p1 += cw * x2 * x * ci;
-            p2 += cw * ci * ci;
+        let resid = |row: usize, b: &[f64; SHAPES], t: f64| {
+            (m[row][RES] + (0..SHAPES).map(|i| b[i] * m[row][i]).sum::<f64>() - t).abs()
+        };
 
-            r0 += c * s.0;
-            r2 += c * x2 * s.0;
-            i1 += c * x * s.1;
-            i3 += c * x2 * x * s.1;
-
-            e_car += c * s.0 * cr;
-            o_car += c * s.1 * ci;
-
-            step(&mut cr, &mut ci);
+        let mut wt = vec![0.0f64; np + 4];
+        let mut nrm = vec![1.0f64; np];
+        for (i, w) in wt.iter_mut().enumerate().skip(np) {
+            *w = PIN;
+            let _ = i;
         }
 
-        let (re, ro) = match pin {
-            Some(t) => (e_car - t, o_car - t),
-            None => (0.0, 0.0),
+        let solve = |wt: &[f64], nrm: &[f64], tgt: &[f64]| {
+            let mut a = [0.0f64; SHAPES * (SHAPES + 1) / 2];
+            let mut b = [0.0f64; SHAPES];
+            for (row, r) in m.iter().enumerate() {
+                let s = if row < np {
+                    wt[row] / nrm[row]
+                } else {
+                    wt[row]
+                };
+                if s == 0.0 {
+                    continue;
+                }
+                let sq = (0..SHAPES).map(|i| r[i] * r[i]).sum::<f64>();
+                if !(sq > 0.0) || !s.is_finite() {
+                    println!(
+                        "bad row {row} sq {sq:e} s {s:e} w {:e}",
+                        if row < np { pr.w[row] } else { f64::NAN }
+                    );
+                }
+                let norm = sq.sqrt().recip();
+                let w = (s * norm).powi(2);
+                for i in 0..SHAPES {
+                    for j in 0..=i {
+                        a[i * (i + 1) / 2 + j] += w * r[i] * r[j];
+                    }
+                    b[i] -= w * r[i] * (r[RES] - tgt[row]);
+                }
+            }
+            let scale = (0..SHAPES)
+                .map(|i| a[i * (i + 1) / 2 + i])
+                .fold(0.0f64, f64::max);
+            for i in 0..SHAPES {
+                a[i * (i + 1) / 2 + i] += RIDGE * scale;
+            }
+            // let d0: Vec<f64> = (0..SHAPES).map(|i| a[i * (i + 1) / 2 + i]).collect();
+            cholesky_solve(SHAPES, &mut a, &mut b);
+            // if b.iter().any(|v| !v.is_finite()) {
+            //     println!("gram diag {d0:?}");
+            // }
+            b
         };
 
-        // Symmetric 3x3, upper triangle by entry. Solves M·coef = -rhs.
-        let solve = |a: [f64; 6], p: f64, q: f64, r: f64| {
-            let [a00, a01, a02, a11, a12, a22] = a;
-            let (c0, c1, c2) = (
-                a11 * a22 - a12 * a12,
-                a02 * a12 - a01 * a22,
-                a01 * a12 - a02 * a11,
-            );
-            let det = a00 * c0 + a01 * c1 + a02 * c2;
-            let (d0, d1, d2) = (
-                a00 * a22 - a02 * a02,
-                a02 * a01 - a00 * a12,
-                a00 * a11 - a01 * a01,
-            );
+        // Calibration: absolute metric, every candidate live. Its worst rejection residual is
+        // what this basis reaches against this much truncation, so the ambition is measured
+        // rather than guessed at one end of the sweep.
+        for (p, w) in wt.iter_mut().enumerate().take(np) {
+            *w = pr.wt[p];
+        }
+        for v in nrm.iter_mut() {
+            *v = peak;
+        }
+        let cal = solve(&wt, &nrm, &tgt);
+        // println!(
+        //     "np {np} track {} peak {peak:e} cal_nan {}",
+        //     pr.track,
+        //     cal.iter().any(|v| !v.is_finite())
+        // );
+        let reach = (pr.track..np)
+            .map(|p| resid(p, &cal, tgt[p]) / peak)
+            .fold(0.0f64, |a, v| if v > a { v } else { a });
+        let rel = band.unwrap_or(REACH * reach);
+        let ambition = (rel * peak).max(f64::MIN_POSITIVE);
+        // println!("reach {reach:e} rel {rel:e} ambition {ambition:e}");
 
-            (
-                -(c0 * p + c1 * q + c2 * r) / det,
-                -(c1 * p + d0 * q + d1 * r) / det,
-                -(c2 * p + d1 * q + d2 * r) / det,
-            )
+        // A row is tracking if its target is reachable and rejection otherwise. That boundary
+        // moves with N and w0, which is why it can't be a probe index.
+        for p in 0..np {
+            let t = peak * pr.tgt[p];
+            if p < pr.track && t > ambition {
+                nrm[p] = tgt[p].abs().max(ambition);
+            } else {
+                nrm[p] = ambition;
+                tgt[p] = 0.0;
+            }
+        }
+
+        let score = |b: &[f64; SHAPES]| {
+            (0..np)
+                .map(|p| resid(p, b, tgt[p]) / nrm[p])
+                .fold(0.0f64, f64::max)
         };
+        let mut best = (cal, score(&cal));
 
-        // even shapes {1, x², cos}
-        let (ea, eb, ec) = solve([m0, m1, q0, m2, q1, q2], r0, r2, re);
-        // odd shapes {x, x³, sin}
-        let (oa, ob, oc) = solve([m1, m2, p0, m3, p1, p2], i1, i3, ro);
+        // Exchange. The active set is rebuilt each pass from where the residual peaks, so the
+        // rejection rows meander without carrying state that the move would invalidate.
+        // Scored on every candidate, not just the active ones: in-sample worst and full worst
+        // parting company is what an under-probed basis looks like.
+        let mut active: Vec<(f64, usize)> = Vec::with_capacity(np - pr.track);
+        let mut cur = cal;
+        for _ in 0..PASSES {
+            let r: Vec<f64> = (pr.track..np)
+                .map(|p| resid(p, &cur, tgt[p]) / nrm[p])
+                .collect();
 
-        let (mut cr, mut ci) = (1.0f64, 0.0f64);
+            active.clear();
+            for i in 0..r.len() {
+                let up = i == 0 || r[i] > r[i - 1];
+                let down = i + 1 == r.len() || r[i] >= r[i + 1];
+                if up && down {
+                    active.push((r[i], pr.track + i));
+                }
+            }
+            active.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            active.truncate(ACTIVE);
+
+            // Tallest-first truncation clusters the active set wherever the ripple envelope
+            // peaks and leaves the rest of the band unopposed. Split the candidates into
+            // equal frequency segments and take the largest extremum in each, so coverage is
+            // structural rather than a consequence of where the residual happens to be big.
+            // let seg = active.len().div_ceil(ACTIVE).max(1);
+            // let mut keep: Vec<(f64, usize)> = active
+            //     .chunks(seg)
+            //     .filter_map(|c| {
+            //         c.iter()
+            //             .copied()
+            //             .reduce(|a, b| if b.0 > a.0 { b } else { a })
+            //     })
+            //     .collect();
+            // core::mem::swap(&mut active, &mut keep);
+
+            for w in wt[pr.track..np].iter_mut() {
+                *w = 0.0;
+            }
+            for &(_, p) in &active {
+                wt[p] = 1.0;
+            }
+
+            let b = solve(&wt, &nrm, &tgt);
+            let s = score(&b);
+            if s < best.1 {
+                best = (b, s);
+            }
+            cur = b;
+        }
+
+        let (b, floor) = best;
+        let mut cq = (1.0f64, 0.0f64);
         for (j, s) in out.iter_mut().enumerate() {
-            let (x, w) = g(j);
-            let x2 = x * x;
-            s.0 += (ea + eb * x2 + ec * cr) * w;
-            s.1 += ((oa + ob * x2) * x + oc * ci) * w;
-            step(&mut cr, &mut ci);
+            let (ev, od) = shapes(j as f64 * inv, cq);
+            for i in 0..SHAPES {
+                s.0 += b[i] * ev[i];
+                s.1 += b[i] * od[i];
+            }
+            rotate(&mut cq, cs, cc);
         }
+
+        (floor, rel)
+    }
+
+    /// `n` is the folded tap count, which sets the rejection grid's density.
+    fn probes_for(&self, w0: f64, n: usize) -> Probes {
+        let env = log_env(self.shape);
+        let (lo3, hi3) = roots(self.shape, core::f64::consts::FRAC_1_SQRT_2);
+        let (u_lo, u_hi) = roots(self.shape, TRACK_EPS);
+        // Clamping the guard at PI would make the skip test below swallow the entire upper
+        // band. The guard is the passband; if it runs past Nyquist there is no upper stopband.
+        let hi_w = u_hi * w0;
+
+        let reject = (REJECT_PER_TAP * n).next_power_of_two();
+        let mut p = Probes {
+            w: Vec::with_capacity(TRACK + reject),
+            tgt: Vec::with_capacity(TRACK + reject),
+            wt: Vec::with_capacity(TRACK + reject),
+            track: 0,
+        };
+
+        let mut push = |p: &mut Probes, u: f64, wt: f64| {
+            p.w.push(u * w0);
+            p.tgt.push(env(u).exp());
+            p.wt.push(wt);
+        };
+
+        // Width and symmetry ride the half-power pair; place them exactly.
+        push(&mut p, lo3, SHOULDER);
+        push(&mut p, hi3, SHOULDER);
+
+        let fill = (TRACK - 2) / 2;
+        for i in 1..=fill {
+            let f = i as f64 / fill as f64;
+            push(&mut p, lo3 * (u_lo / lo3).powf(f), 1.0);
+            let u = hi3 * (u_hi / hi3).powf(f);
+            if u * w0 < hi_w {
+                push(&mut p, u, 1.0);
+            }
+        }
+        p.track = p.w.len();
+
+        // Uniform in w: minimax over a band wants equal density in the band. Everything
+        // below DC is rejection, which finally puts a row on -w0 where the image peaks.
+        let lo_w = u_lo * w0;
+        for i in 0..reject {
+            let w = -PI + TAU * i as f64 / reject as f64;
+            if w > lo_w && w < hi_w {
+                continue;
+            }
+            p.w.push(w);
+            p.tgt.push(0.0);
+            p.wt.push(1.0);
+        }
+        p
     }
 
     fn scale_by(out: &mut [(f64, f64)], norm: f64) {
@@ -763,10 +931,11 @@ impl Plan {
         // enough freedom to land peak gain within an ulp.
         const W: [f64; 2] = [1.0, 1.0];
 
-        let round = |v: f64, row: [f64; 2], e: &mut [f64; 2]| Self::round_shaped(v, row, W, e);
+        // XXX re-enable after we're done
+        // let round = |v: f64, row: [f64; 2], e: &mut [f64; 2]| Self::round_shaped(v, row, W, e);
 
         // Disable weights and truncate naively.  Effect is not zero, not huge.
-        // let round = |v: f64, row: [f64; 2], e: &mut [f64; 2]| v as f32;
+        let round = |v: f64, row: [f64; 2], e: &mut [f64; 2]| v as f32;
 
         let inv = (out.len() as f64).recip();
         let (mut pr_e, mut pi_e) = ([0.0f64; 2], [0.0f64; 2]);
@@ -833,6 +1002,91 @@ fn support(shape: Shape, du: f64, eps: f64) -> (usize, usize) {
     let (u_lo, u_hi) = roots(shape, eps);
     let lo = ((u_lo / du).ceil() as usize).max(1);
     (lo, (u_hi / du).floor() as usize + 1)
+}
+
+/// Envelope level bounding the tracking region. Placement only — a row whose target lands
+/// under the measured floor is demoted to rejection after calibration, so this only has to
+/// sit above any floor a useful truncation can reach.
+const TRACK_EPS: f64 = 1e-4;
+
+/// Tracking rows, half-power pair included.
+const TRACK: usize = 24;
+
+/// Rejection candidates per tap. The residual has O(n) ripples across the band, so a fixed
+/// grid aliases the extrema on long filters and the exchange selects noise.
+const REJECT_PER_TAP: usize = 8;
+
+/// Rejection rows carrying weight in one solve. Exchange rebuilds the set each pass.
+const ACTIVE: usize = 48;
+
+const SHOULDER: f64 = 1e2;
+
+/// Correction basis. Even-parity shapes ride the cosine lane, odd-parity the sine
+/// lane. `x = |nu|/n`, so parity comes entirely from the lane, not the polynomial;
+/// the odd lane's shapes must vanish at x = 0, where the center tap's imaginary
+/// part is structurally zero.
+const SHAPES: usize = 24;
+
+/// Equality rows ride the same normal equations at this weight. Squaring puts the
+/// equalities near 1e-12 relative, far under the f32 storage floor, and leaves the
+/// Gram's condition number inside f64.
+const PIN: f64 = 1e5;
+
+/// One Newton-corrected phasor step by the angle whose `sin_cos` is `(s, c)`.
+fn rotate(z: &mut (f64, f64), s: f64, c: f64) {
+    let (nr, ni) = (z.0 * c - z.1 * s, z.0 * s + z.1 * c);
+    let k = 0.5 * (3.0 - (nr * nr + ni * ni));
+    *z = (nr * k, ni * k);
+}
+
+/// Lower triangle packed by rows. `b` carries the right-hand side in and the solution out.
+fn cholesky_solve(n: usize, a: &mut [f64], b: &mut [f64]) {
+    let ix = |i: usize, j: usize| i * (i + 1) / 2 + j;
+    for i in 0..n {
+        for j in 0..=i {
+            let mut s = a[ix(i, j)];
+            for k in 0..j {
+                s -= a[ix(i, k)] * a[ix(j, k)];
+            }
+            a[ix(i, j)] = if i == j { s.sqrt() } else { s / a[ix(j, j)] };
+        }
+    }
+    for i in 0..n {
+        let mut s = b[i];
+        for k in 0..i {
+            s -= a[ix(i, k)] * b[k];
+        }
+        b[i] = s / a[ix(i, i)];
+    }
+    for i in (0..n).rev() {
+        let mut s = b[i];
+        for k in i + 1..n {
+            s -= a[ix(k, i)] * b[k];
+        }
+        b[i] = s / a[ix(i, i)];
+    }
+}
+
+/// Chebyshev in u = 2x² − 1, so the polynomial family is orthogonal on the tap index and
+/// stays conditioned as SHAPES grows. `x = |nu|/n`, so parity comes from the lane; the odd
+/// lane carries a factor of x, which also makes it vanish at the center tap where the
+/// imaginary part is structurally zero.
+///
+/// Four families of K each: T_k, T_k·cos on the even lane; x·T_k, x·T_k·sin on the odd.
+fn shapes(x: f64, cq: (f64, f64)) -> ([f64; SHAPES], [f64; SHAPES]) {
+    const K: usize = SHAPES / 4;
+    let (mut ev, mut od) = ([0.0; SHAPES], [0.0; SHAPES]);
+    let u = 2.0 * x * x - 1.0;
+    let (mut a, mut b) = (1.0, u);
+
+    for k in 0..K {
+        ev[k] = a;
+        ev[K + k] = a * cq.0;
+        od[2 * K + k] = x * a;
+        od[3 * K + k] = x * a * cq.1;
+        (a, b) = (b, 2.0 * u * b - a);
+    }
+    (ev, od)
 }
 
 #[cfg(test)]
@@ -1155,6 +1409,16 @@ mod test {
         }
         let peak_w = 0.5 * (a + b);
         let peak_h = dtft(taps, peak_w);
+
+        let peak_w = 0.5 * (a + b);
+        let peak_h = dtft(taps, peak_w);
+
+        // println!(
+        //     "H(w0) {:.9}  grid max {:.9}  ternary {:.9}",
+        //     dtft(taps, w0),
+        //     peak.1,
+        //     peak_h
+        // );
 
         let half = peak_h / 2.0f64.sqrt();
         let lo = crossing(taps, peak_w - w0, peak_w, half);
@@ -1679,7 +1943,6 @@ mod test {
     fn quality_assurance() {
         const Q: f64 = 3.5;
         const GAMMA: f64 = 3.0;
-        const SOBOLEV: f64 = 0.0;
         const EPS: f64 = 1e-14; // Using a really low grid floor.
 
         // Omegas sweeping the edge cases, 20Hz at 3kHz sample rate to 15kHz at 48kHz sample rate.
@@ -1709,7 +1972,7 @@ mod test {
         let env = log_env(shape);
         let db = |v: f64| 20.0 * v.log10();
 
-        println!("\n=== QUALITY (Q {Q}, gamma {GAMMA}, sobolev {SOBOLEV}, eps {EPS:e}) ===");
+        println!("\n=== QUALITY (Q {Q}, gamma {GAMMA}, eps {EPS:e}) ===");
 
         for sigmas in SIGMAS {
             println!("\n  truncation {sigmas} sigmas (bound {:.1} dB)\n  {:>7} {:>6} {:>10} {:>8} {:>8} \
@@ -1762,8 +2025,8 @@ mod test {
                     spec,
                     lo,
                     buf: Vec::new(),
-                    sobolev: SOBOLEV,
                     max_load_quantum: 1,
+                    floor: 0.0,
                 };
 
                 let mut w = vec![[0.0f32; 4]; bin.k];
