@@ -54,18 +54,16 @@
 //!                 ●
 //!                 ●
 //!
-//! This module generates our wavelet tables. Morse wavelet is the first chosen implementation.
+//! This module generates our wavelet tables.  The Morse wavelet is the chosen implementation.
 //!
-//! - Easy to generate without dependencies
+//! - Easy to generate
 //! - Regarded as nice for time and frequency reassignment
-//! - Parameterized
-//!
-//! None of these things matter unless people can see pretty pixels, so get to waving!
+//! - Parameterized (but only a little!)
 //!
 //! ## Usage
 //!
-//! One [`Plan`] per Q. It holds the spectrum in a frequency independent form, so every voice
-//! sharing that Q may reuse one `Plan`.
+//! Configure a [`Spec`] and use it to build a [`Plan`]. Each [`Plan`] holds the intermediate data
+//! in a frequency independent form, so every voice sharing those settings may reuse one `Plan`.
 //!
 //! ```
 //! # use mutate::wavelet::Spec;
@@ -82,12 +80,16 @@
 //!
 //! The `max_load_quantum` adjusts truncation and conditioning to land the mirrored tap length
 //! (excluding center tap!) on a quantum matching the size you intend to load.  The center tap is
-//! usually loaded individually for a final reduction.
+//! usually loaded individually for a final reduction, also giving us an **odd tap invariant**.
 //!
-//! For example, if the implementation loads eight weights at a time on mirrored taps, the
-//! half-weight size is eight.  If truncation for the spectrum would lead to 17 folded weights, 24
-//! will be used instead. The extra weights are used to truncate & shape less aggressively,
-//! increasing precision and hopefully de-correlating some bias.
+//! **Example:**
+//!
+//! - Implementation loads eight weights at a time for use in evaluating sixteen unfolded taps.
+//! - The if truncation for the configured options would normally lead to 17 *folded* weights, the
+//!   implementation will round up to 24 instead, meaning 48 *unfolded* taps and 49 including the
+//!   center.
+//! - The extra weights are used to shape truncation aggressively, increasing precision and
+//!   hopefully de-correlating some locally biased response to transients, smearing artifacts.
 //!
 //! ```
 //! # use mutate::wavelet::Spec;
@@ -124,21 +126,57 @@
 //! - 3 (W_ψ, W_d, W_t) complex accumulators, 6 registers per pipelined hop.
 //!
 //! For `P` pipelines, we need `6P + 6 + 2` non-uniform registers per lane and some scratch for
-//! temporaries.  Audio is 8 bytes per sample at two channels and each 8 bytes read can be re-used
-//! with `P` weights for each read.
+//! temporaries.  Audio is 8 bytes per sample at two channels and each 8 bytes of audio read can be
+//! re-used for `P` taps for each read.  Each mirrored tap applies to two audio samples per
+//! pipelined hop.
 //!
 //! `d/ψ` reads in rad/sample and `t/ψ` in samples. No scaling required at the use site.
+//!
+//! ## Generation Pipeline
+//!
+//! Low quality wavelets can cause many bad things that good things cannot fix.  A principled
+//! approach upstream is required.  We can divide the strategy into five phases:
+//!
+//! - Define coherent goals, such as `load_quantum`, `Q`, and a tolerance for skirts and noise
+//!   floor.
+//! - Generate high resolution mother wavelet sufficient to fill any tap count that the spec may
+//!   produce.
+//! - Dilate, taper, and truncate the mother wavelet to the length required to fill `N` taps.
+//! - Pass the shaped and dilated wavelet through a stencil into our N taps.
+//! - Linearly solve taper adjustments until goal moments are achieved in the downsampled result.
+//!
+//! The chosen tapering must terminate in a zero derivative and be a point-wise positive definite
+//! window so that the truncation edge introduces minimal spectral leakage, the "blob of combs" in
+//! a high skirt that otherwise makes aggressive tapering unshippable.
+//!
+//! To get from the high-fidelity tapered 𝛙 to our course N taps, we use a restriction operator, a
+//! stencil, basically fancy downsampling.  This integrates the quadrature (preventing periodization
+//! errors that destroy high-𝛚 filters) in a shape and moment aware way first.
+//!
+//! A very important distinction is that the linear solver is addressing the *truncation* beyond `N`
+//! taps while the stencil is addressing the *downsampling* error that results from the
+//! high-resolution mother wavelet being expressed in many fewer N taps.
+//!
+//! the tapering solver tunes the first, second, and third moments of the taps using a 4th order
+//! Taylor solve of the curvature until it has insured that the **output**, not the input, achieves
+//! the critical properties while still descending from a pure design that was faithfully preserved
+//! by the stencil.
 
 // 🤖 Heavy generation.  Should be pretty standard academic stuff, so not expecting a lot of
 // surprises.  We will, for the most part, swiftly and knowingly eat shit if the wavelet is busted.
 // Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
 // formalism.
 
+// MAYBE Gamma = 4 is not that wild, but has a flatter top and a steeper main lobe, things we are
+// interested in.  It's possibly worth a bit of Q unless reassignment becomes broken.
+// NEXT Transient behavior evaluation to look for negative frequency response under impure tones.
+// NEXT PSSL and skirt detection to qualify the near-field spectral leakage.  Fine scan to search
+// for combs.
 // NEXT High omega filters, starting at around 60% of Nyquist, begin to degrade at low Q.  The
 // carrier doesn't have enough detail to represent a fast-changing envelope.  A numerical solution
 // for these heavily aliased wavelets may succeed or we may use a Plan with a higher Q beyond some
-// empirical cutoff.  Larger sigmas can't help because the main lobe itself is dominating the
-// breakdown.
+// empirical cutoff.  Truncating to more sigmas can't help because the main lobe itself is
+// dominating the breakdown.
 // NEXT Noise floor performance, which provides our dynamic range resolution, is very sensitive to
 // the number of taps for a given Q.  We would like to improve Q without raising N taps and we would
 // like to make more use of our padding quantum, but only an integrated design process, one that
