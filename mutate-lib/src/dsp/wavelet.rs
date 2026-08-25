@@ -1,6 +1,9 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// ⚠️ The module documents are aspirational and not implemented yet.  We are in the middle of
+// implementing the results of the design process conclusions.
+
 //! # The Wavelet
 //!
 //! > The traveler who fears the unknown road will eventually learn that known roads return
