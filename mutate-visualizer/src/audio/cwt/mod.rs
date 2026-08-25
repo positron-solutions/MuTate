@@ -131,7 +131,6 @@
 // XXX Fold is anti-Hermitian for reassignment weights, so we have to unpack the conjugates.
 
 mod warps; // tests used to calibrate workgroup geometry
-mod wavelet;
 
 use std::mem::MaybeUninit;
 
@@ -140,7 +139,7 @@ use num_complex::Complex32 as Complex;
 use num_traits::One;
 
 use mutate_lib::{self as utate, prelude::*};
-use utate::dsp::{self, bank};
+use utate::dsp::{self, bank, wavelet};
 
 use super::downsample::{DownsampleOutput, FILTERS};
 
