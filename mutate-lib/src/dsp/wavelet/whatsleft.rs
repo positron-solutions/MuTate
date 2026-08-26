@@ -32,6 +32,13 @@
 // can probably be done with SIMD and variable load with to support flexible scalar packing.
 // NEXT Complex support as some kind of adapter trait for n-floats structures as long as they are
 // commutative and associative, basically as long as we can treat n-floats as n-sums.
+// NOTE If the SIMD or generalized compensator structure get done, it will be time for this to
+// become a published crate.  Numerical integrations have to contend with finer resolution vs higher
+// error all the time, and residual sums are just one pathological case.
+// MAYBE Peek sum vs consuming finalizer sum.  Depends on if the stores can be skipped efficiently
+// and if registers pressure / shuffling is different for consume compared to peek.  My bet is that
+// SIMD will later want a consume method that uses the fast path while peek has to avoid destroying
+// any compensators.  Peek is extremely useful for prefix summing.
 
 use std::ops::{Add, Sub};
 

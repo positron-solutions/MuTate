@@ -216,7 +216,7 @@
 //   negative-freq max  -105.28 dB
 //   stopband floor     -105.28 dB
 
-// pub mod generate;
+pub mod generate;
 pub mod spec;
 pub mod whatsleft;
 

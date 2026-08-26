@@ -10,7 +10,8 @@
 //!
 //! Define wavelet families.  The [`Spec`] builds the [`Plan`], handing over the realized
 //! configuration choices in the process.  The primary knobs are the [`Truncation`] and the
-//! [`Shape`].  You probably want to set truncation with `tail_db` and shape with `q`.
+//! [`Shape`].  You probably want to set truncation with [`tail_db`] and shape with [`q`].  These
+//! control the filter length and pitch resolution.  T
 //!
 //! ```rust
 //! # use mutate_lib::dsp::wavelet::Spec;
@@ -68,6 +69,7 @@ impl Shape {
         self.p() / (2.0 * LN_2.sqrt())
     }
 
+    // XXX do we need this on the plan?
     /// Argmax of the spectral envelope, in rad/sample.
     pub fn peak(&self) -> f64 {
         if self.gamma == 3.0 {
@@ -81,18 +83,25 @@ impl Shape {
 
 #[derive(Clone, Copy)]
 pub(crate) enum Truncation {
+    /// Use `P` and yeah... some kind of weird math
     Sigmas(f64),
+    /// Very approximate, uncalibrated.
     FloorDb(f64),
+    ///
+    TailDb(f64),
 }
 
 /// Truncation leakage is bounded by the envelope tail, `exp(-n²/2)` at `n` sigmas.
 /// `10/ln(10)` is the dB conversion, so a floor request and a sigma request are the
 /// same number in two units.
 impl Truncation {
-    fn sigmas(&self) -> f64 {
+    /// All tapers describe how much of the tail we are going to throw away, just in different ways.
+    /// Sigmas is
+    fn truncation_db(&self) -> f64 {
         match *self {
             Truncation::Sigmas(n) => n,
             Truncation::FloorDb(db) => (db.abs() * LN_10 / 10.0).sqrt(),
+            Truncation::TailDb(db) => (1.0), // XXX lies.  Figuring out how to support.
         }
     }
 }
@@ -177,9 +186,13 @@ impl Spec {
         self
     }
 
+    /// Set error tolerance as the energy of the tail energy in decibels relative to the body.
+    /// -10dB truncates hard.  -80dB truncates very weakly.
+
     /// Half-span that sets tap count, and the grid extent that feeds it.
     fn spans(&self) -> (f64, f64) {
-        let taps = self.truncation.sigmas() * self.shape.p();
+        // XXX bUTCHERD
+        let taps = 1.0; // self.truncation.sigmas() * self.shape.p();
         let grid = half_width_scaled(self.shape, self.grid_eps);
 
         // Quantum rounding plus the center tap extend the emitted span by up to 2q+1 samples,
@@ -266,4 +279,18 @@ fn half_width_scaled(s: Shape, eps: f64) -> f64 {
     let core = (2.0 * eps.recip().ln()).sqrt() * s.p();
     let tail = eps.recip().powf(1.0 / (2.0 * s.beta + 1.0));
     core.max(tail)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn unified_truncation_metric() {
+        // These expressions relate the ideas of where we truncate.  Truncation must move with Q or
+        // we lose the intended shoulder width by a mile.  More tail usually equals more accuracy,
+        // but ideas like "floor dB" are empirical while "tail dB" is unambiguous.  "Sigmas" is
+        // basically a **multiple** of the standard deviation of a half-span of the time envelope.
+        // We're not
+    }
 }
