@@ -4,9 +4,9 @@
 //! # Generate Wavelets
 //!
 //! > I am incensed that the features I require have been so thoroughly neglected only so that
-//! > this utter slop could be rushed into the hands of mere others who do not share my specific
-//! > requirements, and I will hold accountable those responsible for what yesterday I did not know
-//! > that I must have.
+//! > nthis utter slop could be rushed into the hands of mere others who inconsiderately do not share
+//! > my specific requirements, and I will hold accountable the selfish cretins responsible for what
+//! > yesterday I did not know that I must have.
 //! >
 //! > - Ttang Kong
 //!
@@ -52,6 +52,13 @@ use crate::dsp::wavelet::Shape;
 // focus on getting the nomenclature to presume the reader is familiar with a **good** model for
 // these problems and focus on getting across the choices in place for key conventions where most
 // people choose one or the other formalism.
+// NEXT DFT tests are the ultimate discriminator and confirmation that we have generated a wavelet,
+// but only an untruncated wavelet, which does not exist, can truly give us an answer to whether the
+// IFFT or IFI method is actually the oracle.  One may yet bet an imposter. 🥷🏿
+// NOTE We're interested in bias, not extra precision.  We can barely measure bias any more
+// accurately with extra precision, but a large bias, we have plenty of precision to measure.  Bias
+// will show up even after we squeeze the result through a stencil.  Noise will just get washed away
+// in the stencil and f32 truncation.
 // NEXT Did not compare any other FFT libraries or the quadrature of the Fourier integral method in
 // either speed or accuracy.  Above 2048 resolution (steps per wave), both amplitude and quadrature
 // reach convergence.  This convergence sits below f32 accuracy.
