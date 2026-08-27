@@ -109,11 +109,14 @@ pub(crate) struct IfiSettings {
 impl Default for IfiSettings {
     fn default() -> Self {
         Self {
-            log_tail: 20.0,
-            log_steps: 5.0,
+            log_tail: 22.0,
+            log_steps: 2.0,
         }
     }
 }
+
+const BEND_OFFSET: f64 = 1.5;
+const BEND_SCALE: f64 = 0.33;
 
 /// Time-domain amplitude at `u` in carrier periods.  Returns the same dimensionless `psi` and `d`
 /// that `morse_half_taps` should converge to.
@@ -138,9 +141,10 @@ pub fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, 
     // Continuation in `a` from the real-axis peak.  A cold Newton at large `a` jumps branches;
     // the stage spacing keeps each restart well inside the quadratic basin.
     let mut rho = Complex64::ONE;
-    const STAGES: usize = 8;
-    for k in 1..=STAGES {
-        let a_k = a * k as f64 / STAGES as f64;
+
+    let stages = (a / 4.0).ceil().max(8.0) as usize;
+    for k in 1..=stages {
+        let a_k = a * k as f64 / stages as f64;
         for _ in 0..3 {
             let pow = rho.powf(gamma);
             let g = beta * (Complex64::ONE - pow) + Complex64::I * a_k * rho;
@@ -152,33 +156,40 @@ pub fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, 
     let cap = peak_pow * rho.powf(gamma);
     let osc = Complex64::I * a * rho;
 
-    // Curvature at the saddle sets the only length scale on the contour; `log_steps` is samples
-    // per width and the bend is placed in widths, so both legs refine together at every `u`.
+    // Curvature at the saddle sets the only length scale on the contour: the bend is placed and
+    // shaped in widths, so `log_steps` is samples per width for the core and the turn alike.
     let phi2 = gamma * gamma * cap - osc;
     let width = 1.0 / phi2.norm().sqrt();
-    let h = width / settings.log_steps;
+    // let h = width / settings.log_steps;
+    let h = width.min(BEND_SCALE) / settings.log_steps;
 
     // The cap term needs `|gamma arg rho| < pi/2` at the right end.  Stopping short of the axis
     // keeps a margin there and leaves the oscillation damped rather than free-running.
-    const SECTOR: f64 = 0.9;
+    const SECTOR: f64 = 0.35;
     let phi_end = SECTOR * PI / (2.0 * gamma);
+
+    // Below the sector limit the saddle ray already lands where the cap term needs it, so the
+    // contour is straight and the bend contributes nothing.
     let swing = (rho.arg() - phi_end).max(0.0);
 
-    // Far enough past the core that the bend doesn't distort the Gaussian.
-    let bend = 2.0 * width;
+    let bend = BEND_OFFSET * width;
+    let bend_scale = BEND_SCALE;
 
     let mut psi_re = Accumulator::<f64>::default();
     let mut psi_im = Accumulator::<f64>::default();
     let mut d_re = Accumulator::<f64>::default();
     let mut d_im = Accumulator::<f64>::default();
 
-    let mut tap = |x: f64| -> f64 {
-        let tanh = ((x - bend) / width).tanh();
+    // Returns the log-magnitude of the larger of the two terms, carrying the extra `rho_j` that
+    // `d` holds, so the caller can walk out to the tail cut.
+    let mut tap = |x: f64| {
+        let tanh = ((x - bend) / bend_scale).tanh();
         let z = Complex64::new(x, -swing * (1.0 + tanh) * 0.5);
-        let dz = Complex64::new(1.0, -swing * (1.0 - tanh * tanh) * 0.5 / width);
+        let dz = Complex64::new(1.0, -swing * (1.0 - tanh * tanh) * 0.5 / bend_scale);
 
         let delta = beta * z - cap * ((gamma * z).exp() - Complex64::ONE)
             + osc * (z.exp() - Complex64::ONE);
+
         let mag = delta.re + x.max(2.0 * x);
 
         if !(mag > -settings.log_tail) {
@@ -198,6 +209,7 @@ pub fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, 
     };
 
     tap(0.0);
+
     let mut j = 1;
     while tap(j as f64 * h) > -settings.log_tail {
         j += 1;
@@ -328,10 +340,6 @@ mod test {
     }
 
     #[test]
-    fn ifi_amplitude_convergence() {
-        // Render amplitudes at increasing precision and then look for convergence in values. When
-        // the implementation is out of precision juice, the numbers should begin to oscillate at
-        // low amplitude.  Test condition is that error is small, agreement high.
 
         let shape = Shape::from_q(4.5, 3.0);
         const ROWS: u32 = 12;
@@ -471,43 +479,86 @@ mod test {
 
         let u: f64 = 8.33;
         let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
+    #[test]
+    fn ifi_amplitude_convergence() {
+        let shape = Shape::from_q(4.5, 3.0);
 
-        println!("\n=== Cranking log steps ===  u: {u}");
-        for i in 0..ROWS {
-            let mut settings = settings.clone();
-            let log_steps = (1 + i) as f64 * 0.5;
-            settings.log_steps = log_steps as f64;
+        let reference = IfiSettings {
+            log_tail: 24.0,
+            log_steps: 6.5,
+        };
+
+        let rel = |v: Complex64, r: Complex64| (v - r).norm() / r.norm();
+
+        // Peak, shoulder, the old sick zone around 3.7-4.7, and deep tail.
+        let probes = [0.0, 0.8, 2.0, 2.33, 3.7, 4.7, 5.5, 8.2, 8.33, 11.0, 14.0];
+
+        let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> IfiSettings, rows: u32| {
+            println!("\n=== {name} ===");
+            print!("  {knob:>10} |");
+            for u in probes {
+                print!(" {u:>9.2}");
+            }
+            println!();
+
+            for i in 0..rows {
+                let settings = vary(i);
+                let label = if knob == "log tail" {
+                    settings.log_tail
+                } else {
+                    settings.log_steps
+                };
+
+                print!("  {label:>10.1} |");
+                for u in probes {
+                    let (psi_ref, d_ref) = morse_tap_at(shape, u, reference);
+                    let (psi, d) = morse_tap_at(shape, u, settings);
+                    print!(" {:>9}", fmt_e(rel(psi, psi_ref).max(rel(d, d_ref))));
+                }
+                println!();
+            }
+        };
+
+        sweep(
+            "Cranking log tail",
+            "log tail",
+            &|i| IfiSettings {
+                log_tail: (2 * i + 6) as f64,
+                log_steps: 5.0,
+            },
+            12,
+        );
+
+        sweep(
+            "Cranking log steps",
+            "log steps",
+            &|i| IfiSettings {
+                log_tail: 24.0,
+                log_steps: (1 + i) as f64 * 0.5,
+            },
+            12,
+        );
+
+        // Acceptance: at the settings we intend to ship, the floor is flat in u.  A dense grid so a
+        // narrow seam can't hide between probes.
+        println!("\n=== Current Defaults ===");
+        let settings = IfiSettings::default();
+        let mut worst: f64 = 0.0;
+
+        for k in 0..=280 {
+            let u = k as f64 * 0.05;
+            let (psi_ref, d_ref) = morse_tap_at(shape, u, reference);
             let (psi, d) = morse_tap_at(shape, u, settings);
+            let err = rel(psi, psi_ref).max(rel(d, d_ref));
+            worst = worst.max(err);
 
-            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
-            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
-
-            println!(
-                "  log steps: {log_steps:>5}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
-            );
+            if k % 10 == 0 {
+                println!("  u: {u:>6.2}, err: {:>9}", fmt_e(err));
+            }
         }
 
-        let u: f64 = 14.0; // Deep in the tail
-        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
-
-        println!("\n=== Cranking log steps === u: {u}");
-        for i in 0..ROWS {
-            let mut settings = settings.clone();
-            let log_steps = 2 + i;
-            settings.log_steps = log_steps as f64;
-            let (psi, d) = morse_tap_at(shape, u, settings);
-
-            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
-            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
-
-            println!(
-                "  log steps: {log_steps:>5}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
-            );
-        }
+        println!("  worst over grid: {}", fmt_e(worst));
+        assert!(worst < 1e-6);
     }
 
     #[test]
