@@ -118,17 +118,20 @@ pub struct IfiSettings {
 impl Default for IfiSettings {
     fn default() -> Self {
         Self {
-            log_tail: 40.0,
-            log_steps: 16.0,
+            log_tail: 38.0,
+            log_steps: 18.0,
             phase_steps: 1.5,
         }
     }
 }
 
-/// Quadrature of the inverse Fourier integral at time `u`, in carrier periods.  Returns the
-/// same dimensionless `psi` and `d` that `morse_half_taps` should converge to.
+/// Time-domain amplitude at `u` in carrier periods.  Returns the same dimensionless `psi` and `d`
+/// that `morse_half_taps` should converge to.
+///
+/// Implemented by quadrature of the inverse Fourier integral at time `u`, in carrier periods.
 pub fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, Complex64) {
     let (beta, gamma) = (shape.beta, shape.gamma);
+    // println!("beta {beta:2.4}, gamma: {gamma:2.4}");
     let s_peak = shape.peak();
     let peak_pow = s_peak.powf(gamma);
     let cut = settings.log_tail + peak_pow;
@@ -140,16 +143,34 @@ pub fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, 
         dx_hi = ((cut + (beta + 2.0) * dx_hi) / peak_pow).ln() / gamma;
     }
 
-    let phase_rate = u.abs() * TAU * dx_hi.exp();
-    let density = settings.log_steps.max(phase_rate * settings.phase_steps);
-    let h = 1.0 / density;
-    let n_lo = (-dx_lo * density).ceil() as i64;
-    let n_hi = (dx_hi * density).ceil() as i64;
+    // let phase_rate = u.abs() * TAU * dx_hi.exp();
+    // let density = settings.log_steps.max(phase_rate * settings.phase_steps);
+    // let h = 1.0 / density;
+    // let n_lo = (-dx_lo * density).ceil() as i64;
+    // let n_hi = (dx_hi * density).ceil() as i64;
+
+    let a = TAU * u;
+    let mut rho = Complex64::ONE;
+    const STAGES: usize = 8;
+    for k in 1..=STAGES {
+        let a_k = a * k as f64 / STAGES as f64;
+        for _ in 0..3 {
+            let pow = rho.powf(gamma);
+            let g = beta * (Complex64::ONE - pow) + Complex64::I * a_k * rho;
+            let dg = -beta * gamma * pow / rho + Complex64::I * a_k;
+            rho -= g / dg;
+        }
+    }
 
     let mut psi_re = Accumulator::<f64>::default();
     let mut psi_im = Accumulator::<f64>::default();
     let mut d_re = Accumulator::<f64>::default();
     let mut d_im = Accumulator::<f64>::default();
+
+    // NOTE not maintaining a separate path for kappa reporting.  Uncomment and feed back if these
+    // values are needed to check probe points.
+    let mut l1 = Accumulator::<f64>::default();
+    let mut l1_d = Accumulator::<f64>::default();
 
     for j in -n_lo..=n_hi {
         let dx = j as f64 * h;
@@ -167,6 +188,10 @@ pub fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, 
         let (sin, cos) = (TAU * frac).sin_cos();
 
         let zeta = TAU * ratio;
+
+        l1.add(mag);
+        l1_d.add(mag * zeta);
+
         psi_re.add(mag * cos);
         psi_im.add(mag * sin);
         d_re.add(mag * zeta * cos);
@@ -174,10 +199,22 @@ pub fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, 
     }
 
     let norm = h * s_peak.powf(beta) * (-peak_pow).exp();
-    (
-        Complex64::new(psi_re.sum(), psi_im.sum()) * norm,
-        Complex64::new(d_re.sum(), d_im.sum()) * norm,
-    )
+    let psi = Complex64::new(psi_re.sum(), psi_im.sum()) * norm;
+    let d = Complex64::new(d_re.sum(), d_im.sum()) * norm;
+
+    let kappa = l1.sum() * norm / psi.norm();
+    let kappa_d = l1_d.sum() * norm / d.norm();
+    println!(
+        "u: {u:0.3} kappa: {:1.8e} floor: {:1.8e} kappa_d: {:1.8e}, floor_d: {:1.8e} psi: {:0.12}, d: {:0.12}",
+        kappa,
+        kappa * f64::EPSILON,
+        kappa_d,
+        kappa_d * f64::EPSILON,
+        psi.norm(),
+        d.norm(),
+    );
+
+    return (psi, d);
 }
 
 #[cfg(test)]
@@ -293,25 +330,58 @@ mod test {
         // the implementation is out of precision juice, the numbers should begin to oscillate at
         // low amplitude.  Test condition is that error is small, agreement high.
 
-        let shape = Shape::from_q(3.5, 3.0);
+        let shape = Shape::from_q(4.5, 3.0);
         const ROWS: u32 = 12;
         const PERIODS: usize = 16;
 
         // High res reference settings, high enough to get post-convergence in all dimensions, not
         // too high to start suffering numerical conditioning issues.
         let high_res = IfiSettings {
-            log_tail: 128.0,
+            log_tail: 48.0,
             log_steps: 32.0,
             phase_steps: 3.0,
         };
+
+        let hi = IfiSettings {
+            log_tail: 48.0,
+            log_steps: 32.0,
+            phase_steps: 3.0,
+        };
+        println!("=== Probe conditioning ===");
+        for u in [
+            0.0, 0.1, 0.5, 1.0, 2.33, 4.33, 4.5, 4.77, 5.5, 5.777, 8.33, 12.0, 13.0, 13.1, 13.25,
+            13.73, 14.0,
+        ] {
+            let t = morse_tap_at(shape, u, hi);
+        }
+
+        let u: f64 = 0.0; // One and a third carrier periods
+        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
+
+        println!("=== Cranking log tail ===");
+        let mut settings = IfiSettings::default();
+        settings.log_steps = 32.0;
+        settings.phase_steps = 3.0;
+        for i in 0..ROWS {
+            let mut settings = settings.clone();
+            let log_tail = 4 * i + 16;
+            settings.log_tail = log_tail as f64;
+            let (psi, d) = morse_tap_at(shape, u, settings);
+
+            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
+            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
+
+            println!(
+                "  log tail: {log_tail:>5}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
+                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
+                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
+            );
+        }
 
         let u: f64 = 2.33; // One and a third carrier periods
         let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
 
         println!("=== Cranking log tail ===");
-        let mut settings = IfiSettings::default();
-        settings.log_steps = 16.0;
-        settings.phase_steps = 2.0;
         for i in 0..ROWS {
             let mut settings = settings.clone();
             let log_tail = 4 * i + 16;
@@ -334,8 +404,8 @@ mod test {
 
         println!("\n=== Cranking log steps ===");
         let mut settings = IfiSettings::default();
-        settings.log_tail = 36.0;
-        settings.phase_steps = 2.0;
+        settings.log_tail = 40.0;
+        settings.phase_steps = 0.0;
         for i in 0..ROWS {
             let mut settings = settings.clone();
             let log_steps = 2 + 2 * i;
@@ -356,9 +426,6 @@ mod test {
         let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
 
         println!("\n=== Cranking log steps ===");
-        let mut settings = IfiSettings::default();
-        settings.log_tail = 36.0;
-        settings.phase_steps = 2.0;
         for i in 0..ROWS {
             let mut settings = settings.clone();
             let log_steps = 2 + 2 * i;
@@ -375,15 +442,35 @@ mod test {
             );
         }
 
-        let u: f64 = 4.23; // Fifteen and a third carrier periods, very near the tail
+        let u: f64 = 8.33; // Deep in the tail
         let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
 
         println!("\n=== Cranking phase steps ===");
         let mut settings = IfiSettings::default();
         // Log tail and phase steps interact strongly enough that a higher log tail is necessary to
         // reveal the convergence of the phase steps.
-        settings.log_tail = 44.0;
-        settings.log_steps = 18.0;
+        settings.log_tail = 40.0;
+        settings.log_steps = 1.0;
+        for i in 0..ROWS {
+            let mut settings = settings.clone();
+            let phase_steps = (1.6f64).powf(i as f64) * 0.04 + 0.1;
+            settings.phase_steps = phase_steps;
+            let (psi, d) = morse_tap_at(shape, u, settings);
+
+            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
+            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
+
+            println!(
+                "  phase steps: {phase_steps:>6.3}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
+                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
+                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
+            );
+        }
+
+        let u: f64 = 5.77; // Earlier in the tail
+        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
+
+        println!("\n=== Cranking phase steps ===");
         for i in 0..ROWS {
             let mut settings = settings.clone();
             let phase_steps = (1.6f64).powf(i as f64) * 0.02 + 0.1;
