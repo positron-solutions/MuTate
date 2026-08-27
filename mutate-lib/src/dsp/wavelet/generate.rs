@@ -266,28 +266,6 @@ mod test {
     // the accuracy of the wavelet.
     // NEXT feature rule?
 
-    // Simpson's rule integration, using a high-precision accumulator.
-    fn simpson_weighted_sum(vals: &[Complex64], i0: usize, i1: usize) -> Complex64 {
-        let n = i1 - i0;
-        debug_assert!(n % 2 == 0);
-        let mut real: Accumulator<f64> = Accumulator::default();
-        let mut imag: Accumulator<f64> = Accumulator::default();
-
-        // Initialize with the endpoints
-        real.add(vals[i0].re);
-        real.add(vals[i1].re);
-        imag.add(vals[i0].im);
-        imag.add(vals[i1].im);
-
-        for i in i0 + 1..i1 {
-            let weight = if (i - i0) % 2 == 1 { 4.0 } else { 2.0 };
-            let val = (vals[i] * weight);
-            real.add(val.re);
-            imag.add(val.im);
-        }
-        Complex64::new(real.sum(), imag.sum())
-    }
-
     fn fmt_e(x: f64) -> String {
         let s = format!("{x:+.2e}");
         // split "±m.mme±dd" into mantissa and exponent, then zero-pad the exponent
@@ -339,6 +317,32 @@ mod test {
         let h11 = f3 - f2;
 
         taps[i] * h00 + m0 * h10 + taps[i + 1] * h01 + m1 * h11
+    }
+
+    /// Exact integral of the cubic Hermite reconstruction over `[i0, i1]`, in `u`.
+    ///
+    /// Same stencil as `resample_hermite`, so this measures the area under the curve consumers
+    /// will actually see rather than the area under an independent quadrature rule.
+    fn hermite_integral(
+        vals: &[Complex64],
+        d: &[Complex64],
+        i0: usize,
+        i1: usize,
+        resolution: usize,
+    ) -> Complex64 {
+        let dt = 1.0 / resolution as f64;
+        let mut real: Accumulator<f64> = Accumulator::default();
+        let mut imag: Accumulator<f64> = Accumulator::default();
+
+        for i in i0..i1 {
+            let m0 = Complex64::I * d[i] * dt;
+            let m1 = Complex64::I * d[i + 1] * dt;
+            let seg = (vals[i] + vals[i + 1]) * 0.5 + (m0 - m1) / 12.0;
+            real.add(seg.re);
+            imag.add(seg.im);
+        }
+
+        Complex64::new(real.sum(), imag.sum()) * dt
     }
 
     #[test]
@@ -747,40 +751,98 @@ mod test {
     }
 
     #[test]
-    fn ifft_quadrature_delta() {
-        // Simpson's-rule quadrature of psi and d over a half period centered between the 4th and
-        // 5th periods. Bounds are quarter-period fractions, so any power-of-two
-        // `samples_per_period` >= 8 lands them exactly on a sample index with an even interval
-        // count, as Simpson's rule requires.
+    fn ifft_quadrature_precision() {
+        // Hermite quadrature of psi over half periods, against an over-provisioned instance of
+        // itself.  This is the same stencil `resample_hermite` uses, so a column reports when the
+        // stored psi stops carrying the area downstream will reconstruct.
+        //
+        // Bounds are quarter-period fractions straddling the carrier's zero crossings, so each
+        // column is one signed lobe and successive columns alternate sign.  A whole-period window
+        // would cancel and report on the cancellation instead of the grid.
 
         let shape = Shape::from_q(3.5, 3.0);
-        const FULL_RES_EXP: u32 = 16;
-        const FULL_RES: usize = 1 << FULL_RES_EXP; // 2^15 = 32,768
 
-        // NEXT Using dd, we can interpolate and get to convergence a lot faster
-        let (psi, d, _) = morse_half_taps(shape, 8, 8, FULL_RES);
+        const REF_PERIODS: usize = 8;
+        const REF_PAD: usize = 256;
+        const REF_RES: usize = 1 << 13;
 
-        let (i0, i1) = (17 * FULL_RES / 4, 21 * FULL_RES / 4);
-        let psi0 = simpson_weighted_sum(&psi, i0, i1);
-        let d0 = simpson_weighted_sum(&d, i0, i1) * FULL_RES as f64;
+        // Half periods 0..10, covering the first five carrier periods.
+        const LOBES: usize = 10;
 
-        for i in 3..(FULL_RES_EXP - 1) {
-            let resolution = 2_i32.pow(i) as usize;
-            let (i0, i1) = (17 * resolution / 4, 21 * resolution / 4);
-            let (psi, d, _) = morse_half_taps(shape, 8, 8, resolution);
+        let (ref_psi, ref_d, _) = morse_half_taps(shape, REF_PERIODS, REF_PAD, REF_RES);
 
-            let norm_psi = simpson_weighted_sum(&psi, i0, i1);
-            let delta_psi_pct = (norm_psi - psi0) / psi0 * 100.0;
-            let norm_d = simpson_weighted_sum(&d, i0, i1) * resolution as f64;
-            let delta_d_pct = (norm_d - d0) / d0 * 100.0;
+        let bounds = |k: usize, resolution: usize| {
+            ((1 + 2 * k) * resolution / 4, (3 + 2 * k) * resolution / 4)
+        };
+
+        let refs: Vec<Complex64> = (0..LOBES)
+            .map(|k| {
+                let (i0, i1) = bounds(k, REF_RES);
+                hermite_integral(&ref_psi, &ref_d, i0, i1, REF_RES)
+            })
+            .collect();
+
+        let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> (usize, usize), rows: u32| {
+            println!("\n=== {name} ===");
+            print!("  {knob:>10} |");
+            for k in 0..LOBES {
+                print!(" {:>9.2}", 0.25 + k as f64 * 0.5);
+            }
+            println!();
+
+            for i in 0..rows {
+                let (pad, resolution) = vary(i);
+                let label = if knob == "pad" { pad } else { resolution };
+                let (psi, d, _) = morse_half_taps(shape, REF_PERIODS, pad, resolution);
+
+                print!("  {label:>10} |");
+                for (k, &area_ref) in refs.iter().enumerate() {
+                    let (i0, i1) = bounds(k, resolution);
+                    let area = hermite_integral(&psi, &d, i0, i1, resolution);
+                    print!(" {:>9}", fmt_e((area - area_ref).norm() / area_ref.norm()));
+                }
+                println!();
+            }
+        };
+
+        sweep(
+            "Cranking pad",
+            "pad",
+            &|i| (2 * i as usize + 2, 1 << 12),
+            12,
+        );
+
+        // Truncation floor has to sit below the interpolation error at every row, so pad tracks the
+        // resolution rather than sitting at a fixed over-provision.
+        sweep(
+            "Cranking resolution",
+            "resolution",
+            &|i| (32, 1usize << (i + 5)),
+            7,
+        );
+
+        // Acceptance: the shipping grid sits past both elbows, so the area it carries differs from
+        // the reference only by floor.
+        println!("\n=== Shipping Grid ===");
+        let (pad, resolution) = (26, 1usize << 10);
+        let (psi, d, _) = morse_half_taps(shape, REF_PERIODS, pad, resolution);
+        let mut worst: f64 = 0.0;
+
+        for (k, &area_ref) in refs.iter().enumerate() {
+            let (i0, i1) = bounds(k, resolution);
+            let area = hermite_integral(&psi, &d, i0, i1, resolution);
+            let e = (area - area_ref).norm() / area_ref.norm();
+            worst = worst.max(e);
 
             println!(
-                "resolution: {resolution:>5}, psi0: {:+8.7} (𝛅% {:>10} {:>10}) d0: {:+8.7} (𝛅% {:>10} {:>10})",
-                norm_psi,
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                norm_d,
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
+                "  u: {:>6.2}, area: {:+9.7}, err: {:>9}",
+                0.25 + k as f64 * 0.5,
+                area,
+                fmt_e(e)
             );
         }
+
+        println!("  worst over lobes: {}", fmt_e(worst));
+        assert!(worst < 1e-8);
     }
 }
