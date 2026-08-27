@@ -63,44 +63,65 @@ use crate::dsp::wavelet::Shape;
 // either speed or accuracy.  Above 2048 resolution (steps per wave), both amplitude and quadrature
 // reach convergence.  This convergence sits below f32 accuracy.
 
-/// Use an IFFT to generate time-domain solutions for psi and d.  `periods` sets the
-/// pitch. `samples_per_period` determines how much tail survives.
+/// Use an IFFT to generate time-domain solutions for psi, d, and dd.
 ///
-// XXX IIRC the final period of the output is inaccurate or doesn't converge well
+/// The result covers `periods` carrier cycles at `resolution` samples per cycle, so
+/// `psi.len() == periods * resolution + 1`.
+///
+/// `(periods + pad) * resolution` controls IFFT size.
+///
+/// Each successive array is the `u`-derivative of the one before it up to a quarter turn, so
+/// `dpsi/du == i * d` and `dd/du == i * dd`.  Consumers interpolating `psi` or `d` have exact
+/// slopes available.  This enables both `psi` and `d` to use Hermitian interpolation.
 pub fn morse_half_taps(
     shape: Shape,
     periods: usize,
-    samples_per_period: usize,
-) -> (Vec<Complex64>, Vec<Complex64>) {
-    let half_len = periods * samples_per_period + 1;
-    // Also decides the Nyquist
-    let n_fft = 2 * periods * samples_per_period;
+    pad: usize,
+    resolution: usize,
+) -> (Vec<Complex64>, Vec<Complex64>, Vec<Complex64>) {
+    let record = periods + pad;
+    let n_fft = record * resolution;
+    let half_len = periods * resolution + 1;
 
-    // - Samples per period normalizes omega to the target resolution
-    // - The carrier is bin `2 * periods`
-    let s_per_bin = shape.peak() / (2 * periods) as f64;
-    let zeta_per_bin = TAU / (2 * periods) as f64;
+    // The carrier is bin `record`, which puts `resolution` samples on a cycle and spans the record
+    // over `record` cycles.
+    let s_per_bin = shape.peak() / record as f64;
+    let zeta_per_bin = TAU / record as f64;
 
     let mut psi_spectrum = vec![Complex64::new(0.0, 0.0); n_fft];
     let mut d_spectrum = vec![Complex64::new(0.0, 0.0); n_fft];
+    let mut dd_spectrum = vec![Complex64::new(0.0, 0.0); n_fft];
 
     for k in 1..n_fft / 2 {
         let s = k as f64 * s_per_bin;
         let mag = s.powf(shape.beta) * (-s.powf(shape.gamma)).exp();
+        let zeta = k as f64 * zeta_per_bin;
         psi_spectrum[k] = Complex64::new(mag, 0.0);
-        d_spectrum[k] = Complex64::new(mag * k as f64 * zeta_per_bin, 0.0);
+        d_spectrum[k] = Complex64::new(mag * zeta, 0.0);
+        dd_spectrum[k] = Complex64::new(mag * zeta * zeta, 0.0);
     }
 
     let mut planner = FftPlanner::new();
     let ifft = planner.plan_fft_inverse(n_fft);
     ifft.process(&mut psi_spectrum);
     ifft.process(&mut d_spectrum);
+    ifft.process(&mut dd_spectrum);
 
-    let norm = 1.0 / (2 * periods) as f64;
+    // The quadrature weight `Δs` in units of the peak.  It tracks the record, so a longer record
+    // means more bins of proportionally smaller weight and the amplitude is invariant under `pad`.
+    let norm = 1.0 / record as f64;
 
-    let psi = psi_spectrum[..half_len].iter().map(|x| x * norm).collect();
-    let d = d_spectrum[..half_len].iter().map(|x| x * norm).collect();
-    (psi, d)
+    let sample = |spectrum: &[Complex64]| {
+        (0..half_len)
+            .map(|i| spectrum[i % n_fft] * norm)
+            .collect::<Vec<_>>()
+    };
+
+    (
+        sample(&psi_spectrum),
+        sample(&d_spectrum),
+        sample(&dd_spectrum),
+    )
 }
 
 /// Tune the inverse Fourier integration knob.
@@ -280,7 +301,7 @@ mod test {
     fn full_resolution() {
         let shape = Shape::from_q(3.5, 3.0);
         let now = std::time::Instant::now();
-        let (d, psi) = morse_half_taps(shape, 32, 1024);
+        let _ = morse_half_taps(shape, 16, 8, 512);
 
         let elapsed = now.elapsed().as_micros();
         println!("elapsed: {:?}", elapsed);
@@ -289,203 +310,260 @@ mod test {
         assert!(elapsed < SLOW_MICROS, "FFT slow: {}µs ", elapsed);
     }
 
-    #[test]
-    fn ifft_amplitude_convergence() {
-        // Render amplitudes at increasing precision and then look for convergence in values. When
-        // the implementation is out of precision juice, the numbers should begin to oscillate at
-        // low amplitude.  Test condition is that error is small, agreement high.
+    /// Cubic Hermite reconstruction from a tap and its derivative.
+    ///
+    /// `d` is the `u`-derivative up to a quarter turn (`dpsi/du == i * d`), so the slopes are exact
+    /// rather than estimated and the stencil stays at two taps.  Error is O(dt^4 |psi''''|).
+    ///
+    /// `t` is in tap units; `resolution` converts the exact `u`-derivatives to that spacing.
+    fn resample_hermite(
+        taps: &[Complex64],
+        d: &[Complex64],
+        t: f64,
+        resolution: usize,
+    ) -> Complex64 {
+        let floor = t.floor();
+        let f = t - floor;
+        let i = floor as usize;
 
-        // NEXT compare convergence at Nth periods and convergence at different phases.  Quadrature
-        // is broad spectrum.  Probing amplitude shows us the floor of what we're integrating.
+        let dt = 1.0 / resolution as f64;
+        let m0 = Complex64::I * d[i] * dt;
+        let m1 = Complex64::I * d[i + 1] * dt;
 
-        let shape = Shape::from_q(3.5, 3.0);
-        const MIN_RES_EXP: u32 = 8;
-        const FULL_RES_EXP: u32 = 17;
-        const PERIODS: usize = 8;
-        const FULL_RES: usize = 1 << FULL_RES_EXP;
+        let f2 = f * f;
+        let f3 = f2 * f;
 
-        // Snap the requested point onto the coarsest transform's sample grid.  Resulting pitch is
-        // `1 / MIN_RES` and every finer resolution in the sweep is a power-of-two refinement of it:
-        // The oracle is then given the snapped `u` multiplied by periods per sample, `min_s`.
-        let min_s = 1.0 / (1usize << MIN_RES_EXP) as f64;
-        let u = 1.25;
-        let probe_bin = (u / min_s).round() as usize;
-        let u = probe_bin as f64 * min_s;
+        let h00 = 2.0 * f3 - 3.0 * f2 + 1.0;
+        let h10 = f3 - 2.0 * f2 + f;
+        let h01 = -2.0 * f3 + 3.0 * f2;
+        let h11 = f3 - f2;
 
-        let (psi, d) = morse_half_taps(shape, PERIODS, FULL_RES);
-        let psi0 = psi[probe_bin << (FULL_RES_EXP - MIN_RES_EXP)];
-        let d0 = d[probe_bin << (FULL_RES_EXP - MIN_RES_EXP)];
-
-        // The integral method is used here as an "oracle", but it's more of a second opinion,
-        // corroborating evidence.
-        let settings = IfiSettings::default();
-        let (oracle_psi, oracle_d) = morse_tap_at(shape, u, settings);
-        let oracle_psi_pct = (oracle_psi - psi0) / psi0 * 100.0;
-        let oracle_d_pct = (oracle_d - d0) / d0 * 100.0;
-        println!(
-            "oracle:            psi: {oracle_psi:+8.7} (𝛅% {:>10} {:>10}) d: {oracle_d:+8.7} (𝛅% {:>10} {:>10})\n",
-            fmt_e(oracle_psi_pct.re), fmt_e(oracle_psi_pct.im),
-            fmt_e(oracle_d_pct.re), fmt_e(oracle_d_pct.im),
-        );
-
-        for i in MIN_RES_EXP..FULL_RES_EXP {
-            let resolution = 1usize << i;
-            let (psi, d) = morse_half_taps(shape, PERIODS, resolution);
-            let index = probe_bin << (i - MIN_RES_EXP);
-
-            let tap_psi = psi[index];
-            let tap_d = d[index];
-            let delta_psi_pct = (tap_psi - psi0) / psi0 * 100.0;
-            let delta_d_pct = (tap_d - d0) / d0 * 100.0;
-
-            println!(
-                "resolution: {resolution:>5}, psi: {tap_psi:+8.7} (𝛅% {:>10} {:>10}) d: {tap_d:+8.7} (𝛅% {:>10} {:>10})",
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
-            );
-        }
+        taps[i] * h00 + m0 * h10 + taps[i + 1] * h01 + m1 * h11
     }
 
     #[test]
+    fn ifft_amplitude_convergence() {
+        // Reconstruct taps at arbitrary `u` by Hermite resampling against the IFI oracle.  Errors
+        // are normalized to the oracle's amplitude at the nearest half-phase, so a column tracks
+        // the local extrema.
+        //
+        // Relative error against a decaying signal is only meaningful while that signal stands
+        // above the IFFT's absolute roundoff, which is `n_fft * EPSILON * peak` because the
+        // transform sums `n_fft / 2` bins coherently.  Cells below that are masked rather than
+        // printed, since they measure the floor and not the grid.
 
-        let shape = Shape::from_q(4.5, 3.0);
-        const ROWS: u32 = 12;
-        const PERIODS: usize = 16;
-
-        // High res reference settings, high enough to get post-convergence in all dimensions, not
-        // too high to start suffering numerical conditioning issues.
-        let high_res = IfiSettings {
-            log_tail: 20.0,
-            log_steps: 8.0,
+        let shape = Shape::from_q(3.5, 3.0);
+        let oracle = IfiSettings {
+            log_tail: 24.0,
+            log_steps: 5.0,
         };
 
-        let u: f64 = 2.0; // One and a third carrier periods
-        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
+        // Amplitude has to clear the roundoff floor by this much before a cell reports.
+        const LIVE: f64 = 16.0;
+        const TOL: f64 = 1e-6;
 
-        println!("=== Cranking log tail === u: {u}");
-        let mut settings = IfiSettings::default();
-        settings.log_steps = 6.0;
-        for i in 0..ROWS {
-            let mut settings = settings.clone();
-            let log_tail = 2 * i + 2;
-            settings.log_tail = log_tail as f64;
-            let (psi, d) = morse_tap_at(shape, u, settings);
+        let rel = |v: Complex64, r: Complex64, scale: f64| (v - r).norm() / scale;
 
-            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
-            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
+        // Snap to a half period so a probe is scored against the extremum it sits nearest.
+        let local_scale = |u: f64| {
+            let anchor = (u * 2.0).round() / 2.0;
+            let (psi_a, d_a) = morse_tap_at(shape, anchor, oracle);
+            (psi_a.norm(), d_a.norm())
+        };
 
-            println!(
-                "  log tail: {log_tail:>5}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
+        // Deliberately off-grid at every resolution in the sweep.
+        let probes = [
+            0.37, 1.31, 2.66, 3.42, 4.19, 4.77, 5.31, 5.88, 6.42, 6.94, 7.54,
+        ];
+
+        let refs: Vec<_> = probes
+            .iter()
+            .map(|&u| (morse_tap_at(shape, u, oracle), local_scale(u)))
+            .collect();
+
+        let peak = refs[0].1 .0;
+
+        print!("\n  {:>10} |", "decay");
+        for &(_, (ps, _)) in &refs {
+            print!(" {:>9}", fmt_e(ps / peak));
+        }
+        println!();
+
+        #[derive(Clone, Copy)]
+        enum Tap {
+            Psi,
+            D,
+        }
+
+        let sweep = |tap: Tap,
+                     name: &str,
+                     knob: &str,
+                     vary: &dyn Fn(u32) -> (usize, usize, usize),
+                     rows: u32| {
+            let label_tap = match tap {
+                Tap::Psi => "psi",
+                Tap::D => "d",
+            };
+            println!("\n=== {name} ({label_tap}) ===");
+            print!("  {knob:>10} |");
+            for u in probes {
+                print!(" {u:>9.2}");
+            }
+            println!();
+
+            for i in 0..rows {
+                let (periods, pad, resolution) = vary(i);
+                let label = match knob {
+                    "periods" => periods,
+                    "pad" => pad,
+                    "record" => periods + pad,
+                    _ => resolution,
+                };
+                let (psi, d, dd) = morse_half_taps(shape, periods, pad, resolution);
+                let (value, slope) = match tap {
+                    Tap::Psi => (&psi, &d),
+                    Tap::D => (&d, &dd),
+                };
+                let reach = (psi.len() - 1) as f64 / resolution as f64;
+                let n_fft = ((periods + pad) * resolution) as f64;
+                let noise = n_fft.log2().sqrt() * f64::EPSILON * peak;
+
+                print!("  {label:>10} |");
+                for (&u, &((psi_ref, d_ref), (ps, ds))) in probes.iter().zip(&refs) {
+                    let (reference, scale) = match tap {
+                        Tap::Psi => (psi_ref, ps),
+                        Tap::D => (d_ref, ds),
+                    };
+
+                    // Skip cells that won't have an index due to being too short.
+                    if u >= reach {
+                        print!(" {:>9}", "-");
+                        continue;
+                    }
+
+                    let t = u * resolution as f64;
+                    let cell = format!(
+                        "{:>9}",
+                        fmt_e(rel(
+                            resample_hermite(value, slope, t, resolution),
+                            reference,
+                            scale
+                        ))
+                    );
+
+                    // LIES When the predicted IFFT noise floor is higher than the scale of the
+                    // features we are attempting to draw.  The prediction may be loose or we may
+                    // just be truly above the noise floor in average cases.  Leaving this here in
+                    // case this failure mode is encountered.
+                    if scale < noise * LIVE {
+                        print!(" \x1b[2;90m{cell}\x1b[0m");
+                    } else {
+                        print!(" {cell}");
+                    }
+                }
+
+                println!();
+            }
+        };
+
+        // Each sweep is over-provisioned in the knobs it isn't varying, so the only thing that can
+        // bind is the one in the label.
+        for tap in [Tap::Psi, Tap::D] {
+            // Drive up the FFT grid points per period, resulting in finer sampling of the wavelet
+            // in the time domain.
+            sweep(
+                tap,
+                "Cranking resolution",
+                "resolution",
+                &|i| (8, 56, 1usize << (i + 5)),
+                8,
+            );
+
+            // Add padding to constant period count.
+            sweep(
+                tap,
+                "Cranking pad",
+                "pad",
+                &|i| (8, (1usize << i) - 1, 1 << 8),
+                10,
+            );
+
+            // Fixed reach with a growing transform.  Once pad clears truncation the rows go flat
+            // and stay flat across seven doublings of `n_fft`, so the floor doesn't scale with
+            // transform size the way a coherent-sum bound would predict.  Extra record past that
+            // point is free and useless.
+            sweep(
+                tap,
+                "Cranking record",
+                "record",
+                &|i| (6, (1usize << (i + 3)) - 6, 1 << 8),
+                10,
             );
         }
 
-        let u: f64 = 2.33; // One and a third carrier periods
-        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
+        println!("\n=== Shipping Grid ===");
+        let (periods, pad, resolution) = (6, 26, 1usize << 10);
+        let (psi, d, dd) = morse_half_taps(shape, periods, pad, resolution);
+        let n_fft = ((periods + pad) * resolution) as f64;
+        let noise = n_fft.log2().sqrt() * f64::EPSILON * peak;
+        let reach = (psi.len() - 1) as f64 / resolution as f64;
 
-        println!("=== Cranking log tail === u: {u}");
-        for i in 0..ROWS {
-            let mut settings = settings.clone();
-            let log_tail = 2 * i + 2;
-            settings.log_tail = log_tail as f64;
-            let (psi, d) = morse_tap_at(shape, u, settings);
+        let mut worst = [(0.0f64, 0.0f64); 2];
+        let mut live_to = [0.0f64; 2];
 
-            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
-            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
+        println!("  {:>6} | {:>9} {:>9} | {:>9}", "u", "psi", "d", "decay");
 
+        let steps = ((reach - 0.011) / 0.05) as u32;
+
+        for k in 0..steps {
+            let u = k as f64 * 0.05 + 0.011;
+            let t = u * resolution as f64;
+            let (psi_ref, d_ref) = morse_tap_at(shape, u, oracle);
+            let (ps, ds) = local_scale(u);
+
+            let e = [
+                rel(resample_hermite(&psi, &d, t, resolution), psi_ref, ps),
+                rel(resample_hermite(&d, &dd, t, resolution), d_ref, ds),
+            ];
+            let live = [ps > noise * LIVE, ds > noise * LIVE];
+
+            for j in 0..2 {
+                if !live[j] {
+                    continue;
+                }
+                live_to[j] = u;
+                if e[j] > worst[j].0 {
+                    worst[j] = (e[j], u);
+                }
+            }
+
+            if k % 10 == 0 {
+                println!(
+                    "  {u:>6.2} | {:>9} {:>9} | {:>9}",
+                    fmt_e(e[0]),
+                    fmt_e(e[1]),
+                    fmt_e(ps / peak)
+                );
+            }
+        }
+
+        println!("\n  noise floor {} at peak scale", fmt_e(noise / peak));
+        for (j, name) in ["psi", "d"].iter().enumerate() {
             println!(
-                "  log tail: {log_tail:>5}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
+                "  {name:>3}: worst {} at u {:.3} ({:.0}x under tol), live to u {:.2}",
+                fmt_e(worst[j].0),
+                worst[j].1,
+                TOL / worst[j].0,
+                live_to[j]
             );
         }
 
-        let u: f64 = 4.7; // One and a third carrier periods
-        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
-
-        println!("=== Cranking log tail === u: {u}");
-        for i in 0..ROWS {
-            let mut settings = settings.clone();
-            let log_tail = 2 * i + 2;
-            settings.log_tail = log_tail as f64;
-            let (psi, d) = morse_tap_at(shape, u, settings);
-
-            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
-            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
-
-            println!(
-                "  log tail: {log_tail:>5}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
-            );
+        for j in 0..2 {
+            assert!(worst[j].0 < TOL);
+            assert!(live_to[j] > 5.5);
         }
+    }
 
-        let u: f64 = 8.2; // One and a third carrier periods
-        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
-
-        println!("=== Cranking log tail === u: {u}");
-        for i in 0..ROWS {
-            let mut settings = settings.clone();
-            let log_tail = 2 * i + 2;
-            settings.log_tail = log_tail as f64;
-            let (psi, d) = morse_tap_at(shape, u, settings);
-
-            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
-            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
-
-            println!(
-                "  log tail: {log_tail:>5}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
-            );
-        }
-
-        let mut settings = IfiSettings::default();
-        settings.log_tail = 18.0;
-
-        let u: f64 = 0.8; // One and a third carrier periods
-        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
-
-        println!("\n=== Cranking log steps === u: {u}");
-        for i in 0..ROWS {
-            let mut settings = settings.clone();
-            let log_steps = (1 + i) as f64 * 0.5;
-            settings.log_steps = log_steps as f64;
-            let (psi, d) = morse_tap_at(shape, u, settings);
-
-            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
-            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
-
-            println!(
-                "  log steps: {log_steps:>5}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
-            );
-        }
-
-        let u: f64 = 3.7; // One and a third carrier periods
-        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
-
-        println!("\n=== Cranking log steps === u: {u}");
-        for i in 0..ROWS {
-            let mut settings = settings.clone();
-            let log_steps = (1 + i) as f64 * 0.5;
-            settings.log_steps = log_steps as f64;
-            let (psi, d) = morse_tap_at(shape, u, settings);
-
-            let delta_psi_pct = (psi - psi_ref) / psi_ref * 100.0;
-            let delta_d_pct = (d - d_ref) / d_ref * 100.0;
-
-            println!(
-                "  log steps: {log_steps:>5}, psi: {psi:+8.7} (𝛅% {:>10} {:>10}) d: {d:+8.7} (𝛅% {:>10} {:>10})",
-                fmt_e(delta_psi_pct.re), fmt_e(delta_psi_pct.im),
-                fmt_e(delta_d_pct.re), fmt_e(delta_d_pct.im),
-            );
-        }
-
-        let u: f64 = 8.33;
-        let (psi_ref, d_ref) = morse_tap_at(shape, u, high_res);
     #[test]
     fn ifi_amplitude_convergence() {
         let shape = Shape::from_q(4.5, 3.0);
@@ -579,7 +657,9 @@ mod test {
         const FULL_RES_EXP: u32 = 16;
         const FULL_RES: usize = 1 << FULL_RES_EXP; // 2^15 = 32,768
 
-        let (psi, d) = morse_half_taps(shape, 8, FULL_RES);
+        // NEXT Using dd, we can interpolate and get to convergence a lot faster
+        let (psi, d, _) = morse_half_taps(shape, 8, 8, FULL_RES);
+
         let (i0, i1) = (17 * FULL_RES / 4, 21 * FULL_RES / 4);
         let psi0 = simpson_weighted_sum(&psi, i0, i1);
         let d0 = simpson_weighted_sum(&d, i0, i1) * FULL_RES as f64;
@@ -587,7 +667,7 @@ mod test {
         for i in 3..(FULL_RES_EXP - 1) {
             let resolution = 2_i32.pow(i) as usize;
             let (i0, i1) = (17 * resolution / 4, 21 * resolution / 4);
-            let (psi, d) = morse_half_taps(shape, 8, resolution);
+            let (psi, d, _) = morse_half_taps(shape, 8, 8, resolution);
 
             let norm_psi = simpson_weighted_sum(&psi, i0, i1);
             let delta_psi_pct = (norm_psi - psi0) / psi0 * 100.0;
