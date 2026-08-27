@@ -189,8 +189,8 @@ impl Default for IfiSettings {
 const BEND_OFFSET: f64 = 1.5;
 const BEND_SCALE: f64 = 0.33;
 
-/// Time-domain amplitude at `u` in carrier periods.  Returns the same dimensionless `psi` and `d`
-/// that `morse_half_taps` should converge to.
+/// Time-domain amplitude at `u` in carrier periods.  Returns the same dimensionless `psi`, `d`, and
+/// `dd` that `morse_half_taps` should converge to.
 ///
 ///
 /// Steepest-descent quadrature of the inverse Fourier integral, carried out in `v = ln rho` where
@@ -201,7 +201,11 @@ const BEND_SCALE: f64 = 0.33;
 /// is entire.  The path is a single line through the saddle, bent by a `tanh` so that its left end
 /// is the ray at `arg rho_star` and its right end returns to the real `rho` axis, which is where
 /// the cap term needs it to be for the closing arc to vanish.
-pub(crate) fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, Complex64) {
+pub(crate) fn morse_tap_at(
+    shape: Shape,
+    u: f64,
+    settings: IfiSettings,
+) -> (Complex64, Complex64, Complex64) {
     // 🤖 Hugely generated.
 
     let (beta, gamma) = (shape.beta, shape.gamma);
@@ -250,6 +254,8 @@ pub(crate) fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Comp
     let mut psi_im = Accumulator::<f64>::default();
     let mut d_re = Accumulator::<f64>::default();
     let mut d_im = Accumulator::<f64>::default();
+    let mut dd_re = Accumulator::<f64>::default();
+    let mut dd_im = Accumulator::<f64>::default();
 
     // Returns the log-magnitude of the larger of the two terms, carrying the extra `rho_j` that
     // `d` holds, so the caller can walk out to the tail cut.
@@ -268,13 +274,18 @@ pub(crate) fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Comp
         }
 
         let rho_j = rho * z.exp();
+        let step = rho_j * TAU;
         let term = delta.exp() * (h * dz) * rho_j;
+
         let dv = term * rho_j * TAU;
+        let ddv = dv * step;
 
         psi_re.add(term.re);
         psi_im.add(term.im);
         d_re.add(dv.re);
         d_im.add(dv.im);
+        dd_re.add(ddv.re);
+        dd_im.add(ddv.im);
 
         mag
     };
@@ -295,8 +306,9 @@ pub(crate) fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Comp
 
     let psi = Complex64::new(psi_re.sum(), psi_im.sum()) * scale;
     let d = Complex64::new(d_re.sum(), d_im.sum()) * scale;
+    let dd = Complex64::new(dd_re.sum(), dd_im.sum()) * scale;
 
-    (psi, d)
+    (psi, d, dd)
 }
 
 #[cfg(test)]
@@ -540,7 +552,7 @@ mod test {
         // Snap to a half period so a probe is scored against the extremum it sits nearest.
         let local_scale = |u: f64| {
             let anchor = (u * 2.0).round() / 2.0;
-            let (psi_a, d_a) = morse_tap_at(shape, anchor, oracle);
+            let (psi_a, d_a, _) = morse_tap_at(shape, anchor, oracle);
             (psi_a.norm(), d_a.norm())
         };
 
@@ -598,7 +610,7 @@ mod test {
                     let floor = (settings.n_fft() as f64).log2().sqrt() * f64::EPSILON * peak;
 
                     print!("  {label:>10} |");
-                    for (&u, &((psi_ref, d_ref), (ps, ds))) in probes.iter().zip(&refs) {
+                    for (&u, &((psi_ref, d_ref, _), (ps, ds))) in probes.iter().zip(&refs) {
                         let (reference, scale) = match tap {
                             Tap::Psi => (psi_ref, ps),
                             Tap::D => (d_ref, ds),
@@ -703,7 +715,7 @@ mod test {
             }
 
             let t = u * shipping.resolution as f64;
-            let (psi_ref, d_ref) = morse_tap_at(shape, u, oracle);
+            let (psi_ref, d_ref, _) = morse_tap_at(shape, u, oracle);
             let (ps, ds) = local_scale(u);
 
             let e = [
@@ -773,50 +785,73 @@ mod test {
         // Peak, shoulder, the old sick zone around 3.7-4.7, and deep tail.
         let probes = [0.0, 0.8, 2.0, 2.33, 3.7, 4.7, 5.5, 8.2, 8.33, 11.0, 14.0];
 
-        let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> IfiSettings, rows: u32| {
-            println!("\n=== {name} ===");
-            print!("  {knob:>10} |");
-            for u in probes {
-                print!(" {u:>9.2}");
-            }
-            println!();
+        #[derive(Clone, Copy)]
+        enum Tap {
+            Psi,
+            D,
+            Dd,
+        }
 
-            for i in 0..rows {
-                let settings = vary(i);
-                let label = if knob == "log tail" {
-                    settings.log_tail
-                } else {
-                    settings.log_steps
-                };
-
-                print!("  {label:>10.1} |");
-                for u in probes {
-                    let (psi_ref, d_ref) = morse_tap_at(shape, u, reference);
-                    let (psi, d) = morse_tap_at(shape, u, settings);
-                    print!(" {:>9}", fmt_e(rel(psi, psi_ref).max(rel(d, d_ref))));
-                }
-                println!();
-            }
+        let pick = |t: Tap, (psi, d, dd): (Complex64, Complex64, Complex64)| match t {
+            Tap::Psi => psi,
+            Tap::D => d,
+            Tap::Dd => dd,
         };
 
-        sweep(
-            "Cranking log tail",
-            "log tail",
-            &|i| IfiSettings {
-                log_tail: (2 * i + 6) as f64,
-                log_steps: 5.0,
-            },
-            12,
-        );
-        sweep(
-            "Cranking log steps",
-            "log steps",
-            &|i| IfiSettings {
-                log_steps: (1 + i) as f64 * 0.5,
-                ..reference
-            },
-            12,
-        );
+        let sweep =
+            |tap: Tap, name: &str, knob: &str, vary: &dyn Fn(u32) -> IfiSettings, rows: u32| {
+                let label_tap = match tap {
+                    Tap::Psi => "psi",
+                    Tap::D => "d",
+                    Tap::Dd => "dd",
+                };
+                println!("\n=== {name} ({label_tap}) ===");
+                print!("  {knob:>10} |");
+                for u in probes {
+                    print!(" {u:>9.2}");
+                }
+                println!();
+
+                for i in 0..rows {
+                    let settings = vary(i);
+                    let label = if knob == "log tail" {
+                        settings.log_tail
+                    } else {
+                        settings.log_steps
+                    };
+
+                    print!("  {label:>10.1} |");
+                    for u in probes {
+                        let r = pick(tap, morse_tap_at(shape, u, reference));
+                        let v = pick(tap, morse_tap_at(shape, u, settings));
+                        print!(" {:>9}", fmt_e(rel(v, r)));
+                    }
+                    println!();
+                }
+            };
+
+        for tap in [Tap::Psi, Tap::D, Tap::Dd] {
+            sweep(
+                tap,
+                "Cranking log tail",
+                "log tail",
+                &|i| IfiSettings {
+                    log_tail: (2 * i + 6) as f64,
+                    log_steps: 5.0,
+                },
+                12,
+            );
+            sweep(
+                tap,
+                "Cranking log steps",
+                "log steps",
+                &|i| IfiSettings {
+                    log_steps: (1 + i) as f64 * 0.5,
+                    ..reference
+                },
+                12,
+            );
+        }
 
         // Acceptance: at the settings we intend to ship, the floor is flat in u.  A dense grid so a
         // narrow seam can't hide between probes.
@@ -826,9 +861,10 @@ mod test {
 
         for k in 0..=280 {
             let u = k as f64 * 0.05;
-            let (psi_ref, d_ref) = morse_tap_at(shape, u, reference);
-            let (psi, d) = morse_tap_at(shape, u, settings);
-            let err = rel(psi, psi_ref).max(rel(d, d_ref));
+
+            let (psi_ref, d_ref, dd_ref) = morse_tap_at(shape, u, reference);
+            let (psi, d, dd) = morse_tap_at(shape, u, settings);
+            let err = rel(psi, psi_ref).max(rel(d, d_ref)).max(rel(dd, dd_ref));
             worst = worst.max(err);
 
             if k % 10 == 0 {
