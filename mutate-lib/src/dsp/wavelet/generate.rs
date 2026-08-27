@@ -59,29 +59,72 @@ use crate::dsp::wavelet::Shape;
 // accurately with extra precision, but a large bias, we have plenty of precision to measure.  Bias
 // will show up even after we squeeze the result through a stencil.  Noise will just get washed away
 // in the stencil and f32 truncation.
-// NEXT Did not compare any other FFT libraries or the quadrature of the Fourier integral method in
-// either speed or accuracy.  Above 2048 resolution (steps per wave), both amplitude and quadrature
-// reach convergence.  This convergence sits below f32 accuracy.
+// NEXT Did not compare any other FFT libraries, just went with stock standard.
+
+/// Grid for the IFFT generator.
+///
+/// `periods` is the reach of the returned half-taps in carrier cycles; `pad` extends the record
+/// past that reach so the periodic wrap lands in the decayed tail; `resolution` is samples per
+/// carrier cycle.  Only `record` and `n_fft` are derived, so no call site recomputes them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IfftSettings {
+    pub periods: usize,
+    pub pad: usize,
+    pub resolution: usize,
+}
+
+impl Default for IfftSettings {
+    /// Past both elbows in `ifft_precision_convergence` and `ifft_quadrature_precision`: pad is
+    /// into the flat rows around 1e-14 at the near lobes, and resolution 1024 puts Hermite
+    /// interpolation at ~2e-12 where the truncation floor no longer binds.
+    fn default() -> Self {
+        Self {
+            periods: 8,
+            pad: 26,
+            resolution: 1 << 10,
+        }
+    }
+}
+
+impl IfftSettings {
+    /// Periods + padding periods
+    pub fn record(self) -> usize {
+        self.periods + self.pad
+    }
+
+    /// Dimensions of the IFFT that will result
+    pub fn n_fft(self) -> usize {
+        self.record() * self.resolution
+    }
+
+    /// Folded legth in taps
+    pub fn half_len(self) -> usize {
+        self.periods * self.resolution + 1
+    }
+
+    /// Reach of the returned taps in `u`, i.e. the largest `u` a resample can index.
+    pub fn reach(self) -> f64 {
+        (self.half_len() - 1) as f64 / self.resolution as f64
+    }
+}
 
 /// Use an IFFT to generate time-domain solutions for psi, d, and dd.
 ///
-/// The result covers `periods` carrier cycles at `resolution` samples per cycle, so
-/// `psi.len() == periods * resolution + 1`.
+/// The result covers `settings.periods` carrier cycles at `settings.resolution` samples per cycle,
+/// so `psi.len() == settings.half_len()`.
 ///
-/// `(periods + pad) * resolution` controls IFFT size.
+/// `settings.n_fft()` is the transform size.
 ///
 /// Each successive array is the `u`-derivative of the one before it up to a quarter turn, so
 /// `dpsi/du == i * d` and `dd/du == i * dd`.  Consumers interpolating `psi` or `d` have exact
 /// slopes available.  This enables both `psi` and `d` to use Hermitian interpolation.
-pub fn morse_half_taps(
+pub(crate) fn morse_half_taps(
     shape: Shape,
-    periods: usize,
-    pad: usize,
-    resolution: usize,
+    settings: IfftSettings,
 ) -> (Vec<Complex64>, Vec<Complex64>, Vec<Complex64>) {
-    let record = periods + pad;
-    let n_fft = record * resolution;
-    let half_len = periods * resolution + 1;
+    let record = settings.record();
+    let n_fft = settings.n_fft();
+    let half_len = settings.half_len();
 
     // The carrier is bin `record`, which puts `resolution` samples on a cycle and spans the record
     // over `record` cycles.
@@ -158,7 +201,7 @@ const BEND_SCALE: f64 = 0.33;
 /// is entire.  The path is a single line through the saddle, bent by a `tanh` so that its left end
 /// is the ray at `arg rho_star` and its right end returns to the real `rho` axis, which is where
 /// the cap term needs it to be for the closing arc to vanish.
-pub fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, Complex64) {
+pub(crate) fn morse_tap_at(shape: Shape, u: f64, settings: IfiSettings) -> (Complex64, Complex64) {
     // 🤖 Hugely generated.
 
     let (beta, gamma) = (shape.beta, shape.gamma);
@@ -279,7 +322,14 @@ mod test {
     fn full_resolution() {
         let shape = Shape::from_q(3.5, 3.0);
         let now = std::time::Instant::now();
-        let _ = morse_half_taps(shape, 16, 8, 512);
+        let _ = morse_half_taps(
+            shape,
+            IfftSettings {
+                periods: 16,
+                pad: 8,
+                resolution: 512,
+            },
+        );
 
         let elapsed = now.elapsed().as_micros();
         println!("elapsed: {:?}", elapsed);
@@ -354,11 +404,12 @@ mod test {
 
         let shape = Shape::from_q(3.5, 3.0);
 
-        const REF_PERIODS: usize = 8;
-        const REF_PAD: usize = 64;
-        const REF_RES: usize = 2048;
-
-        let (ref_psi, ref_d, ref_dd) = morse_half_taps(shape, REF_PERIODS, REF_PAD, REF_RES);
+        let reference = IfftSettings {
+            periods: 8,
+            pad: 64,
+            resolution: 1 << 11,
+        };
+        let (ref_psi, ref_d, ref_dd) = morse_half_taps(shape, reference);
 
         let rel = |v: Complex64, r: Complex64| (v - r).norm() / r.norm();
 
@@ -370,15 +421,15 @@ mod test {
         let refs: Vec<_> = probes
             .iter()
             .map(|&u| {
-                let t = u * REF_RES as f64;
+                let t = u * reference.resolution as f64;
                 (
-                    resample_hermite(&ref_psi, &ref_d, t, REF_RES),
-                    resample_hermite(&ref_d, &ref_dd, t, REF_RES),
+                    resample_hermite(&ref_psi, &ref_d, t, reference.resolution),
+                    resample_hermite(&ref_d, &ref_dd, t, reference.resolution),
                 )
             })
             .collect();
 
-        let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> (usize, usize), rows: u32| {
+        let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> IfftSettings, rows: u32| {
             println!("\n=== {name} ===");
             print!("  {knob:>10} |");
             for u in probes {
@@ -387,15 +438,20 @@ mod test {
             println!();
 
             for i in 0..rows {
-                let (pad, resolution) = vary(i);
-                let label = if knob == "pad" { pad } else { resolution };
-                let (psi, d, dd) = morse_half_taps(shape, REF_PERIODS, pad, resolution);
+                let settings = vary(i);
+                let label = if knob == "pad" {
+                    settings.pad
+                } else {
+                    settings.resolution
+                };
+                let (psi, d, dd) = morse_half_taps(shape, settings);
 
                 print!("  {label:>10} |");
                 for (&u, &(psi_ref, d_ref)) in probes.iter().zip(&refs) {
-                    let t = u * resolution as f64;
-                    let e = rel(resample_hermite(&psi, &d, t, resolution), psi_ref)
-                        .max(rel(resample_hermite(&d, &dd, t, resolution), d_ref));
+                    let t = u * settings.resolution as f64;
+                    let e = rel(resample_hermite(&psi, &d, t, settings.resolution), psi_ref).max(
+                        rel(resample_hermite(&d, &dd, t, settings.resolution), d_ref),
+                    );
                     print!(" {:>9}", fmt_e(e));
                 }
                 println!();
@@ -405,34 +461,42 @@ mod test {
         sweep(
             "Cranking pad",
             "pad",
-            &|i| (2 * i as usize + 2, REF_RES * 2),
+            &|i| IfftSettings {
+                pad: 2 * i as usize + 2,
+                resolution: reference.resolution * 2,
+                ..reference
+            },
             14,
         );
         sweep(
             "Cranking resolution",
             "resolution",
-            &|i| (REF_PAD * 2, (i as usize + 1) * 128),
+            &|i| IfftSettings {
+                pad: reference.pad * 2,
+                resolution: (i as usize + 1) * 128,
+                ..reference
+            },
             12,
         );
 
         // Acceptance: the shipping grid sits past both elbows, so its disagreement with the
         // reference is floor and not truncation or interpolation error.
         println!("\n=== Shipping Grid ===");
-        let (periods, pad, resolution) = (REF_PERIODS, 26, 1usize << 10);
-        let (psi, d, dd) = morse_half_taps(shape, periods, pad, resolution);
+        let shipping = IfftSettings::default();
+        let (psi, d, dd) = morse_half_taps(shape, shipping);
         let mut worst: f64 = 0.0;
 
         for k in 0..=150 {
             let u = k as f64 * 0.05 + 0.011;
-            let t_ref = u * REF_RES as f64;
-            let t = u * resolution as f64;
+            let t_ref = u * reference.resolution as f64;
+            let t = u * shipping.resolution as f64;
             let e = rel(
-                resample_hermite(&psi, &d, t, resolution),
-                resample_hermite(&ref_psi, &ref_d, t_ref, REF_RES),
+                resample_hermite(&psi, &d, t, shipping.resolution),
+                resample_hermite(&ref_psi, &ref_d, t_ref, reference.resolution),
             )
             .max(rel(
-                resample_hermite(&d, &dd, t, resolution),
-                resample_hermite(&ref_d, &ref_dd, t_ref, REF_RES),
+                resample_hermite(&d, &dd, t, shipping.resolution),
+                resample_hermite(&ref_d, &ref_dd, t_ref, reference.resolution),
             ));
             worst = worst.max(e);
 
@@ -452,9 +516,9 @@ mod test {
         // the local extrema.
         //
         // Relative error against a decaying signal is only meaningful while that signal stands
-        // above the IFFT's absolute roundoff, which is `n_fft * EPSILON * peak` because the
-        // transform sums `n_fft / 2` bins coherently.  Cells below that are masked rather than
-        // printed, since they measure the floor and not the grid.
+        // above the IFFT's roundoff floor, which the `record` sweep shows is incoherent in `n_fft`
+        // rather than linear.  Cells below that are masked rather than printed, since they measure
+        // the floor and not the grid.
 
         let shape = Shape::from_q(3.5, 3.0);
         let oracle = IfiSettings {
@@ -462,6 +526,11 @@ mod test {
             log_steps: 5.0,
         };
 
+        let base = IfftSettings {
+            periods: 8,
+            pad: 56,
+            resolution: 1 << 8,
+        };
         // Amplitude has to clear the roundoff floor by this much before a cell reports.
         const LIVE: f64 = 16.0;
         const TOL: f64 = 1e-6;
@@ -499,76 +568,72 @@ mod test {
             D,
         }
 
-        let sweep = |tap: Tap,
-                     name: &str,
-                     knob: &str,
-                     vary: &dyn Fn(u32) -> (usize, usize, usize),
-                     rows: u32| {
-            let label_tap = match tap {
-                Tap::Psi => "psi",
-                Tap::D => "d",
-            };
-            println!("\n=== {name} ({label_tap}) ===");
-            print!("  {knob:>10} |");
-            for u in probes {
-                print!(" {u:>9.2}");
-            }
-            println!();
-
-            for i in 0..rows {
-                let (periods, pad, resolution) = vary(i);
-                let label = match knob {
-                    "periods" => periods,
-                    "pad" => pad,
-                    "record" => periods + pad,
-                    _ => resolution,
+        let sweep =
+            |tap: Tap, name: &str, knob: &str, vary: &dyn Fn(u32) -> IfftSettings, rows: u32| {
+                let label_tap = match tap {
+                    Tap::Psi => "psi",
+                    Tap::D => "d",
                 };
-                let (psi, d, dd) = morse_half_taps(shape, periods, pad, resolution);
-                let (value, slope) = match tap {
-                    Tap::Psi => (&psi, &d),
-                    Tap::D => (&d, &dd),
-                };
-                let reach = (psi.len() - 1) as f64 / resolution as f64;
-                let n_fft = ((periods + pad) * resolution) as f64;
-                let noise = n_fft.log2().sqrt() * f64::EPSILON * peak;
-
-                print!("  {label:>10} |");
-                for (&u, &((psi_ref, d_ref), (ps, ds))) in probes.iter().zip(&refs) {
-                    let (reference, scale) = match tap {
-                        Tap::Psi => (psi_ref, ps),
-                        Tap::D => (d_ref, ds),
-                    };
-
-                    // Skip cells that won't have an index due to being too short.
-                    if u >= reach {
-                        print!(" {:>9}", "-");
-                        continue;
-                    }
-
-                    let t = u * resolution as f64;
-                    let cell = format!(
-                        "{:>9}",
-                        fmt_e(rel(
-                            resample_hermite(value, slope, t, resolution),
-                            reference,
-                            scale
-                        ))
-                    );
-
-                    // LIES When the predicted IFFT noise floor is higher than the scale of the
-                    // features we are attempting to draw.  The prediction may be loose or we may
-                    // just be truly above the noise floor in average cases.  Leaving this here in
-                    // case this failure mode is encountered.
-                    if scale < noise * LIVE {
-                        print!(" \x1b[2;90m{cell}\x1b[0m");
-                    } else {
-                        print!(" {cell}");
-                    }
+                println!("\n=== {name} ({label_tap}) ===");
+                print!("  {knob:>10} |");
+                for u in probes {
+                    print!(" {u:>9.2}");
                 }
-
                 println!();
-            }
-        };
+
+                for i in 0..rows {
+                    let settings = vary(i);
+                    let label = match knob {
+                        "periods" => settings.periods,
+                        "pad" => settings.pad,
+                        "record" => settings.record(),
+                        _ => settings.resolution,
+                    };
+                    let (psi, d, dd) = morse_half_taps(shape, settings);
+                    let (value, slope) = match tap {
+                        Tap::Psi => (&psi, &d),
+                        Tap::D => (&d, &dd),
+                    };
+                    let reach = settings.reach();
+                    let floor = (settings.n_fft() as f64).log2().sqrt() * f64::EPSILON * peak;
+
+                    print!("  {label:>10} |");
+                    for (&u, &((psi_ref, d_ref), (ps, ds))) in probes.iter().zip(&refs) {
+                        let (reference, scale) = match tap {
+                            Tap::Psi => (psi_ref, ps),
+                            Tap::D => (d_ref, ds),
+                        };
+
+                        // Skip cells that won't have an index due to being too short.
+                        if u >= reach - 1.0 / settings.resolution as f64 {
+                            print!(" {:>9}", "-");
+                            continue;
+                        }
+
+                        let t = u * settings.resolution as f64;
+                        let cell = format!(
+                            "{:>9}",
+                            fmt_e(rel(
+                                resample_hermite(value, slope, t, settings.resolution),
+                                reference,
+                                scale
+                            ))
+                        );
+
+                        // LIES When the predicted IFFT noise floor is higher than the scale of the
+                        // features we are attempting to draw.  The prediction may be loose or we may
+                        // just be truly above the noise floor in average cases.  Leaving this here in
+                        // case this failure mode is encountered.
+                        if scale < floor * LIVE {
+                            print!(" \x1b[2;90m{cell}\x1b[0m");
+                        } else {
+                            print!(" {cell}");
+                        }
+                    }
+
+                    println!();
+                }
+            };
 
         // Each sweep is over-provisioned in the knobs it isn't varying, so the only thing that can
         // bind is the one in the label.
@@ -579,7 +644,10 @@ mod test {
                 tap,
                 "Cranking resolution",
                 "resolution",
-                &|i| (8, 56, 1usize << (i + 5)),
+                &|i| IfftSettings {
+                    resolution: 1 << (i + 5),
+                    ..base
+                },
                 8,
             );
 
@@ -588,7 +656,10 @@ mod test {
                 tap,
                 "Cranking pad",
                 "pad",
-                &|i| (8, (1usize << i) - 1, 1 << 8),
+                &|i| IfftSettings {
+                    pad: (1usize << i) - 1,
+                    ..base
+                },
                 8,
             );
 
@@ -600,17 +671,22 @@ mod test {
                 tap,
                 "Cranking record",
                 "record",
-                &|i| (6, (1usize << (i + 3)) - 6, 1 << 8),
+                &|i| IfftSettings {
+                    periods: 6,
+                    pad: (1usize << (i + 3)) - 6,
+                    ..base
+                },
                 8,
             );
         }
 
         println!("\n=== Shipping Grid ===");
-        let (periods, pad, resolution) = (6, 26, 1usize << 10);
-        let (psi, d, dd) = morse_half_taps(shape, periods, pad, resolution);
-        let n_fft = ((periods + pad) * resolution) as f64;
-        let noise = n_fft.log2().sqrt() * f64::EPSILON * peak;
-        let reach = (psi.len() - 1) as f64 / resolution as f64;
+
+        let shipping = IfftSettings::default();
+        let (psi, d, dd) = morse_half_taps(shape, shipping);
+        let noise = (shipping.n_fft() as f64).log2().sqrt() * f64::EPSILON * peak;
+        let floor = noise.max((-oracle.log_tail).exp() * peak);
+        let reach = shipping.reach();
 
         let mut worst = [(0.0f64, 0.0f64); 2];
         let mut live_to = [0.0f64; 2];
@@ -621,15 +697,25 @@ mod test {
 
         for k in 0..steps {
             let u = k as f64 * 0.05 + 0.011;
-            let t = u * resolution as f64;
+            if u >= reach {
+                print!(" {:>9}", "-");
+                continue;
+            }
+
+            let t = u * shipping.resolution as f64;
             let (psi_ref, d_ref) = morse_tap_at(shape, u, oracle);
             let (ps, ds) = local_scale(u);
 
             let e = [
-                rel(resample_hermite(&psi, &d, t, resolution), psi_ref, ps),
-                rel(resample_hermite(&d, &dd, t, resolution), d_ref, ds),
+                rel(
+                    resample_hermite(&psi, &d, t, shipping.resolution),
+                    psi_ref,
+                    ps,
+                ),
+                rel(resample_hermite(&d, &dd, t, shipping.resolution), d_ref, ds),
             ];
-            let live = [ps > noise * LIVE, ds > noise * LIVE];
+
+            let live = [ps > floor * LIVE, ds > floor * LIVE];
 
             for j in 0..2 {
                 if !live[j] {
@@ -651,7 +737,12 @@ mod test {
             }
         }
 
-        println!("\n  noise floor {} at peak scale", fmt_e(noise / peak));
+        println!(
+            "\n  floor {} at peak scale (ifft {}, oracle {})",
+            fmt_e(floor / peak),
+            fmt_e(noise / peak),
+            fmt_e((-oracle.log_tail).exp())
+        );
         for (j, name) in ["psi", "d"].iter().enumerate() {
             println!(
                 "  {name:>3}: worst {} at u {:.3} ({:.0}x under tol), live to u {:.2}",
@@ -717,13 +808,12 @@ mod test {
             },
             12,
         );
-
         sweep(
             "Cranking log steps",
             "log steps",
             &|i| IfiSettings {
-                log_tail: 24.0,
                 log_steps: (1 + i) as f64 * 0.5,
+                ..reference
             },
             12,
         );
@@ -747,7 +837,7 @@ mod test {
         }
 
         println!("  worst over grid: {}", fmt_e(worst));
-        assert!(worst < 1e-6);
+        assert!(worst < 1e-9);
     }
 
     #[test]
@@ -762,14 +852,16 @@ mod test {
 
         let shape = Shape::from_q(3.5, 3.0);
 
-        const REF_PERIODS: usize = 8;
-        const REF_PAD: usize = 256;
-        const REF_RES: usize = 1 << 13;
+        let reference = IfftSettings {
+            periods: 8,
+            pad: 72,
+            resolution: 2048,
+        };
 
         // Half periods 0..10, covering the first five carrier periods.
         const LOBES: usize = 10;
 
-        let (ref_psi, ref_d, _) = morse_half_taps(shape, REF_PERIODS, REF_PAD, REF_RES);
+        let (ref_psi, ref_d, _) = morse_half_taps(shape, reference);
 
         let bounds = |k: usize, resolution: usize| {
             ((1 + 2 * k) * resolution / 4, (3 + 2 * k) * resolution / 4)
@@ -777,12 +869,12 @@ mod test {
 
         let refs: Vec<Complex64> = (0..LOBES)
             .map(|k| {
-                let (i0, i1) = bounds(k, REF_RES);
-                hermite_integral(&ref_psi, &ref_d, i0, i1, REF_RES)
+                let (i0, i1) = bounds(k, reference.resolution);
+                hermite_integral(&ref_psi, &ref_d, i0, i1, reference.resolution)
             })
             .collect();
 
-        let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> (usize, usize), rows: u32| {
+        let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> IfftSettings, rows: u32| {
             println!("\n=== {name} ===");
             print!("  {knob:>10} |");
             for k in 0..LOBES {
@@ -791,14 +883,18 @@ mod test {
             println!();
 
             for i in 0..rows {
-                let (pad, resolution) = vary(i);
-                let label = if knob == "pad" { pad } else { resolution };
-                let (psi, d, _) = morse_half_taps(shape, REF_PERIODS, pad, resolution);
+                let settings = vary(i);
+                let label = if knob == "pad" {
+                    settings.pad
+                } else {
+                    settings.resolution
+                };
+                let (psi, d, _) = morse_half_taps(shape, settings);
 
                 print!("  {label:>10} |");
                 for (k, &area_ref) in refs.iter().enumerate() {
-                    let (i0, i1) = bounds(k, resolution);
-                    let area = hermite_integral(&psi, &d, i0, i1, resolution);
+                    let (i0, i1) = bounds(k, settings.resolution);
+                    let area = hermite_integral(&psi, &d, i0, i1, settings.resolution);
                     print!(" {:>9}", fmt_e((area - area_ref).norm() / area_ref.norm()));
                 }
                 println!();
@@ -808,29 +904,36 @@ mod test {
         sweep(
             "Cranking pad",
             "pad",
-            &|i| (2 * i as usize + 2, 1 << 12),
+            &|i| IfftSettings {
+                pad: 2 * i as usize + 2,
+                resolution: 1 << 12,
+                ..reference
+            },
             12,
         );
-
         // Truncation floor has to sit below the interpolation error at every row, so pad tracks the
         // resolution rather than sitting at a fixed over-provision.
         sweep(
             "Cranking resolution",
             "resolution",
-            &|i| (32, 1usize << (i + 5)),
+            &|i| IfftSettings {
+                pad: 32,
+                resolution: 1 << (i + 5),
+                ..reference
+            },
             7,
         );
 
         // Acceptance: the shipping grid sits past both elbows, so the area it carries differs from
         // the reference only by floor.
         println!("\n=== Shipping Grid ===");
-        let (pad, resolution) = (26, 1usize << 10);
-        let (psi, d, _) = morse_half_taps(shape, REF_PERIODS, pad, resolution);
+        let shipping = IfftSettings::default();
+        let (psi, d, _) = morse_half_taps(shape, shipping);
         let mut worst: f64 = 0.0;
 
         for (k, &area_ref) in refs.iter().enumerate() {
-            let (i0, i1) = bounds(k, resolution);
-            let area = hermite_integral(&psi, &d, i0, i1, resolution);
+            let (i0, i1) = bounds(k, shipping.resolution);
+            let area = hermite_integral(&psi, &d, i0, i1, shipping.resolution);
             let e = (area - area_ref).norm() / area_ref.norm();
             worst = worst.max(e);
 
