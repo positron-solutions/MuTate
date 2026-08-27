@@ -342,7 +342,107 @@ mod test {
     }
 
     #[test]
-    fn ifft_amplitude_convergence() {
+    fn ifft_precision_convergence() {
+        // The IFFT against a post-elbow instance of itself.  This isolates the grid from the
+        // method: once the rows stop improving and start jittering, additional pad or resolution
+        // is buying nothing, and any remaining disagreement with the IFI oracle is a disagreement
+        // about the wavelet rather than about precision.
+
+        let shape = Shape::from_q(3.5, 3.0);
+
+        const REF_PERIODS: usize = 8;
+        const REF_PAD: usize = 64;
+        const REF_RES: usize = 2048;
+
+        let (ref_psi, ref_d, ref_dd) = morse_half_taps(shape, REF_PERIODS, REF_PAD, REF_RES);
+
+        let rel = |v: Complex64, r: Complex64| (v - r).norm() / r.norm();
+
+        // Deliberately off-grid at every resolution in the sweep.
+        let probes = [
+            0.37, 1.31, 2.66, 3.42, 4.19, 4.77, 5.31, 5.88, 6.42, 6.94, 7.54,
+        ];
+
+        let refs: Vec<_> = probes
+            .iter()
+            .map(|&u| {
+                let t = u * REF_RES as f64;
+                (
+                    resample_hermite(&ref_psi, &ref_d, t, REF_RES),
+                    resample_hermite(&ref_d, &ref_dd, t, REF_RES),
+                )
+            })
+            .collect();
+
+        let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> (usize, usize), rows: u32| {
+            println!("\n=== {name} ===");
+            print!("  {knob:>10} |");
+            for u in probes {
+                print!(" {u:>9.2}");
+            }
+            println!();
+
+            for i in 0..rows {
+                let (pad, resolution) = vary(i);
+                let label = if knob == "pad" { pad } else { resolution };
+                let (psi, d, dd) = morse_half_taps(shape, REF_PERIODS, pad, resolution);
+
+                print!("  {label:>10} |");
+                for (&u, &(psi_ref, d_ref)) in probes.iter().zip(&refs) {
+                    let t = u * resolution as f64;
+                    let e = rel(resample_hermite(&psi, &d, t, resolution), psi_ref)
+                        .max(rel(resample_hermite(&d, &dd, t, resolution), d_ref));
+                    print!(" {:>9}", fmt_e(e));
+                }
+                println!();
+            }
+        };
+
+        sweep(
+            "Cranking pad",
+            "pad",
+            &|i| (2 * i as usize + 2, REF_RES * 2),
+            14,
+        );
+        sweep(
+            "Cranking resolution",
+            "resolution",
+            &|i| (REF_PAD * 2, (i as usize + 1) * 128),
+            12,
+        );
+
+        // Acceptance: the shipping grid sits past both elbows, so its disagreement with the
+        // reference is floor and not truncation or interpolation error.
+        println!("\n=== Shipping Grid ===");
+        let (periods, pad, resolution) = (REF_PERIODS, 26, 1usize << 10);
+        let (psi, d, dd) = morse_half_taps(shape, periods, pad, resolution);
+        let mut worst: f64 = 0.0;
+
+        for k in 0..=150 {
+            let u = k as f64 * 0.05 + 0.011;
+            let t_ref = u * REF_RES as f64;
+            let t = u * resolution as f64;
+            let e = rel(
+                resample_hermite(&psi, &d, t, resolution),
+                resample_hermite(&ref_psi, &ref_d, t_ref, REF_RES),
+            )
+            .max(rel(
+                resample_hermite(&d, &dd, t, resolution),
+                resample_hermite(&ref_d, &ref_dd, t_ref, REF_RES),
+            ));
+            worst = worst.max(e);
+
+            if k % 10 == 0 {
+                println!("  u: {u:>6.2}, err: {:>9}", fmt_e(e));
+            }
+        }
+
+        println!("  worst over grid: {}", fmt_e(worst));
+        assert!(worst < 1e-5); // Just a shade under!
+    }
+
+    #[test]
+    fn ifft_accuracy_convergence() {
         // Reconstruct taps at arbitrary `u` by Hermite resampling against the IFI oracle.  Errors
         // are normalized to the oracle's amplitude at the nearest half-phase, so a column tracks
         // the local extrema.
@@ -485,7 +585,7 @@ mod test {
                 "Cranking pad",
                 "pad",
                 &|i| (8, (1usize << i) - 1, 1 << 8),
-                10,
+                8,
             );
 
             // Fixed reach with a growing transform.  Once pad clears truncation the rows go flat
@@ -497,7 +597,7 @@ mod test {
                 "Cranking record",
                 "record",
                 &|i| (6, (1usize << (i + 3)) - 6, 1 << 8),
-                10,
+                8,
             );
         }
 
@@ -565,7 +665,7 @@ mod test {
     }
 
     #[test]
-    fn ifi_amplitude_convergence() {
+    fn ifi_precision_convergence() {
         let shape = Shape::from_q(4.5, 3.0);
 
         let reference = IfiSettings {
@@ -647,7 +747,7 @@ mod test {
     }
 
     #[test]
-    fn quadrature_delta() {
+    fn ifft_quadrature_delta() {
         // Simpson's-rule quadrature of psi and d over a half period centered between the 4th and
         // 5th periods. Bounds are quarter-period fractions, so any power-of-two
         // `samples_per_period` >= 8 lands them exactly on a sample index with an even interval
