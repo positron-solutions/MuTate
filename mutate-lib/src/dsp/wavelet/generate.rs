@@ -173,21 +173,86 @@ pub(crate) struct IfiSettings {
     /// Relative log-amplitude cut for the integration limits: e^-64 is ~1.6e-28, below the f64
     /// epsilon of the peak contribution.
     log_tail: f64,
-    /// Grid points per e-fold of `s`, resolving the shape's log-domain lobe.
+    /// Grid points per e-fold of `s`, resolving the shape's log-domain lobe.  Middle `u`, going
+    /// into the tail starts to sag in accuracy at lower settings.
     log_steps: f64,
 }
 
 impl Default for IfiSettings {
     fn default() -> Self {
         Self {
-            log_tail: 22.0,
-            log_steps: 2.0,
+            log_tail: 32.0,
+            log_steps: 4.0,
         }
     }
 }
 
-const BEND_OFFSET: f64 = 1.5;
-const BEND_SCALE: f64 = 0.33;
+/// Dominant saddle: the root continuously connected to `rho = 1` at `lambda = 0`, which is the
+/// one of largest real part throughout.  The endpoint root sits near `i / lambda` and the rest
+/// are rotated into the left half-plane, so the selection never becomes ambiguous.
+fn saddle(shape: Shape, a: f64) -> Complex64 {
+    let gamma = shape.gamma as usize;
+    let mut rho = saddle_set(gamma, a / shape.beta)[..gamma]
+        .iter()
+        .copied()
+        .fold(Complex64::new(f64::NEG_INFINITY, 0.0), |best, r| {
+            if r.re > best.re {
+                r
+            } else {
+                best
+            }
+        });
+
+    // Durand-Kerner leaves a few ulp; polish in `v = ln rho` so the exponent the contour is
+    // built from is stationary to full precision.
+    let (beta, gamma) = (shape.beta, shape.gamma);
+    let mut v = rho.ln();
+    for _ in 0..3 {
+        let (pow, lin) = ((gamma * v).exp(), v.exp());
+        let g = beta * (Complex64::ONE - pow) + Complex64::I * a * lin;
+        let dg = -beta * gamma * pow + Complex64::I * a * lin;
+        v -= g / dg;
+    }
+    rho = v.exp();
+
+    rho
+}
+
+/// Saddles of the normalized exponent: roots of `rho^gamma - i*lambda*rho - 1`,
+/// `lambda = a / beta`. Durand-Kerner, which needs no branch choice for integer `gamma`.
+fn saddle_set(gamma: usize, lambda: f64) -> [Complex64; 4] {
+    let p = |r: Complex64| r.powi(gamma as i32) - Complex64::I * lambda * r - Complex64::ONE;
+
+    let radius = 1.0 + lambda.powf(1.0 / (gamma - 1) as f64);
+    let mut z = [Complex64::ONE; 4];
+    for k in 0..gamma {
+        let t = TAU * k as f64 / gamma as f64 + 0.4;
+        z[k] = Complex64::from_polar(radius, t);
+    }
+
+    for _ in 0..60 {
+        for k in 0..gamma {
+            let mut denom = Complex64::ONE;
+            for j in 0..gamma {
+                if j != k {
+                    denom *= z[k] - z[j];
+                }
+            }
+            z[k] -= p(z[k]) / denom;
+        }
+    }
+    z
+}
+
+/// Log-distance from the dominant saddle to its nearest neighbor, measured in the
+/// contour's own `v = ln rho`.
+fn neighbor_gap(gamma: usize, lambda: f64, rho: Complex64) -> f64 {
+    saddle_set(gamma, lambda)[..gamma]
+        .iter()
+        .map(|r| (r / rho).ln().norm())
+        .filter(|d| *d > 1e-6)
+        .fold(f64::INFINITY, f64::min)
+}
 
 /// Time-domain amplitude at `u` in carrier periods.  Returns the same dimensionless `psi`, `d`, and
 /// `dd` that `morse_half_taps` should converge to.
@@ -208,47 +273,39 @@ pub(crate) fn morse_tap_at(
 ) -> (Complex64, Complex64, Complex64) {
     // 🤖 Hugely generated.
 
+    const SECTOR: f64 = 0.35;
+    const BEND_OFFSET: f64 = 2.8;
+    const BEND_SCALE: f64 = 0.60;
+
     let (beta, gamma) = (shape.beta, shape.gamma);
+
     let s_peak = shape.peak();
     let peak_pow = s_peak.powf(gamma);
     let a = TAU * u;
 
-    // Continuation in `a` from the real-axis peak.  A cold Newton at large `a` jumps branches;
-    // the stage spacing keeps each restart well inside the quadratic basin.
-    let mut rho = Complex64::ONE;
-
-    let stages = (a / 4.0).ceil().max(8.0) as usize;
-    for k in 1..=stages {
-        let a_k = a * k as f64 / stages as f64;
-        for _ in 0..3 {
-            let pow = rho.powf(gamma);
-            let g = beta * (Complex64::ONE - pow) + Complex64::I * a_k * rho;
-            let dg = -beta * gamma * pow / rho + Complex64::I * a_k;
-            rho -= g / dg;
-        }
-    }
+    let mut rho = saddle(shape, a);
 
     let cap = peak_pow * rho.powf(gamma);
     let osc = Complex64::I * a * rho;
 
-    // Curvature at the saddle sets the only length scale on the contour: the bend is placed and
-    // shaped in widths, so `log_steps` is samples per width for the core and the turn alike.
     let phi2 = gamma * gamma * cap - osc;
-    let width = 1.0 / phi2.norm().sqrt();
-    // let h = width / settings.log_steps;
-    let h = width.min(BEND_SCALE) / settings.log_steps;
+    let phi3 = osc - gamma * gamma * gamma * cap;
+    let gap = neighbor_gap(gamma as usize, a / beta, rho);
 
-    // The cap term needs `|gamma arg rho| < pi/2` at the right end.  Stopping short of the axis
-    // keeps a margin there and leaves the oscillation damped rather than free-running.
-    const SECTOR: f64 = 0.35;
+    // Away from a coalescence the curvature is the only scale and this is the old
+    // `1/sqrt(|phi2|)`.  Where two saddles graze, `phi2` softens and the cubic scale takes
+    // over, which is the Airy width without the Airy machinery.
+    let width = (1.0 / phi2.norm().sqrt()).min((6.0 / phi3.norm()).cbrt());
+
     let phi_end = SECTOR * PI / (2.0 * gamma);
-
-    // Below the sector limit the saddle ray already lands where the cap term needs it, so the
-    // contour is straight and the bend contributes nothing.
     let swing = (rho.arg() - phi_end).max(0.0);
 
-    let bend = BEND_OFFSET * width;
+    // The turn has to happen before `Re(cap * e^{gamma z})` changes sign, so it is placed and
+    // shaped in absolute `v`, never in a saddle-derived scale that can grow.
     let bend_scale = BEND_SCALE;
+    let bend = BEND_OFFSET * width.min(bend_scale);
+
+    let h = width.min(bend_scale) / settings.log_steps;
 
     let mut psi_re = Accumulator::<f64>::default();
     let mut psi_im = Accumulator::<f64>::default();
@@ -292,13 +349,18 @@ pub(crate) fn morse_tap_at(
 
     tap(0.0);
 
-    let mut j = 1;
-    while tap(j as f64 * h) > -settings.log_tail {
-        j += 1;
-    }
-    let mut j = 1;
-    while tap(-(j as f64) * h) > -settings.log_tail {
-        j += 1;
+    let margin = (gap.min(2.0 * width) / h).ceil() as usize + 2;
+
+    for dir in [1.0, -1.0] {
+        let (mut j, mut below) = (1usize, 0usize);
+        while below < margin {
+            if tap(dir * j as f64 * h) > -settings.log_tail {
+                below = 0;
+            } else {
+                below += 1;
+            }
+            j += 1;
+        }
     }
 
     let ln_scale = beta * rho.ln() - cap + osc;
@@ -535,7 +597,7 @@ mod test {
         let shape = Shape::from_q(3.5, 3.0);
         let oracle = IfiSettings {
             log_tail: 24.0,
-            log_steps: 5.0,
+            log_steps: 6.5,
         };
 
         let base = IfftSettings {
@@ -773,17 +835,18 @@ mod test {
 
     #[test]
     fn ifi_precision_convergence() {
-        let shape = Shape::from_q(4.5, 3.0);
-
+        let shape = Shape::from_q(3.5, 3.0);
         let reference = IfiSettings {
-            log_tail: 24.0,
-            log_steps: 6.5,
+            log_tail: 40.0,
+            log_steps: 7.0,
         };
 
         let rel = |v: Complex64, r: Complex64| (v - r).norm() / r.norm();
 
         // Peak, shoulder, the old sick zone around 3.7-4.7, and deep tail.
-        let probes = [0.0, 0.8, 2.0, 2.33, 3.7, 4.7, 5.5, 8.2, 8.33, 11.0, 14.0];
+        let probes = [
+            0.0, 0.8, 2.0, 2.33, 3.7, 4.7, 5.5, 7.5, 8.0, 8.2, 8.33, 11.0, 14.0,
+        ];
 
         #[derive(Clone, Copy)]
         enum Tap {
@@ -836,8 +899,8 @@ mod test {
                 "Cranking log tail",
                 "log tail",
                 &|i| IfiSettings {
-                    log_tail: (2 * i + 6) as f64,
-                    log_steps: 5.0,
+                    log_tail: (4 * i + 2) as f64,
+                    ..reference
                 },
                 12,
             );
@@ -846,7 +909,7 @@ mod test {
                 "Cranking log steps",
                 "log steps",
                 &|i| IfiSettings {
-                    log_steps: (1 + i) as f64 * 0.5,
+                    log_steps: (1 + i) as f64 * 1.0,
                     ..reference
                 },
                 12,
@@ -857,22 +920,27 @@ mod test {
         // narrow seam can't hide between probes.
         println!("\n=== Current Defaults ===");
         let settings = IfiSettings::default();
-        let mut worst: f64 = 0.0;
 
-        for k in 0..=280 {
-            let u = k as f64 * 0.05;
+        let mut worst: f64 = 0.0;
+        let mut worst_u: f64 = 0.0;
+
+        for k in 0..=2048 {
+            let u = k as f64 * 0.0125;
 
             let (psi_ref, d_ref, dd_ref) = morse_tap_at(shape, u, reference);
             let (psi, d, dd) = morse_tap_at(shape, u, settings);
             let err = rel(psi, psi_ref).max(rel(d, d_ref)).max(rel(dd, dd_ref));
-            worst = worst.max(err);
+            if err > worst {
+                worst = err;
+                worst_u = u;
+            }
 
-            if k % 10 == 0 {
+            if k % 100 == 0 {
                 println!("  u: {u:>6.2}, err: {:>9}", fmt_e(err));
             }
         }
 
-        println!("  worst over grid: {}", fmt_e(worst));
+        println!("  worst over grid: {} at {:0.2}", fmt_e(worst), worst_u);
         assert!(worst < 1e-9);
     }
 
