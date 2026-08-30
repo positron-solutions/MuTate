@@ -41,12 +41,16 @@
 //! within the IFFT output.  The inverse Fourier integral matches this normalization to create
 //! regularity across the module.
 
-use core::f64::consts::{PI, TAU};
+use core::f64::consts::{FRAC_PI_2, LN_2, PI, TAU};
+use std::ops::Div;
 
 use rustfft::{num_complex::Complex64, FftPlanner};
 
 use crate::dsp::wavelet::whatsleft::Accumulator;
 use crate::dsp::wavelet::Shape;
+
+// NOTE As in other files, `𝐮` is the normalized time coordinate, `𝛚𝐭`, periods at the wavelet's
+// angular velocity.
 
 // NOTE The doc comments are getting really dense.  While it's fun to play educator, I'd like to
 // focus on getting the nomenclature to presume the reader is familiar with a **good** model for
@@ -106,6 +110,15 @@ impl IfftSettings {
     pub fn reach(self) -> f64 {
         (self.half_len() - 1) as f64 / self.resolution as f64
     }
+
+    /// Post-elbow reference settings.  Additional precision will buy only noise or regression.
+    pub fn reference() -> Self {
+        Self {
+            periods: 8,
+            pad: 34,
+            resolution: 1 << 11,
+        }
+    }
 }
 
 /// Use an IFFT to generate time-domain solutions for psi, d, and dd.
@@ -122,49 +135,89 @@ pub(crate) fn morse_half_taps(
     shape: Shape,
     settings: IfftSettings,
 ) -> (Vec<Complex64>, Vec<Complex64>, Vec<Complex64>) {
-    let record = settings.record();
-    let n_fft = settings.n_fft();
+    let record = settings.record() as f64;
     let half_len = settings.half_len();
+    let resolution = settings.resolution as f64;
 
-    // The carrier is bin `record`, which puts `resolution` samples on a cycle and spans the record
-    // over `record` cycles.
-    let s_per_bin = shape.peak() / record as f64;
-    let zeta_per_bin = TAU / record as f64;
+    let s_per_bin = shape.peak() / record;
+    let zeta_per_bin = TAU / record;
 
-    let mut psi_spectrum = vec![Complex64::new(0.0, 0.0); n_fft];
-    let mut d_spectrum = vec![Complex64::new(0.0, 0.0); n_fft];
-    let mut dd_spectrum = vec![Complex64::new(0.0, 0.0); n_fft];
+    // Integer binade shift placing the spectral peak in [1, 2).  Exponent-only, so folding it
+    // back out through `norm` restores the mantissa exactly.
+    let peak = shape.peak();
+    let shift = -((shape.beta * peak.ln() - peak.powf(shape.gamma)) / LN_2).floor();
+    let norm = (-shift).exp2() / record;
 
-    for k in 1..n_fft / 2 {
-        let s = k as f64 * s_per_bin;
-        let mag = s.powf(shape.beta) * (-s.powf(shape.gamma)).exp();
-        let zeta = k as f64 * zeta_per_bin;
-        psi_spectrum[k] = Complex64::new(mag, 0.0);
-        d_spectrum[k] = Complex64::new(mag * zeta, 0.0);
-        dd_spectrum[k] = Complex64::new(mag * zeta * zeta, 0.0);
+    // The envelope underflows well before the Nyquist bin, so the significant support is far
+    // shorter than the transform would be.  Collect it once and reuse across all samples.
+    let bins: Vec<[f64; 4]> = (1..settings.n_fft() / 2)
+        .map(|k| {
+            let s = k as f64 * s_per_bin;
+            let mag = ((shape.beta * s.ln() - s.powf(shape.gamma)) / LN_2 + shift).exp2();
+            let zeta = k as f64 * zeta_per_bin;
+            [k as f64, mag, mag * zeta, mag * zeta * zeta]
+        })
+        .filter(|b| b[1] > 0.0)
+        .collect();
+
+    let mut psi = Vec::with_capacity(half_len);
+    let mut d = Vec::with_capacity(half_len);
+    let mut dd = Vec::with_capacity(half_len);
+
+    for i in 0..half_len {
+        let u = i as f64 / resolution;
+        let mut acc = [0.0f64; 6];
+        let mut comp = [0.0f64; 6];
+
+        for &[k, w_psi, w_d, w_dd] in &bins {
+            let (sin, cos) = (TAU * frac_turns(k, u, record)).sin_cos();
+            for (j, (w, trig)) in [
+                (w_psi, cos),
+                (w_psi, sin),
+                (w_d, cos),
+                (w_d, sin),
+                (w_dd, cos),
+                (w_dd, sin),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let x = w * trig;
+                let x_err = w.mul_add(trig, -x);
+                let t = acc[j] + x;
+                comp[j] += (acc[j] - (t - x)) + (x - (t - acc[j])) + x_err;
+                acc[j] = t;
+            }
+        }
+
+        let mut out =
+            |j: usize| Complex64::new((acc[j] + comp[j]) * norm, (acc[j + 1] + comp[j + 1]) * norm);
+        psi.push(out(0));
+        d.push(out(2));
+        dd.push(out(4));
     }
 
-    let mut planner = FftPlanner::new();
-    let ifft = planner.plan_fft_inverse(n_fft);
-    ifft.process(&mut psi_spectrum);
-    ifft.process(&mut d_spectrum);
-    ifft.process(&mut dd_spectrum);
+    (psi, d, dd)
+}
 
-    // The quadrature weight `Δs` in units of the peak.  It tracks the record, so a longer record
-    // means more bins of proportionally smaller weight and the amplitude is invariant under `pad`.
-    let norm = 1.0 / record as f64;
+/// Fractional turns of `k*u/record`, carrying the low half of the product.
+///
+/// The phase reaches tens of thousands of radians at high `u`; reducing in turns before
+/// scaling by TAU keeps the argument reduction out of `sin_cos`.
+#[inline]
+fn frac_turns(k: f64, u: f64, record: f64) -> f64 {
+    let p_hi = k * u;
+    let p_lo = k.mul_add(u, -p_hi);
+    let q_hi = p_hi / record;
+    let q_lo = ((-q_hi).mul_add(record, p_hi) + p_lo) / record;
+    (q_hi - q_hi.floor()) + q_lo
+}
 
-    let sample = |spectrum: &[Complex64]| {
-        (0..half_len)
-            .map(|i| spectrum[i % n_fft] * norm)
-            .collect::<Vec<_>>()
-    };
-
-    (
-        sample(&psi_spectrum),
-        sample(&d_spectrum),
-        sample(&dd_spectrum),
-    )
+#[inline]
+fn two_sum_into(acc: &mut f64, comp: &mut f64, x: f64) {
+    let t = *acc + x;
+    *comp += (*acc - (t - x)) + (x - (t - *acc));
+    *acc = t;
 }
 
 /// Tune the inverse Fourier integration knob.
@@ -412,6 +465,33 @@ mod test {
         assert!(elapsed < SLOW_MICROS, "FFT slow: {}µs ", elapsed);
     }
 
+    #[inline]
+    fn two_diff(a: f64, b: f64) -> (f64, f64) {
+        let s = a - b;
+        let bv = s - a;
+        (s, (a - (s - bv)) + (-b - bv))
+    }
+
+    /// Hermite basis in delta form, anchored on the nearer endpoint.
+    ///
+    /// `a` and `b` are the one-sided second differences; they are the only place cancellation
+    /// occurs, and the two-sum residuals are folded back before they reach the Horner chain.
+    #[inline]
+    fn hermite_1d(p0: f64, p1: f64, m0: f64, m1: f64, f: f64) -> f64 {
+        let (delta, delta_err) = two_diff(p1, p0);
+        let (a, a_err) = two_diff(delta, m0);
+        let (b, b_err) = two_diff(m1, delta);
+        let a = a + (a_err + delta_err);
+        let b = b + (b_err - delta_err);
+
+        if f <= 0.5 {
+            p0 + f * (b - a).mul_add(f, 2.0 * a - b).mul_add(f, m0)
+        } else {
+            let g = 1.0 - f;
+            p1 + g * (a - b).mul_add(g, 2.0 * b - a).mul_add(g, -m1)
+        }
+    }
+
     /// Cubic Hermite reconstruction from a tap and its derivative.
     ///
     /// `d` is the `u`-derivative up to a quarter turn (`dpsi/du == i * d`), so the slopes are exact
@@ -428,19 +508,17 @@ mod test {
         let f = t - floor;
         let i = floor as usize;
 
-        let dt = 1.0 / resolution as f64;
-        let m0 = Complex64::I * d[i] * dt;
-        let m1 = Complex64::I * d[i + 1] * dt;
+        let res = resolution as f64;
+        let m0 = Complex64::new(-d[i].im / res, d[i].re / res);
+        let m1 = Complex64::new(-d[i + 1].im / res, d[i + 1].re / res);
 
-        let f2 = f * f;
-        let f3 = f2 * f;
+        let p0 = taps[i];
+        let p1 = taps[i + 1];
 
-        let h00 = 2.0 * f3 - 3.0 * f2 + 1.0;
-        let h10 = f3 - 2.0 * f2 + f;
-        let h01 = -2.0 * f3 + 3.0 * f2;
-        let h11 = f3 - f2;
-
-        taps[i] * h00 + m0 * h10 + taps[i + 1] * h01 + m1 * h11
+        Complex64::new(
+            hermite_1d(p0.re, p1.re, m0.re, m1.re, f),
+            hermite_1d(p0.im, p1.im, m0.im, m1.im, f),
+        )
     }
 
     /// Exact integral of the cubic Hermite reconstruction over `[i0, i1]`, in `u`.
@@ -471,116 +549,118 @@ mod test {
 
     #[test]
     fn ifft_precision_convergence() {
-        // The IFFT against a post-elbow instance of itself.  This isolates the grid from the
-        // method: once the rows stop improving and start jittering, additional pad or resolution
-        // is buying nothing, and any remaining disagreement with the IFI oracle is a disagreement
-        // about the wavelet rather than about precision.
+        // Find the grid and padding elbows.  Remaining disagreement in other tests is disagreement
+        // about the wavelet rather than disagreement with self. Tests show that padding has the
+        // largest effect on accuracy.  Grid size has relatively little influence relative to padding.
 
         let shape = Shape::from_q(3.5, 3.0);
 
-        let reference = IfftSettings {
-            periods: 8,
-            pad: 64,
-            resolution: 1 << 11,
-        };
-        let (ref_psi, ref_d, ref_dd) = morse_half_taps(shape, reference);
+        let reference = IfftSettings::reference();
+
+        let (ref_psi, ref_d, _) = morse_half_taps(shape, reference);
 
         let rel = |v: Complex64, r: Complex64| (v - r).norm() / r.norm();
 
         // Deliberately off-grid at every resolution in the sweep.
         let probes = [
-            0.37, 1.31, 2.66, 3.42, 4.19, 4.77, 5.31, 5.88, 6.42, 6.94, 7.54,
+            0.0, 0.37, 0.89, 1.31, 2.07, 2.66, 3.42, 4.19, 5.88, 6.42, 7.911,
         ];
 
         let refs: Vec<_> = probes
             .iter()
             .map(|&u| {
-                let t = u * reference.resolution as f64;
-                (
-                    resample_hermite(&ref_psi, &ref_d, t, reference.resolution),
-                    resample_hermite(&ref_d, &ref_dd, t, reference.resolution),
+                resample_hermite(
+                    &ref_psi,
+                    &ref_d,
+                    u * reference.resolution as f64,
+                    reference.resolution,
                 )
             })
             .collect();
 
-        let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> IfftSettings, rows: u32| {
-            println!("\n=== {name} ===");
-            print!("  {knob:>10} |");
-            for u in probes {
-                print!(" {u:>9.2}");
-            }
-            println!();
-
-            for i in 0..rows {
-                let settings = vary(i);
-                let label = if knob == "pad" {
-                    settings.pad
-                } else {
-                    settings.resolution
-                };
-                let (psi, d, dd) = morse_half_taps(shape, settings);
-
-                print!("  {label:>10} |");
-                for (&u, &(psi_ref, d_ref)) in probes.iter().zip(&refs) {
-                    let t = u * settings.resolution as f64;
-                    let e = rel(resample_hermite(&psi, &d, t, settings.resolution), psi_ref).max(
-                        rel(resample_hermite(&d, &dd, t, settings.resolution), d_ref),
-                    );
-                    print!(" {:>9}", fmt_e(e));
+        let sweep =
+            |name: &str, knob: &str, vary: &dyn Fn(u32) -> (usize, IfftSettings), rows: u32| {
+                println!("\n=== {name} ===");
+                print!("  {knob:>10} |");
+                for u in probes {
+                    print!(" {u:>9.2}");
                 }
                 println!();
-            }
-        };
+
+                for i in 0..rows {
+                    let (label, settings) = vary(i);
+                    let (psi, d, _) = morse_half_taps(shape, settings);
+
+                    print!("  {label:>10} |");
+                    for (&u, &psi_ref) in probes.iter().zip(&refs) {
+                        let t = u * settings.resolution as f64;
+                        let e = rel(resample_hermite(&psi, &d, t, settings.resolution), psi_ref);
+                        print!(" {:>9}", fmt_e(e));
+                    }
+                    println!();
+                }
+            };
 
         sweep(
             "Cranking pad",
             "pad",
-            &|i| IfftSettings {
-                pad: 2 * i as usize + 2,
-                resolution: reference.resolution * 2,
-                ..reference
+            &|i| {
+                let pad = 2 * i as usize + 2;
+                (pad, IfftSettings { pad, ..reference })
             },
-            14,
+            16,
         );
         sweep(
             "Cranking resolution",
             "resolution",
-            &|i| IfftSettings {
-                pad: reference.pad * 2,
-                resolution: (i as usize + 1) * 128,
-                ..reference
+            &|i| {
+                let resolution = (i as usize + 1) * 64;
+                (
+                    resolution,
+                    IfftSettings {
+                        resolution,
+                        ..reference
+                    },
+                )
             },
-            12,
+            14,
         );
 
-        // Acceptance: the shipping grid sits past both elbows, so its disagreement with the
-        // reference is floor and not truncation or interpolation error.
         println!("\n=== Shipping Grid ===");
         let shipping = IfftSettings::default();
-        let (psi, d, dd) = morse_half_taps(shape, shipping);
+        let (psi, d, _) = morse_half_taps(shape, shipping);
+
         let mut worst: f64 = 0.0;
+        let mut worst_u: f64 = 0.0;
 
         for k in 0..=150 {
             let u = k as f64 * 0.05 + 0.011;
-            let t_ref = u * reference.resolution as f64;
-            let t = u * shipping.resolution as f64;
             let e = rel(
-                resample_hermite(&psi, &d, t, shipping.resolution),
-                resample_hermite(&ref_psi, &ref_d, t_ref, reference.resolution),
-            )
-            .max(rel(
-                resample_hermite(&d, &dd, t, shipping.resolution),
-                resample_hermite(&ref_d, &ref_dd, t_ref, reference.resolution),
-            ));
-            worst = worst.max(e);
+                resample_hermite(
+                    &psi,
+                    &d,
+                    u * shipping.resolution as f64,
+                    shipping.resolution,
+                ),
+                resample_hermite(
+                    &ref_psi,
+                    &ref_d,
+                    u * reference.resolution as f64,
+                    reference.resolution,
+                ),
+            );
+            if e > worst {
+                worst = e;
+                worst_u = u;
+            }
 
             if k % 10 == 0 {
                 println!("  u: {u:>6.2}, err: {:>9}", fmt_e(e));
             }
         }
 
-        println!("  worst over grid: {}", fmt_e(worst));
-        assert!(worst < 1e-5); // Just a shade under!
+        println!("  worst over grid: {} at {:0.2}", fmt_e(worst), worst_u);
+        assert!(worst < 1e-5);
     }
 
     #[test]
