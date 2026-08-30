@@ -1132,4 +1132,88 @@ mod test {
         println!("  worst over lobes: {}", fmt_e(worst));
         assert!(worst < 1e-8);
     }
+
+    #[test]
+    fn multi_cross_reference() {
+        // NEXT Probably this belongs in an integration test module.
+        use super::super::reference;
+
+        let shape = Shape {
+            gamma: 3.0,
+            beta: 3.5,
+        };
+        let beta = shape.beta;
+
+        let settings = IfftSettings {
+            periods: 12,
+            ..IfftSettings::default()
+        };
+        let (psi, _, _) = morse_half_taps(shape, settings);
+
+        let ifi_settings = IfiSettings::reference();
+
+        let res = settings.resolution as f64;
+        let stride = settings.resolution / 4;
+        let last = (10.0 * res) as usize;
+
+        let digits = |x: f64| if x <= 1e-17 { 17.0 } else { -x.log10() };
+
+        let mut worst_ifft: f64 = 17.0;
+        let mut worst_ifft_u: f64 = 0.0;
+        let mut worst_pair: f64 = 17.0;
+        let mut worst_pair_u: f64 = 0.0;
+        let mut optimistic: f64 = 0.0;
+        let mut optimistic_u: f64 = 0.0;
+
+        // All three pairs as digits of agreement, so the columns compare directly.  `ifft` is the
+        // IFFT against the mean of the two integrators, which agree far better with each other
+        // than either does with the grid.  `pred` is what contour's own residual claims for
+        // `ifi-c`; it runs conservative, so `short` is only interesting when positive.
+        println!("\n=== IFFT vs IFI vs deformed contour (beta {beta}) ===");
+        println!(
+            "  {:>6} | {:>9} | {:>5} {:>5} {:>5} {:>5} {:>6}",
+            "u", "scale", "ifft-ifi", "i-c", "pred", "short", "resid"
+        );
+
+        for k in (0..=last).step_by(stride) {
+            let u = k as f64 / res;
+            let v = psi[k];
+
+            let (ifi, _, _) = morse_tap_at(shape, u, ifi_settings);
+            let contour = reference::deformed_contour_morse(shape, u);
+
+            let scale = ifi.norm().max(contour.value.norm());
+            let truth = (ifi + contour.value) * 0.5;
+
+            let ifft_d = digits((v - truth).norm() / scale);
+            let tc = digits((ifi - contour.value).norm() / scale);
+            let pred = digits(contour.residual / scale);
+            let short = tc - pred;
+
+            if ifft_d < worst_ifft {
+                worst_ifft = ifft_d;
+                worst_ifft_u = u;
+            }
+            if tc < worst_pair {
+                worst_pair = tc;
+                worst_pair_u = u;
+            }
+            if short < 0.0 && -short > optimistic {
+                optimistic = -short;
+                optimistic_u = u;
+            }
+
+            println!(
+                "  {u:>6.3} | {:>9} | {ifft_d:>5.1} {tc:>5.1} {pred:>5.1} {short:>5.1} {:>6}",
+                fmt_e(scale),
+                fmt_e(contour.residual),
+            );
+        }
+
+        println!("  worst ifft vs integrators: {worst_ifft:.1} digits at u {worst_ifft_u:.3}");
+        println!("  worst ifi/contour: {worst_pair:.1} digits at u {worst_pair_u:.3}");
+        println!("  residual optimistic by up to {optimistic:.1} digits at u {optimistic_u:.3}");
+
+        assert!(worst_pair > 5.5);
+    }
 }
