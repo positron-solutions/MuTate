@@ -19,6 +19,8 @@
 //! summation while using 32bit operands. If they were fast 32bit operands, it might actually be
 //! worth it!
 
+// NEXT We really need a way to return one compensator-residual pair so that intermediate sums
+// retain acquired precision across intermediate calls to sum.
 // NOTE This is a Shewchuk style expansion?  Worth identifying any formal treatment if we can.
 // NEXT Test against Neumaier to be sure we still see the improvements.
 // NEXT Assemble some pathological test cases to at least think about what functions this can't be
