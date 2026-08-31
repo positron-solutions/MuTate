@@ -220,70 +220,141 @@ fn two_sum_into(acc: &mut f64, comp: &mut f64, x: f64) {
     *acc = t;
 }
 
-/// Tune the inverse Fourier integration knob.
+/// Relative accuracy target for the inverse Fourier integration.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct IfiSettings {
-    /// Relative log-amplitude cut for the integration limits: e^-64 is ~1.6e-28, below the f64
-    /// epsilon of the peak contribution.
-    log_tail: f64,
-    /// Grid points per e-fold of `s`, resolving the shape's log-domain lobe.  Middle `u`, going
-    /// into the tail starts to sag in accuracy at lower settings.
-    log_steps: f64,
+    tol: f64,
+    /// Ceiling on the endpoint series.  The working count is solved per call from the same Stirling
+    /// bound that gates the splice; this only has to be past what any `(cap, osc, tol)` in range
+    /// can ask for.  The `[Complex64; N + 1]` in `tail_moments` is sized by `MAX_TAIL_TERMS`, so a
+    /// larger value here is a request, not a guarantee.
+    terms: usize,
+    /// `ln((terms + 1)!)`, the Stirling denominator.  Fixed by `terms`, so it is paid once here
+    /// rather than per evaluation of the bracket.
+    ln_fact: f64,
+}
+
+/// Backing size for the coefficient array.  `terms` clamps to this.
+const MAX_TAIL_TERMS: usize = 128;
+
+impl IfiSettings {
+    fn with(tol: f64, terms: usize) -> Self {
+        let terms = terms.min(MAX_TAIL_TERMS);
+        Self {
+            tol,
+            terms,
+            ln_fact: (1..=terms as u64 + 1).map(|k| (k as f64).ln()).sum(),
+        }
+    }
+
+    fn reference() -> Self {
+        Self::with(1e-15, MAX_TAIL_TERMS)
+    }
+
+    /// Nats of dynamic range
+    fn range(self) -> f64 {
+        -self.tol.ln()
+    }
 }
 
 impl Default for IfiSettings {
     fn default() -> Self {
-        Self {
-            log_tail: 32.0,
-            log_steps: 4.0,
-        }
+        Self::with(1e-9, MAX_TAIL_TERMS)
     }
 }
 
-/// Dominant saddle: the root continuously connected to `rho = 1` at `lambda = 0`, which is the
-/// one of largest real part throughout.  The endpoint root sits near `i / lambda` and the rest
-/// are rotated into the left half-plane, so the selection never becomes ambiguous.
-fn saddle(shape: Shape, a: f64) -> Complex64 {
-    let gamma = shape.gamma as usize;
-    let mut rho = saddle_set(gamma, a / shape.beta)[..gamma]
-        .iter()
-        .copied()
-        .fold(Complex64::new(f64::NEG_INFINITY, 0.0), |best, r| {
-            if r.re > best.re {
-                r
-            } else {
-                best
-            }
-        });
+/// Exact remainder of the three contour integrals on `(-inf, x]`, where the path lies on the real
+/// axis and `dz = 1`.  Returns `∫ exp(delta) e^{k z} dz` for `k = 1, 2, 3` -- the same three
+/// moments the quadrature accumulates into `psi`, `d`, and `dd`, less their `rho` and `TAU`
+/// prefactors.
+///
+/// With `delta = beta z + (cap - osc) - cap e^{gamma z} + osc e^z`, the residual exponential is a
+/// power series in `w = e^z` whose coefficients are the Cauchy product of `exp(-cap w^gamma)` and
+/// `exp(osc w)`.  Each monomial integrates to `e^{(beta + k + m) x} / (beta + k + m)`.
+/// Exact remainder of the three contour integrals on `(-inf, x]`, where the path lies on the real
+/// axis and `dz = 1`.  Returns `∫ exp(delta) e^{k z} dz` for `k = 1, 2, 3` -- the same three
+/// moments the quadrature accumulates into `psi`, `d`, and `dd`, less their `rho` and `TAU`
+/// prefactors.
+///
+/// With `delta = beta z + (cap - osc) - cap e^{gamma z} + osc e^z`, the residual exponential is a
+/// power series in `w = e^z` whose coefficients are the Cauchy product of `exp(-cap w^gamma)` and
+/// `exp(osc w)`.  Each monomial integrates to `e^{(beta + k + m) x} / (beta + k + m)`.
+///
+/// `terms` carries `1/p!`, so the truncation error is below `1/terms!` once the caller has placed
+/// the cut where `|cap| e^{gamma x}` and `|osc| e^x` are inside the unit disk.
+fn tail_moments(
+    beta: f64,
+    gamma: f64,
+    cap: Complex64,
+    osc: Complex64,
+    x: f64,
+    h: f64,
+    terms: usize,
+) -> [Complex64; 3] {
+    let g = gamma as usize;
+    let mut c = [Complex64::ZERO; MAX_TAIL_TERMS + 1];
 
-    // Durand-Kerner leaves a few ulp; polish in `v = ln rho` so the exponent the contour is
-    // built from is stationary to full precision.
-    let (beta, gamma) = (shape.beta, shape.gamma);
-    let mut v = rho.ln();
-    for _ in 0..3 {
-        let (pow, lin) = ((gamma * v).exp(), v.exp());
-        let g = beta * (Complex64::ONE - pow) + Complex64::I * a * lin;
-        let dg = -beta * gamma * pow + Complex64::I * a * lin;
-        v -= g / dg;
+    let mut a = Complex64::ONE;
+    let mut p = 0usize;
+    while p * g <= terms {
+        let mut b = a;
+        for q in 0..=terms - p * g {
+            c[p * g + q] += b;
+            b *= osc / (q + 1) as f64;
+        }
+        p += 1;
+        a *= -cap / p as f64;
     }
-    rho = v.exp();
 
-    rho
+    let w = x.exp();
+    let mut out = [Complex64::ZERO; 3];
+    for k in 0..3 {
+        let order = beta + (k + 1) as f64;
+
+        // The quadrature is a trapezoid sum on the `h` grid, so the remainder must be the matching
+        // geometric sum -- not the exact integral -- or the splice carries an `O((order*h)^2)` step.
+        let mut pw = (cap - osc + order * x).exp();
+        let mut acc = Complex64::ZERO;
+
+        for m in 0..=terms {
+            let r = order + m as f64;
+            acc += c[m] * pw * h / (1.0 - (-r * h).exp());
+            pw *= w;
+        }
+
+        out[k] = acc;
+    }
+    out
 }
 
 /// Saddles of the normalized exponent: roots of `rho^gamma - i*lambda*rho - 1`,
-/// `lambda = a / beta`. Durand-Kerner, which needs no branch choice for integer `gamma`.
-fn saddle_set(gamma: usize, lambda: f64) -> [Complex64; 4] {
+/// `lambda = a / beta`.  Slot 0 is the dominant root -- the one continuously connected to
+/// `rho = 1` at `lambda = 0`, of largest real part throughout -- polished in `v = ln rho`.
+///
+/// Durand-Kerner needs no branch choice for integer `gamma`, and seeding it from the two
+/// asymptotic regimes rather than a rotated circle cuts the sweep count.  Slots `1..gamma`
+/// are unlabeled; those seeds are paired by index and only need to be distinct.
+/// All `gamma` roots of `rho^gamma - i*lambda*rho - 1`, slot 0 dominant and polished in
+/// `v = ln rho`.  Slots `1..gamma` carry Durand-Kerner accuracy only.
+fn saddles(shape: Shape, lambda: f64) -> ([Complex64; 4], usize) {
+    let gamma = shape.gamma as usize;
     let p = |r: Complex64| r.powi(gamma as i32) - Complex64::I * lambda * r - Complex64::ONE;
 
-    let radius = 1.0 + lambda.powf(1.0 / (gamma - 1) as f64);
-    let mut z = [Complex64::ONE; 4];
-    for k in 0..gamma {
-        let t = TAU * k as f64 / gamma as f64 + 0.4;
-        z[k] = Complex64::from_polar(radius, t);
-    }
+    let mu = lambda.powf(1.0 / (gamma - 1) as f64);
+    let w = mu / (1.0 + mu);
 
-    for _ in 0..60 {
+    let mut z = [Complex64::ONE; 4];
+    for k in 0..gamma - 1 {
+        let small = TAU * k as f64 / gamma as f64;
+        let big = (FRAC_PI_2 + TAU * k as f64) / (gamma - 1) as f64;
+        z[k] = Complex64::from_polar(1.0 + mu, (1.0 - w) * small + w * big);
+    }
+    let endpoint = TAU * (gamma - 1) as f64 / gamma as f64;
+    z[gamma - 1] =
+        Complex64::from_polar(1.0 / (1.0 + lambda), (1.0 - w) * endpoint + w * FRAC_PI_2);
+
+    for _ in 0..12 {
+        let mut moved = 0.0f64;
         for k in 0..gamma {
             let mut denom = Complex64::ONE;
             for j in 0..gamma {
@@ -291,25 +362,47 @@ fn saddle_set(gamma: usize, lambda: f64) -> [Complex64; 4] {
                     denom *= z[k] - z[j];
                 }
             }
-            z[k] -= p(z[k]) / denom;
+            let step = p(z[k]) / denom;
+            z[k] -= step;
+            moved = moved.max(step.norm());
+        }
+        if moved < 1e-3 {
+            break;
         }
     }
-    z
+
+    let mut best = 0;
+    for k in 1..gamma {
+        if z[k].re > z[best].re {
+            best = k;
+        }
+    }
+    z.swap(0, best);
+
+    let (beta, gammaf) = (shape.beta, shape.gamma);
+    let a = lambda * beta;
+    let mut v = z[0].ln();
+    for _ in 0..6 {
+        let (pow, lin) = ((gammaf * v).exp(), v.exp());
+        let g = beta * (Complex64::ONE - pow) + Complex64::I * a * lin;
+        let dg = -beta * gammaf * pow + Complex64::I * a * lin;
+        let step = g / dg;
+        v -= step;
+        if step.norm() < f64::EPSILON * v.norm().max(1.0) {
+            break;
+        }
+    }
+    z[0] = v.exp();
+
+    (z, gamma)
 }
 
-/// Log-distance from the dominant saddle to its nearest neighbor, measured in the
-/// contour's own `v = ln rho`.
-fn neighbor_gap(gamma: usize, lambda: f64, rho: Complex64) -> f64 {
-    saddle_set(gamma, lambda)[..gamma]
-        .iter()
-        .map(|r| (r / rho).ln().norm())
-        .filter(|d| *d > 1e-6)
-        .fold(f64::INFINITY, f64::min)
+fn saddle(shape: Shape, lambda: f64) -> Complex64 {
+    saddles(shape, lambda).0[0]
 }
 
 /// Time-domain amplitude at `u` in carrier periods.  Returns the same dimensionless `psi`, `d`, and
 /// `dd` that `morse_half_taps` should converge to.
-///
 ///
 /// Steepest-descent quadrature of the inverse Fourier integral, carried out in `v = ln rho` where
 /// the integrand
@@ -324,41 +417,279 @@ pub(crate) fn morse_tap_at(
     u: f64,
     settings: IfiSettings,
 ) -> (Complex64, Complex64, Complex64) {
-    // 🤖 Hugely generated.
+    let range = settings.range();
 
-    const SECTOR: f64 = 0.35;
-    const BEND_OFFSET: f64 = 2.8;
-    const BEND_SCALE: f64 = 0.60;
+    const SECTOR: f64 = 0.31;
+    const BEND_OFFSET: f64 = 1.3;
+    const BEND_SCALE: f64 = 0.33;
+    const POLE_MARGIN: f64 = 0.90;
 
     let (beta, gamma) = (shape.beta, shape.gamma);
+    let gi = gamma as i32;
 
     let s_peak = shape.peak();
-    let peak_pow = s_peak.powf(gamma);
     let a = TAU * u;
 
-    let mut rho = saddle(shape, a);
+    let rho = saddle(shape, a / beta);
 
-    let cap = peak_pow * rho.powf(gamma);
+    // `s_peak^gamma = beta / gamma` for the Morse peak, so `gamma * cap = beta * rho^gamma` and the
+    // saddle equation `beta(1 - rho^gamma) + osc = 0` is exactly `delta'(0) = 0`.  The stationary
+    // point of the quadrature exponent is the origin of the `z` frame, not merely near it.
+    let cap = s_peak.powf(gamma) * rho.powi(gi);
     let osc = Complex64::I * a * rho;
 
     let phi2 = gamma * gamma * cap - osc;
     let phi3 = osc - gamma * gamma * gamma * cap;
-    let gap = neighbor_gap(gamma as usize, a / beta, rho);
-
-    // Away from a coalescence the curvature is the only scale and this is the old
-    // `1/sqrt(|phi2|)`.  Where two saddles graze, `phi2` softens and the cubic scale takes
-    // over, which is the Airy width without the Airy machinery.
     let width = (1.0 / phi2.norm().sqrt()).min((6.0 / phi3.norm()).cbrt());
 
     let phi_end = SECTOR * PI / (2.0 * gamma);
     let swing = (rho.arg() - phi_end).max(0.0);
+    let bend = BEND_OFFSET * width.min(BEND_SCALE);
 
-    // The turn has to happen before `Re(cap * e^{gamma z})` changes sign, so it is placed and
-    // shaped in absolute `v`, never in a saddle-derived scale that can grow.
-    let bend_scale = BEND_SCALE;
-    let bend = BEND_OFFSET * width.min(bend_scale);
+    // The turn is centered near the saddle, so the raw tanh displaces `x = 0` off the stationary
+    // point.  Referencing the shift to its own value at the origin makes `z(0) = 0` identically,
+    // which is the property the quadratic model and `peak` both assume.  `dz` is unchanged --
+    // the offset is a constant.
+    let tanh0 = (-bend / BEND_SCALE).tanh();
+    let shift = |t: Complex64| (t - tanh0) * 0.5;
+    let path = |x: Complex64| {
+        let tanh = ((x - bend) / BEND_SCALE).tanh();
+        let z = x - Complex64::I * swing * shift(tanh);
+        let dz = Complex64::ONE
+            - Complex64::I * swing * (Complex64::ONE - tanh * tanh) * 0.5 / BEND_SCALE;
+        (z, dz)
+    };
 
-    let h = width.min(bend_scale) / settings.log_steps;
+    // `gamma` is integral and the `rho_j^3` weight is a pure magnitude, so the exponent needs one
+    // complex `exp` rather than two and the weight closes to `3(ln|rho| + Re z)`.
+    let ln_rho = rho.norm().ln();
+    let exponent = |z: Complex64| {
+        let w = z.exp();
+        let delta = beta * z - cap * (w.powi(gi) - Complex64::ONE) + osc * (w - Complex64::ONE);
+        (delta, w)
+    };
+    let height = |x: f64, y: f64| {
+        let (z, dz) = path(Complex64::new(x, y));
+        let (delta, _) = exponent(z);
+        delta.re + 0.5 * dz.norm_sqr().ln() + 3.0 * (ln_rho + z.re)
+    };
+
+    // The tail assumes `dz = 1`, which needs `1 - |tanh|` below `tol` relative to the swing the
+    // moments would otherwise miss.  Only meaningful when the path actually bends.
+    let x_bend = if swing > 0.0 {
+        bend - 0.5 * BEND_SCALE * (range + (swing * (beta + 3.0)).ln())
+    } else {
+        f64::INFINITY
+    };
+
+    let ln_fact = settings.ln_fact;
+    let max_terms = settings.terms;
+
+    let a_of = |x: f64| {
+        let (c, o) = (cap.norm() * (gamma * x).exp(), osc.norm() * x.exp());
+        (c + o, gamma * c + o)
+    };
+
+    // Radius of the Cauchy product, not its truncation: below this the series argument is inside
+    // the unit disk, the terms decay from the first, and the sum has no cancellation to lose.
+    // Truncation is then a consequence rather than a separate claim.
+    let x_disk = {
+        let mut x = 0.0f64;
+        for _ in 0..8 {
+            let (a_val, a_prime) = a_of(x);
+            let step = a_val.ln() / (a_prime / a_val);
+            x -= step;
+            if step.abs() < 1e-12 * x.abs().max(1.0) {
+                break;
+            }
+        }
+        x
+    };
+
+    // provisional peak
+    let peak = height(0.0, 0.0);
+
+    // Where the integrand is `range` below the crest.  The tail is exact in form but truncated in
+    // practice, so its share of the answer has to be small on its own terms -- the disk radius
+    // bounds the series' validity, not its weight.  On the settled left the path is straight and
+    // the cap term is negligible, so the height is affine and the cut is explicit.
+    let x_mag = (peak - range - (cap - osc).re) / (beta + 3.0);
+    let x_cut = x_disk.min(x_bend).min(x_mag);
+
+    let x_settle = bend + 3.0 * BEND_SCALE;
+
+    let phi_tail = if swing > 0.0 { phi_end } else { rho.arg() };
+    let damp = (gamma * phi_tail).cos().max(f64::MIN_POSITIVE);
+
+    let x_max = {
+        let osc_phase = (osc.arg() - swing).cos();
+        let target = peak - range;
+        let mut x = (((range + peak.abs() + 1.0) / (cap.norm() * damp)).ln() / gamma)
+            .max(x_settle + BEND_SCALE);
+        for _ in 0..6 {
+            let (c, o) = (cap.norm() * (gamma * x).exp(), osc.norm() * x.exp());
+            let f =
+                beta * x + (cap - osc).re - c * damp + o * osc_phase + 3.0 * (ln_rho + x) - target;
+            let df = beta + 3.0 - gamma * c * damp + o * osc_phase;
+            let step = f / df;
+            x = (x - step).max(x_settle);
+            if step.abs() < 1e-12 * x.abs().max(1.0) {
+                break;
+            }
+        }
+        x
+    };
+
+    // Right end of the scan, solved on the line rather than inherited from the real axis: the cap
+    // term damps as `cos(gamma * (phi_tail + y))` off-axis, so the real-axis `x_max` can still be
+    // on the rising side.  Same closed form as `x_max`, one parameter different.
+    let x_end = |y: f64| {
+        let damp_y = (gamma * (phi_tail + y)).cos().max(f64::MIN_POSITIVE);
+        let osc_phase = (osc.arg() - swing + y).cos();
+        let target = peak - range;
+        let mut x = x_max;
+        for _ in 0..8 {
+            let (c, o) = (cap.norm() * (gamma * x).exp(), osc.norm() * x.exp());
+            let f = beta * x + (cap - osc).re - c * damp_y + o * osc_phase + 3.0 * (ln_rho + x)
+                - target;
+            let df = beta + 3.0 - gamma * c * damp_y + o * osc_phase;
+            let step = f / df;
+            x = (x - step).max(x_settle);
+            if step.abs() < 1e-12 * x.abs().max(1.0) {
+                break;
+            }
+        }
+        x
+    };
+
+    // `d/dx height` on the line at `y`, carrying the deformation: the crest sits inside the bend
+    // whenever the path swings, so the tanh Jacobian is part of the stationarity condition, not a
+    // correction to it.  Secant rather than Newton -- the second derivative of the Jacobian term
+    // is not worth forming, and the bracket below is what actually guarantees the basin.
+    let slope = |x: f64, y: f64| {
+        let c = Complex64::new(x, y);
+        let tanh = ((c - bend) / BEND_SCALE).tanh();
+        let sech2 = Complex64::ONE - tanh * tanh;
+        let dz = Complex64::ONE - Complex64::I * swing * sech2 * 0.5 / BEND_SCALE;
+        let ddz = Complex64::I * swing * sech2 * tanh / (BEND_SCALE * BEND_SCALE);
+        let (z, _) = path(c);
+        let w = z.exp();
+        let ddelta = beta - gamma * cap * w.powi(gi) + osc * w;
+        ((ddelta + 3.0) * dz + ddz / dz).re
+    };
+
+    // Need peak
+    /// Roots of `beta + 3 - gamma*cap*w^gamma + osc*w = 0`, the stationarity condition for
+    /// `Re(delta + 3z)`.  These are the saddles of the weighted exponent -- the local maxima of the
+    /// height along the path -- so the crest is one of them rather than something to be searched
+    /// for.  Durand-Kerner from a circle: the roots are well separated here and only need to reach
+    /// the basin of the polish below.
+    let crest_roots = || {
+        let g = gamma as usize;
+        let lead = -gamma * cap;
+        let mut w = [Complex64::ONE; 4];
+        let seed = ((beta + 3.0) / lead.norm()).powf(1.0 / gamma);
+        for k in 0..g {
+            w[k] = Complex64::from_polar(seed, TAU * k as f64 / g as f64 + 0.4);
+        }
+        for _ in 0..40 {
+            let mut moved = 0.0f64;
+            for k in 0..g {
+                let p = lead * w[k].powi(gi) + osc * w[k] + (beta + 3.0);
+                let mut den = lead;
+                for j in 0..g {
+                    if j != k {
+                        den *= w[k] - w[j];
+                    }
+                }
+                let step = p / den;
+                w[k] -= step;
+                moved = moved.max(step.norm());
+            }
+            if moved < 1e-13 {
+                break;
+            }
+        }
+        (w, g)
+    };
+
+    let crest = |y: f64| -> Option<f64> {
+        let hi_end = x_end(y);
+        let (w, g) = crest_roots();
+
+        let mut best: Option<(f64, f64)> = None;
+        for k in 0..g {
+            // `z.re = x` on the path up to the swing's own imaginary part, so the root's log is
+            // already the right seed; the secant carries the Jacobian correction.
+            // let mut x0 = w[k].ln().re;
+
+            // The polynomial lives in `z`, the bracket in `x`, and on the bent path they differ by
+            // the swing's real part -- which depends on `y`, so a seed taken straight from
+            // `Re(ln w)` is displaced on exactly the lines where the bend is doing the most work.
+            // Two fixed-point passes invert `Re path(x + iy) = Re ln w`; the map is a contraction
+            // here because the tanh's slope is bounded by `1 / BEND_SCALE` and the swing is small
+            // against it.
+            let target = w[k].ln().re;
+            let mut x0 = target;
+            for _ in 0..2 {
+                let t = ((Complex64::new(x0, y) - bend) / BEND_SCALE).tanh();
+                x0 = target - swing * shift(t).im;
+            }
+            let mut x1 = x0 + 1e-3;
+
+            let mut s0 = slope(x0, y);
+            for _ in 0..24 {
+                let s1 = slope(x1, y);
+                if (s1 - s0).abs() < f64::MIN_POSITIVE {
+                    break;
+                }
+                let x2 = x1 - s1 * (x1 - x0) / (s1 - s0);
+                x0 = x1;
+                s0 = s1;
+                x1 = x2;
+                if (x1 - x0).abs() < 1e-12 * x1.abs().max(1.0) {
+                    break;
+                }
+            }
+
+            if x1 > x_cut && x1 < hi_end && slope(x1, y).abs() < 1.0 {
+                let h = height(x1, y);
+                if best.map_or(true, |(bh, _)| h > bh) {
+                    best = Some((h, x1));
+                }
+            }
+        }
+        best.map(|(_, x)| x)
+    };
+
+    // The good peak
+    // let peak = match crest(0.0) {
+    //     Some(x) => height(x, 0.0).max(height(0.0, 0.0)),
+    //     None => height(0.0, 0.0),
+    // };
+
+    let strip = |y: f64| {
+        let ends = height(x_cut, y).max(height(x_end(y), y));
+        match crest(y) {
+            Some(x) => height(x, y).max(ends),
+            None => ends,
+        }
+    };
+
+    let y_tanh = FRAC_PI_2 * BEND_SCALE;
+    let y_cap = FRAC_PI_2 / gamma;
+    let blend = (swing / BEND_SCALE).min(1.0);
+    let y_pole = POLE_MARGIN * (blend * y_tanh.min(y_cap) + (1.0 - blend) * y_cap);
+
+    let h = (1..=5)
+        .map(|k| {
+            let y = y_pole * k as f64 / 5.0;
+            TAU * y / (range + (strip(y).max(strip(-y)) - peak).max(0.0))
+        })
+        .fold(0.0f64, f64::max);
+
+    let lo = (x_cut / h).ceil() as i64;
+    let hi = (x_max / h).ceil() as i64;
 
     let mut psi_re = Accumulator::<f64>::default();
     let mut psi_im = Accumulator::<f64>::default();
@@ -367,27 +698,25 @@ pub(crate) fn morse_tap_at(
     let mut dd_re = Accumulator::<f64>::default();
     let mut dd_im = Accumulator::<f64>::default();
 
-    // Returns the log-magnitude of the larger of the two terms, carrying the extra `rho_j` that
-    // `d` holds, so the caller can walk out to the tail cut.
-    let mut tap = |x: f64| {
-        let tanh = ((x - bend) / bend_scale).tanh();
-        let z = Complex64::new(x, -swing * (1.0 + tanh) * 0.5);
-        let dz = Complex64::new(1.0, -swing * (1.0 - tanh * tanh) * 0.5 / bend_scale);
+    // Largest height reached on the walked path, and where.  On a correct single-thimble
+    // deformation this is `peak` at `j = 0`.
+    let mut walk_top = f64::NEG_INFINITY;
+    let mut walk_top_x = 0.0f64;
 
-        let delta = beta * z - cap * ((gamma * z).exp() - Complex64::ONE)
-            + osc * (z.exp() - Complex64::ONE);
+    for j in lo..=hi {
+        let x = j as f64 * h;
+        let (z, dz) = path(Complex64::new(x, 0.0));
+        let (delta, w) = exponent(z);
 
-        let mag = delta.re + x.max(2.0 * x);
-
-        if !(mag > -settings.log_tail) {
-            return mag;
+        let hgt = delta.re + 0.5 * dz.norm_sqr().ln() + 3.0 * (ln_rho + z.re);
+        if hgt > walk_top {
+            walk_top = hgt;
+            walk_top_x = x;
         }
 
-        let rho_j = rho * z.exp();
-        let step = rho_j * TAU;
-        let term = delta.exp() * (h * dz) * rho_j;
-
-        let dv = term * rho_j * TAU;
+        let step = rho * w * TAU;
+        let term = delta.exp() * (h * dz) * rho * w;
+        let dv = term * step;
         let ddv = dv * step;
 
         psi_re.add(term.re);
@@ -396,28 +725,44 @@ pub(crate) fn morse_tap_at(
         d_im.add(dv.im);
         dd_re.add(ddv.re);
         dd_im.add(ddv.im);
-
-        mag
-    };
-
-    tap(0.0);
-
-    let margin = (gap.min(2.0 * width) / h).ceil() as usize + 2;
-
-    for dir in [1.0, -1.0] {
-        let (mut j, mut below) = (1usize, 0usize);
-        while below < margin {
-            if tap(dir * j as f64 * h) > -settings.log_tail {
-                below = 0;
-            } else {
-                below += 1;
-            }
-            j += 1;
-        }
     }
 
-    let ln_scale = beta * rho.ln() - cap + osc;
-    let scale = ln_scale.exp() * s_peak.powf(beta);
+    let edge = lo as f64 * h - h;
+
+    let mut tail_terms = 0usize;
+    if height(edge, 0.0) - peak > -range {
+        let terms = {
+            let a_ser = cap.norm() * (gamma * edge).exp() + osc.norm() * edge.exp();
+            let head = beta * edge + (cap - osc).re + a_ser + range;
+            let ln_a = a_ser.ln();
+            let mut ln_f = 0.0;
+            let mut n = max_terms;
+            for k in 0..max_terms {
+                ln_f += ((k + 1) as f64).ln();
+                if head + (k + 1) as f64 * ln_a - ln_f < 0.0 {
+                    n = k;
+                    break;
+                }
+            }
+            n
+        };
+        tail_terms = terms + 1;
+
+        let m = tail_moments(beta, gamma, cap, osc, edge, h, terms);
+
+        let tail_psi = rho * m[0];
+        let tail_d = rho * rho * TAU * m[1];
+        let tail_dd = rho * rho * rho * TAU * TAU * m[2];
+
+        psi_re.add(tail_psi.re);
+        psi_im.add(tail_psi.im);
+        d_re.add(tail_d.re);
+        d_im.add(tail_d.im);
+        dd_re.add(tail_dd.re);
+        dd_im.add(tail_dd.im);
+    }
+
+    let scale = (beta * rho.ln() - cap + osc).exp() * s_peak.powf(beta);
 
     let psi = Complex64::new(psi_re.sum(), psi_im.sum()) * scale;
     let d = Complex64::new(d_re.sum(), d_im.sum()) * scale;
@@ -675,10 +1020,7 @@ mod test {
         // the floor and not the grid.
 
         let shape = Shape::from_q(3.5, 3.0);
-        let oracle = IfiSettings {
-            log_tail: 24.0,
-            log_steps: 6.5,
-        };
+        let oracle = IfiSettings::reference();
 
         let base = IfftSettings {
             periods: 8,
@@ -687,7 +1029,7 @@ mod test {
         };
         // Amplitude has to clear the roundoff floor by this much before a cell reports.
         const LIVE: f64 = 16.0;
-        const TOL: f64 = 1e-6;
+        const TOL: f64 = 1e-4; // Around u = 7, IFFT and IFI start to disagree enough to trip any more.
 
         let rel = |v: Complex64, r: Complex64, scale: f64| (v - r).norm() / scale;
 
@@ -838,14 +1180,21 @@ mod test {
 
         let shipping = IfftSettings::default();
         let (psi, d, dd) = morse_half_taps(shape, shipping);
+
         let noise = (shipping.n_fft() as f64).log2().sqrt() * f64::EPSILON * peak;
-        let floor = noise.max((-oracle.log_tail).exp() * peak);
+        let floor = noise.max(oracle.tol * peak);
+
         let reach = shipping.reach();
 
         let mut worst = [(0.0f64, 0.0f64); 2];
         let mut live_to = [0.0f64; 2];
 
-        println!("  {:>6} | {:>9} {:>9} | {:>9}", "u", "psi", "d", "decay");
+        println!(
+            "  {:>6} | {:>9} {:>9} | {:>9} {:>9} | {:>9}",
+            "u", "psi", "d", "ifft-psi", "ifft-d", "decay"
+        );
+
+        let mut drift = [(0.0f64, 0.0f64); 2];
 
         let steps = ((reach - 0.011) / 0.05) as u32;
 
@@ -869,7 +1218,30 @@ mod test {
                 rel(resample_hermite(&d, &dd, t, shipping.resolution), d_ref, ds),
             ];
 
+            // Nearest grid index; the oracle is exact at any `u`, so evaluating it *there*
+            // isolates solver-vs-solver drift from Hermite error.
+            let idx = t.round() as usize;
+            let u_grid = idx as f64 / shipping.resolution as f64;
+            let (psi_g, d_g, _) = morse_tap_at(shape, u_grid, oracle);
+            let g = [rel(psi[idx], psi_g, ps), rel(d[idx], d_g, ds)];
+
+            if k % 10 == 0 {
+                println!(
+                    "  {u:>6.2} | {:>9} {:>9} | {:>9} {:>9} | {:>9}",
+                    fmt_e(e[0]),
+                    fmt_e(e[1]),
+                    fmt_e(g[0]),
+                    fmt_e(g[1]),
+                    fmt_e(ps / peak)
+                );
+            }
+
             let live = [ps > floor * LIVE, ds > floor * LIVE];
+            for j in 0..2 {
+                if live[j] && g[j] > drift[j].0 {
+                    drift[j] = (g[j], u);
+                }
+            }
 
             for j in 0..2 {
                 if !live[j] {
@@ -880,29 +1252,21 @@ mod test {
                     worst[j] = (e[j], u);
                 }
             }
-
-            if k % 10 == 0 {
-                println!(
-                    "  {u:>6.2} | {:>9} {:>9} | {:>9}",
-                    fmt_e(e[0]),
-                    fmt_e(e[1]),
-                    fmt_e(ps / peak)
-                );
-            }
         }
 
         println!(
             "\n  floor {} at peak scale (ifft {}, oracle {})",
             fmt_e(floor / peak),
             fmt_e(noise / peak),
-            fmt_e((-oracle.log_tail).exp())
+            fmt_e((-oracle.tol))
         );
         for (j, name) in ["psi", "d"].iter().enumerate() {
             println!(
-                "  {name:>3}: worst {} at u {:.3} ({:.0}x under tol), live to u {:.2}",
+                "  {name:>3}: worst {} at u {:.3}, oracle drift {} at u {:.3}, live to u {:.2}",
                 fmt_e(worst[j].0),
                 worst[j].1,
-                TOL / worst[j].0,
+                fmt_e(drift[j].0),
+                drift[j].1,
                 live_to[j]
             );
         }
@@ -916,16 +1280,13 @@ mod test {
     #[test]
     fn ifi_precision_convergence() {
         let shape = Shape::from_q(3.5, 3.0);
-        let reference = IfiSettings {
-            log_tail: 40.0,
-            log_steps: 7.0,
-        };
+        let reference = IfiSettings::reference();
 
         let rel = |v: Complex64, r: Complex64| (v - r).norm() / r.norm();
 
         // Peak, shoulder, the old sick zone around 3.7-4.7, and deep tail.
         let probes = [
-            0.0, 0.8, 2.0, 2.33, 3.7, 4.7, 5.5, 7.5, 8.0, 8.2, 8.33, 11.0, 14.0,
+            0.0, 0.8, 2.0, 2.4, 3.7, 4.7, 5.5, 6.7, 7.911, 8.2, 8.33, 11.0, 14.0,
         ];
 
         #[derive(Clone, Copy)]
@@ -957,13 +1318,9 @@ mod test {
 
                 for i in 0..rows {
                     let settings = vary(i);
-                    let label = if knob == "log tail" {
-                        settings.log_tail
-                    } else {
-                        settings.log_steps
-                    };
+                    let label = settings.tol;
 
-                    print!("  {label:>10.1} |");
+                    print!("  {label:>10.1e} |");
                     for u in probes {
                         let r = pick(tap, morse_tap_at(shape, u, reference));
                         let v = pick(tap, morse_tap_at(shape, u, settings));
@@ -973,28 +1330,20 @@ mod test {
                 }
             };
 
+        let matrix_start = std::time::Instant::now();
         for tap in [Tap::Psi, Tap::D, Tap::Dd] {
             sweep(
                 tap,
-                "Cranking log tail",
-                "log tail",
+                "Cranking tol",
+                "tol",
                 &|i| IfiSettings {
-                    log_tail: (4 * i + 2) as f64,
+                    tol: 1.0 / 10.0f64.powf((i + 1) as f64),
                     ..reference
                 },
-                12,
-            );
-            sweep(
-                tap,
-                "Cranking log steps",
-                "log steps",
-                &|i| IfiSettings {
-                    log_steps: (1 + i) as f64 * 1.0,
-                    ..reference
-                },
-                12,
+                13,
             );
         }
+        let matrix_time = matrix_start.elapsed();
 
         // Acceptance: at the settings we intend to ship, the floor is flat in u.  A dense grid so a
         // narrow seam can't hide between probes.
@@ -1021,7 +1370,8 @@ mod test {
         }
 
         println!("  worst over grid: {} at {:0.2}", fmt_e(worst), worst_u);
-        assert!(worst < 1e-9);
+        println!("  matrix completed in: {}", matrix_time.as_millis());
+        assert!(worst < 1e-8);
     }
 
     #[test]
