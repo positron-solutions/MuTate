@@ -19,6 +19,7 @@
 //! summation while using 32bit operands. If they were fast 32bit operands, it might actually be
 //! worth it!
 
+// NOTE This is a Shewchuk style expansion?  Worth identifying any formal treatment if we can.
 // NEXT Test against Neumaier to be sure we still see the improvements.
 // NEXT Assemble some pathological test cases to at least think about what functions this can't be
 // used to sum, especially ones where the other methods are better.
@@ -51,6 +52,7 @@ use num_traits::Float;
 /// it is carried into the band it now belongs to.  That carry is what keeps each accumulator small
 /// relative to its own compensator, alleviating the worst case magnitude differences that can
 /// frustrate simple Kahan summation.
+#[derive(Clone, Copy)]
 pub struct Accumulator<F, const N: usize = 32> {
     slots: Aligned<A64, [(F, F); N]>,
     min_exp: i32,

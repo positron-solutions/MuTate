@@ -771,6 +771,15 @@ pub(crate) fn morse_tap_at(
     (psi, d, dd)
 }
 
+
+fn fmt_e(x: f64) -> String {
+    let s = format!("{x:+.2e}");
+    // split "±m.mme±dd" into mantissa and exponent, then zero-pad the exponent
+    let (mantissa, exp) = s.split_once('e').unwrap_or(("999", "999"));
+    let exp: i32 = exp.parse().unwrap();
+    format!("{mantissa}e{exp:+03}")
+}
+
 #[cfg(test)]
 mod test {
 
@@ -780,14 +789,6 @@ mod test {
     // These tests are mostly print tests used to calibrate, fill in empirical values, and design
     // the accuracy of the wavelet.
     // NEXT feature rule?
-
-    fn fmt_e(x: f64) -> String {
-        let s = format!("{x:+.2e}");
-        // split "±m.mme±dd" into mantissa and exponent, then zero-pad the exponent
-        let (mantissa, exp) = s.split_once('e').unwrap_or(("999", "999"));
-        let exp: i32 = exp.parse().unwrap();
-        format!("{mantissa}e{exp:+03}")
-    }
 
     #[ignore] // 12.5ms on a Zen2+ core
     #[test]
