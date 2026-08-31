@@ -6,10 +6,13 @@
 //! `∫₀^∞ ω^β e^{-ω^γ} e^{iωt} dω` by steepest descent in `z = ln(ω/ρ)`.  The log coordinate
 //! removes the branch point at the origin, so the saddle condition is the trinomial
 //! `u^γ - iτu - 1 = 0` and every derivative of the phase is affine in the single number
-//! `B = u^γ - 1`.  Saddle selection is a dominance sort plus an erfc weight; there is no path
-//! tracing and no continuation, so the result is a pure function of `t`.
-
-// 🤖 Of course.
+//! `B = u^γ - 1`.
+//!
+//! Which saddles the original contour decomposes into is a membership vector `m`, not a
+//! height ranking.  `m` is exact at `τ = 0` (roots of unity, `m = (1,0,…,0)`) and changes
+//! only at Stokes crossings, where `Im Δ_jk` changes sign with `Re Δ_jk > 0`.  We march `τ`
+//! from zero internally, carrying root identity and `m` together, so the result stays a pure
+//! function of `t` and the caller owes us no grid continuity.
 
 use libm::erfc;
 use num_complex::Complex64;
@@ -19,7 +22,11 @@ use super::spec::Shape;
 use super::whatsleft::Accumulator;
 
 const R_MAX: usize = 14;
-const DK_ITERS: usize = 200;
+const DK_ITERS: usize = 64;
+const MARCH_BASE: usize = 24;
+const MARCH_PER_TAU: f64 = 8.0;
+const MARCH_MAX: usize = 512;
+const LIVE: f64 = 1e-15;
 
 pub struct JetMorseResult {
     pub psi: Complex64,
@@ -30,33 +37,25 @@ pub struct JetMorseResult {
 /// Caller owns: `beta > 0`, `gamma` a positive integer ≥ 2.
 pub fn jet_morse(shape: Shape, u: f64) -> JetMorseResult {
     let Shape { beta, gamma } = shape;
+    let g = gamma as usize;
     let rho = (beta / gamma).powf(1.0 / gamma);
     let t = TAU * u / rho;
     let tau = rho * t.abs() / beta;
 
-    let saddles: Vec<Saddle> = durand_kerner(gamma as usize, tau)
-        .into_iter()
-        .filter(|u| u.im >= -1e-12)
-        .map(|u| Saddle::new(u, gamma))
-        .collect();
+    let (roots, weights) = march(g, gamma, beta, tau);
+    let saddles: Vec<Saddle> = roots.iter().map(|&u| Saddle::new(u, gamma)).collect();
 
-    let primary = saddles
+    let active: Vec<usize> = (0..g).filter(|&i| weights[i].abs() > LIVE).collect();
+
+    let dominant = *active
         .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.phi.re.partial_cmp(&b.1.phi.re).unwrap())
-        .map(|(i, _)| i)
+        .max_by(|&&a, &&b| saddles[a].phi.re.partial_cmp(&saddles[b].phi.re).unwrap())
         .unwrap();
 
-    let singulants: Vec<Complex64> = saddles
+    let order = active
         .iter()
-        .map(|s| (saddles[primary].phi - s.phi) * beta)
-        .collect();
-
-    let order = singulants
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != primary)
-        .map(|(_, d)| d.norm())
+        .filter(|&&i| i != dominant)
+        .map(|&i| ((saddles[dominant].phi - saddles[i].phi) * beta).norm())
         .fold(f64::INFINITY, f64::min)
         .clamp(1.0, R_MAX as f64) as usize;
 
@@ -65,16 +64,9 @@ pub fn jet_morse(shape: Shape, u: f64) -> JetMorseResult {
     let mut d_re: Accumulator<f64> = Accumulator::default();
     let mut d_im: Accumulator<f64> = Accumulator::default();
 
-    for (i, s) in saddles.iter().enumerate() {
-        let w = if i == primary {
-            1.0
-        } else {
-            let delta = singulants[i];
-            0.5 * erfc(-delta.im / (2.0 * delta.re).sqrt())
-        };
-        if w == 0.0 {
-            continue;
-        }
+    for &i in &active {
+        let s = &saddles[i];
+        let w = weights[i];
         let p = s.contribution(beta, gamma, rho, 1, order) * w;
         let q = s.contribution(beta, gamma, rho, 2, order) * w * Complex64::i();
         psi_re.add(p.re);
@@ -82,9 +74,6 @@ pub fn jet_morse(shape: Shape, u: f64) -> JetMorseResult {
         d_re.add(q.re);
         d_im.add(q.im);
     }
-
-    // let psi = Complex64::new(psi_re.sum(), psi_im.sum());
-    // let d = Complex64::new(d_re.sum(), d_im.sum());
 
     let psi = Complex64::new(psi_re.sum(), psi_im.sum()) / rho;
     let d = Complex64::new(d_re.sum(), d_im.sum()) / rho;
@@ -99,6 +88,94 @@ pub fn jet_morse(shape: Shape, u: f64) -> JetMorseResult {
     }
 }
 
+/// Last Stokes crossing seen on one ordered pair: the sign of the increment and the
+/// dominant saddle's membership at the moment it fired.
+#[derive(Clone, Copy)]
+struct Crossing {
+    s: f64,
+    mj: f64,
+}
+
+/// Marches `τ` from the exact seed to `tau`, carrying root identity and membership.
+/// Returns the roots at `tau` and their real, erfc-smoothed weights.
+fn march(g: usize, gamma: f64, beta: f64, tau: f64) -> (Vec<Complex64>, Vec<f64>) {
+    let steps = (MARCH_BASE + (MARCH_PER_TAU * tau) as usize).min(MARCH_MAX);
+
+    let mut roots: Vec<Complex64> = (0..g)
+        .map(|k| Complex64::from_polar(1.0, TAU * k as f64 / g as f64))
+        .collect();
+    let mut m = vec![0.0_f64; g];
+    m[0] = 1.0;
+
+    let mut delta = singulants(&roots, gamma, beta);
+    let mut prev_im: Vec<f64> = delta.iter().map(|d| d.im).collect();
+    let mut last: Vec<Option<Crossing>> = vec![None; g * g];
+
+    for step in 1..=steps {
+        let ti = tau * step as f64 / steps as f64;
+        durand_kerner(&mut roots, g, ti);
+        delta = singulants(&roots, gamma, beta);
+        let im: Vec<f64> = delta.iter().map(|d| d.im).collect();
+        let held = m.clone();
+
+        for j in 0..g {
+            for k in 0..g {
+                let idx = j * g + k;
+                if j == k || delta[idx].re <= 0.0 || prev_im[idx] * im[idx] >= 0.0 {
+                    continue;
+                }
+                let s = im[idx].signum();
+                m[k] += s * held[j];
+                last[idx] = Some(Crossing { s, mj: held[j] });
+            }
+        }
+
+        if step < steps {
+            prev_im = im;
+        } else {
+            let mut w = m.clone();
+            for j in 0..g {
+                for k in 0..g {
+                    let idx = j * g + k;
+                    if j == k || delta[idx].re <= 0.0 {
+                        continue;
+                    }
+                    let scale = (2.0 * delta[idx].re).sqrt();
+                    match last[idx] {
+                        Some(c) => {
+                            let sigma = c.s * delta[idx].im / scale;
+                            w[k] += c.mj * c.s * (0.5 * erfc(-sigma) - 1.0);
+                        }
+                        None => {
+                            let s = (im[idx] - prev_im[idx]).signum();
+                            let sigma = s * delta[idx].im / scale;
+                            if sigma < 0.0 {
+                                w[k] += m[j] * s * 0.5 * erfc(-sigma);
+                            }
+                        }
+                    }
+                }
+            }
+            return (roots, w);
+        }
+    }
+
+    (roots, m)
+}
+
+/// Row-major `Δ_jk = β(Φ_j - Φ_k)`.
+fn singulants(roots: &[Complex64], gamma: f64, beta: f64) -> Vec<Complex64> {
+    let phi: Vec<Complex64> = roots.iter().map(|&u| Saddle::new(u, gamma).phi).collect();
+    let g = roots.len();
+    let mut d = vec![Complex64::default(); g * g];
+    for j in 0..g {
+        for k in 0..g {
+            d[j * g + k] = (phi[j] - phi[k]) * beta;
+        }
+    }
+    d
+}
+
 struct Saddle {
     u: Complex64,
     b: Complex64,
@@ -106,9 +183,11 @@ struct Saddle {
 }
 
 impl Saddle {
-    /// `B = u^γ - 1 = iτu`, and `Φ = ln u + B(1 - 1/γ) - 1/γ` follows from the saddle condition.
+    /// `B = u^γ - 1 = iτu`, and `Φ = ln u + B(1 - 1/γ) - 1/γ` follows from the saddle
+    /// condition.  Integer power, not `powf`: the principal branch of `u^γ` disagrees with
+    /// the polynomial once `γ·arg u` leaves `(-π, π]`, which is most of the root set.
     fn new(u: Complex64, gamma: f64) -> Self {
-        let b = u.powf(gamma) - 1.0;
+        let b = u.powi(gamma as i32) - 1.0;
         let phi = u.ln() + b * (1.0 - 1.0 / gamma) - 1.0 / gamma;
         Saddle { u, b, phi }
     }
@@ -168,12 +247,8 @@ impl Saddle {
     }
 }
 
-fn durand_kerner(gamma: usize, tau: f64) -> Vec<Complex64> {
-    let radius = (1.0 + tau).powf(1.0 / (gamma as f64 - 1.0));
-    let mut r: Vec<Complex64> = (0..gamma)
-        .map(|k| Complex64::from_polar(radius, 2.0 * PI * k as f64 / gamma as f64 + 0.3))
-        .collect();
-
+/// Warm-started in place, so root identity survives the step.
+fn durand_kerner(r: &mut [Complex64], gamma: usize, tau: f64) {
     for _ in 0..DK_ITERS {
         let mut moved = 0.0_f64;
         for k in 0..gamma {
@@ -192,7 +267,6 @@ fn durand_kerner(gamma: usize, tau: f64) -> Vec<Complex64> {
             break;
         }
     }
-    r
 }
 
 fn series_mul(a: &[Complex64], b: &[Complex64]) -> Vec<Complex64> {
