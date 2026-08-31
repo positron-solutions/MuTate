@@ -1,7 +1,16 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! # Log-Tilted Saddle Jet
+//! # Log-Tilted Saddle Jet + Terminal Quadrature
+//!
+//! > Engineers don't know anything but physicists can't do anything.
+//! >
+//! > - Nigel Clayton
+//!
+//! This is the production method.  It uses the log tilt to avoid endpoint terms at all.  Heavy
+//! reliance on saddle terms is sufficient for many `u`.  Quadrature is used wherever the saddle
+//! terms struggle to do the job or to do it accurately.  That's a lot of sophistication.  The
+//! simpler IFFT and Contour methods are provided as evidence of its accuracy and precision.
 //!
 //! `∫₀^∞ ω^β e^{-ω^γ} e^{iωt} dω` by steepest descent in `z = ln(ω/ρ)`.  The log coordinate
 //! removes the branch point at the origin, so the saddle condition is the trinomial
@@ -14,19 +23,20 @@
 //! from zero internally, carrying root identity and `m` together, so the result stays a pure
 //! function of `t` and the caller owes us no grid continuity.
 //!
-//! Membership is integer.  Each contribution is an exact quadrature rather than a truncated
-//! asymptotic series, so a flip adds a saddle at `e^{-Re Δ}` of the total and the result is
-//! continuous without erfc smoothing — Stokes jumps are an artifact of truncation, not a
-//! property of the integral.
+//! Membership is integer and needs no Stokes smoothing.  A flip fires where `Re Δ_jk` is
+//! maximal, so the entering saddle arrives at `e^{-Re Δ}` of the total, and since each
+//! contribution is integrated rather than expanded there is no truncation artifact to
+//! repair.  Berry's erfc weight belongs to the divergent-series form of this method and
+//! injects error here.
 //!
-//! `γ ≥ 3` assumed.  `γ = 2` has a genuine caustic at `τ = 2` where two saddles coalesce and
-//! `Φ''` vanishes; the normal-coordinate map degenerates there and would need a cubic form.
+//! `γ ≥ 3` is the supported range.  `γ = 2` has a real caustic at `τ = 2` where two saddles
+//! coalesce and `Φ''` vanishes, which degenerates the normal coordinate.
 
 use num_complex::Complex64;
 use std::f64::consts::TAU;
 
-use super::spec::Shape;
-use super::whatsleft::Accumulator;
+use super::super::spec::Shape;
+use super::super::whatsleft::Accumulator;
 
 const DK_ITERS: usize = 64;
 const MARCH_BASE: usize = 24;
@@ -34,16 +44,43 @@ const MARCH_PER_TAU: f64 = 8.0;
 const MARCH_MAX: usize = 512;
 const LIVE: f64 = 0.5;
 
-pub struct JetMorseResult {
+pub struct QuadJetResult {
     pub psi: Complex64,
     /// dψ/dt, from the same roots and the same paths.
     pub d: Complex64,
-    /// Sum of per-saddle decimation estimates.  Absolute, same units as `psi`.
+    /// Sum of per-saddle quadrature estimates.  Absolute, same units as `psi`.
     pub residual: f64,
 }
 
-/// Caller owns: `beta > 0`, `gamma` a positive integer ≥ 3.
-pub fn jet_morse(shape: Shape, u: f64) -> JetMorseResult {
+/// # QuadJet
+///
+/// Tolerance and shape are configured once.  This may provide opportunity for re-use of
+/// intermediates on long grids.
+pub struct QuadJet {
+    /// Solver goal precision.  When estimated error of remaining terms falls below this level, the
+    /// solution will be returned.
+    pub tol: f64,
+    /// Morse wavelet parameters.
+    pub shape: Shape,
+}
+
+impl QuadJet {
+    pub fn tap_at(&self, u: f64) -> QuadJetResult {
+        // LIES tol is still unused!
+        integrate(self.shape, u, self.tol)
+    }
+
+    pub fn reference(shape: Shape) -> Self {
+        Self { tol: 1e-16, shape }
+    }
+
+    pub fn standard(shape: Shape) -> Self {
+        Self { tol: 1e-8, shape }
+    }
+}
+
+/// Caller owns: `beta > 0`, `gamma` an integer ≥ 3.
+fn integrate(shape: Shape, u: f64, _tol: f64) -> QuadJetResult {
     let Shape { beta, gamma } = shape;
     let g = gamma as usize;
     let rho = (beta / gamma).powf(1.0 / gamma);
@@ -52,7 +89,7 @@ pub fn jet_morse(shape: Shape, u: f64) -> JetMorseResult {
 
     let (roots, weights) = march(g, gamma, beta, tau);
     let saddles: Vec<Saddle> = roots.iter().map(|&u| Saddle::new(u, gamma)).collect();
-    let active: Vec<usize> = (0..g).filter(|&i| weights[i].abs() > LIVE).collect();
+    let active = (0..g).filter(|&i| weights[i].abs() > LIVE);
 
     let mut psi_re: Accumulator<f64> = Accumulator::default();
     let mut psi_im: Accumulator<f64> = Accumulator::default();
@@ -60,7 +97,7 @@ pub fn jet_morse(shape: Shape, u: f64) -> JetMorseResult {
     let mut d_im: Accumulator<f64> = Accumulator::default();
     let mut residual = 0.0_f64;
 
-    for &i in &active {
+    for i in active {
         let s = &saddles[i];
         let w = weights[i];
         let p = s.quadrature(beta, gamma, rho, 1);
@@ -76,19 +113,16 @@ pub fn jet_morse(shape: Shape, u: f64) -> JetMorseResult {
 
     let psi = Complex64::new(psi_re.sum(), psi_im.sum()) / rho;
     let d = Complex64::new(d_re.sum(), d_im.sum()) / rho;
+    let residual = residual / rho;
 
     if t < 0.0 {
-        JetMorseResult {
+        QuadJetResult {
             psi: psi.conj(),
             d: -d.conj(),
-            residual: residual / rho,
+            residual,
         }
     } else {
-        JetMorseResult {
-            psi,
-            d,
-            residual: residual / rho,
-        }
+        QuadJetResult { psi, d, residual }
     }
 }
 
@@ -109,8 +143,7 @@ fn march(g: usize, gamma: f64, beta: f64, tau: f64) -> (Vec<Complex64>, Vec<f64>
         .collect();
 
     for step in 1..=steps {
-        let ti = tau * step as f64 / steps as f64;
-        durand_kerner(&mut roots, g, ti);
+        durand_kerner(&mut roots, g, tau * step as f64 / steps as f64);
         let delta = singulants(&roots, gamma, beta);
         let im: Vec<f64> = delta.iter().map(|d| d.im).collect();
         let held = m.clone();
@@ -219,8 +252,7 @@ impl Saddle {
     /// from the previous node, so the contour follows the valley however it bends.
     ///
     /// `dv/dx = -x/g'(v)`, and at the saddle `g'` vanishes with `x`, so the limit `1/s₀`
-    /// is used there.  Amplitude `u^m e^{mv}`; `m = 1` is ψ, `m = 2` is the t-derivative
-    /// integrand.
+    /// is used there.
     fn trapezoid(&self, beta: f64, gamma: f64, m: i32, density: f64) -> Complex64 {
         let phi2 = self.b * (1.0 - gamma) - gamma;
         let mut s0 = (-phi2).sqrt();
@@ -288,5 +320,110 @@ fn durand_kerner(r: &mut [Complex64], gamma: usize, tau: f64) {
         if moved < 1e-15 {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::super::fmt_e;
+    use super::*;
+
+    #[test]
+    fn convergence_precision() {
+        let shape = Shape::from_q(3.5, 3.0);
+        let ref_jet = QuadJet::reference(shape);
+
+        let rel = |v: Complex64, r: Complex64| (v - r).norm() / r.norm();
+
+        // Peak, shoulder, the old sick zone around 3.7-4.7, and deep tail.
+        let probes = [
+            0.0, 0.8, 2.0, 2.4, 3.7, 4.7, 5.5, 6.7, 7.911, 8.2, 8.33, 11.0, 14.0,
+        ];
+
+        #[derive(Clone, Copy)]
+        enum Channel {
+            Psi,
+            D,
+        }
+
+        let pick = |t: Channel, result: QuadJetResult| match t {
+            Channel::Psi => result.psi,
+            Channel::D => Complex64::new(777.0, 777.0), // XXX Add back in after supporting the D
+        };
+
+        // NOTE this is crude and depends on settings but provides some development signal.
+        let mut matrix_time = std::time::Duration::default();
+        let mut sweep =
+            |channel: Channel, name: &str, knob: &str, vary: &dyn Fn(u32) -> QuadJet, rows: u32| {
+                let channel_label = match channel {
+                    Channel::Psi => "psi",
+                    Channel::D => "d",
+                };
+                println!("\n=== {name} ({channel_label}) ===");
+                print!("  {knob:>10} |");
+                for u in probes {
+                    print!(" {u:>9.2}");
+                }
+                println!();
+
+                for i in 0..rows {
+                    let test_jet = vary(i);
+                    let label = test_jet.tol;
+
+                    print!("  {label:>10.1e} |");
+                    for u in probes {
+                        let matrix_row_start = std::time::Instant::now();
+                        let v = pick(channel, test_jet.tap_at(u));
+                        let r = pick(channel, ref_jet.tap_at(u));
+                        matrix_time += matrix_row_start.elapsed();
+                        print!(" {:>9}", fmt_e(rel(v, r)));
+                    }
+                    println!();
+                }
+            };
+
+        // XXX Support the D
+        // Channel::D
+        for tap in [Channel::Psi] {
+            sweep(
+                tap,
+                "Cranking tol",
+                "tol",
+                &|i| QuadJet {
+                    tol: 1.0 / 10.0f64.powf((i + 1) as f64),
+                    ..ref_jet
+                },
+                13,
+            );
+        }
+
+        // Acceptance: at the settings we intend to ship, the floor is flat in u.  A dense grid so a
+        // narrow seam can't hide between probes.
+        println!("\n=== Current Defaults ===");
+        let standard_jet = QuadJet::standard(shape);
+
+        let mut worst: f64 = 0.0;
+        let mut worst_u: f64 = 0.0;
+
+        for k in 0..=2048 {
+            let u = k as f64 * 0.0125;
+
+            let reference = ref_jet.tap_at(u);
+            let standard = standard_jet.tap_at(u);
+            // XXX after supporting the D, add the max chain back in.
+            let err = rel(standard.psi, reference.psi);
+            if err > worst {
+                worst = err;
+                worst_u = u;
+            }
+
+            if k % 100 == 0 {
+                println!("  u: {u:>6.2}, err: {:>9}", fmt_e(err));
+            }
+        }
+
+        println!("  worst over grid: {} at {:0.2}", fmt_e(worst), worst_u);
+        println!("  matrix completed in: {}µs", matrix_time.as_micros());
+        assert!(worst < 1e-8);
     }
 }

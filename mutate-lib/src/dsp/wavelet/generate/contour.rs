@@ -1,18 +1,33 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! # Morse Wavelet Reference
+//! # Deformed Contour
 //!
-//! `u` counts carrier cycles at the peak frequency and the amplitude carries the same `1/record`
-//! quadrature weight, so a value here is directly comparable to a tap from the IFFT grid.
+//! This method is a quadrature integration that is somewhat well behaved (precision in transition
+//! region sags but isn't terrible) and serves as a 3rd opinion on the IFFT and QuadJet methods.  The
+//! implementation should be compact, simple, and work at any u.
+//!
+//! Other reference methods tried included Hypergeometric Airy and the Taylor expansion, but both of
+//! those only function at small u and worst of all, lose precision in a way that provides no
+//! indication of who as wrong in any u sweep.  Small u methods are like the tenth doctor.  They
+//! might be right, but since all evidence is against what they say, they can't decide anything
+//! alone.
 
+// NEXT support variable precision
+// NEXT use a more similar interface as QuadJet with precision knobs.
+// NEXT add a self-precison convergence test when available.
+// NEXT Check the root selection for the saddle term.  Saddles near zero and in the transition have
+// been all over the place, and quadrature is generally being used to make up for this.  If the
+// saddle term is bad enough, it might affect the quadrature, and that might affect the method
+// agreement.  We don't need something as sophisticated / complex as QuadJet,  but we shouldn't just
+// throw away available grip on a known source of badness.
 // 🤖 Of course.
 
 use num_complex::Complex64;
 use std::f64::consts::{PI, TAU};
 
-use super::spec::Shape;
-use super::whatsleft::Accumulator;
+use super::super::spec::Shape;
+use super::super::whatsleft::Accumulator;
 
 const H: f64 = 1.0 / 64.0;
 const TAU_MAX: f64 = 4.0;
@@ -34,7 +49,7 @@ pub struct DeformedContourEval {
 /// `u`.  No asymptotics: the integrand is exact everywhere on the path.
 ///
 /// `u` and the `1/peak` amplitude match the Airy module, so values are directly comparable.
-pub fn deformed_contour_morse(shape: Shape, u: f64) -> DeformedContourEval {
+pub fn tap_at(shape: Shape, u: f64) -> DeformedContourEval {
     let peak = (shape.beta / shape.gamma).powf(1.0 / shape.gamma);
     let t = TAU * u / peak;
     let saddle = saddle(shape, t);
