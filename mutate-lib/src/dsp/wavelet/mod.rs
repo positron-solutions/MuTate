@@ -217,6 +217,7 @@
 //   stopband floor     -105.28 dB
 
 pub mod generate;
+pub(crate) mod jetmorse;
 pub(crate) mod reference;
 pub mod spec;
 pub mod whatsleft;

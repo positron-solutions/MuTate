@@ -771,7 +771,6 @@ pub(crate) fn morse_tap_at(
     (psi, d, dd)
 }
 
-
 fn fmt_e(x: f64) -> String {
     let s = format!("{x:+.2e}");
     // split "±m.mme±dd" into mantissa and exponent, then zero-pad the exponent
@@ -1487,6 +1486,7 @@ mod test {
     #[test]
     fn multi_cross_reference() {
         // NEXT Probably this belongs in an integration test module.
+        use super::super::jetmorse;
         use super::super::reference;
 
         let shape = Shape {
@@ -1509,62 +1509,71 @@ mod test {
 
         let digits = |x: f64| if x <= 1e-17 { 17.0 } else { -x.log10() };
 
-        let mut worst_ifft: f64 = 17.0;
-        let mut worst_ifft_u: f64 = 0.0;
-        let mut worst_pair: f64 = 17.0;
-        let mut worst_pair_u: f64 = 0.0;
-        let mut optimistic: f64 = 0.0;
-        let mut optimistic_u: f64 = 0.0;
-
-        // All three pairs as digits of agreement, so the columns compare directly.  `ifft` is the
-        // IFFT against the mean of the two integrators, which agree far better with each other
-        // than either does with the grid.  `pred` is what contour's own residual claims for
-        // `ifi-c`; it runs conservative, so `short` is only interesting when positive.
-        println!("\n=== IFFT vs IFI vs deformed contour (beta {beta}) ===");
+        // Every pair, so no method sits in the denominator of its own score.  `f` is IFFT,
+        // `i` is IFI, `c` is deformed contour, `j` is the jet.  If the three integrators
+        // agree with each other better than any of them agrees with `j`, the jet is the
+        // outlier; if `j-c` tracks `i-c`, the jet is inside the reference noise.
+        println!("\n=== pairwise agreement, beta {beta} ===");
         println!(
-            "  {:>6} | {:>9} | {:>5} {:>5} {:>5} {:>5} {:>6}",
-            "u", "scale", "ifft-ifi", "i-c", "pred", "short", "resid"
+            "  {:>6} | {:>9} | {:>5} {:>5} {:>5} | {:>5} {:>5} {:>5} | {:>5}",
+            "u", "scale", "i-c", "f-i", "f-c", "j-i", "j-c", "j-f", "pred"
         );
+
+        let mut worst_ic: f64 = 17.0;
+        let mut worst_ic_u: f64 = 0.0;
+        let mut worst_jc: f64 = 17.0;
+        let mut worst_jc_u: f64 = 0.0;
+        let mut worst_gap: f64 = 17.0;
+        let mut worst_gap_u: f64 = 0.0;
 
         for k in (0..=last).step_by(stride) {
             let u = k as f64 / res;
-            let v = psi[k];
 
+            let ifft = psi[k];
             let (ifi, _, _) = morse_tap_at(shape, u, ifi_settings);
             let contour = reference::deformed_contour_morse(shape, u);
+            let jet = jetmorse::jet_morse(shape, u).psi;
 
             let scale = ifi.norm().max(contour.value.norm());
-            let truth = (ifi + contour.value) * 0.5;
+            let d = |a: Complex64, b: Complex64| digits((a - b).norm() / scale);
 
-            let ifft_d = digits((v - truth).norm() / scale);
-            let tc = digits((ifi - contour.value).norm() / scale);
+            let ic = d(ifi, contour.value);
+            let fi = d(ifft, ifi);
+            let fc = d(ifft, contour.value);
+            let ji = d(jet, ifi);
+            let jc = d(jet, contour.value);
+            let jf = d(jet, ifft);
             let pred = digits(contour.residual / scale);
-            let short = tc - pred;
 
-            if ifft_d < worst_ifft {
-                worst_ifft = ifft_d;
-                worst_ifft_u = u;
+            // How much worse the jet's best pairing is than the integrators' best pairing.
+            let gap = ic.max(fi).max(fc) - ji.max(jc).max(jf);
+
+            if ic < worst_ic {
+                worst_ic = ic;
+                worst_ic_u = u;
             }
-            if tc < worst_pair {
-                worst_pair = tc;
-                worst_pair_u = u;
+            if jc < worst_jc {
+                worst_jc = jc;
+                worst_jc_u = u;
             }
-            if short < 0.0 && -short > optimistic {
-                optimistic = -short;
-                optimistic_u = u;
+            if gap > 0.0 && 17.0 - gap < worst_gap {
+                worst_gap = 17.0 - gap;
+                worst_gap_u = u;
             }
 
             println!(
-                "  {u:>6.3} | {:>9} | {ifft_d:>5.1} {tc:>5.1} {pred:>5.1} {short:>5.1} {:>6}",
+                "  {u:>6.3} | {:>9} | {ic:>5.1} {fi:>5.1} {fc:>5.1} | {ji:>5.1} {jc:>5.1} {jf:>5.1} | {pred:>5.1}",
                 fmt_e(scale),
-                fmt_e(contour.residual),
             );
         }
 
-        println!("  worst ifft vs integrators: {worst_ifft:.1} digits at u {worst_ifft_u:.3}");
-        println!("  worst ifi/contour: {worst_pair:.1} digits at u {worst_pair_u:.3}");
-        println!("  residual optimistic by up to {optimistic:.1} digits at u {optimistic_u:.3}");
+        println!("  worst ifi/contour: {worst_ic:.1} digits at u {worst_ic_u:.3}");
+        println!("  worst jet/contour: {worst_jc:.1} digits at u {worst_jc_u:.3}");
+        println!(
+            "  largest jet deficit: {:.1} digits at u {worst_gap_u:.3}",
+            17.0 - worst_gap
+        );
 
-        assert!(worst_pair > 5.5);
+        assert!(worst_ic > 5.5);
     }
 }
