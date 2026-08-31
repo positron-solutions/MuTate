@@ -1515,8 +1515,8 @@ mod test {
         // outlier; if `j-c` tracks `i-c`, the jet is inside the reference noise.
         println!("\n=== pairwise agreement, beta {beta} ===");
         println!(
-            "  {:>6} | {:>9} | {:>5} {:>5} {:>5} | {:>5} {:>5} {:>5} | {:>5}",
-            "u", "scale", "i-c", "f-i", "f-c", "j-i", "j-c", "j-f", "pred"
+            "  {:>6} | {:>9} | {:>5} {:>5} {:>5} | {:>5} {:>5} {:>5} | {:>5} | {:>5}",
+            "u", "scale", "i-c", "f-i", "f-c", "j-i", "j-c", "j-f", "pred", "jpred"
         );
 
         let mut worst_ic: f64 = 17.0;
@@ -1532,7 +1532,7 @@ mod test {
             let ifft = psi[k];
             let (ifi, _, _) = morse_tap_at(shape, u, ifi_settings);
             let contour = reference::deformed_contour_morse(shape, u);
-            let jet = jetmorse::jet_morse(shape, u).psi;
+            let jet = jetmorse::jet_morse(shape, u);
 
             let scale = ifi.norm().max(contour.value.norm());
             let d = |a: Complex64, b: Complex64| digits((a - b).norm() / scale);
@@ -1540,10 +1540,11 @@ mod test {
             let ic = d(ifi, contour.value);
             let fi = d(ifft, ifi);
             let fc = d(ifft, contour.value);
-            let ji = d(jet, ifi);
-            let jc = d(jet, contour.value);
-            let jf = d(jet, ifft);
+            let ji = d(jet.psi, ifi);
+            let jc = d(jet.psi, contour.value);
+            let jf = d(jet.psi, ifft);
             let pred = digits(contour.residual / scale);
+            let jpred = digits(jet.residual / scale);
 
             // How much worse the jet's best pairing is than the integrators' best pairing.
             let gap = ic.max(fi).max(fc) - ji.max(jc).max(jf);
@@ -1562,7 +1563,8 @@ mod test {
             }
 
             println!(
-                "  {u:>6.3} | {:>9} | {ic:>5.1} {fi:>5.1} {fc:>5.1} | {ji:>5.1} {jc:>5.1} {jf:>5.1} | {pred:>5.1}",
+                "  {u:>6.3} | {:>9} | {ic:>5.1} {fi:>5.1} {fc:>5.1} | {ji:>5.1} {jc:>5.1} {jf:>5.1} \
+                | {pred:>5.1} | {jpred:>5.1}",
                 fmt_e(scale),
             );
         }
