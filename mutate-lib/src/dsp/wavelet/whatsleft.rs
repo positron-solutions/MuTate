@@ -8,7 +8,7 @@
 //! > - Ivo Nahak
 //!
 //! Calculating **vanishing** residuals of oscillating functions can provide marvelous opportunities
-//! for transient loss of precision to obliterate many whole terms.
+//! for transient losses of precision to obliterate the contributions of many whole terms.
 //!
 //! This implementation descended from using a stack array to perform a tree sum as each term is
 //! emitted, so no pre-generation or sorting would be required.  Further review lead to the
@@ -34,27 +34,32 @@
 //! summation while using 32bit operands. If they were fast 32bit operands, it might actually be
 //! worth it!
 
-// NEXT We really need a way to return one compensator-residual pair so that intermediate sums
-// retain acquired precision across intermediate calls to sum.
-// NEXT Assemble some pathological test cases to at least think about what functions this can't be
-// used to sum, especially ones where the other methods are better.
-// NEXT Binning oracle trait so that any type with a magnitude signal can be added
-// NEXT SIMD.... probably based on some kind of pre-calculated greater-than and scale masks that
-// enable routing decisions to be pre-calculated (behind the actual sums) and enable fast2sum and
-// other such things.  Overlapping magnitude ranges may actually some kind of compensator-summand
-// spectrum that we can economize over a structure to limit the number of scalar operations.  The
-// operand load pipeline for SIMD is just extra space we can epilogue away and taken all together,
-// would hide a shit ton of latency.  Zero padding.  Integrated design approach necessary, but this
-// can probably be done with SIMD and variable load with to support flexible scalar packing.
-// NEXT Complex support as some kind of adapter trait for n-floats structures as long as they are
-// commutative and associative, basically as long as we can treat n-floats as n-sums.
 // NOTE If the SIMD or generalized compensator structure get done, it will be time for this to
 // become a published crate.  Numerical integrations have to contend with finer resolution vs higher
 // error all the time, and residual sums are just one pathological case.
+
+// NEXT Assemble some pathological test cases to at least think about what functions this can't be
+// used to sum, especially ones where the other methods are better.
+
+// NEXT The next architecture improvements will all flow along a set of predictable paths:
+//
+// - Scalar insertion of summands will pre-split and pipeline with rolling accounting work
+// - Space time tradeoff with an error track on the magnitude of the worst rounding that was forced
+//   by running out of bins.  This is the user's engineering knob.  People doing big sums can
+//   tolerate leakage in low bins as long as the maximum error scale is known
+// - Pre-split insertions may coalesce via pre-calculated routing
+// - Opportunistic SIMD drain steps
+// - More space, more latency hiding, fewer stalls, another engineering knob expressed as a simple
+//   const generic and an error check in the return value.
+
+// NEXT Complex support as some kind of adapter trait for n-floats structures as long as they are
+// commutative and associative, basically as long as we can treat n-floats as n-sums.
 // MAYBE Peek sum vs consuming finalizer sum.  Depends on if the stores can be skipped efficiently
 // and if registers pressure / shuffling is different for consume compared to peek.  My bet is that
 // SIMD will later want a consume method that uses the fast path while peek has to avoid destroying
 // any compensators.  Peek is extremely useful for prefix summing.
+// NEXT We really need a way to return one compensator-residual set so that intermediate sums
+// retain acquired precision across intermediate calls to sum.
 
 use std::ops::{Add, Sub};
 
