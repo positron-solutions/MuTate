@@ -89,19 +89,23 @@ mod test {
     #[cfg(feature = "validate")]
     #[test]
     fn multi_cross_reference() {
-        let shape = Shape {
-            gamma: 3.0,
-            beta: 3.5,
-        };
+        use std::time::{Duration, Instant};
+
+        let shape = Shape::from_q(3.5, 3.0);
         let beta = shape.beta;
 
         let settings = ifft::IfftSettings {
             periods: 12,
             ..ifft::IfftSettings::default()
         };
-        let (psi, _, _) = ifft::morse_half_taps(shape, settings);
 
-        let ref_jet = quadjet::QuadJet::reference(shape);
+        let ifft_nominal_taps = 1000;
+        let ifft_start = Instant::now();
+        let (psi, _, _) = ifft::morse_half_taps(shape, settings);
+        let ifft_us_per_tap = ifft_start.elapsed().as_secs_f64() * 1e6 / ifft_nominal_taps as f64;
+
+        // let ref_jet = quadjet::QuadJet::reference(shape);
+        let ref_jet = quadjet::QuadJet::standard(shape);
 
         let res = settings.resolution as f64;
         let stride = settings.resolution / 4;
@@ -113,7 +117,7 @@ mod test {
         // deformed contour, `j` is the jet.  If the two references agree with each other better
         // than any of them agrees with `j`, the jet is the outlier; if `j-c` tracks `f-c`, the jet
         // is inside the reference noise.
-        println!("\n=== pairwise agreement, beta {beta} ===");
+        println!("\n=== pairwise agreement, beta {beta:3.2} ===");
         println!(
             "  {:>6} | {:>9} | {:>5} {:>5} {:>5} | {:>5} | {:>5}",
             "u", "scale", "f-c", "j-c", "j-f", "pred", "jpred"
@@ -126,12 +130,24 @@ mod test {
         let mut worst_gap: f64 = 17.0;
         let mut worst_gap_u: f64 = 0.0;
 
+        let mut contour_time = Duration::ZERO;
+        let mut jet_time = Duration::ZERO;
+        let mut taps: u64 = 0;
+
         for k in (0..=last).step_by(stride) {
             let u = k as f64 / res;
 
             let ifft = psi[k];
+
+            let t = Instant::now();
             let contour = contour::tap_at(shape, u);
+            contour_time += t.elapsed();
+
+            let t = Instant::now();
             let jet = ref_jet.tap_at(u);
+            jet_time += t.elapsed();
+
+            taps += 1;
 
             let scale = ifft.norm().max(contour.value.norm());
             let d = |a: Complex64, b: Complex64| digits((a - b).norm() / scale);
@@ -140,7 +156,7 @@ mod test {
             let jc = d(jet.psi, contour.value);
             let jf = d(jet.psi, ifft);
             let pred = digits(contour.residual / scale);
-            let jpred = digits(jet.residual / scale);
+            let jpred = digits(jet.residual[0] / scale);
 
             // How much worse the jet's best pairing is than the integrators' best pairing.
             let gap = jc.max(jf) - fc;
@@ -173,6 +189,19 @@ mod test {
             "  largest jet deficit: {:.1} digits at u {worst_gap_u:.3}",
             17.0 - worst_gap
         );
+
+        let contour_us_per_tap = contour_time.as_secs_f64() * 1e6 / taps as f64;
+        let jet_us_per_tap = jet_time.as_secs_f64() * 1e6 / taps as f64;
+
+        println!("\n=== per-tap cost ===");
+        println!("  {:>18} | {:>8}", "method", "us/tap");
+        println!(
+            "  {:>18} | {:>8.3}",
+            format!("ifft ({ifft_nominal_taps})"),
+            ifft_us_per_tap
+        );
+        println!("  {:>18} | {:>8.3}", "contour", contour_us_per_tap);
+        println!("  {:>18} | {:>8.3}", "jet", jet_us_per_tap);
 
         assert!(worst_jc > 5.5);
     }
