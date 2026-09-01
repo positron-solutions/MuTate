@@ -22,7 +22,6 @@
 // NEXT We really need a way to return one compensator-residual pair so that intermediate sums
 // retain acquired precision across intermediate calls to sum.
 // NOTE This is a Shewchuk style expansion?  Worth identifying any formal treatment if we can.
-// NEXT Test against Neumaier to be sure we still see the improvements.
 // NEXT Assemble some pathological test cases to at least think about what functions this can't be
 // used to sum, especially ones where the other methods are better.
 // NEXT Binning oracle trait so that any type with a magnitude signal can be added
@@ -131,6 +130,20 @@ impl<F: Float, const N: usize> Accumulator<F, N> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Neumaier's improvement over Kahan: the correction is chosen by comparing magnitudes, so it
+    /// stays correct when the incoming term dominates the running sum.  Its weakness is that `c`
+    /// is itself a plain accumulator — corrections spanning many magnitudes fall off its bottom.
+    fn neumaier_step<F: Float>(x: F, v: &mut F, c: &mut F) {
+        let t = *v + x;
+        *c = *c
+            + if v.abs() >= x.abs() {
+                (*v - t) + x
+            } else {
+                (x - t) + *v
+            };
+        *v = t;
+    }
 
     #[test]
     fn all_zeroes() {
@@ -282,6 +295,89 @@ mod test {
             (result - 16.0).abs() < f64::MIN_POSITIVE,
             "f64 sum was not sixteen: {}",
             result
+        );
+    }
+
+    #[test]
+    fn meets_neumaier_on_uniform_terms() {
+        // Uniform small terms into a growing sum: the case Neumaier handles essentially exactly in
+        // f32.  We only need to confirm we are not worse.
+        let n = 1_000_000_usize;
+        let x = 1.0e-6_f32;
+
+        let mut neumaier_v = 0.0_f32;
+        let mut neumaier_c = 0.0_f32;
+        let mut accum = Accumulator::<f32>::default();
+
+        for _ in 0..n {
+            neumaier_step(x, &mut neumaier_v, &mut neumaier_c);
+            accum.add(x);
+        }
+
+        let expected = n as f64 * x as f64;
+        let neumaier_err = ((neumaier_v + neumaier_c) as f64 - expected).abs();
+        let accum_err = (accum.sum() as f64 - expected).abs();
+
+        println!(
+            "expected: {expected}, neumaier error: {neumaier_err:+0.4e}, accumulator error: {accum_err:+0.4e}"
+        );
+
+        assert!(
+            accum_err <= neumaier_err,
+            "accumulator ({accum_err:+0.4e}) should match or beat neumaier ({neumaier_err:+0.4e})"
+        );
+    }
+
+    #[test]
+    fn beats_neumaier() {
+        // Stress the single-compensator assumption directly.  The chirp sweeps 36 decades, so the
+        // per-step corrections themselves span a range no single f32 can hold: early corrections
+        // near 1e11 pin the exponent of `c` and every later correction rounds straight out of it.
+        // The anchor offset survives as the whole answer after cancellation.
+        let n = 4_000_000_usize;
+        let theta = 2.0 * std::f64::consts::PI / 977.0;
+        let log_start = 1.0e18_f64.ln();
+        let log_end = 1.0e-18_f64.ln();
+
+        let offset = 0.5_f32;
+
+        let sample = |i: usize| -> f32 {
+            let t = i as f64 / (n - 1) as f64;
+            let amp = (log_start + (log_end - log_start) * t).exp();
+            (amp * (i as f64 * theta).sin()) as f32
+        };
+
+        let mut neumaier_v = offset;
+        let mut neumaier_c = 0.0_f32;
+        let mut accum = Accumulator::<f32>::default();
+        accum.add(offset);
+
+        for i in 0..n {
+            let x = sample(i);
+            neumaier_step(x, &mut neumaier_v, &mut neumaier_c);
+            accum.add(x);
+        }
+        for i in (0..n).rev() {
+            let x = -sample(i);
+            neumaier_step(x, &mut neumaier_v, &mut neumaier_c);
+            accum.add(x);
+        }
+
+        let expected = offset as f64;
+        let neumaier_err = ((neumaier_v + neumaier_c) as f64 - expected).abs();
+        let accum_err = (accum.sum() as f64 - expected).abs();
+
+        println!(
+            "expected: {expected}, neumaier error: {neumaier_err:+0.16e}, accumulator error: {accum_err:+0.16e}"
+        );
+
+        assert!(
+            neumaier_err > 1e-7,
+            "neumaier was unexpectedly exact — test isn't stressing the compensator"
+        );
+        assert!(
+            accum_err < neumaier_err,
+            "accumulator ({accum_err:+0.4e}) should beat neumaier ({neumaier_err:+0.4e})"
         );
     }
 }
