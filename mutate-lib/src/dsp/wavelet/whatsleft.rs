@@ -10,9 +10,24 @@
 //! Calculating **vanishing** residuals of oscillating functions can provide marvelous opportunities
 //! for transient loss of precision to obliterate many whole terms.
 //!
-//! This implementation combines the path advantages of tree sum with the precision of Kahan
-//! summation along those paths.  It's a Kahan compensated ripple-carry-add, so no pre-generation or
-//! sorting is required.  Add as you like.  Destructively cancel as you will.
+//! This implementation descended from using a stack array to perform a tree sum as each term is
+//! emitted, so no pre-generation or sorting would be required.  Further review lead to the
+//! realization that the stack slots could be used to store compensator terms, retaining more
+//! precision of each intermediate term.  The result is similar to a Møller–Knuth two-sum style
+//! bidirectional carry.  The benefits for long vanishing sums are demonstrated.  Add as you like.
+//! Destructively cancel as you will.
+//!
+//! There has been a lot of convergent evolution over the years:
+//!
+//! - Wolfe (1964) took the first step toward bucket summation.
+//! - Malcolm's (1974) contribution was reducing the number of buckets by associating each with `d`
+//!   consecutive exponents.
+//!
+//! Additionally, these contributions were pointed out as "roughly similar" in ways that are likely
+//! to at least inspire improvements if not land on the formalization:
+//!
+//! - Zhu & Hayes, HybridSum (2009) and OnlineExactSum (2010)
+//! - Lange & Rump aaaSum (2022)
 //!
 //! This is a toy implementation used in some tests and does not use SIMD or any kind of fast
 //! routing decisions, and that strongly limits the performance.  It does better than Kahan 64-bit
@@ -21,7 +36,6 @@
 
 // NEXT We really need a way to return one compensator-residual pair so that intermediate sums
 // retain acquired precision across intermediate calls to sum.
-// NOTE This is a Shewchuk style expansion?  Worth identifying any formal treatment if we can.
 // NEXT Assemble some pathological test cases to at least think about what functions this can't be
 // used to sum, especially ones where the other methods are better.
 // NEXT Binning oracle trait so that any type with a magnitude signal can be added
