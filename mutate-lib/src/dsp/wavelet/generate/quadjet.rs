@@ -97,11 +97,16 @@ const EPS: f64 = f64::EPSILON;
 const JET_ORDER: usize = 96;
 const LIVE: f64 = 0.5;
 const MAX_G: usize = 8;
+
+// Quadrature
+const GAP_FLOOR: f64 = 1e-6;
+const LIFT_CREDIT: f64 = 0.5;
 const NEWTON_ITERS: usize = 6;
-const NEWTON_TOL: f64 = 1e-13;
+const NEWTON_TOL: f64 = 1e-12;
+const QUAD_MARGIN: f64 = 2.0;
 const QUAD_MAX_DENSITY: f64 = QUAD_MAX_NODES as f64 / (2.0 * REACH_MAX);
 const QUAD_MAX_NODES: usize = 512;
-const QUAD_MIN_DENSITY: f64 = 1.0;
+const QUAD_MIN_DENSITY: f64 = 0.4;
 const QUAD_SLOTS: usize = QUAD_MAX_NODES + 2;
 const REACH_MAX: f64 = 8.6;
 const TABLE_NODES: usize = 512;
@@ -608,13 +613,15 @@ impl Saddle {
         }
     }
 
-    /// The expensive approach to a saddle, a trapezoid along its traced steepest-descent path,
-    /// refined until the levels stop disagreeing by more than the bar.
+    /// The expensive approach to a saddle, a trapezoid along its traced steepest-descent path.
     ///
-    /// Node density is a question about the neighbors.  Aliasing folds in whatever feature sits
-    /// a distance `gap` off the path and carries the size that feature already has, so a
-    /// neighbor suppressed to `e^{-Re Δ}` asks for nothing, and the density is set by whichever
-    /// neighbor is both close and still large.
+    /// Node density is a question about the neighbors and nothing else.  Aliasing folds in
+    /// whatever feature sits `gap` off the path carrying the size that feature already has, so a
+    /// neighbor suppressed below the bar asks for nothing and the closest survivor asks for
+    /// everything.  Distance decides which one binds.  The trapezoid buries that neighbor as
+    /// `e^{-2π·gap·density}`, so the density that clears the bar is a closed form and the pass
+    /// lands on it directly.  The ladder below survives to catch a gap that was not the whole
+    /// story, not to find the answer by climbing.
     fn quadrature(
         &self,
         frame: &Frame,
@@ -623,84 +630,91 @@ impl Saddle {
         seen: &[Complex64],
         nodes: &mut [(Complex64, Complex64)],
     ) -> Priced {
+        // The neighbor that binds is the one whose own size, carried onto the path at its own
+        // distance, is hardest to bury.  One standing above this saddle enters amplified and
+        // charges full freight, while one already suppressed is credited only partly, since the
+        // fold point sits nearer than the neighbor's own center and sees less of that decay.
+        let mut gap = 1.0_f64;
+        let mut lift = 0.0_f64;
         let mut want = 0.0_f64;
-        let mut binding_gap = 0.0_f64;
         for &d in seen {
-            let gap = (-2.0 * d).sqrt().im.abs();
-            if gap > 1e-6 {
-                let need = (bar + d.re).max(0.0) / (TAU * gap);
-                if need > want {
-                    want = need;
-                    binding_gap = gap;
-                }
+            let t = (-2.0 * d).sqrt().im.abs();
+            if t <= GAP_FLOOR {
+                continue;
+            }
+            let l = if d.re > 0.0 { d.re } else { LIFT_CREDIT * d.re };
+            let need = (bar + l).max(0.0) / t;
+            if need > want {
+                want = need;
+                gap = t;
+                lift = l;
             }
         }
 
-        // With every neighbor already negligible there is no length scale left to set a density
-        // from, so the strip width of the `e^{γv}` growth stands in for one.
-        if binding_gap <= 1e-6 {
-            binding_gap = 1.0;
-        }
-
-        let mut density = want.clamp(QUAD_MIN_DENSITY, 0.5 * QUAD_MAX_DENSITY);
-        let mut cost = Cost::default();
-
-        // Margin past the bar so the cut is an order below the accuracy being asked for, and
-        // the tail past the cut is charged rather than assumed away.
         let reach = (2.0 * (bar + 3.0)).sqrt().min(REACH_MAX);
-
         let tail = (-0.5 * reach * reach).exp() * (TAU / frame.beta).sqrt() / self.s0.norm();
 
-        let (mut prev, seed_cost) = self.trapezoid(frame, reach, density, nodes, false);
+        let density =
+            (QUAD_MARGIN * (bar + lift) / (TAU * gap)).clamp(QUAD_MIN_DENSITY, QUAD_MAX_DENSITY);
+
+        let settle =
+            |terms: &mut [Term; 2], raw: [Complex64; 2], diff: [f64; 2], contraction: f64| {
+                for m in 0..2 {
+                    let noise = EPS * (ch[m].scale * raw[m]).norm();
+                    let endpoint = tail * ch[m].scale.norm();
+                    terms[m] = Term {
+                        value: ch[m].scale * raw[m],
+                        residual: (diff[m] * contraction).max(noise) + endpoint,
+                    };
+                }
+            };
+        let converged = |terms: &[Term; 2]| {
+            (0..2).all(|m| terms[m].residual <= ch[m].target.max(EPS * terms[m].value.norm()))
+        };
+
+        // One pass at the predicted density.  With no second level there is no diff to measure
+        // against, so the first error estimate is the model's own suppression read against the
+        // value the pass just produced, floored so an underflowed exponential cannot pass for
+        // convergence it did not earn.
+        let mut cost = Cost::default();
+        let (mut raw, seed_cost) = self.trapezoid(frame, reach, density, nodes, false);
         cost += seed_cost;
 
-        let mut terms = [
-            Term {
-                value: ch[0].scale * prev[0],
-                residual: f64::INFINITY,
-            },
-            Term {
-                value: ch[1].scale * prev[1],
-                residual: f64::INFINITY,
-            },
-        ];
+        // The neighbor enters the path at the size its own exponent already gives it, so what
+        // the trapezoid has left to bury is the gap between that size and the bar.  Crediting
+        // the suppression here is what keeps the estimate honest against the density that was
+        // sized with the same credit.
+        let modeled = (lift - TAU * gap * density).exp().max(EPS);
 
+        let mut terms = [0, 1].map(|m| Term {
+            value: ch[m].scale * raw[m],
+            residual: f64::INFINITY,
+        });
+        let guess = [0, 1].map(|m| (ch[m].scale * raw[m]).norm());
+        settle(&mut terms, raw, guess, modeled);
+
+        // The prediction is an ETA.  If the closed form was reading the wrong neighbor, the
+        // ladder buys density back a doubling at a time, now with a rate it can measure.
+        let mut density = density;
         let mut prev_diff = [f64::INFINITY; 2];
-
-        while 2.0 * density <= QUAD_MAX_DENSITY {
+        while !converged(&terms) && 2.0 * density <= QUAD_MAX_DENSITY {
             density *= 2.0;
-            let modeled = (-TAU * binding_gap * density).exp();
-            let (raw, step_cost) = self.trapezoid(frame, reach, density, nodes, true);
+            let (next, step_cost) = self.trapezoid(frame, reach, density, nodes, true);
             cost += step_cost;
-
-            let mut done = true;
-            for m in 0..2 {
-                let diff = (ch[m].scale * (raw[m] - prev[m])).norm();
-
-                // What the ladder demonstrated, against what the binding neighbor predicts.
-                // The model can only ever tighten a claim the levels already support.
-                let measured = if prev_diff[m].is_finite() && prev_diff[m] > 0.0 {
-                    (diff / prev_diff[m]).min(1.0)
-                } else {
-                    1.0
-                };
-                let contraction = modeled.max(measured);
-
-                let noise = EPS * (ch[m].scale * raw[m]).norm();
-                let endpoint = tail * ch[m].scale.norm();
-
-                terms[m] = Term {
-                    value: ch[m].scale * raw[m],
-                    residual: (diff * contraction).max(noise) + endpoint,
-                };
-                prev_diff[m] = diff;
-                done &= terms[m].residual <= ch[m].target.max(EPS * terms[m].value.norm());
-            }
-
-            prev = raw;
-            if done {
-                break;
-            }
+            let diff = [0, 1].map(|m| (ch[m].scale * (next[m] - raw[m])).norm());
+            let measured = (0..2)
+                .map(|m| {
+                    if prev_diff[m].is_finite() && prev_diff[m] > 0.0 {
+                        diff[m] / prev_diff[m]
+                    } else {
+                        1.0
+                    }
+                })
+                .fold(0.0_f64, f64::max);
+            let modeled = (lift - TAU * gap * density).exp().max(EPS);
+            settle(&mut terms, next, diff, modeled.max(measured));
+            prev_diff = diff;
+            raw = next;
         }
 
         Priced { terms, cost }
