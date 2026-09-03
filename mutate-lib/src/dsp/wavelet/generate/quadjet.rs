@@ -1399,7 +1399,7 @@ mod test {
                 "Cranking tol",
                 "tol",
                 &|i| QuadJet::new(shape, 1.0 / 10.0f64.powf((i + 1) as f64), false),
-                12,
+                18,
             );
         }
 
