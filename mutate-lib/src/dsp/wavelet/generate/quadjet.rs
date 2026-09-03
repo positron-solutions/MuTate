@@ -103,8 +103,9 @@ const TABLE_TAU_MAX: f64 = 256.0;
 
 // Saddles & Jets
 const ADJ_CONE: f64 = 0.9;
-const JET_ORDER: usize = 32;
+const JET_ORDER: usize = 96;
 const JET_SLOTS: usize = JET_ORDER + 2;
+const JET_MIN_ORDER: usize = 6;
 const LIVE: f64 = 0.5;
 const MAX_G: usize = 8;
 
@@ -113,10 +114,10 @@ const GAP_FLOOR: f64 = 1e-6;
 const LIFT_CREDIT: f64 = 0.5;
 const NEWTON_ITERS: usize = 6;
 const NEWTON_TOL: f64 = 1e-12;
-const QUAD_MARGIN: f64 = 2.0;
+const QUAD_MARGIN: f64 = 1.2;
 const QUAD_MAX_DENSITY: f64 = QUAD_MAX_NODES as f64 / (2.0 * REACH_MAX);
 const QUAD_MAX_NODES: usize = 512;
-const QUAD_MIN_DENSITY: f64 = 0.4;
+const QUAD_MIN_DENSITY: f64 = 0.1;
 const QUAD_SLOTS: usize = QUAD_MAX_NODES + 2;
 const REACH_MAX: f64 = 12.0;
 const TRACE_MAX_SPLIT: u32 = 6;
@@ -187,6 +188,7 @@ impl std::ops::AddAssign for Cost {
 /// A jet at one order, with whether the series ended on the mathematics or on the max order.
 struct Pass {
     terms: [Term; 2],
+    raw: [Complex64; 2],
     reached: [usize; 2],
     settled: bool,
     cost: Cost,
@@ -197,6 +199,7 @@ struct Pass {
 /// the same polynomial turns and must not be trusted.
 struct Expansion {
     terms: [Term; 2],
+    raw: [Complex64; 2],
     reached: [usize; 2],
     cost: Cost,
 }
@@ -355,6 +358,12 @@ impl QuadJet {
             let jet = s.jet(frame, ch, r_star, local_bar, &mut normal);
             cost += jet.cost;
 
+            let handoff = Handoff {
+                normal: &normal,
+                degree: [2 * jet.reached[0], 2 * jet.reached[1]],
+                moments: jet.raw,
+            };
+
             let worth_tracing = |m: usize| jet.terms[m].residual > ch[m].target;
 
             // Fall back on the path where the series floor cannot reach the bar, and where the
@@ -364,7 +373,7 @@ impl QuadJet {
                 || worth_tracing(0)
                 || worth_tracing(1)
             {
-                let quad = s.quadrature(frame, local_bar, ch, seen, &mut nodes);
+                let quad = s.quadrature(frame, local_bar, ch, seen, &handoff, &mut nodes);
                 cost += quad.cost;
 
                 // The jet ran either way, so what the path moved is free to measure against the
@@ -486,7 +495,9 @@ impl Saddle {
         for _ in 0..2 {
             n = bar / ((r_star / n).max(1.0).ln() + 1.0);
         }
-        let mut n_max = (n.ceil() as usize).clamp(1, n_cap);
+        let mut n_max = (n.ceil() as usize)
+            .clamp(1, n_cap)
+            .max(JET_MIN_ORDER.min(n_cap));
         let mut cost = Cost::default();
         loop {
             normal.extend(self, frame, 2 * n_max);
@@ -495,6 +506,7 @@ impl Saddle {
             if pass.settled || n_max == n_cap {
                 return Expansion {
                     terms: pass.terms,
+                    raw: pass.raw,
                     reached: pass.reached,
                     cost,
                 };
@@ -549,11 +561,13 @@ impl Saddle {
                 prev[m] = env;
                 value[m] += term;
                 reached[m] = n;
-                // The tail we are dropping, taken from the envelope one term out rather than
-                // this one.
                 residual[m] = env * (2.0 * n as f64 / r_star).max(1.0);
 
-                if env <= ch[m].target || env <= EPS * scale_abs[m] * value[m].norm() {
+                // Meeting the bar is reason enough to stop reporting, but not to stop building.
+                // The path downstream walks whatever shape this series hands it, so a channel
+                // that arrived early keeps going until it has some to hand over.
+                let done = env <= ch[m].target || env <= EPS * scale_abs[m] * value[m].norm();
+                if done && n >= JET_MIN_ORDER {
                     settled[m] = true;
                 }
             }
@@ -577,6 +591,7 @@ impl Saddle {
                 },
             ],
             reached,
+            raw: value,
             settled: settled[0] && settled[1],
             cost: Cost {
                 jet_passes: 1,
@@ -601,6 +616,7 @@ impl Saddle {
         bar: f64,
         ch: [Channel; 2],
         seen: &[Complex64],
+        hand: &Handoff,
         nodes: &mut [(Complex64, Complex64)],
     ) -> Priced {
         // The neighbor that binds is the one whose own size, carried onto the path at its own
@@ -631,40 +647,37 @@ impl Saddle {
             (QUAD_MARGIN * (bar + lift) / (TAU * gap)).clamp(QUAD_MIN_DENSITY, QUAD_MAX_DENSITY);
 
         let settle =
-            |terms: &mut [Term; 2], raw: [Complex64; 2], diff: [f64; 2], contraction: f64| {
+            |terms: &mut [Term; 2], resid: [Complex64; 2], diff: [f64; 2], contraction: f64| {
                 for m in 0..2 {
-                    let noise = EPS * (ch[m].scale * raw[m]).norm();
+                    let value = ch[m].scale * (resid[m] + hand.moments[m]);
+                    let noise = EPS * value.norm();
                     let endpoint = tail * ch[m].scale.norm();
                     terms[m] = Term {
-                        value: ch[m].scale * raw[m],
+                        value,
                         residual: (diff[m] * contraction).max(noise) + endpoint,
                     };
                 }
             };
+
         let converged = |terms: &[Term; 2]| {
             (0..2).all(|m| terms[m].residual <= ch[m].target.max(EPS * terms[m].value.norm()))
         };
 
-        // One pass at the predicted density.  With no second level there is no diff to measure
-        // against, so the first error estimate is the model's own suppression read against the
-        // value the pass just produced, floored so an underflowed exponential cannot pass for
-        // convergence it did not earn.
+        // One pass at the predicted density.  With no second level there is no diff to measure,
+        // so the model's suppression is read against what the path actually integrated.  That is
+        // the residual the series could not reach rather than the answer itself.
         let mut cost = Cost::default();
-        let (mut raw, seed_cost) = self.trapezoid(frame, reach, density, nodes, false);
+        let (mut resid, seed_cost) = self.trapezoid(frame, reach, density, hand, nodes, false);
         cost += seed_cost;
 
-        // The neighbor enters the path at the size its own exponent already gives it, so what
-        // the trapezoid has left to bury is the gap between that size and the bar.  Crediting
-        // the suppression here is what keeps the estimate honest against the density that was
-        // sized with the same credit.
         let modeled = (lift - TAU * gap * density).exp().max(EPS);
 
         let mut terms = [0, 1].map(|m| Term {
-            value: ch[m].scale * raw[m],
+            value: ch[m].scale * (resid[m] + hand.moments[m]),
             residual: f64::INFINITY,
         });
-        let guess = [0, 1].map(|m| (ch[m].scale * raw[m]).norm());
-        settle(&mut terms, raw, guess, modeled);
+        let guess = [0, 1].map(|m| (ch[m].scale * resid[m]).norm());
+        settle(&mut terms, resid, guess, modeled);
 
         // The prediction is an ETA.  If the closed form was reading the wrong neighbor, the
         // ladder buys density back a doubling at a time, now with a rate it can measure.
@@ -672,9 +685,9 @@ impl Saddle {
         let mut prev_diff = [f64::INFINITY; 2];
         while !converged(&terms) && 2.0 * density <= QUAD_MAX_DENSITY {
             density *= 2.0;
-            let (next, step_cost) = self.trapezoid(frame, reach, density, nodes, true);
+            let (next, step_cost) = self.trapezoid(frame, reach, density, hand, nodes, true);
             cost += step_cost;
-            let diff = [0, 1].map(|m| (ch[m].scale * (next[m] - raw[m])).norm());
+            let diff = [0, 1].map(|m| (ch[m].scale * (next[m] - resid[m])).norm());
             let measured = (0..2)
                 .map(|m| {
                     if prev_diff[m].is_finite() && prev_diff[m] > 0.0 {
@@ -687,9 +700,8 @@ impl Saddle {
             let modeled = (lift - TAU * gap * density).exp().max(EPS);
             settle(&mut terms, next, diff, modeled.max(measured));
             prev_diff = diff;
-            raw = next;
+            resid = next;
         }
-
         Priced { terms, cost }
     }
 
@@ -705,6 +717,7 @@ impl Saddle {
         frame: &Frame,
         reach: f64,
         density: f64,
+        hand: &Handoff,
         nodes: &mut [(Complex64, Complex64)],
         refine: bool,
     ) -> ([Complex64; 2], Cost) {
@@ -733,8 +746,9 @@ impl Saddle {
 
         let mut tally = |x: f64, v: Complex64, slope: Complex64| {
             let ev = v.exp();
-            let f1 = (-0.5 * beta * x * x).exp() * ev * slope;
-            let f2 = f1 * ev;
+            let gauss = (-0.5 * beta * x * x).exp();
+            let f1 = gauss * (ev * slope - hand.poly(0, x));
+            let f2 = gauss * (ev * ev * slope - hand.poly(1, x));
             acc[0].0.add(f1.re);
             acc[0].1.add(f1.im);
             acc[1].0.add(f2.re);
@@ -862,6 +876,33 @@ impl Saddle {
     /// in it, since a saddle with small `Φ''` is wide and outweighs its prefactor.
     fn amplitude(&self, frame: &Frame, scale: Complex64) -> f64 {
         scale.norm() * (TAU / frame.beta).sqrt() / self.s0.norm()
+    }
+}
+
+/// What the jet leaves behind for the path to stand on.  The series carries the shape the
+/// integrand has near the saddle, so the trapezoid walks only what is left once that shape comes
+/// out, and the jet's own moments put it back exactly.
+///
+/// The polynomial turns somewhere past the order it reached, but every one of its terms peaks at
+/// `√k` in the standardized coordinate and the reach always sits beyond `√(2·reached)`, so the
+/// Gaussian has buried the turn before the path arrives at it.
+struct Handoff<'a> {
+    normal: &'a Normal,
+    /// Degree in `x`, twice the order each channel reached.
+    degree: [usize; 2],
+    /// The Gaussian integral of that polynomial, pre-scale, which is the sum the jet already
+    /// formed.
+    moments: [Complex64; 2],
+}
+
+impl Handoff<'_> {
+    fn poly(&self, m: usize, x: f64) -> Complex64 {
+        let c = &self.normal.h[m];
+        let mut acc = c[self.degree[m]];
+        for k in (0..self.degree[m]).rev() {
+            acc = acc * x + c[k];
+        }
+        acc
     }
 }
 
