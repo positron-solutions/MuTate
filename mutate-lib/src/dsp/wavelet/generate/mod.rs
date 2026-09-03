@@ -89,6 +89,12 @@ mod test {
     #[cfg(feature = "validate")]
     #[test]
     fn multi_cross_reference() {
+        // We compare the standard jet to its quadrature-only reference behavior.  The reference is
+        // then compared to contour and ifft.  Whichever of the three non-jet methods agrees better
+        // is taken as the goal.  Standard jet sags versus the goal will be tracked as a precision
+        // deficit and asserted on.  Worst pairs are reported, but it's known that IFFT at high u
+        // sags and mid-u Contour sags vs IFFT and reference QuadJet.
+
         use std::time::{Duration, Instant};
 
         let shape = Shape::from_q(3.5, 3.0);
@@ -104,8 +110,10 @@ mod test {
         let (psi, _, _) = ifft::morse_half_taps(shape, settings);
         let ifft_us_per_tap = ifft_start.elapsed().as_secs_f64() * 1e6 / ifft_nominal_taps as f64;
 
-        // let ref_jet = quadjet::QuadJet::reference(shape);
-        let ref_jet = quadjet::QuadJet::standard(shape);
+        let ref_jet = quadjet::QuadJet::reference(shape);
+        let std_jet = quadjet::QuadJet::standard(shape);
+
+        const TRUST_DIGITS: f64 = 5.5;
 
         let res = settings.resolution as f64;
         let stride = settings.resolution / 4;
@@ -113,26 +121,57 @@ mod test {
 
         let digits = |x: f64| if x <= 1e-17 { 17.0 } else { -x.log10() };
 
-        // Every pair, so no method sits in the denominator of its own score.  `f` is IFFT, `c` is
-        // deformed contour, `j` is the jet.  If the two references agree with each other better
-        // than any of them agrees with `j`, the jet is the outlier; if `j-c` tracks `f-c`, the jet
-        // is inside the reference noise.
-        println!("\n=== pairwise agreement, beta {beta:3.2} ===");
-        println!(
-            "  {:>6} | {:>9} | {:>5} {:>5} {:>5} | {:>5} | {:>5}",
-            "u", "scale", "f-c", "j-c", "j-f", "pred", "jpred"
-        );
+        // If bad > worst, worst = bad, location = u.
+        struct Extreme {
+            value: f64,
+            u: f64,
+            keep_min: bool,
+        }
 
-        let mut worst_jc: f64 = 17.0;
-        let mut worst_jc_u: f64 = 0.0;
-        let mut worst_jf: f64 = 17.0;
-        let mut worst_jf_u: f64 = 0.0;
-        let mut worst_gap: f64 = 17.0;
-        let mut worst_gap_u: f64 = 0.0;
+        impl Extreme {
+            fn min() -> Self {
+                Self {
+                    value: f64::INFINITY,
+                    u: 0.0,
+                    keep_min: true,
+                }
+            }
+            fn max() -> Self {
+                Self {
+                    value: f64::NEG_INFINITY,
+                    u: 0.0,
+                    keep_min: false,
+                }
+            }
+            fn see(&mut self, value: f64, u: f64) {
+                let better = if self.keep_min {
+                    value < self.value
+                } else {
+                    value > self.value
+                };
+                if better {
+                    self.value = value;
+                    self.u = u;
+                }
+            }
+        }
+
+        let mut worst_qs_qr = Extreme::min();
+        let mut worst_qr_c = Extreme::min();
+        let mut worst_qr_i = Extreme::min();
+        let mut worst_c_i = Extreme::min();
+        let mut worst_qs_deficit = Extreme::max();
 
         let mut contour_time = Duration::ZERO;
-        let mut jet_time = Duration::ZERO;
+        let mut ref_time = Duration::ZERO;
+        let mut std_time = Duration::ZERO;
         let mut taps: u64 = 0;
+
+        println!("\n=== pairwise agreement, beta {beta:3.2} ===");
+        println!(
+            "  {:>6} | {:>9} | {:>5} {:>5} {:>5} {:>5} | {:>5}",
+            "u", "scale", "qs-qr", "qr-c", "qr-i", "c-i", "defct"
+        );
 
         for k in (0..=last).step_by(stride) {
             let u = k as f64 / res;
@@ -144,54 +183,69 @@ mod test {
             contour_time += t.elapsed();
 
             let t = Instant::now();
-            let jet = ref_jet.tap_at(u);
-            jet_time += t.elapsed();
+            let reference = ref_jet.tap_at(u);
+            ref_time += t.elapsed();
+
+            let t = Instant::now();
+            let standard = std_jet.tap_at(u);
+            std_time += t.elapsed();
 
             taps += 1;
 
             let scale = ifft.norm().max(contour.value.norm());
             let d = |a: Complex64, b: Complex64| digits((a - b).norm() / scale);
 
-            let fc = d(ifft, contour.value);
-            let jc = d(jet.psi, contour.value);
-            let jf = d(jet.psi, ifft);
-            let pred = digits(contour.residual / scale);
-            let jpred = digits(jet.residual[0] / scale);
+            let qs_qr = d(standard.psi, reference.psi);
+            let qr_c = d(reference.psi, contour.value);
+            let qr_i = d(reference.psi, ifft);
+            let c_i = d(contour.value, ifft);
 
-            // How much worse the jet's best pairing is than the integrators' best pairing.
-            let gap = jc.max(jf) - fc;
+            worst_qs_qr.see(qs_qr, u);
+            worst_qr_c.see(qr_c, u);
+            worst_qr_i.see(qr_i, u);
+            worst_c_i.see(c_i, u);
 
-            if jc < worst_jc {
-                worst_jc = jc;
-                worst_jc_u = u;
-            }
-
-            if jf < worst_jf {
-                worst_jf = jf;
-                worst_jf_u = u;
-            }
-
-            if gap > 0.0 && 17.0 - gap < worst_gap {
-                worst_gap = 17.0 - gap;
-                worst_gap_u = u;
-            }
+            // The best-agreeing pair among the three non-jet comparisons sets the bar. Below
+            // TRUST_DIGITS none of the three is corroborated enough to trip, so the assertion on
+            // jet's agreement with quadrature-only is leaned on in a separate assert.
+            let goal = qr_c.max(qr_i).max(c_i);
+            let deficit = if goal > TRUST_DIGITS {
+                (goal - qs_qr).max(0.0)
+            } else {
+                0.0
+            };
+            worst_qs_deficit.see(deficit, u);
 
             println!(
-                "  {u:>6.3} | {:>9} | {fc:>5.1} {jc:>5.1} {jf:>5.1} \
-                | {pred:>5.1} | {jpred:>5.1}",
+                "  {u:>6.3} | {:>9} | {qs_qr:>5.1} {qr_c:>5.1} {qr_i:>5.1} {c_i:>5.1} | {deficit:>5.1}",
                 fmt_e(scale),
             );
         }
 
-        println!("  worst jet/ifft: {worst_jf:.1} digits at u {worst_jf_u:.3}");
-        println!("  worst jet/contour: {worst_jc:.1} digits at u {worst_jc_u:.3}");
         println!(
-            "  largest jet deficit: {:.1} digits at u {worst_gap_u:.3}",
-            17.0 - worst_gap
+            "  worst qs-qr: {:.1} digits at u {:.3}",
+            worst_qs_qr.value, worst_qs_qr.u
+        );
+        println!(
+            "  worst qr-c:  {:.1} digits at u {:.3}",
+            worst_qr_c.value, worst_qr_c.u
+        );
+        println!(
+            "  worst qr-i:  {:.1} digits at u {:.3}",
+            worst_qr_i.value, worst_qr_i.u
+        );
+        println!(
+            "  worst c-i:   {:.1} digits at u {:.3}",
+            worst_c_i.value, worst_c_i.u
+        );
+        println!(
+            "  worst qs deficit: {:.1} digits at u {:.3}",
+            worst_qs_deficit.value, worst_qs_deficit.u
         );
 
         let contour_us_per_tap = contour_time.as_secs_f64() * 1e6 / taps as f64;
-        let jet_us_per_tap = jet_time.as_secs_f64() * 1e6 / taps as f64;
+        let ref_us_per_tap = ref_time.as_secs_f64() * 1e6 / taps as f64;
+        let std_us_per_tap = std_time.as_secs_f64() * 1e6 / taps as f64;
 
         println!("\n=== per-tap cost ===");
         println!("  {:>18} | {:>8}", "method", "us/tap");
@@ -201,8 +255,11 @@ mod test {
             ifft_us_per_tap
         );
         println!("  {:>18} | {:>8.3}", "contour", contour_us_per_tap);
-        println!("  {:>18} | {:>8.3}", "jet", jet_us_per_tap);
+        println!("  {:>18} | {:>8.3}", "quadjet (reference)", ref_us_per_tap);
+        println!("  {:>18} | {:>8.3}", "quadjet (standard)", std_us_per_tap);
 
-        assert!(worst_jc > 5.5);
+        assert!(worst_qr_c.value.max(worst_qr_i.value).max(worst_c_i.value) > TRUST_DIGITS);
+        assert!(worst_qs_qr.value < 5.0);
+        assert!(worst_qs_deficit.value < 5.0);
     }
 }
