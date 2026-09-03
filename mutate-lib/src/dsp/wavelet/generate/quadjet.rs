@@ -358,12 +358,6 @@ impl QuadJet {
             let jet = s.jet(frame, ch, r_star, local_bar, &mut normal);
             cost += jet.cost;
 
-            let handoff = Handoff {
-                normal: &normal,
-                degree: [2 * jet.reached[0], 2 * jet.reached[1]],
-                moments: jet.raw,
-            };
-
             let worth_tracing = |m: usize| jet.terms[m].residual > ch[m].target;
 
             // Fall back on the path where the series floor cannot reach the bar, and where the
@@ -373,7 +367,28 @@ impl QuadJet {
                 || worth_tracing(0)
                 || worth_tracing(1)
             {
-                let quad = s.quadrature(frame, local_bar, ch, seen, &handoff, &mut nodes);
+                // How much of the distance from full amplitude down to target the jet already covered,
+                // in the same nats `bar` is measured in. A jet that settled near its own floor leaves
+                // this near zero; one that stalled at n_cap leaves most of it standing.
+                let jet_progress = (0..2)
+                    .map(|m| ((amps[i][m] / jet.terms[m].residual.max(EPS)).ln()).max(0.0))
+                    .fold(f64::INFINITY, f64::min);
+
+                let handoff = Handoff {
+                    normal: &normal,
+                    degree: [2 * jet.reached[0], 2 * jet.reached[1]],
+                    moments: jet.raw,
+                };
+
+                let quad = s.quadrature(
+                    frame,
+                    local_bar,
+                    jet_progress,
+                    ch,
+                    seen,
+                    &handoff,
+                    &mut nodes,
+                );
                 cost += quad.cost;
 
                 // The jet ran either way, so what the path moved is free to measure against the
@@ -614,6 +629,7 @@ impl Saddle {
         &self,
         frame: &Frame,
         bar: f64,
+        jet_progress: f64,
         ch: [Channel; 2],
         seen: &[Complex64],
         hand: &Handoff,
@@ -643,8 +659,8 @@ impl Saddle {
         let reach = (2.0 * (bar + 3.0)).sqrt().min(REACH_MAX);
         let tail = (-0.5 * reach * reach).exp() * (TAU / frame.beta).sqrt() / self.s0.norm();
 
-        let density =
-            (QUAD_MARGIN * (bar + lift) / (TAU * gap)).clamp(QUAD_MIN_DENSITY, QUAD_MAX_DENSITY);
+        let density = (QUAD_MARGIN * (bar + lift) / (TAU * (gap - jet_progress)))
+            .clamp(QUAD_MIN_DENSITY, QUAD_MAX_DENSITY);
 
         let settle =
             |terms: &mut [Term; 2], resid: [Complex64; 2], diff: [f64; 2], contraction: f64| {
