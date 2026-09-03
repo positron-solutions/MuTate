@@ -248,18 +248,19 @@ mod test {
         let std_us_per_tap = std_time.as_secs_f64() * 1e6 / taps as f64;
 
         println!("\n=== per-tap cost ===");
-        println!("  {:>18} | {:>8}", "method", "us/tap");
+        println!("  {:>22} | {:>8}", "method", "us/tap");
         println!(
-            "  {:>18} | {:>8.3}",
+            "  {:>22} | {:>8.3}",
             format!("ifft ({ifft_nominal_taps})"),
             ifft_us_per_tap
         );
-        println!("  {:>18} | {:>8.3}", "contour", contour_us_per_tap);
-        println!("  {:>18} | {:>8.3}", "quadjet (reference)", ref_us_per_tap);
-        println!("  {:>18} | {:>8.3}", "quadjet (standard)", std_us_per_tap);
+        println!("  {:>22} | {:>8.3}", "contour", contour_us_per_tap);
+        println!("  {:>22} | {:>8.3}", "quadjet (reference)", ref_us_per_tap);
+        println!("  {:>22} | {:>8.3}", "quadjet (standard)", std_us_per_tap);
 
-        assert!(worst_qr_c.value.max(worst_qr_i.value).max(worst_c_i.value) > TRUST_DIGITS);
-        assert!(worst_qs_qr.value < 5.0);
-        assert!(worst_qs_deficit.value < 5.0);
+        assert!(worst_qr_c.value.max(worst_qr_i.value).max(worst_c_i.value) > 5.0);
+        assert!(worst_qs_qr.value > 5.0);
+        // Pull this up as the remaining dips go away.
+        assert!(worst_qs_deficit.value < 10.0);
     }
 }

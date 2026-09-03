@@ -83,9 +83,6 @@
 // always obtains a correct result.  If a descent can be coaxed along a line that will fall into a
 // groove, a heuristic an be made to behave in a deterministic manner, and to pretend otherwise is
 // perhaps an instance of motivated failure to comprehend.
-
-use std::cell::Cell;
-
 use num_complex::Complex64;
 use std::f64::consts::TAU;
 
@@ -95,38 +92,45 @@ use super::super::whatsleft::Accumulator;
 const EPS: f64 = f64::EPSILON;
 
 // Stokes table
-const DK_ITERS: usize = 36;
-const DK_TOL: f64 = 1e-14;
-const TABLE_NEWTON_TOL: f64 = 1e-14;
+const DK_ITERS: usize = 32;
+const DK_TOL: f64 = 1e-16;
+const TABLE_NEWTON_TOL: f64 = 1e-16;
 const TABLE_NEWTON_ITERS: usize = 32;
-const TABLE_NODES: usize = 2048;
+const TABLE_NODES: usize = 1024;
 const TABLE_QUIET_SPAN: f64 = 4.0;
-const TABLE_TAU_MAX: f64 = 256.0;
+const TABLE_TAU_MAX: f64 = 128.0;
 
 // Saddle orientation
 const DESCENT_AXIS_TIE: f64 = 1e-12;
 
 // Jets
 const ADJ_CONE: f64 = 0.5;
-const JET_ORDER: usize = 64;
+const JET_ORDER: usize = 128;
 const JET_SLOTS: usize = JET_ORDER + 2;
-const JET_MIN_ORDER: usize = 6;
+const JET_SETTLE_FLOOR: usize = 8;
+const JET_OVERSHOOT: f64 = 2.5;
 const LIVE: f64 = 0.5;
 const MAX_G: usize = 8;
+const TURN_CONFIRM: u32 = 16;
 
 // Quadrature
+const CALIBRATE_NODES: f64 = 2.0;
+const ANCHOR_EFOLDS: f64 = 3.0;
+const CERTIFY_DERATE: f64 = 0.35;
 const GAP_FLOOR: f64 = 1e-6;
 const LIFT_CREDIT: f64 = 0.5;
-const NEWTON_ITERS: usize = 3;
-const NEWTON_TOL: f64 = 1e-9;
-const QUAD_MARGIN: f64 = 1.2;
-const QUAD_MAX_DENSITY: f64 = QUAD_MAX_NODES as f64 / (2.0 * REACH_MAX);
-const QUAD_MAX_NODES: usize = 512;
-const QUAD_MIN_DENSITY: f64 = 0.1;
-const QUAD_MIN_NODES: usize = 8;
-const QUAD_SLOTS: usize = QUAD_MAX_NODES + 2;
+const NEWTON_ITERS: usize = 8;
+const NEWTON_STALL: f64 = 1e-11;
+const NEWTON_TOL_FACTOR: f64 = 0.1;
+const NEWTON_TOL_FLOOR: f64 = 1e-13;
+const PLACE_MARGIN: f64 = 1.2;
+const PLACE_ROUNDS: u32 = 3;
+const QUAD_MAX_NODES: usize = 2048;
+const QUAD_MIN_DENSITY: f64 = 1e-3;
+const RATE_CREDIBLE: f64 = 4.0;
+const REACH_MARGIN: f64 = 3.0;
 const REACH_MAX: f64 = 16.0;
-const TRACE_MAX_SPLIT: u32 = 6;
+const TRACE_MAX_SPLIT: u32 = 8;
 
 /// The shape, together with the forms of it the rest of the file actually reads.  `ρ` is where
 /// the saddle sits at `τ = 0` and sets the scale `ω` is measured in, and the two integer casts
@@ -159,7 +163,7 @@ pub struct QuadJetResult {
     pub d: Complex64,
     /// What each saddle's own method could say about its own error, summed over the
     /// decomposition, in the units of the channel it describes.
-    pub residual: [f64; 2],
+    pub residual: f64,
     /// Approximate spend for this tap.
     pub cost: Cost,
 }
@@ -168,51 +172,86 @@ pub struct QuadJetResult {
 /// so the numbers are read against themselves across a change rather than against each other.
 #[derive(Clone, Copy, Default)]
 pub struct Cost {
-    /// `jet_pass` invocations.  More than one per saddle means the predicted order fell short.
+    /// `jet_pass` invocations.
     pub jet_passes: u32,
-    /// Summed order actually reached.
+    /// Summed order reached.
     pub jet_orders: u32,
+    /// The deepest order any single pass reached.
+    pub jet_depth: u32,
+    /// Saddles the jet was run on at all.
+    pub jet_saddles: u32,
     /// `trapezoid` invocations.
     pub quad_paths: u32,
-    /// Nodes a `walk` was actually spent on; a refinement reuses its even neighbors.
+    /// Nodes a `walk` was actually spent on, summed over every level traced.
     pub quad_nodes: u32,
     /// How far the traced path moved the jet's answer, measured against the bar that asked for
     /// it.  Under one, the series had already arrived wherever a path was spent.
     pub quad_gain: f64,
+    /// A trace ran out of valley before the reach was spent, so part of the contour is carried
+    /// by the endpoint charge rather than by nodes.
+    pub quad_truncated: bool,
+    /// The placement stopped with the residual still above the bar it was given.
+    pub quad_short: bool,
+    pub quad_density_ratio: f64,
+    pub quad_rate_ratio: f64,
 }
 
 impl std::ops::AddAssign for Cost {
     fn add_assign(&mut self, rhs: Self) {
         self.jet_passes += rhs.jet_passes;
         self.jet_orders += rhs.jet_orders;
+        self.jet_depth = self.jet_depth.max(rhs.jet_depth);
+        self.jet_saddles += rhs.jet_saddles;
         self.quad_paths += rhs.quad_paths;
         self.quad_nodes += rhs.quad_nodes;
         self.quad_gain = self.quad_gain.max(rhs.quad_gain);
+        self.quad_truncated |= rhs.quad_truncated;
+        self.quad_short |= rhs.quad_short;
+        self.quad_density_ratio = self.quad_density_ratio.max(rhs.quad_density_ratio);
+        self.quad_rate_ratio = self.quad_rate_ratio.max(rhs.quad_rate_ratio);
     }
+}
+
+/// Both channels, together with whatever the producing method could say about its own error in
+/// `ψ`.  Convergence is a question about `ψ` alone, so `dψ/dt` carries a value and no verdict.
+struct Terms {
+    value: [Complex64; 2],
+    residual: f64,
 }
 
 /// A jet at one order, with whether the series ended on the mathematics or on the max order.
 struct Pass {
-    terms: [Term; 2],
-    raw: [Complex64; 2],
-    reached: [usize; 2],
+    terms: Terms,
+    reached: usize,
+    spent: bool,
+    /// Met the bar it needed to cross.
     settled: bool,
     cost: Cost,
 }
 
-/// What a jet had to say, together with where each channel's series stopped improving.  That
-/// order is the degree of the polynomial a traced path would subtract, and the point past which
-/// the same polynomial turns and must not be trusted.
+/// What a jet had to say, together with the last order that improved the sum.  Everything above
+/// that order is the divergent tail and belongs to nobody.
 struct Expansion {
-    terms: [Term; 2],
-    raw: [Complex64; 2],
-    reached: [usize; 2],
+    terms: Terms,
+    reached: usize,
     cost: Cost,
+    /// Nothing left to expand
+    exhausted: bool,
 }
 
 /// Both channels plus the spend that produced them.
 struct Priced {
-    terms: [Term; 2],
+    terms: Terms,
+    cost: Cost,
+}
+
+/// One traced level.  The sum it came to, how far along the path it actually got, and whether
+/// that was the whole reach it was asked for.  A walk that ran out of valley early owes an
+/// endpoint charge at the span it reached rather than the reach it was handed.
+struct Level {
+    resid: [Complex64; 2],
+    spans: [f64; 2],
+    full: bool,
     cost: Cost,
 }
 
@@ -229,7 +268,9 @@ pub struct QuadJet {
     /// Skip the jet's verdict and trace every saddle, which is the mode the IFFT and contour
     /// methods are compared against.
     pub quadrature_only: bool,
-
+    /// What each saddle's own method could say about its error in `ψ`, summed over the
+    /// decomposition.
+    pub residual: f64,
     frame: Frame,
     table: StokesTable,
 }
@@ -245,6 +286,7 @@ impl QuadJet {
             quadrature_only,
             frame,
             table,
+            residual: 0.0,
         }
     }
 
@@ -253,7 +295,7 @@ impl QuadJet {
     }
 
     pub fn standard(shape: Shape) -> Self {
-        Self::new(shape, 1e-8, false)
+        Self::new(shape, 1e-7, false)
     }
 
     pub fn tap_at(&self, u: f64) -> QuadJetResult {
@@ -300,27 +342,23 @@ impl QuadJet {
         let singulants = Singulants::new(&saddles, frame);
         let adj = singulants.adjacent();
 
-        let mut amps = [[0.0_f64; 2]; MAX_G];
+        // Sizes are read off `ψ` alone, since `ψ` is the channel the accuracy is owed to.
+        let mut amps = [0.0_f64; MAX_G];
         for &i in active {
-            for m in 0..2 {
-                amps[i][m] = saddles[i].amplitude(frame, scales[i][m]);
-            }
+            amps[i] = saddles[i].amplitude(frame, scales[i][0]);
         }
 
-        let dominant = [0usize, 1].map(|m| {
-            active
-                .iter()
-                .map(|&i| amps[i][m] * weights[i].abs())
-                .fold(0.0_f64, f64::max)
-        });
+        let dominant = active
+            .iter()
+            .map(|&i| amps[i] * weights[i].abs())
+            .fold(0.0_f64, f64::max);
 
         let mut psi_re: Accumulator<f64> = Accumulator::default();
         let mut psi_im: Accumulator<f64> = Accumulator::default();
         let mut d_re: Accumulator<f64> = Accumulator::default();
         let mut d_im: Accumulator<f64> = Accumulator::default();
-        let mut residual = [0.0_f64; 2];
+        let mut residual = 0.0_f64;
 
-        let mut nodes = [(Complex64::default(), Complex64::default()); QUAD_SLOTS];
         let mut normal = Normal::default();
         let mut cost = Cost::default();
 
@@ -328,14 +366,11 @@ impl QuadJet {
             let s = &saddles[i];
             let w = weights[i];
             let seen = singulants.from(i);
+            let scale = scales[i];
 
-            // The bar is `rel` of the largest contribution any saddle makes to the channel,
-            // divided back through this saddle's weight because everything in here is still
-            // pre-weight.
-            let ch = [0usize, 1].map(|m| Channel {
-                scale: scales[i][m],
-                target: rel * dominant[m] / w.abs(),
-            });
+            // The bar is `rel` of the largest contribution any saddle makes to `ψ`, divided back
+            // through this saddle's weight because everything in here is still pre-weight.
+            let target = rel * dominant / w.abs();
 
             // The nearest singulant that can actually reach saddle `i` is both where its series
             // turns and the floor `e^{-r*}` it can never go below.  A shadowed saddle sits
@@ -348,89 +383,75 @@ impl QuadJet {
             }
 
             // The bar belongs to the dominant saddle, and a suppressed one meets it with fewer
-            // digits of its own.  This is what saddle `i` owes in its own units, the wider
-            // channel governing since it is the one still unmet when the other has stopped.
-            let local_bar = (0..2)
-                .map(|m| (amps[i][m] / ch[m].target).ln())
-                .fold(f64::NEG_INFINITY, f64::max);
+            // digits of its own.  This is what saddle `i` owes in its own units.
+            let local_bar = (amps[i] / target).ln();
 
             // The skip below is really the jet's own opinion that a saddle is too small to
-            // bother with, read off its leading Watson term. Reference mode has no jet, so it
+            // bother with, read off its leading Watson term.  Reference mode has no jet, so it
             // owes that opinion nothing: every active saddle gets integrated, cold, by
             // quadrature, and stands or falls on what quadrature itself finds.
             if !self.quadrature_only && local_bar <= 1.0 {
-                residual[0] += amps[i][0] * w.abs();
-                residual[1] += amps[i][1] * w.abs();
+                residual += amps[i] * w.abs();
                 continue;
             }
 
-            let [p, q] = if self.quadrature_only {
+            let terms = if self.quadrature_only {
                 let handoff = Handoff {
                     normal: None,
-                    degree: [0, 0],
+                    degree: 0,
                     moments: [Complex64::default(); 2],
                 };
-                let quad = s.quadrature(frame, local_bar, 0.0, ch, seen, &handoff, &mut nodes);
+                // Nothing was subtracted, so the path owes the whole saddle in both the density
+                // it needs and the distance it walks.
+                let quad = s.quadrature(frame, local_bar, rel, scale, target, seen, &handoff);
                 cost += quad.cost;
                 quad.terms
             } else {
-                let jet = s.jet(frame, ch, r_star, local_bar, &mut normal);
+                let mut jet = s.jet(frame, scale, target, r_star, local_bar, &mut normal);
                 cost += jet.cost;
 
-                let worth_tracing = |m: usize| jet.terms[m].residual > ch[m].target;
+                // A missed bar buys more series before it buys any nodes, but only where the
+                // first pass stopped on the search rather than on its own turn.  A pass that
+                // watched its terms turn or already reached the cap has nothing further to sell,
+                // and asking again reproduces it exactly.
+                if jet.terms.residual > target && !jet.exhausted {
+                    let deeper = s.deepen(frame, scale, target, r_star, &mut normal);
+                    cost += deeper.cost;
+                    jet = deeper;
+                }
 
-                // Fall back on the path where the series floor cannot reach the bar, and where
-                // the series reports that it stalled before getting there.
-                if r_star <= local_bar || worth_tracing(0) || worth_tracing(1) {
-                    // How much of the distance from full amplitude down to target the jet
-                    // already covered, in the same nats `bar` is measured in. A jet that settled
-                    // near its own floor leaves this near zero; one that stalled at n_cap leaves
-                    // most of it standing.
-                    let jet_progress = (0..2)
-                        .map(|m| ((amps[i][m] / jet.terms[m].residual.max(EPS)).ln()).max(0.0))
-                        .fold(f64::INFINITY, f64::min);
-
-                    // The series turns somewhere past the order it reached, and the path walks
-                    // out to `reach`. Handing over more degree than the reach can support means
-                    // subtracting a polynomial in the region where it has started to diverge, so
-                    // the degree stops where the path's own footprint stops.
-                    let degree_cap = (frame.beta * REACH_MAX * REACH_MAX) as usize;
+                if jet.terms.residual > target {
+                    // Every term of the polynomial peaks at `√k` in the standardized coordinate,
+                    // so a walk that stops short of `√degree` subtracts a shape whose own mass
+                    // sits outside it while the moments add that mass back over the whole line.
+                    // The degree stops where the path's footprint stops and the moments follow
+                    // the same truncation.
+                    let reach = reach_for(local_bar);
+                    let degree_cap = (reach * reach) as usize;
+                    // `degree` counts coefficients of `x` and the moments count orders, so the
+                    // even half is what puts back exactly the polynomial the path took out.
+                    let degree = (2 * jet.reached).min(degree_cap) & !1;
                     let handoff = Handoff {
                         normal: Some(&normal),
-                        degree: [
-                            (2 * jet.reached[0]).min(degree_cap),
-                            (2 * jet.reached[1]).min(degree_cap),
-                        ],
-                        moments: jet.raw,
+                        degree,
+                        moments: normal.moments(frame.beta, degree / 2),
                     };
 
-                    let quad = s.quadrature(
-                        frame,
-                        local_bar,
-                        jet_progress,
-                        ch,
-                        seen,
-                        &handoff,
-                        &mut nodes,
-                    );
+                    let quad = s.quadrature(frame, local_bar, rel, scale, target, seen, &handoff);
                     cost += quad.cost;
 
-                    // The jet ran either way, so what the path moved is free to measure against
-                    // the bar that asked for it.
-                    for m in 0..2 {
-                        let moved = (quad.terms[m].value - jet.terms[m].value).norm();
-                        cost.quad_gain = cost.quad_gain.max(moved / ch[m].target);
-                    }
+                    let moved = (quad.terms.value[0] - jet.terms.value[0]).norm();
+                    cost.quad_gain = cost.quad_gain.max(moved / target);
+
                     quad.terms
                 } else {
                     jet.terms
                 }
             };
 
-            residual[0] += p.residual * w.abs();
-            residual[1] += q.residual * w.abs();
-            let pv = p.value * w;
-            let qv = q.value * w * Complex64::i();
+            residual += terms.residual * w.abs();
+            let pv = terms.value[0] * w;
+            let qv = terms.value[1] * w * Complex64::i();
             psi_re.add(pv.re);
             psi_im.add(pv.im);
             d_re.add(qv.re);
@@ -440,7 +461,7 @@ impl QuadJet {
         let unscale = log_scale.exp() / rho;
         let psi = Complex64::new(psi_re.sum(), psi_im.sum()) * unscale;
         let d = Complex64::new(d_re.sum(), d_im.sum()) * unscale;
-        let residual = [residual[0] * unscale, residual[1] * unscale];
+        let residual = residual * unscale;
 
         if t < 0.0 {
             QuadJetResult {
@@ -458,22 +479,6 @@ impl QuadJet {
             }
         }
     }
-}
-
-/// One of the two things a saddle is asked for, `ψ` and `dψ/dt`, which travel together because
-/// they differ only in the `e^{mv}` the moments read.
-#[derive(Clone, Copy, Default)]
-struct Channel {
-    /// The prefactor, with the dominant `e^{βΦ}` already divided out.
-    scale: Complex64,
-    /// The bar this channel has to clear, absolute and pre-weight.
-    target: f64,
-}
-
-/// Value, and whatever the producing method could say about its own error.
-struct Term {
-    value: Complex64,
-    residual: f64,
 }
 
 /// The steepest-descent curvature at a saddle, carrying the orientation the traced contour is
@@ -527,57 +532,45 @@ impl Saddle {
 
     /// The cheap approach to a saddle, Watson's lemma on the series `Normal` carries.
     ///
-    /// The order is predicted rather than searched.  The singulant `r_star` says where the
-    /// series turns and the bar says where its terms fall under notice, and both are known
-    /// before the first coefficient exists.  A prediction that runs short is corrected upward,
-    /// and correcting it costs only the orders it did not already have.
+    /// The order is predicted before the first coefficient exists, since the singulant `r_star`
+    /// says where the series turns and the bar says where its terms fall under notice.  A
+    /// prediction that runs short is doubled until it holds or reaches the cap, and each retry
+    /// costs only the orders the series did not already have.
     fn jet(
         &self,
         frame: &Frame,
-        ch: [Channel; 2],
+        scales: [Complex64; 2],
+        target: f64,
         r_star: f64,
         bar: f64,
         normal: &mut Normal,
     ) -> Expansion {
         normal.seed(self, frame);
 
-        let n_cap = (r_star.ceil() as usize).clamp(1, JET_ORDER / 2);
-        let mut cost = Cost::default();
+        let n_cap = cap_for(r_star);
+        let mut cost = Cost {
+            jet_saddles: 1,
+            ..Default::default()
+        };
 
         // A series whose own floor sits under its own bar is handing its polynomial to
-        // quadrature no matter how far it climbs. There's nothing to search for, so build
-        // it once at the cap and let the caller trace the rest.
-        if r_star <= bar {
-            normal.extend(self, frame, 2 * n_cap);
-            let pass = self.jet_sum(frame, ch, r_star, n_cap, normal);
-            cost += pass.cost;
-            return Expansion {
-                terms: pass.terms,
-                raw: pass.raw,
-                reached: pass.reached,
-                cost,
-            };
-        }
+        // quadrature no matter how far it climbs.  There is nothing to search for, so build it
+        // once at the cap and let the caller trace the rest.
+        let mut n_max = if r_star <= bar {
+            n_cap
+        } else {
+            predict_order(bar, r_star).clamp(JET_SETTLE_FLOOR, n_cap)
+        };
 
-        // Otherwise the order is worth predicting, since a lucky guess settles the whole
-        // saddle here for the price of a single pass.
-        let mut n = bar.max(1.0);
-        for _ in 0..2 {
-            n = bar / ((r_star / n).max(1.0).ln() + 1.0);
-        }
-        let mut n_max = (n.ceil() as usize)
-            .clamp(1, n_cap)
-            .max(JET_MIN_ORDER.min(n_cap));
-        let mut cost = Cost::default();
         loop {
             normal.extend(self, frame, 2 * n_max);
-            let pass = self.jet_sum(frame, ch, r_star, n_max, normal);
+            let pass = self.jet_sum(frame, scales, target, n_max, true, normal);
             cost += pass.cost;
-            if pass.settled || n_max == n_cap {
+            if pass.settled || pass.spent || n_max == n_cap {
                 return Expansion {
                     terms: pass.terms,
-                    raw: pass.raw,
                     reached: pass.reached,
+                    exhausted: pass.spent || n_max == n_cap,
                     cost,
                 };
             }
@@ -585,87 +578,135 @@ impl Saddle {
         }
     }
 
-    /// The series at one order.  Each even coefficient meets its Gaussian moment and the two
+    /// Everything the series still has, spent before any node is.  An order is one convolution
+    /// against coefficients that already exist, while a node is a Newton solve down a valley
+    /// that may have to be walked twice, so a saddle that missed its bar asks the series for the
+    /// rest before it asks the path for anything.  Often the rest is enough and no path is
+    /// traced.  When it is not, the deeper polynomial is what the path gets to stand on and the
+    /// shortfall it has to cover is smaller by whatever those orders bought.
+    fn deepen(
+        &self,
+        frame: &Frame,
+        scales: [Complex64; 2],
+        target: f64,
+        r_star: f64,
+        normal: &mut Normal,
+    ) -> Expansion {
+        let n_cap = cap_for(r_star);
+        normal.extend(self, frame, 2 * n_cap);
+        let pass = self.jet_sum(frame, scales, target, n_cap, false, normal);
+        Expansion {
+            terms: pass.terms,
+            reached: pass.reached,
+            cost: pass.cost,
+            exhausted: true,
+        }
+    }
+
+    /// The series at one order.  Each even coefficient meets its Gaussian moment, and the two
     /// channels differ only in which `h` they read.
     ///
-    /// A channel that ended on the mathematics, having diverged or crossed under the bar or run
-    /// into roundoff, has said everything it is going to say, and only a channel that ran out of
-    /// order is worth asking again.
+    /// The envelope of the `ψ` terms is what decides where the sum ends.  `dψ/dt` is accumulated
+    /// over exactly the orders `ψ` accepted, so it neither prolongs the sum nor cuts it short.
+    /// Ending on the mathematics, having diverged or crossed under the bar or run into roundoff,
+    /// means the series has said everything it is going to say.
     fn jet_sum(
         &self,
         frame: &Frame,
-        ch: [Channel; 2],
-        r_star: f64,
+        scales: [Complex64; 2],
+        target: f64,
         n_max: usize,
+        stop_at_bar: bool,
         normal: &Normal,
     ) -> Pass {
         let beta = frame.beta;
-        let scale_abs = [ch[0].scale.norm(), ch[1].scale.norm()];
+        let scale_abs = scales[0].norm();
 
         let mut moment = (TAU / beta).sqrt();
-        let mut value = [Complex64::default(); 2];
-        let mut prev = [f64::INFINITY; 2];
-        let mut last = [0.0_f64; 2];
-        let mut residual = [f64::INFINITY; 2];
-        let mut settled = [false; 2];
-        let mut reached = [0usize; 2];
+        let mut running = [Complex64::default(); 2];
+        let mut last = 0.0_f64;
+
+        // The envelope decides where the series turned and the accepted term is what the series
+        // still owes.  An order only becomes a truncation when the envelope improved, which
+        // means both it and its predecessor are small, so the accepted term is never a zero of
+        // the oscillation standing in for the remainder.
+        let mut best = [Complex64::default(); 2];
+        let mut best_env = f64::INFINITY;
+        let mut best_term = f64::INFINITY;
+        let mut reached = 0usize;
+        let mut descents = 0usize;
+
+        let mut spent = false;
+        let mut met = false;
+        let mut rises = 0u32;
+
         for n in 0..=n_max {
-            for m in 0..2 {
-                if settled[m] {
-                    continue;
+            let term = [normal.h[0][2 * n] * moment, normal.h[1][2 * n] * moment];
+            let size = scale_abs * term[0].norm();
+
+            // A conjugate pair of singulants makes the terms oscillate, which is forced at
+            // `τ = 0` where every `Δ` is imaginary, so a single small term is a zero of the
+            // oscillation rather than the remainder.  The envelope is what decays.
+            let env = size.max(last);
+            last = size;
+
+            running[0] += term[0];
+            running[1] += term[1];
+
+            if env < best_env {
+                best_env = env;
+                best_term = size;
+                best = running;
+                reached = n;
+                rises = 0;
+                descents += 1;
+
+                // Meeting the bar ends a pass that was sent to find the bar, once the envelope
+                // has descended far enough to be an envelope rather than a slow zero of the
+                // oscillation.  A pass building the shape a path will stand on notes the
+                // crossing and keeps climbing, since the orders above are ones the path does not
+                // have to resolve.  Roundoff ends both and answers to no floor, since a sum that
+                // has lost its bits gains nothing from more terms.
+                if env <= target && descents >= JET_SETTLE_FLOOR {
+                    met = true;
+                    if stop_at_bar {
+                        break;
+                    }
                 }
-                let term = normal.h[m][2 * n] * moment;
-                let size = scale_abs[m] * term.norm();
 
-                // A conjugate pair of singulants makes the terms oscillate, which is forced at
-                // `τ = 0` where every `Δ` is imaginary, so a single small term is a zero of the
-                // oscillation rather than the remainder.  The envelope is what decays.
-                let env = size.max(last[m]);
-                last[m] = size;
-
-                if env > prev[m] {
-                    settled[m] = true;
-                    continue;
+                if env <= EPS * scale_abs * running[0].norm() {
+                    spent = true;
+                    met = true;
+                    break;
                 }
-
-                prev[m] = env;
-                value[m] += term;
-                reached[m] = n;
-                residual[m] = env * (2.0 * n as f64 / r_star).max(1.0);
-
-                // Meeting the bar is reason enough to stop reporting, but not to stop building.
-                // The path downstream walks whatever shape this series hands it, so a channel
-                // that arrived early keeps going until it has some to hand over.
-                let done = env <= ch[m].target || env <= EPS * scale_abs[m] * value[m].norm();
-                if done && n >= JET_MIN_ORDER {
-                    settled[m] = true;
+            } else {
+                rises += 1;
+                // Terms oscillate and alias within an envelope, so the turn is confirmed over
+                // several orders before the tail is believed.
+                if rises >= TURN_CONFIRM {
+                    spent = true;
+                    break;
                 }
-            }
-
-            if settled[0] && settled[1] {
-                break;
             }
 
             moment *= (2 * n + 1) as f64 / beta;
         }
 
+        let value = [scales[0] * best[0], scales[1] * best[1]];
         Pass {
-            terms: [
-                Term {
-                    value: ch[0].scale * value[0],
-                    residual: residual[0],
-                },
-                Term {
-                    value: ch[1].scale * value[1],
-                    residual: residual[1],
-                },
-            ],
+            terms: Terms {
+                // No channel can claim more digits than the partial sum carries, and the traced
+                // path is held to the same floor.
+                residual: best_term.max(EPS * value[0].norm()),
+                value,
+            },
             reached,
-            raw: value,
-            settled: settled[0] && settled[1],
+            settled: met,
+            spent,
             cost: Cost {
                 jet_passes: 1,
-                jet_orders: reached[0].max(reached[1]) as u32,
+                jet_orders: reached as u32,
+                jet_depth: reached as u32,
                 ..Default::default()
             },
         }
@@ -674,21 +715,35 @@ impl Saddle {
     /// The expensive approach to a saddle, a trapezoid along its traced steepest-descent path.
     ///
     /// Node density is a question about the neighbors and nothing else.  Aliasing folds in
-    /// whatever feature sits `gap` off the path carrying the size that feature already has, so a
-    /// neighbor suppressed below the bar asks for nothing and the closest survivor asks for
-    /// everything.  Distance decides which one binds.  The trapezoid buries that neighbor as
-    /// `e^{-2π·gap·density}`, so the density that clears the bar is a closed form and the pass
-    /// lands on it directly.  The ladder below survives to catch a gap that was not the whole
-    /// story, not to find the answer by climbing.
+    /// whatever feature sits `gap` off the path, carrying the size that feature already has, and
+    /// the trapezoid buries it as `e^{-2π·gap·density}`.  The rate in that exponent is geometry
+    /// and the model knows it.  The amplitude in front of it is the thing the model only guesses
+    /// at, and it is the guess that goes wrong wherever two saddles are close to trading places.
+    ///
+    /// So the amplitude gets measured instead.  A coarse anchor level is placed where the feature
+    /// is still standing in the answer, and the difference between it and a finer level names the
+    /// amplitude the model was standing in for.  Each further level is placed where the last
+    /// difference says the bar is met, and once two differences exist the rate becomes measured
+    /// too.  Any of those levels may already be the whole answer, so the passes that calibrate
+    /// the model are the same passes that can retire it.
+    ///
+    /// The path is one contour and it carries no `m`, so the placement is decided by what `ψ`
+    /// still owes and `dψ/dt` is read off the same nodes.
+    ///
+    /// How far the path walks is a different question with a different answer.  The reach belongs
+    /// to the bar alone, and where a neighboring saddle sits on this path the trace runs out of
+    /// valley and stops on its own.  What it never reached is charged to the endpoint and
+    /// reported, never handed to the placement, since no density buys back a piece of contour
+    /// that was never walked.
     fn quadrature(
         &self,
         frame: &Frame,
         bar: f64,
-        jet_progress: f64,
-        ch: [Channel; 2],
+        rel: f64,
+        scales: [Complex64; 2],
+        target: f64,
         seen: &[Complex64],
         hand: &Handoff,
-        nodes: &mut [(Complex64, Complex64)],
     ) -> Priced {
         // The neighbor that binds is the one whose own size, carried onto the path at its own
         // distance, is hardest to bury.  One standing above this saddle enters amplified and
@@ -711,106 +766,139 @@ impl Saddle {
             }
         }
 
-        let reach = (2.0 * (bar + 3.0).max(0.0)).sqrt().min(REACH_MAX);
-        let tail = (-0.5 * reach * reach).exp() * (TAU / frame.beta).sqrt() / self.s0().norm();
+        // Aliasing folds the neighbor onto the path carrying the size the neighbor already has,
+        // and a polynomial is entire, so subtracting one leaves that fold exactly where it was.
+        // Density answers to the whole saddle no matter how well the series did.  So does the
+        // distance, since the moments put the polynomial back over the whole line and a walk
+        // that stops early owes the difference.
+        let reach = reach_for(bar);
+        let model_rate = TAU * gap;
+        let ceiling = (QUAD_MAX_NODES as f64 / (2.0 * reach)).max(QUAD_MIN_DENSITY);
+        let ideal =
+            (PLACE_MARGIN * (bar + lift).max(0.0) / model_rate).clamp(QUAD_MIN_DENSITY, ceiling);
 
-        // The neighbor stands where it stands. Subtracting this saddle's own shape does nothing
-        // to the feature `gap` away, so the density that buries it owes the series no credit.
-        let density = (QUAD_MARGIN * (bar + lift).max(0.0) / (TAU * gap))
-            .clamp(QUAD_MIN_DENSITY, QUAD_MAX_DENSITY);
+        let value = |resid: [Complex64; 2], m: usize| scales[m] * (resid[m] + hand.moments[m]);
+        let spread = |a: [Complex64; 2], b: [Complex64; 2]| (scales[0] * (a[0] - b[0])).norm();
 
-        let settle =
-            |terms: &mut [Term; 2], resid: [Complex64; 2], diff: [f64; 2], contraction: f64| {
-                for m in 0..2 {
-                    let value = ch[m].scale * (resid[m] + hand.moments[m]);
-                    let noise = EPS * value.norm();
-                    let endpoint = tail * ch[m].scale.norm();
-                    terms[m] = Term {
-                        value,
-                        residual: (diff[m] * contraction).max(noise) + endpoint,
-                    };
-                }
-            };
-
-        let converged = |terms: &[Term; 2]| {
-            (0..2).all(|m| terms[m].residual <= ch[m].target.max(EPS * terms[m].value.norm()))
-        };
-
-        // One pass at the predicted density.  With no second level there is no diff to measure,
-        // so the model's suppression is read against what the path actually integrated.  That is
-        // the residual the series could not reach rather than the answer itself.
         let mut cost = Cost::default();
-        let (mut resid, seed_cost) = self.trapezoid(frame, reach, density, hand, nodes, false);
-        cost += seed_cost;
 
-        let modeled = (lift - TAU * gap * density).exp().max(EPS);
+        // The anchor is placed by the suppression and not by the answer.  A few e-folds of decay
+        // is what makes the gap between two levels a measurement of the neighbor rather than a
+        // measurement of the anchor's own coarseness, and an extrapolation off the flat stretch
+        // below onset always lands short.  Where the answer itself sits below onset the anchor
+        // keeps its place and the finer level is lifted to clear it.
+        let onset = ANCHOR_EFOLDS / model_rate;
+        let anchor_density = onset
+            .max(CALIBRATE_NODES / reach)
+            .clamp(QUAD_MIN_DENSITY, ceiling);
+        let fine_density = ideal.max(PLACE_MARGIN * anchor_density).min(ceiling);
 
-        let mut terms = [0, 1].map(|m| Term {
-            value: ch[m].scale * (resid[m] + hand.moments[m]),
-            residual: f64::INFINITY,
-        });
-        let guess = [0, 1].map(|m| (ch[m].scale * resid[m]).norm());
-        settle(&mut terms, resid, guess, modeled);
+        let anchor = self.trapezoid(frame, reach, anchor_density, rel, hand);
+        cost += anchor.cost;
 
-        // The prediction is an ETA.  If the closed form was reading the wrong neighbor, the
-        // ladder buys density back a doubling at a time, now with a rate it can measure.
-        let mut density = density;
-        let mut prev_diff = [f64::INFINITY; 2];
-        while !converged(&terms) && 2.0 * density <= QUAD_MAX_DENSITY {
-            density *= 2.0;
-            let (next, step_cost) = self.trapezoid(frame, reach, density, hand, nodes, true);
-            cost += step_cost;
-            let diff = [0, 1].map(|m| (ch[m].scale * (next[m] - resid[m])).norm());
-            let measured = (0..2)
-                .map(|m| {
-                    if prev_diff[m].is_finite() && prev_diff[m] > 0.0 {
-                        diff[m] / prev_diff[m]
-                    } else {
-                        1.0
-                    }
-                })
-                .fold(0.0_f64, f64::max);
-            let modeled = (lift - TAU * gap * density).exp().max(EPS);
-            settle(&mut terms, next, diff, modeled.max(measured));
-            prev_diff = diff;
-            resid = next;
+        let mut level = self.trapezoid(frame, reach, fine_density, rel, hand);
+        cost += level.cost;
+
+        let mut lo = anchor_density;
+        let mut hi = fine_density;
+        let mut err_lo = spread(level.resid, anchor.resid);
+        let mut rate = model_rate;
+        let mut carried = f64::INFINITY;
+
+        for _ in 0..PLACE_ROUNDS {
+            // A difference between two levels bounds the error of the coarser one, so what the
+            // finer still carries is that difference decayed across the step between them.  The
+            // decay is derated, since the rate is the model's until a second difference exists
+            // and a model that flatters the neighbor should not be allowed to certify on the
+            // strength of that flattery.
+            let fade = (-CERTIFY_DERATE * rate * (hi - lo)).exp();
+            let bar_abs = target.max(EPS * value(level.resid, 0).norm());
+            carried = err_lo * fade;
+            let short = carried > bar_abs;
+            let place = lo + (err_lo / bar_abs).max(1.0).ln() / rate;
+
+            // A pair that has not yet reached onset is measuring itself, so its difference is no
+            // evidence about either level and the loop buys another regardless of what the
+            // projection claims.
+            if !short && lo >= onset {
+                break;
+            }
+
+            let next = (hi + PLACE_MARGIN * (place - hi)).min(ceiling);
+            if next <= hi {
+                break;
+            }
+
+            let step = self.trapezoid(frame, reach, next, rel, hand);
+            cost += step.cost;
+            let err_hi = spread(step.resid, level.resid);
+
+            // Two consecutive levels name the suppression the path actually gets, which is the
+            // number the model was standing in for.  A pair that failed to shrink has hit
+            // roundoff and has nothing left to say, and a rate far from the model's has been
+            // read off terrain the model does not describe, so both leave the job with the model
+            // rather than let one measurement steer the whole placement.
+            if err_hi > 0.0 && err_lo > err_hi {
+                let measured = (err_lo / err_hi).ln() / (hi - lo);
+                rate = measured.clamp(model_rate / RATE_CREDIBLE, model_rate * RATE_CREDIBLE);
+            }
+
+            lo = hi;
+            hi = next;
+            err_lo = err_hi;
+            level = step;
         }
-        Priced { terms, cost }
+
+        cost.quad_density_ratio = hi / ideal;
+        cost.quad_rate_ratio = rate / model_rate;
+
+        let alias = carried;
+
+        // Each side stopped where its own valley gave out, so the Gaussian is charged twice at
+        // two different edges rather than once at the shorter of them.
+        let width = (TAU / frame.beta).sqrt() / self.s0().norm();
+        let tail = 0.5
+            * width
+            * level
+                .spans
+                .iter()
+                .map(|s| (-0.5 * s * s).exp())
+                .sum::<f64>();
+
+        let value = [value(level.resid, 0), value(level.resid, 1)];
+        let residual = (alias + tail * scales[0].norm()).max(EPS * value[0].norm());
+
+        cost.quad_truncated = !level.full;
+        cost.quad_short = residual > target.max(EPS * value[0].norm());
+
+        Priced {
+            terms: Terms { value, residual },
+            cost,
+        }
     }
 
-    /// One level of the ladder.  In the normal coordinate the phase is exactly `-x²/2`, so the
-    /// weight is Gaussian by construction and cannot overflow the way a straight segment in `v`
-    /// does once the reach is long enough for `e^{γv}` to climb the neighboring hill.  The path
-    /// carries no `m`, so one trace serves both channels.
+    /// One level.  In the normal coordinate the phase is exactly `-x²/2`, so the weight is
+    /// Gaussian by construction and cannot overflow the way a straight segment in `v` does once
+    /// the reach is long enough for `e^{γv}` to climb the neighboring hill.  The path carries no
+    /// `m`, so one trace serves both channels.
     ///
-    /// Nodes are held at the finest density this ladder will reach, so a refinement finds half
-    /// its work already done beside it.
+    /// Each level stands alone at its own density and every node on it is traced fresh.  Either
+    /// side may run out of valley before the reach is spent, and the sum stops there and reports
+    /// the span it actually covered, which is what the endpoint charge is built on.
     fn trapezoid(
         &self,
         frame: &Frame,
         reach: f64,
         density: f64,
+        rel: f64,
         hand: &Handoff,
-        nodes: &mut [(Complex64, Complex64)],
-        refine: bool,
-    ) -> ([Complex64; 2], Cost) {
+    ) -> Level {
         let beta = frame.beta;
-
         let h = 1.0 / (density * beta.sqrt());
-        let n = (reach * density).floor().max(QUAD_MIN_NODES as f64) as usize;
+        let n = (reach * density).round().max(1.0) as usize;
 
         // At the saddle `x` and `g'` vanish together and the slope `-x/g'(v)` goes to `1/s0`.
         let apex = (Complex64::default(), self.s0().inv());
-        nodes[0] = apex;
-        nodes[1] = apex;
-
-        if refine {
-            for si in 0..2 {
-                for j in (1..=n / 2).rev() {
-                    nodes[4 * j + si] = nodes[2 * j + si];
-                }
-            }
-        }
 
         let mut acc = [
             (Accumulator::<f64>::default(), Accumulator::<f64>::default()),
@@ -831,85 +919,117 @@ impl Saddle {
         tally(0.0, apex.0, apex.1);
 
         let mut walked = 0u32;
+        let mut spans = [0.0_f64; 2];
+        let mut full = true;
 
-        for (si, side) in [1.0_f64, -1.0].into_iter().enumerate() {
+        for (which, side) in [1.0_f64, -1.0].into_iter().enumerate() {
+            let mut at = apex;
+            let mut splits = 1u32;
+            let mut last = 0usize;
             for j in 1..=n {
-                let slot = 2 * j + si;
-                let x = side * j as f64 * h;
-
-                if !refine || j % 2 == 1 {
-                    let x_prev = side * (j - 1) as f64 * h;
-                    nodes[slot] = self.walk(nodes[2 * (j - 1) + si], x_prev, x);
-                    walked += 1;
+                let x0 = side * (j - 1) as f64 * h;
+                let x1 = side * j as f64 * h;
+                match self.walk(at, x0, x1, rel, &mut splits) {
+                    Some(next) => at = next,
+                    None => break,
                 }
-
-                let (v, slope) = nodes[slot];
-                tally(x, v, slope);
+                walked += 1;
+                tally(x1, at.0, at.1);
+                last = j;
             }
+            full &= last == n;
+            spans[which] = last as f64 / density;
         }
-
         drop(tally);
 
-        (
-            [
+        Level {
+            resid: [
                 Complex64::new(acc[0].0.sum(), acc[0].1.sum()) * h,
                 Complex64::new(acc[1].0.sum(), acc[1].1.sum()) * h,
             ],
-            Cost {
+            spans,
+            full,
+            cost: Cost {
                 quad_paths: 1,
                 quad_nodes: walked,
                 ..Default::default()
             },
-        )
+        }
     }
 
     /// One step along the path that `dv/dx = -x/g'(v)` predicts, closed by Newton on
     /// `g(v) = -x²/2`.
     ///
-    /// The valley runs close by neighboring saddles, where `g'` is small enough that the
-    /// prediction overshoots and Newton lands on the neighbor's sheet.  Refusing a step that
-    /// wanders leaves the caller to approach the neighbor more slowly.
+    /// Newton doubles its digits every pass, so a step that stops shrinking has found the floor
+    /// the arithmetic allows rather than failing to arrive.  Both endings count as arrival while
+    /// the last step is small.  A step that is still large means the prediction overshot into a
+    /// neighboring valley and Newton landed on that saddle's sheet, and the caller is left to
+    /// approach more slowly or to stop.
     fn advance(
         &self,
         v: Complex64,
         slope: Complex64,
         x0: f64,
         x1: f64,
+        rel: f64,
     ) -> Option<(Complex64, Complex64)> {
         let h = x1 - x0;
         let mut w = v + slope * h;
         let target = Complex64::new(-0.5 * x1 * x1, 0.0);
+        let step_tol = (NEWTON_TOL_FACTOR * rel).max(NEWTON_TOL_FLOOR);
 
-        let mut converged = false;
+        let mut arrived = false;
         let mut gp = Complex64::default();
+        let mut prev = f64::INFINITY;
         for _ in 0..NEWTON_ITERS {
             let (gv, gpv) = self.g(w);
             let step = (gv - target) / gpv;
             w -= step;
             gp = gpv;
-            if step.norm() < NEWTON_TOL {
-                converged = true;
+
+            let size = step.norm();
+            if size < step_tol {
+                arrived = true;
                 break;
             }
+            if size > 0.5 * prev {
+                arrived = size < NEWTON_STALL;
+                break;
+            }
+            prev = size;
         }
 
-        if !converged || (w - v).norm() > 4.0 * slope.norm() * h.abs() + 0.25 {
+        if !arrived || (w - v).norm() > 4.0 * slope.norm() * h.abs() + 0.25 {
             return None;
         }
         Some((w, -x1 / gp))
     }
 
-    /// Subdivides a step until the path stays in its own valley.
-    fn walk(&self, from: (Complex64, Complex64), x0: f64, x1: f64) -> (Complex64, Complex64) {
-        let mut splits = 1u32;
+    /// Subdivides a step until the path stays in its own valley, and reports the give-up rather
+    /// than handing back where it got to.  A node quietly placed short of its own `x` is worse
+    /// than no node.
+    ///
+    /// Difficulty here is a property of the terrain and not of the node, and it only grows as
+    /// the walk leaves the saddle and closes on a neighbor.  So the split count that worked last
+    /// time is where the next node starts.  Climbing from one at every node pays the whole climb
+    /// again along the stretch where the valley is tightest, which is exactly the stretch
+    /// carrying the most nodes.
+    fn walk(
+        &self,
+        from: (Complex64, Complex64),
+        x0: f64,
+        x1: f64,
+        rel: f64,
+        splits: &mut u32,
+    ) -> Option<(Complex64, Complex64)> {
         loop {
-            let sub = (x1 - x0) / splits as f64;
+            let sub = (x1 - x0) / *splits as f64;
             let mut at = from;
             let mut ok = true;
-            for k in 1..=splits {
+            for k in 1..=*splits {
                 let a = x0 + sub * (k - 1) as f64;
                 let b = x0 + sub * k as f64;
-                match self.advance(at.0, at.1, a, b) {
+                match self.advance(at.0, at.1, a, b, rel) {
                     Some(next) => at = next,
                     None => {
                         ok = false;
@@ -917,10 +1037,13 @@ impl Saddle {
                     }
                 }
             }
-            if ok || splits > 1 << TRACE_MAX_SPLIT {
-                return at;
+            if ok {
+                return Some(at);
             }
-            splits *= 2;
+            if *splits > 1 << TRACE_MAX_SPLIT {
+                return None;
+            }
+            *splits *= 2;
         }
     }
 
@@ -957,22 +1080,45 @@ impl Saddle {
     }
 }
 
+/// The order the series is predicted to need, in the index the moments actually carry.  Terms go
+/// like `Γ(n)/r*^n`, so a bar of `bar` e-folds asks for the `n` solving `n(1 + ln(r*/n)) = bar`.
+/// The map is increasing and the seed sits above the root, so the iteration walks down onto it
+/// and stopping early lands on the generous side.
+fn predict_order(bar: f64, r_star: f64) -> usize {
+    let mut n = bar.max(1.0);
+    for _ in 0..3 {
+        n = bar / ((r_star / n).max(1.0).ln() + 1.0);
+    }
+    n.ceil() as usize
+}
+
+/// Where the search is allowed to stop asking.  The singulant says where the terms turn, the
+/// settle floor keeps a short singulant from capping the search under the order a bar can be
+/// read at, and `JET_SLOTS` is the hard wall.
+fn cap_for(r_star: f64) -> usize {
+    ((JET_OVERSHOOT * r_star).ceil() as usize)
+        .max(JET_SETTLE_FLOOR)
+        .min(JET_ORDER / 2)
+}
+
 /// What the jet leaves behind for the path to stand on.  The series carries the shape the
 /// integrand has near the saddle, so the trapezoid walks only what is left once that shape comes
-/// out, and the jet's own moments put it back exactly.
+/// out, and the moments of the same truncation put it back exactly.
 ///
-/// The polynomial turns somewhere past the order it reached, but every one of its terms peaks at
-/// `√k` in the standardized coordinate and the reach always sits beyond `√(2·reached)`, so the
-/// Gaussian has buried the turn before the path arrives at it.
-/// What the jet leaves behind for the path to stand on.
+/// The caller owes us a degree the path's own footprint covers, since a term of degree `k` peaks
+/// at `√k` and one peaking outside the walk would be subtracted where the path is not and added
+/// back over the whole line.
+///
+/// One degree serves both channels, since the truncation is a property of how far the path
+/// walked and the path is the same curve for both.
 struct Handoff<'a> {
     /// `None` means no series ran for this saddle at all, and the trapezoid should integrate the
     /// bare integrand with nothing subtracted, which is what reference mode asks for on every
     /// saddle.
     normal: Option<&'a Normal>,
-    /// Degree in `x`, twice the order each channel reached. Unused when `normal` is `None`.
-    degree: [usize; 2],
-    /// The Gaussian integral of that polynomial, pre-scale. Zero when `normal` is `None`.
+    /// Degree in `x`, twice the order the series reached.  Unused when `normal` is `None`.
+    degree: usize,
+    /// The Gaussian integral of that polynomial, pre-scale.  Zero when `normal` is `None`.
     moments: [Complex64; 2],
 }
 
@@ -982,14 +1128,13 @@ impl Handoff<'_> {
             return Complex64::default();
         };
         let c = &normal.h[m];
-        let mut acc = c[self.degree[m]];
-        for k in (0..self.degree[m]).rev() {
+        let mut acc = c[self.degree];
+        for k in (0..self.degree).rev() {
             acc = acc * x + c[k];
         }
         acc
     }
 }
-
 /// The integrand in the normal coordinate, carried as a series in `x`.
 ///
 /// The saddle is where `g'` vanishes, so `P = g'` has no constant term and `P = x·P̃`.  That
@@ -1099,6 +1244,21 @@ impl Normal {
         }
 
         self.width = target;
+    }
+
+    /// The Gaussian moments of the series truncated at order `n`, one per channel.  A path whose
+    /// reach cannot cover the whole polynomial subtracts fewer orders than the jet reached, and
+    /// what it adds back has to be the same truncation it took away.
+    fn moments(&self, beta: f64, n: usize) -> [Complex64; 2] {
+        let mut out = [Complex64::default(); 2];
+        for m in 0..2 {
+            let mut moment = (TAU / beta).sqrt();
+            for k in 0..=n {
+                out[m] += self.h[m][2 * k] * moment;
+                moment *= (2 * k + 1) as f64 / beta;
+            }
+        }
+        out
     }
 }
 
@@ -1288,6 +1448,47 @@ impl StokesTable {
 
         (r, w)
     }
+
+    /// Prints the march's own record across a span of `τ`, every root and not just the live
+    /// ones, since which roots count as live is read off the very weights in question.  The
+    /// integrality flag is the cheap tell.  Membership is a count of steepest-descent paths and
+    /// has no business being fractional, so a row that fails it has found something the
+    /// crossing test does not understand.
+    #[cfg(test)]
+    fn dump(&self, frame: &Frame, from: f64, to: f64) {
+        println!("\n=== stokes march, tau {from:.3} to {to:.3} ===");
+        print!("  {:>6} {:>8} |", "node", "tau");
+        for k in 0..self.g {
+            print!(" {:>18}", format!("root {k}"));
+        }
+        println!("  {:>7}", "weights");
+
+        for n in 0..self.s.len() {
+            let tau = self.s[n].exp() - 1.0;
+            if tau < from || tau > to {
+                continue;
+            }
+
+            let row = &self.m[n * self.g..(n + 1) * self.g];
+            let ragged = row.iter().any(|w| (w - w.round()).abs() > 1e-9);
+
+            print!("  {n:>6} {tau:>8.4} |");
+            for k in 0..self.g {
+                let u = self.roots[n * self.g + k];
+                let phi = Saddle::new(u, frame).phi;
+                print!(" {:>8.4}{:+8.4}i", phi.re * frame.beta, phi.im * frame.beta);
+            }
+            print!("  ");
+            for w in row {
+                let live = if w.abs() > LIVE { '*' } else { ' ' };
+                print!("{w:>5.2}{live}");
+            }
+            if ragged {
+                print!("  RAGGED");
+            }
+            println!();
+        }
+    }
 }
 
 /// Polishes a single root of `u^γ - iτu - 1` in place, quadratic from a table seed.
@@ -1333,6 +1534,13 @@ fn durand_kerner(r: &mut [Complex64; MAX_G], g: usize, tau: f64) {
 /// to cancellation.
 fn relative(tol: f64) -> f64 {
     0.5 * tol.max(8.0 * EPS)
+}
+
+/// How far a traced path walks, in the coordinate where the weight is exactly `e^{-x²/2}`.  Far
+/// enough that the Gaussian has buried whatever the bar still cares about, and no farther, since
+/// every node past that point is spent on digits nobody reads.
+fn reach_for(bar: f64) -> f64 {
+    (2.0 * (bar + REACH_MARGIN).max(0.0)).sqrt().min(REACH_MAX)
 }
 
 #[cfg(test)]
@@ -1416,10 +1624,13 @@ mod test {
         // NOTE this is crude and depends on settings but provides some development signal.
         let mut matrix_time = std::time::Duration::default();
 
-        for k in 0..=4096 {
-            let u = k as f64 * 0.00625 * 0.5;
+        // for k in 0..=4096 {
+        //    let u = k as f64 * 0.00625 * 0.5;
+        for k in 0..=32 {
+            let u = k as f64 * 0.05 + 2.5;
 
             let reference = ref_jet.tap_at(u);
+            let rc = reference.cost;
             let matrix_row_start = std::time::Instant::now();
             let standard = standard_jet.tap_at(u);
             let elapsed = matrix_row_start.elapsed();
@@ -1437,17 +1648,30 @@ mod test {
                 worst_u = u;
             }
 
-            if k % 100 == 0 {
+            // if k % 100 == 0 {
+            {
                 let c = standard.cost;
+                // `T` is a trace that ran out of valley, `S` is a bar the placement never met.
+                let flags = |truncated: bool, short: bool| match (truncated, short) {
+                    (true, true) => "TS",
+                    (true, false) => "T ",
+                    (false, true) => " S",
+                    (false, false) => "  ",
+                };
                 println!(
-                    "  u: {u:>6.2}, err: {:>9}, res: {:>9}, time: {:>6}µs, jet: {:>3}p/{:>4}o, quad: {:>2}p/{:>4}n, gain: {:>9}",
+                    "  u: {u:>6.2}, err: {:>9}, res: {:>9}, time: {:>6}µs, jet: {:>2}s/{:>2}p/{:>3}d, quad: {:>2}p/{:>5}n {}, ref: {:>2}p/{:>5}n {}, gain: {:>9}",
                     fmt_e(err),
-                    fmt_e(standard.residual[0] / standard.psi.norm()),
+                    fmt_e(standard.residual / standard.psi.norm()),
                     elapsed.as_micros(),
+                    c.jet_saddles,
                     c.jet_passes,
-                    c.jet_orders,
+                    c.jet_depth,
                     c.quad_paths,
                     c.quad_nodes,
+                    flags(c.quad_truncated, c.quad_short),
+                    rc.quad_paths,
+                    rc.quad_nodes,
+                    flags(rc.quad_truncated, rc.quad_short),
                     fmt_e(c.quad_gain),
                 );
             }
@@ -1465,5 +1689,18 @@ mod test {
         );
         println!("  matrix completed in: {}µs", matrix_time.as_micros());
         assert!(worst < 1e-7);
+    }
+
+    #[test]
+    fn stokes_membership_band() {
+        let shape = Shape::from_q(3.5, 3.0);
+        let frame = Frame::new(shape);
+        let jet = QuadJet::standard(shape);
+
+        // The band shows up in `u`, but the march lives in `τ`, and the two are related by
+        // `τ = 2πu/β` once `ρ` cancels.  Widening past the observed edges catches a flip that
+        // fires early and gets corrected late.
+        let tau_of = |u: f64| TAU * u / frame.beta;
+        jet.table.dump(&frame, tau_of(1.0), tau_of(4.0));
     }
 }
