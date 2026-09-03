@@ -117,14 +117,15 @@ const MAX_G: usize = 8;
 // Quadrature
 const GAP_FLOOR: f64 = 1e-6;
 const LIFT_CREDIT: f64 = 0.5;
-const NEWTON_ITERS: usize = 6;
-const NEWTON_TOL: f64 = 1e-12;
+const NEWTON_ITERS: usize = 3;
+const NEWTON_TOL: f64 = 1e-9;
 const QUAD_MARGIN: f64 = 1.2;
 const QUAD_MAX_DENSITY: f64 = QUAD_MAX_NODES as f64 / (2.0 * REACH_MAX);
 const QUAD_MAX_NODES: usize = 512;
 const QUAD_MIN_DENSITY: f64 = 0.1;
+const QUAD_MIN_NODES: usize = 8;
 const QUAD_SLOTS: usize = QUAD_MAX_NODES + 2;
-const REACH_MAX: f64 = 12.0;
+const REACH_MAX: f64 = 16.0;
 const TRACE_MAX_SPLIT: u32 = 6;
 
 /// The shape, together with the forms of it the rest of the file actually reads.  `ρ` is where
@@ -353,58 +354,77 @@ impl QuadJet {
                 .map(|m| (amps[i][m] / ch[m].target).ln())
                 .fold(f64::NEG_INFINITY, f64::max);
 
-            // Charge based on the leading Watson term being discarded
-            if local_bar <= 1.0 {
+            // The skip below is really the jet's own opinion that a saddle is too small to
+            // bother with, read off its leading Watson term. Reference mode has no jet, so it
+            // owes that opinion nothing: every active saddle gets integrated, cold, by
+            // quadrature, and stands or falls on what quadrature itself finds.
+            if !self.quadrature_only && local_bar <= 1.0 {
                 residual[0] += amps[i][0] * w.abs();
                 residual[1] += amps[i][1] * w.abs();
                 continue;
             }
 
-            let jet = s.jet(frame, ch, r_star, local_bar, &mut normal);
-            cost += jet.cost;
-
-            let worth_tracing = |m: usize| jet.terms[m].residual > ch[m].target;
-
-            // Fall back on the path where the series floor cannot reach the bar, and where the
-            // series reports that it stalled before getting there.
-            let [p, q] = if self.quadrature_only
-                || r_star <= local_bar
-                || worth_tracing(0)
-                || worth_tracing(1)
-            {
-                // How much of the distance from full amplitude down to target the jet already covered,
-                // in the same nats `bar` is measured in. A jet that settled near its own floor leaves
-                // this near zero; one that stalled at n_cap leaves most of it standing.
-                let jet_progress = (0..2)
-                    .map(|m| ((amps[i][m] / jet.terms[m].residual.max(EPS)).ln()).max(0.0))
-                    .fold(f64::INFINITY, f64::min);
-
+            let [p, q] = if self.quadrature_only {
                 let handoff = Handoff {
-                    normal: &normal,
-                    degree: [2 * jet.reached[0], 2 * jet.reached[1]],
-                    moments: jet.raw,
+                    normal: None,
+                    degree: [0, 0],
+                    moments: [Complex64::default(); 2],
                 };
-
-                let quad = s.quadrature(
-                    frame,
-                    local_bar,
-                    jet_progress,
-                    ch,
-                    seen,
-                    &handoff,
-                    &mut nodes,
-                );
+                let quad = s.quadrature(frame, local_bar, 0.0, ch, seen, &handoff, &mut nodes);
                 cost += quad.cost;
-
-                // The jet ran either way, so what the path moved is free to measure against the
-                // bar that asked for it.
-                for m in 0..2 {
-                    let moved = (quad.terms[m].value - jet.terms[m].value).norm();
-                    cost.quad_gain = cost.quad_gain.max(moved / ch[m].target);
-                }
                 quad.terms
             } else {
-                jet.terms
+                let jet = s.jet(frame, ch, r_star, local_bar, &mut normal);
+                cost += jet.cost;
+
+                let worth_tracing = |m: usize| jet.terms[m].residual > ch[m].target;
+
+                // Fall back on the path where the series floor cannot reach the bar, and where
+                // the series reports that it stalled before getting there.
+                if r_star <= local_bar || worth_tracing(0) || worth_tracing(1) {
+                    // How much of the distance from full amplitude down to target the jet
+                    // already covered, in the same nats `bar` is measured in. A jet that settled
+                    // near its own floor leaves this near zero; one that stalled at n_cap leaves
+                    // most of it standing.
+                    let jet_progress = (0..2)
+                        .map(|m| ((amps[i][m] / jet.terms[m].residual.max(EPS)).ln()).max(0.0))
+                        .fold(f64::INFINITY, f64::min);
+
+                    // The series turns somewhere past the order it reached, and the path walks
+                    // out to `reach`. Handing over more degree than the reach can support means
+                    // subtracting a polynomial in the region where it has started to diverge, so
+                    // the degree stops where the path's own footprint stops.
+                    let degree_cap = (frame.beta * REACH_MAX * REACH_MAX) as usize;
+                    let handoff = Handoff {
+                        normal: Some(&normal),
+                        degree: [
+                            (2 * jet.reached[0]).min(degree_cap),
+                            (2 * jet.reached[1]).min(degree_cap),
+                        ],
+                        moments: jet.raw,
+                    };
+
+                    let quad = s.quadrature(
+                        frame,
+                        local_bar,
+                        jet_progress,
+                        ch,
+                        seen,
+                        &handoff,
+                        &mut nodes,
+                    );
+                    cost += quad.cost;
+
+                    // The jet ran either way, so what the path moved is free to measure against
+                    // the bar that asked for it.
+                    for m in 0..2 {
+                        let moved = (quad.terms[m].value - jet.terms[m].value).norm();
+                        cost.quad_gain = cost.quad_gain.max(moved / ch[m].target);
+                    }
+                    quad.terms
+                } else {
+                    jet.terms
+                }
             };
 
             residual[0] += p.residual * w.abs();
@@ -691,10 +711,12 @@ impl Saddle {
             }
         }
 
-        let reach = (2.0 * (bar + 3.0)).sqrt().min(REACH_MAX);
+        let reach = (2.0 * (bar + 3.0).max(0.0)).sqrt().min(REACH_MAX);
         let tail = (-0.5 * reach * reach).exp() * (TAU / frame.beta).sqrt() / self.s0().norm();
 
-        let density = (QUAD_MARGIN * (bar + lift) / (TAU * (gap - jet_progress)))
+        // The neighbor stands where it stands. Subtracting this saddle's own shape does nothing
+        // to the feature `gap` away, so the density that buries it owes the series no credit.
+        let density = (QUAD_MARGIN * (bar + lift).max(0.0) / (TAU * gap))
             .clamp(QUAD_MIN_DENSITY, QUAD_MAX_DENSITY);
 
         let settle =
@@ -775,7 +797,7 @@ impl Saddle {
         let beta = frame.beta;
 
         let h = 1.0 / (density * beta.sqrt());
-        let n = (reach * density).floor() as usize;
+        let n = (reach * density).floor().max(QUAD_MIN_NODES as f64) as usize;
 
         // At the saddle `x` and `g'` vanish together and the slope `-x/g'(v)` goes to `1/s0`.
         let apex = (Complex64::default(), self.s0().inv());
@@ -942,18 +964,24 @@ impl Saddle {
 /// The polynomial turns somewhere past the order it reached, but every one of its terms peaks at
 /// `√k` in the standardized coordinate and the reach always sits beyond `√(2·reached)`, so the
 /// Gaussian has buried the turn before the path arrives at it.
+/// What the jet leaves behind for the path to stand on.
 struct Handoff<'a> {
-    normal: &'a Normal,
-    /// Degree in `x`, twice the order each channel reached.
+    /// `None` means no series ran for this saddle at all, and the trapezoid should integrate the
+    /// bare integrand with nothing subtracted, which is what reference mode asks for on every
+    /// saddle.
+    normal: Option<&'a Normal>,
+    /// Degree in `x`, twice the order each channel reached. Unused when `normal` is `None`.
     degree: [usize; 2],
-    /// The Gaussian integral of that polynomial, pre-scale, which is the sum the jet already
-    /// formed.
+    /// The Gaussian integral of that polynomial, pre-scale. Zero when `normal` is `None`.
     moments: [Complex64; 2],
 }
 
 impl Handoff<'_> {
     fn poly(&self, m: usize, x: f64) -> Complex64 {
-        let c = &self.normal.h[m];
+        let Some(normal) = self.normal else {
+            return Complex64::default();
+        };
+        let c = &normal.h[m];
         let mut acc = c[self.degree[m]];
         for k in (0..self.degree[m]).rev() {
             acc = acc * x + c[k];
