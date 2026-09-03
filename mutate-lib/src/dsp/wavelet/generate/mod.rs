@@ -95,11 +95,11 @@ mod test {
         let beta = shape.beta;
 
         let settings = ifft::IfftSettings {
-            periods: 12,
+            periods: 10,
             ..ifft::IfftSettings::default()
         };
 
-        let ifft_nominal_taps = 1000;
+        let ifft_nominal_taps = settings.periods * settings.resolution;
         let ifft_start = Instant::now();
         let (psi, _, _) = ifft::morse_half_taps(shape, settings);
         let ifft_us_per_tap = ifft_start.elapsed().as_secs_f64() * 1e6 / ifft_nominal_taps as f64;
