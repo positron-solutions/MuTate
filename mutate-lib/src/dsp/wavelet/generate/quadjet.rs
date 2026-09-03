@@ -103,10 +103,8 @@ const TABLE_NODES: usize = 2048;
 const TABLE_QUIET_SPAN: f64 = 4.0;
 const TABLE_TAU_MAX: f64 = 256.0;
 
-// Saddle root untanling
-const DESCENT_PROBE_RADIUS: f64 = 1e-3;
-const DESCENT_SEARCH_TRIES: usize = 16;
-const DESCENT_FAIL_MAGNITUDE: f64 = 1e-12;
+// Saddle orientation
+const DESCENT_AXIS_TIE: f64 = 1e-12;
 
 // Jets
 const ADJ_CONE: f64 = 0.5;
@@ -270,7 +268,7 @@ impl QuadJet {
 
         let (roots, weights) = self.table.roots_at(tau);
 
-        let mut saddles: [Saddle; MAX_G] = std::array::from_fn(|_| Saddle::default());
+        let mut saddles: [Saddle; MAX_G] = [Saddle::default(); MAX_G];
         for i in 0..g {
             saddles[i] = Saddle::new(roots[i], frame);
         }
@@ -458,109 +456,31 @@ struct Term {
     residual: f64,
 }
 
-/// A deterministic, seedable generator, so a stuck resolution reruns identically rather than
-/// becoming a source of test flakiness.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn seeded(raw: Complex64) -> Self {
-        Self(raw.re.to_bits() ^ raw.im.to_bits().rotate_left(1))
-    }
-
-    // 🤖 I'm roughly familiar with this style of deterministic seeding of a low-grade PRNG.
-    fn next_f64(&mut self) -> f64 {
-        self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^= z >> 31;
-        (z >> 11) as f64 / (1u64 << 53) as f64
-    }
-}
-
-/// Inverse CDF of a standard Laplace draw, folded to a magnitude since the caller only wants
-/// how far out to look, not which way.
-fn laplace_radius(rng: &mut SplitMix64) -> f64 {
-    // Laplace was used because heavy tails best express the idea that "we know what we need, but if
-    // we don't, keep an open mind."  Gaussian distributions are only valuable because of the
-    // central limit theorem making everything from darts to quantum physics appear normal.
-    let p = rng.next_f64() - 0.5;
-    (1.0 - 2.0 * p.abs()).ln().abs()
-}
-
-/// The steepest-descent curvature at a saddle, resolved against `Re(g)` actually falling away
-/// from the apex rather than trusted from `sqrt`'s principal branch. Resolution is deferred
-/// until first use, since the Stokes march and the saddle-weight cutoff both build `Saddle`s
-/// that most of the time never ask for this at all.
-#[derive(Clone, Default)]
-struct Descent(Cell<Option<Complex64>>);
+/// The steepest-descent curvature at a saddle, carrying the orientation the traced contour is
+/// walked in.
+#[derive(Clone, Copy, Default)]
+struct Descent(Complex64);
 
 impl Descent {
-    /// `raw` is one of the two square roots; `probe(v)` should be `Saddle::g(v).0`, closed
-    /// over the fields `g` needs, none of which are `s0` itself.
-    fn get(&self, raw: Complex64, probe: impl Fn(Complex64) -> Complex64) -> Complex64 {
-        if let Some(v) = self.0.get() {
-            return v;
-        }
-        let v = resolve_descent(raw, probe);
-        self.0.set(Some(v));
-        v
-    }
-}
-
-/// Picks `raw` or `-raw`, whichever actually descends.
-///
-/// A single probe on each axis, at the scale the linear model itself suggests, settles almost
-/// every saddle outright. Near two roots passing close, that scale is exactly where the
-/// quadratic phase model is weakest, so both axes can look ambiguous at the radius that
-/// mattered a moment ago. There the search doesn't change what it's choosing between, only how
-/// far out it's willing to look before choosing: radii come from a Laplace draw anchored at the
-/// linear scale, heavy-tailed so an axis that only reveals itself past where the quadratic
-/// model stopped being trustworthy still gets found. A tie that survives the whole budget
-/// reports back a value near zero, the same signal a genuinely vanishing curvature sends,
-/// which every downstream amplitude and bar already reads as "trust this saddle least."
-fn resolve_descent(raw: Complex64, probe: impl Fn(Complex64) -> Complex64) -> Complex64 {
-    let scale = raw.norm().max(DESCENT_PROBE_RADIUS);
-    let falls = |dir: Complex64, r: f64| probe(dir * (r / dir.norm())).re < 0.0;
-
-    if falls(raw, DESCENT_PROBE_RADIUS * scale) {
-        return raw;
-    }
-    if falls(-raw, DESCENT_PROBE_RADIUS * scale) {
-        return -raw;
-    }
-
-    let mut rng = SplitMix64::seeded(raw);
-    let mut votes = 0i32;
-    for _ in 0..DESCENT_SEARCH_TRIES {
-        let r = scale * laplace_radius(&mut rng).max(0.1);
-        votes += falls(raw, r) as i32 - falls(-raw, r) as i32;
-    }
-
-    match votes {
-        v if v > 0 => raw,
-        v if v < 0 => -raw,
-        _ => {
-            let dir = if raw.norm() > 0.0 {
-                raw / raw.norm()
-            } else {
-                Complex64::new(1.0, 0.0)
-            };
-            dir * DESCENT_FAIL_MAGNITUDE
-        }
+    fn new(raw: Complex64) -> Self {
+        let flip = if raw.re.abs() > DESCENT_AXIS_TIE * raw.norm() {
+            raw.re < 0.0
+        } else {
+            raw.im < 0.0
+        };
+        Self(if flip { -raw } else { raw })
     }
 }
 
 /// A root of the saddle condition, carrying the numbers every later step reads off it.
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 struct Saddle {
     u: Complex64,
     b: Complex64,
     phi: Complex64,
     /// The curvature at the saddle, branch fixed so that `x` runs up the valley the contour
     /// arrives on.
-    raw_s0: Complex64,
-    descent: Descent,
+    s0: Descent,
     /// `(B+1)/γ`, the coefficient the `e^{γv}` term of the phase carries.
     bp1: Complex64,
     gi: i32,
@@ -574,14 +494,12 @@ impl Saddle {
         let Frame { gamma, gi, .. } = *frame;
         let b = u.powi(gi) - 1.0;
         let phi = u.ln() + b * (1.0 - 1.0 / gamma) - 1.0 / gamma;
-        let raw_s0 = (-(b * (1.0 - gamma) - gamma)).sqrt();
 
         Saddle {
             u,
             b,
             phi,
-            raw_s0,
-            descent: Descent::default(),
+            s0: Descent::new((-(b * (1.0 - gamma) - gamma)).sqrt()),
             bp1: (b + 1.0) / gamma,
             gi,
         }
@@ -1011,11 +929,9 @@ impl Saddle {
         scale.norm() * (TAU / frame.beta).sqrt() / self.s0().norm()
     }
 
-    /// The resolved curvature. Cheap after the first call; the first call costs a handful of
-    /// `g` evaluations only when two saddles are close enough that the linear probe couldn't
-    /// settle it outright.
+    /// The resolved curvature, the one number the whole normal coordinate stands on.
     fn s0(&self) -> Complex64 {
-        self.descent.get(self.raw_s0, |v| self.g(v).0)
+        self.s0.0
     }
 }
 
