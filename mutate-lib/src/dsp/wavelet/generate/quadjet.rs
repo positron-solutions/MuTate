@@ -103,7 +103,8 @@ const TABLE_TAU_MAX: f64 = 256.0;
 
 // Saddles & Jets
 const ADJ_CONE: f64 = 0.9;
-const JET_ORDER: usize = 96;
+const JET_ORDER: usize = 32;
+const JET_SLOTS: usize = JET_ORDER + 2;
 const LIVE: f64 = 0.5;
 const MAX_G: usize = 8;
 
@@ -186,7 +187,17 @@ impl std::ops::AddAssign for Cost {
 /// A jet at one order, with whether the series ended on the mathematics or on the max order.
 struct Pass {
     terms: [Term; 2],
+    reached: [usize; 2],
     settled: bool,
+    cost: Cost,
+}
+
+/// What a jet had to say, together with where each channel's series stopped improving.  That
+/// order is the degree of the polynomial a traced path would subtract, and the point past which
+/// the same polynomial turns and must not be trusted.
+struct Expansion {
+    terms: [Term; 2],
+    reached: [usize; 2],
     cost: Cost,
 }
 
@@ -253,7 +264,6 @@ impl QuadJet {
         for i in 0..g {
             saddles[i] = Saddle::new(roots[i], frame);
         }
-
         let mut active = [0usize; MAX_G];
         let mut live = 0;
         for i in 0..g {
@@ -302,6 +312,7 @@ impl QuadJet {
         let mut residual = [0.0_f64; 2];
 
         let mut nodes = [(Complex64::default(), Complex64::default()); QUAD_SLOTS];
+        let mut normal = Normal::default();
         let mut cost = Cost::default();
 
         for &i in active {
@@ -341,7 +352,7 @@ impl QuadJet {
                 continue;
             }
 
-            let jet = s.jet(frame, ch, r_star, local_bar);
+            let jet = s.jet(frame, ch, r_star, local_bar, &mut normal);
             cost += jet.cost;
 
             let worth_tracing = |m: usize| jet.terms[m].residual > ch[m].target;
@@ -454,14 +465,22 @@ impl Saddle {
         }
     }
 
-    /// The cheap approach to a saddle, Watson's lemma on the normal coordinate `x(v) = v·S(v)`,
-    /// where Lagrange–Bürmann hands over the integrand's Taylor coefficients and the Gaussian
-    /// moments close the sum.
+    /// The cheap approach to a saddle, Watson's lemma on the series `Normal` carries.
     ///
     /// The order is predicted rather than searched.  The singulant `r_star` says where the
     /// series turns and the bar says where its terms fall under notice, and both are known
-    /// before the first coefficient exists.  A prediction that runs short is corrected upward.
-    fn jet(&self, frame: &Frame, ch: [Channel; 2], r_star: f64, bar: f64) -> Priced {
+    /// before the first coefficient exists.  A prediction that runs short is corrected upward,
+    /// and correcting it costs only the orders it did not already have.
+    fn jet(
+        &self,
+        frame: &Frame,
+        ch: [Channel; 2],
+        r_star: f64,
+        bar: f64,
+        normal: &mut Normal,
+    ) -> Expansion {
+        normal.seed(self, frame);
+
         let n_cap = (r_star.ceil() as usize).clamp(1, JET_ORDER / 2);
         let mut n = bar.max(1.0);
         for _ in 0..2 {
@@ -470,11 +489,13 @@ impl Saddle {
         let mut n_max = (n.ceil() as usize).clamp(1, n_cap);
         let mut cost = Cost::default();
         loop {
-            let pass = self.jet_pass(frame, ch, r_star, n_max);
+            normal.extend(self, frame, 2 * n_max);
+            let pass = self.jet_sum(frame, ch, r_star, n_max, normal);
             cost += pass.cost;
             if pass.settled || n_max == n_cap {
-                return Priced {
+                return Expansion {
                     terms: pass.terms,
+                    reached: pass.reached,
                     cost,
                 };
             }
@@ -482,82 +503,36 @@ impl Saddle {
         }
     }
 
-    /// The series at one order.  A channel that ended on the mathematics, having diverged or
-    /// crossed under the bar or run into roundoff, has said everything it is going to say, and
-    /// only a channel that ran out of order is worth asking again.
-    fn jet_pass(&self, frame: &Frame, ch: [Channel; 2], r_star: f64, n_max: usize) -> Pass {
-        let Frame { beta, gamma, .. } = *frame;
-        let width = 2 * n_max;
-
-        // `S(v)² = -2g(v)/v²`, whose leading coefficient is the curvature `s0²` at the saddle.
-        // Its square root `s` and reciprocal `r` follow termwise, and `r` is the coefficient
-        // series the moments will read.
-        let mut p = [Complex64::default(); JET_ORDER + 1];
-        let mut inv_fact = 0.5;
-        let mut gpow = gamma / 2.0;
-        for j in 0..=width {
-            p[j] = -2.0 * (self.b * inv_fact - (self.b + 1.0) * gpow);
-            let k = (j + 3) as f64;
-            inv_fact /= k;
-            gpow *= gamma / k;
-        }
-
-        let mut s = [Complex64::default(); JET_ORDER + 1];
-        s[0] = self.s0;
-        for k in 1..=width {
-            let mut acc = Complex64::default();
-            for i in 1..k {
-                acc += s[i] * s[k - i];
-            }
-            s[k] = (p[k] - acc) / (2.0 * self.s0);
-        }
-
-        let mut r = [Complex64::default(); JET_ORDER + 1];
-        r[0] = self.s0.inv();
-        for k in 1..=width {
-            let mut acc = Complex64::default();
-            for i in 1..=k {
-                acc += s[i] * r[k - i];
-            }
-            r[k] = -acc / self.s0;
-        }
-
-        let mut r2 = [Complex64::default(); JET_ORDER + 1];
-        series_mul_into(&mut r2, &r, &r, width);
-
-        // `e^{mv}` is the only place the two channels part company before the moments.
-        let mut emv = [[Complex64::default(); JET_ORDER + 1]; 2];
-        for m in 0..2 {
-            let mf = (m + 1) as f64;
-            let mut term = 1.0;
-            for j in 0..=width {
-                emv[m][j] = Complex64::new(term, 0.0);
-                term *= mf / (j + 1) as f64;
-            }
-        }
-
+    /// The series at one order.  Each even coefficient meets its Gaussian moment and the two
+    /// channels differ only in which `h` they read.
+    ///
+    /// A channel that ended on the mathematics, having diverged or crossed under the bar or run
+    /// into roundoff, has said everything it is going to say, and only a channel that ran out of
+    /// order is worth asking again.
+    fn jet_sum(
+        &self,
+        frame: &Frame,
+        ch: [Channel; 2],
+        r_star: f64,
+        n_max: usize,
+        normal: &Normal,
+    ) -> Pass {
+        let beta = frame.beta;
         let scale_abs = [ch[0].scale.norm(), ch[1].scale.norm()];
 
-        let mut q = r;
-        let mut scratch = [Complex64::default(); JET_ORDER + 1];
         let mut moment = (TAU / beta).sqrt();
         let mut value = [Complex64::default(); 2];
         let mut prev = [f64::INFINITY; 2];
         let mut last = [0.0_f64; 2];
         let mut residual = [f64::INFINITY; 2];
         let mut settled = [false; 2];
-        let mut reached = 0usize;
+        let mut reached = [0usize; 2];
         for n in 0..=n_max {
-            reached = n;
             for m in 0..2 {
                 if settled[m] {
                     continue;
                 }
-                let mut b = Complex64::default();
-                for j in 0..=2 * n {
-                    b += emv[m][j] * q[2 * n - j];
-                }
-                let term = b * moment;
+                let term = normal.h[m][2 * n] * moment;
                 let size = scale_abs[m] * term.norm();
 
                 // A conjugate pair of singulants makes the terms oscillate, which is forced at
@@ -573,6 +548,7 @@ impl Saddle {
 
                 prev[m] = env;
                 value[m] += term;
+                reached[m] = n;
                 // The tail we are dropping, taken from the envelope one term out rather than
                 // this one.
                 residual[m] = env * (2.0 * n as f64 / r_star).max(1.0);
@@ -586,18 +562,7 @@ impl Saddle {
                 break;
             }
 
-            // if n < n_max {
-            //     let len = (2 * n + 2).min(width);
-            //     series_mul_into(&mut scratch, &q, &r2, len);
-            //     std::mem::swap(&mut q, &mut scratch);
-            //     moment *= (2 * n + 1) as f64 / beta;
-            // }
-            // NEXT better jet flow control coming up in overall cost priority refactor.
-            if n < n_max {
-                series_mul_into(&mut scratch, &q, &r2, width);
-                std::mem::swap(&mut q, &mut scratch);
-                moment *= (2 * n + 1) as f64 / beta;
-            }
+            moment *= (2 * n + 1) as f64 / beta;
         }
 
         Pass {
@@ -611,10 +576,11 @@ impl Saddle {
                     residual: residual[1],
                 },
             ],
+            reached,
             settled: settled[0] && settled[1],
             cost: Cost {
                 jet_passes: 1,
-                jet_orders: reached as u32,
+                jet_orders: reached[0].max(reached[1]) as u32,
                 ..Default::default()
             },
         }
@@ -896,6 +862,118 @@ impl Saddle {
     /// in it, since a saddle with small `Φ''` is wide and outweighs its prefactor.
     fn amplitude(&self, frame: &Frame, scale: Complex64) -> f64 {
         scale.norm() * (TAU / frame.beta).sqrt() / self.s0.norm()
+    }
+}
+
+/// The integrand in the normal coordinate, carried as a series in `x`.
+///
+/// The saddle is where `g'` vanishes, so `P = g'` has no constant term and `P = x·P̃`.  That
+/// missing term is what makes the whole scheme go.  A convolution that would otherwise close on
+/// itself at order `k` instead drops its own leading term, and the order-`k` coefficient falls
+/// out against lower ones.
+///
+/// Every recurrence below reads only what sits beneath it, so a jet that guessed its order too
+/// low extends into the series it already has.  Growing to twice the order costs the difference
+/// and nothing more, which is the whole reason for the coordinate change.
+///
+/// `h` is the pair the moments read and the pair a traced path will subtract, held to the full
+/// order rather than the even half, since the path samples both signs of `x` and wants the odd
+/// coefficients the Gaussian throws away.
+struct Normal {
+    /// `e^{v(x)}`.
+    y: [Complex64; JET_SLOTS],
+    /// `y^γ`, kept because `P` reads it at every order and rebuilding it is a convolution.
+    yg: [Complex64; JET_SLOTS],
+    /// `g'` along the path, `P_0 = 0` by construction.
+    p: [Complex64; JET_SLOTS],
+    /// `dv/dx`, the same slope `trapezoid` walks.
+    w: [Complex64; JET_SLOTS],
+    /// `e^{v}·dv/dx` and `e^{2v}·dv/dx`, one per channel.
+    h: [[Complex64; JET_SLOTS]; 2],
+    /// The valid prefix of `w` and `h`.  `y`, `yg`, and `p` run one order further.
+    width: usize,
+}
+
+impl Default for Normal {
+    fn default() -> Self {
+        Self {
+            y: [Complex64::default(); JET_SLOTS],
+            yg: [Complex64::default(); JET_SLOTS],
+            p: [Complex64::default(); JET_SLOTS],
+            w: [Complex64::default(); JET_SLOTS],
+            h: [[Complex64::default(); JET_SLOTS]; 2],
+            width: 0,
+        }
+    }
+}
+
+impl Normal {
+    /// Plants the series at the saddle.  Order one is the quadratic root of `y₁P₁ = -1`, whose
+    /// branch is the one `s0` already committed to, and everything above it is linear.
+    fn seed(&mut self, s: &Saddle, frame: &Frame) {
+        let y1 = s.s0.inv();
+        self.y[0] = Complex64::new(1.0, 0.0);
+        self.y[1] = y1;
+        self.yg[0] = Complex64::new(1.0, 0.0);
+        self.yg[1] = y1 * frame.gamma;
+        self.p[0] = Complex64::default();
+        self.p[1] = -s.s0;
+        self.w[0] = y1;
+        self.h[0][0] = y1;
+        self.h[1][0] = y1;
+        self.width = 0;
+    }
+
+    /// Grows the series to `target`, picking up wherever the last call stopped.
+    fn extend(&mut self, s: &Saddle, frame: &Frame, target: usize) {
+        if target <= self.width {
+            return;
+        }
+        let gamma = frame.gamma;
+        let bp1 = s.b + 1.0;
+        let y1 = self.y[1];
+
+        // Walk `y` up first, since `P` is a function of it and the slope reads `P` one order
+        // above its own.  `y^γ` splits into the part that carries `y_k` and the part that does
+        // not, and only the second half is known when the step begins.
+        for k in (self.width + 2)..=(target + 1) {
+            let mut tail = Complex64::default();
+            for i in 1..k {
+                tail += (gamma * i as f64 - (k - i) as f64) * self.y[i] * self.yg[k - i];
+            }
+            tail /= k as f64;
+
+            let mut mid = Complex64::default();
+            for j in 2..k {
+                mid += (k - j + 1) as f64 * self.y[k - j + 1] * self.p[j];
+            }
+
+            self.y[k] = (self.y[k - 1] + mid - y1 * bp1 * tail) / ((k + 1) as f64 * s.s0);
+            self.yg[k] = self.y[k] * gamma + tail;
+            self.p[k] = self.y[k] * s.b - self.yg[k] * bp1;
+        }
+
+        // The slope inverts `P̃w = -1`, and the two channels follow as products against `y`.
+        for k in (self.width + 1)..=target {
+            let mut acc = Complex64::default();
+            for i in 0..k {
+                acc += self.w[i] * self.p[k - i + 1];
+            }
+            self.w[k] = -acc / self.p[1];
+
+            let mut h0 = Complex64::default();
+            let mut h1 = Complex64::default();
+            for i in 0..=k {
+                h0 += self.y[i] * self.w[k - i];
+            }
+            self.h[0][k] = h0;
+            for i in 0..=k {
+                h1 += self.y[i] * self.h[0][k - i];
+            }
+            self.h[1][k] = h1;
+        }
+
+        self.width = target;
     }
 }
 
@@ -1227,17 +1305,6 @@ fn durand_kerner(r: &mut [Complex64; MAX_G], g: usize, tau: f64) {
         }
         if moved < DK_TOL {
             break;
-        }
-    }
-}
-
-/// Truncated to `width`, which the caller owes as the valid prefix of both inputs.
-fn series_mul_into(out: &mut [Complex64], a: &[Complex64], b: &[Complex64], width: usize) {
-    out[..=width].fill(Complex64::default());
-    for i in 0..=width {
-        let ai = a[i];
-        for j in 0..=width - i {
-            out[i + j] += ai * b[j];
         }
     }
 }
