@@ -586,6 +586,7 @@ impl Saddle {
             //     std::mem::swap(&mut q, &mut scratch);
             //     moment *= (2 * n + 1) as f64 / beta;
             // }
+            // NEXT better jet flow control coming up in overall cost priority refactor.
             if n < n_max {
                 series_mul_into(&mut scratch, &q, &r2, width);
                 std::mem::swap(&mut q, &mut scratch);
