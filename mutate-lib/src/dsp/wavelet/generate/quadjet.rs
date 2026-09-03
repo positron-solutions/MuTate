@@ -957,6 +957,92 @@ impl Singulants {
     }
 }
 
+/// The saddle geometry that depends on `τ` alone, held in the units `Φ` comes in so that a tap
+/// applies its own `β` on the way out.  The transverse reach carries `√β` and the turn carries
+/// a full `β`.
+#[derive(Clone, Copy, Default)]
+struct Geometry {
+    /// Distance off the path to the nearest neighbor that can alias onto it.
+    gap: f64,
+    /// The same for the next one out, which is where a residual's aliasing moves once the
+    /// nearest has been subtracted away.  The ratio against `gap` is what says whether one
+    /// subtraction is worth attempting.
+    gap_next: f64,
+    /// `|ΔΦ|` to the nearest unshadowed neighbor, where the series turns.
+    turn: f64,
+    /// Which saddle owns `gap`.
+    binding: u8,
+    /// The unshadowed neighbors, screened as in `Singulants::adjacent`.
+    adj: u8,
+}
+
+/// Reads the whole neighbor picture off one node's phases.  The shadow cone and the norm
+/// comparisons are ratios, so `β` cancels out of the screen entirely and only the distances
+/// carry it.
+fn geometry(p: &[Complex64; MAX_G], g: usize) -> [Geometry; MAX_G] {
+    let mut out = [Geometry::default(); MAX_G];
+    for i in 0..g {
+        let mut d = [Complex64::default(); MAX_G];
+        for k in 0..g {
+            d[k] = p[k] - p[i];
+        }
+
+        let mut adj = 0u8;
+        for k in 0..g {
+            if k == i {
+                continue;
+            }
+            let dk = d[k];
+            let mut shadowed = false;
+            for j in 0..g {
+                if j == i || j == k {
+                    continue;
+                }
+                let dj = d[j];
+                if dj.norm() < dk.norm() && (dk * dj.conj()).re > ADJ_CONE * dk.norm() * dj.norm() {
+                    shadowed = true;
+                    break;
+                }
+            }
+            if !shadowed {
+                adj |= 1 << k;
+            }
+        }
+
+        let mut gap = f64::INFINITY;
+        let mut gap_next = f64::INFINITY;
+        let mut binding = i as u8;
+        let mut turn = f64::INFINITY;
+        for k in 0..g {
+            if k == i {
+                continue;
+            }
+            let t = (-2.0 * d[k]).sqrt().im.abs();
+            if t > GAP_FLOOR {
+                if t < gap {
+                    gap_next = gap;
+                    gap = t;
+                    binding = k as u8;
+                } else if t < gap_next {
+                    gap_next = t;
+                }
+            }
+            if adj & (1 << k) != 0 {
+                turn = turn.min(d[k].norm());
+            }
+        }
+
+        out[i] = Geometry {
+            gap,
+            gap_next,
+            turn,
+            binding,
+            adj,
+        };
+    }
+    out
+}
+
 /// Root identity and membership as functions of `τ`, resolved once.
 ///
 /// Membership changes only where two saddles exchange dominance, so it has to be marched from
@@ -974,6 +1060,8 @@ struct StokesTable {
     roots: Box<[Complex64]>,
     /// Row-major `[node][root]`.
     m: Box<[f64]>,
+    /// Row-major `[node][saddle]`.
+    geom: Box<[Geometry]>,
 }
 
 impl StokesTable {
@@ -981,6 +1069,7 @@ impl StokesTable {
         let g = frame.g;
 
         let mut roots = vec![Complex64::default(); TABLE_NODES * g].into_boxed_slice();
+        let mut geom = vec![Geometry::default(); TABLE_NODES * g].into_boxed_slice();
         let mut m = vec![0.0_f64; TABLE_NODES * g].into_boxed_slice();
         let mut s = vec![0.0_f64; TABLE_NODES].into_boxed_slice();
 
@@ -1040,6 +1129,7 @@ impl StokesTable {
             s[n] = sn;
             roots[n * g..(n + 1) * g].copy_from_slice(&r[..g]);
             m[n * g..(n + 1) * g].copy_from_slice(&weights[..g]);
+            geom[n * g..(n + 1) * g].copy_from_slice(&geometry(&p, g)[..g]);
             used = n + 1;
 
             // Once the crossings have stopped coming the decomposition is settled and there is
@@ -1054,6 +1144,7 @@ impl StokesTable {
             s: s[..used].to_vec().into_boxed_slice(),
             roots: roots[..used * g].to_vec().into_boxed_slice(),
             m: m[..used * g].to_vec().into_boxed_slice(),
+            geom: geom[..used * g].to_vec().into_boxed_slice(),
         }
     }
 
@@ -1084,6 +1175,21 @@ impl StokesTable {
         }
 
         (r, w)
+    }
+
+    /// The neighbor picture at `tau`, read off the bracketing node without polishing.  The
+    /// roots move slowly in `ln(1 + τ)` and this only ever feeds a decision about which method
+    /// to spend, so the node's own geometry stands in for the exact one.
+    fn geometry_at(&self, tau: f64) -> &[Geometry] {
+        let target = (1.0 + tau).ln();
+        let n = match self
+            .s
+            .binary_search_by(|probe| probe.partial_cmp(&target).unwrap())
+        {
+            Ok(hit) => hit,
+            Err(above) => above.min(self.s.len() - 1),
+        };
+        &self.geom[n * self.g..(n + 1) * self.g]
     }
 }
 
