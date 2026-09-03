@@ -506,6 +506,25 @@ impl Saddle {
         normal.seed(self, frame);
 
         let n_cap = (r_star.ceil() as usize).clamp(1, JET_ORDER / 2);
+        let mut cost = Cost::default();
+
+        // A series whose own floor sits under its own bar is handing its polynomial to
+        // quadrature no matter how far it climbs. There's nothing to search for, so build
+        // it once at the cap and let the caller trace the rest.
+        if r_star <= bar {
+            normal.extend(self, frame, 2 * n_cap);
+            let pass = self.jet_sum(frame, ch, r_star, n_cap, normal);
+            cost += pass.cost;
+            return Expansion {
+                terms: pass.terms,
+                raw: pass.raw,
+                reached: pass.reached,
+                cost,
+            };
+        }
+
+        // Otherwise the order is worth predicting, since a lucky guess settles the whole
+        // saddle here for the price of a single pass.
         let mut n = bar.max(1.0);
         for _ in 0..2 {
             n = bar / ((r_star / n).max(1.0).ln() + 1.0);
