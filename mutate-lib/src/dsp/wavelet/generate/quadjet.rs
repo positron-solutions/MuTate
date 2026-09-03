@@ -90,10 +90,19 @@ use std::f64::consts::TAU;
 use super::super::spec::Shape;
 use super::super::whatsleft::Accumulator;
 
-const ADJ_CONE: f64 = 0.9;
-const DK_ITERS: usize = 24;
-const DK_TOL: f64 = 1e-13;
 const EPS: f64 = f64::EPSILON;
+
+// Stokes table
+const DK_ITERS: usize = 36;
+const DK_TOL: f64 = 1e-14;
+const TABLE_NEWTON_TOL: f64 = 1e-14;
+const TABLE_NEWTON_ITERS: usize = 32;
+const TABLE_NODES: usize = 2048;
+const TABLE_QUIET_SPAN: f64 = 4.0;
+const TABLE_TAU_MAX: f64 = 256.0;
+
+// Saddles & Jets
+const ADJ_CONE: f64 = 0.9;
 const JET_ORDER: usize = 96;
 const LIVE: f64 = 0.5;
 const MAX_G: usize = 8;
@@ -108,10 +117,7 @@ const QUAD_MAX_DENSITY: f64 = QUAD_MAX_NODES as f64 / (2.0 * REACH_MAX);
 const QUAD_MAX_NODES: usize = 512;
 const QUAD_MIN_DENSITY: f64 = 0.4;
 const QUAD_SLOTS: usize = QUAD_MAX_NODES + 2;
-const REACH_MAX: f64 = 8.6;
-const TABLE_NODES: usize = 512;
-const TABLE_QUIET_SPAN: f64 = 4.0;
-const TABLE_TAU_MAX: f64 = 256.0;
+const REACH_MAX: f64 = 12.0;
 const TRACE_MAX_SPLIT: u32 = 6;
 
 /// The shape, together with the forms of it the rest of the file actually reads.  `ρ` is where
@@ -1085,12 +1091,12 @@ impl StokesTable {
 fn newton_trinomial(u: &mut Complex64, g: usize, tau: f64) {
     let gi = g as i32;
     let it = Complex64::i() * tau;
-    for _ in 0..NEWTON_ITERS {
+    for _ in 0..TABLE_NEWTON_ITERS {
         let p = u.powi(gi) - it * *u - 1.0;
         let dp = u.powi(gi - 1) * g as f64 - it;
         let step = p / dp;
         *u -= step;
-        if step.norm() < NEWTON_TOL {
+        if step.norm() < TABLE_NEWTON_TOL {
             break;
         }
     }
