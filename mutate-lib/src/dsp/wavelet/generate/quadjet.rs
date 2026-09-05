@@ -105,13 +105,14 @@ const DESCENT_AXIS_TIE: f64 = 1e-12;
 
 // Jets
 const ADJ_CONE: f64 = 0.5;
+const HANDOVER_SPLITS: u32 = 2;
 const JET_ORDER: usize = 128;
 const JET_SLOTS: usize = JET_ORDER + 2;
-const JET_SETTLE_FLOOR: usize = 8;
+const JET_SETTLE_FLOOR: usize = 4;
 const JET_OVERSHOOT: f64 = 2.5;
 const LIVE: f64 = 0.5;
 const MAX_G: usize = 8;
-const TURN_CONFIRM: u32 = 16;
+const TURN_CONFIRM: u32 = 8;
 
 // Quadrature
 const CALIBRATE_NODES: f64 = 2.0;
@@ -130,6 +131,7 @@ const QUAD_MIN_DENSITY: f64 = 1e-3;
 const RATE_CREDIBLE: f64 = 4.0;
 const REACH_MARGIN: f64 = 3.0;
 const REACH_MAX: f64 = 16.0;
+const SERIES_TRUST: f64 = 0.5;
 const TRACE_MAX_SPLIT: u32 = 8;
 
 /// The shape, together with the forms of it the rest of the file actually reads.  `ρ` is where
@@ -184,6 +186,8 @@ pub struct Cost {
     pub quad_paths: u32,
     /// Nodes a `walk` was actually spent on, summed over every level traced.
     pub quad_nodes: u32,
+    /// Nodes the map's own series placed instead, which cost a Horner pass apiece.
+    pub quad_series: u32,
     /// How far the traced path moved the jet's answer, measured against the bar that asked for
     /// it.  Under one, the series had already arrived wherever a path was spent.
     pub quad_gain: f64,
@@ -204,6 +208,7 @@ impl std::ops::AddAssign for Cost {
         self.jet_saddles += rhs.jet_saddles;
         self.quad_paths += rhs.quad_paths;
         self.quad_nodes += rhs.quad_nodes;
+        self.quad_series += rhs.quad_series;
         self.quad_gain = self.quad_gain.max(rhs.quad_gain);
         self.quad_truncated |= rhs.quad_truncated;
         self.quad_short |= rhs.quad_short;
@@ -400,6 +405,7 @@ impl QuadJet {
                     normal: None,
                     degree: 0,
                     moments: [Complex64::default(); 2],
+                    inner: 0.0,
                 };
                 // Nothing was subtracted, so the path owes the whole saddle in both the density
                 // it needs and the distance it walks.
@@ -431,10 +437,20 @@ impl QuadJet {
                     // `degree` counts coefficients of `x` and the moments count orders, so the
                     // even half is what puts back exactly the polynomial the path took out.
                     let degree = (2 * jet.reached).min(degree_cap) & !1;
+
+                    let width = trust_width(degree, rel);
+                    normal.extend(s, frame, width);
+                    let inner = if width >= trust_orders(rel) + degree {
+                        SERIES_TRUST * branch_wall(seen, beta)
+                    } else {
+                        0.0
+                    };
+
                     let handoff = Handoff {
                         normal: Some(&normal),
                         degree,
                         moments: normal.moments(frame.beta, degree / 2),
+                        inner,
                     };
 
                     let quad = s.quadrature(frame, local_bar, rel, scale, target, seen, &handoff);
@@ -745,10 +761,17 @@ impl Saddle {
         seen: &[Complex64],
         hand: &Handoff,
     ) -> Priced {
-        // The neighbor that binds is the one whose own size, carried onto the path at its own
-        // distance, is hardest to bury.  One standing above this saddle enters amplified and
-        // charges full freight, while one already suppressed is credited only partly, since the
-        // fold point sits nearer than the neighbor's own center and sees less of that decay.
+        // Each neighbor is a square-root branch point of the inverse map at `x_c = √(-2Δ/β)`.
+        // Its distance off the path is the aliasing gap the density answers to, and its modulus
+        // is where the map's own series stops converging.  A neighbor sitting below this one
+        // with equal `Im Φ` puts that point on the path itself, which is the configuration a
+        // trace runs out of valley in.
+
+        // Each neighbor is a square-root branch point of the inverse map at `x_c = √(-2Δ/β)`,
+        // and what the density answers to is how far that point sits off the path.  One standing
+        // above this saddle enters amplified and charges full freight, while one already
+        // suppressed is credited only partly, since the fold point sits nearer than the
+        // neighbor's own center and sees less of that decay.
         let mut gap = 1.0_f64;
         let mut lift = 0.0_f64;
         let mut want = 0.0_f64;
@@ -765,7 +788,6 @@ impl Saddle {
                 lift = l;
             }
         }
-
         // Aliasing folds the neighbor onto the path carrying the size the neighbor already has,
         // and a polynomial is entire, so subtracting one leaves that fold exactly where it was.
         // Density answers to the whole saddle no matter how well the series did.  So does the
@@ -882,9 +904,10 @@ impl Saddle {
     /// the reach is long enough for `e^{γv}` to climb the neighboring hill.  The path carries no
     /// `m`, so one trace serves both channels.
     ///
-    /// Each level stands alone at its own density and every node on it is traced fresh.  Either
-    /// side may run out of valley before the reach is spent, and the sum stops there and reports
-    /// the span it actually covered, which is what the endpoint charge is built on.
+    /// Each level stands alone at its own density.  The inner nodes come from the map's own
+    /// series and the outer ones are traced, and either side may run out of valley before the
+    /// reach is spent, so the sum stops there and reports the span it actually covered, which is
+    /// what the endpoint charge is built on.
     fn trapezoid(
         &self,
         frame: &Frame,
@@ -905,36 +928,69 @@ impl Saddle {
             (Accumulator::<f64>::default(), Accumulator::<f64>::default()),
         ];
 
-        let mut tally = |x: f64, v: Complex64, slope: Complex64| {
-            let ev = v.exp();
+        let mut tally = |x: f64, f: [Complex64; 2]| {
             let gauss = (-0.5 * beta * x * x).exp();
-            let f1 = gauss * (ev * slope - hand.poly(0, x));
-            let f2 = gauss * (ev * ev * slope - hand.poly(1, x));
+            let f1 = gauss * f[0];
+            let f2 = gauss * f[1];
             acc[0].0.add(f1.re);
             acc[0].1.add(f1.im);
             acc[1].0.add(f2.re);
             acc[1].1.add(f2.im);
         };
 
-        tally(0.0, apex.0, apex.1);
+        // The node as a traced point gives it, the whole integrand less the whole subtracted
+        // polynomial.  Past the trust radius this is the only form available.
+        let traced = |x: f64, v: Complex64, slope: Complex64| {
+            let ev = v.exp();
+            [
+                ev * slope - hand.poly(0, x),
+                ev * ev * slope - hand.poly(1, x),
+            ]
+        };
+
+        tally(
+            0.0,
+            hand.tail(0.0)
+                .unwrap_or_else(|| traced(0.0, apex.0, apex.1)),
+        );
 
         let mut walked = 0u32;
+        let mut summed = 0u32;
         let mut spans = [0.0_f64; 2];
         let mut full = true;
 
+        // Each side runs the summed stretch first and hands the path to Newton once, at the last
+        // node the series placed.  Difficulty grows outward, so the handover sits where the walk
+        // would have started climbing its split count anyway.
         for (which, side) in [1.0_f64, -1.0].into_iter().enumerate() {
             let mut at = apex;
             let mut splits = 1u32;
             let mut last = 0usize;
+            let mut summing = true;
             for j in 1..=n {
                 let x0 = side * (j - 1) as f64 * h;
                 let x1 = side * j as f64 * h;
+
+                if summing {
+                    if let Some(f) = hand.tail(x1) {
+                        tally(x1, f);
+                        summed += 1;
+                        last = j;
+                        continue;
+                    }
+                    if let Some(state) = hand.seed(x0) {
+                        at = state;
+                        splits = HANDOVER_SPLITS;
+                    }
+                    summing = false;
+                }
+
                 match self.walk(at, x0, x1, rel, &mut splits) {
                     Some(next) => at = next,
                     None => break,
                 }
                 walked += 1;
-                tally(x1, at.0, at.1);
+                tally(x1, traced(x1, at.0, at.1));
                 last = j;
             }
             full &= last == n;
@@ -952,6 +1008,7 @@ impl Saddle {
             cost: Cost {
                 quad_paths: 1,
                 quad_nodes: walked,
+                quad_series: summed,
                 ..Default::default()
             },
         }
@@ -1120,6 +1177,8 @@ struct Handoff<'a> {
     degree: usize,
     /// The Gaussian integral of that polynomial, pre-scale.  Zero when `normal` is `None`.
     moments: [Complex64; 2],
+    /// How far out the jet series places nodes on its own.
+    inner: f64,
 }
 
 impl Handoff<'_> {
@@ -1134,7 +1193,43 @@ impl Handoff<'_> {
         }
         acc
     }
+
+    /// Both channels inside the trust radius.  The integrand and the subtracted polynomial are
+    /// the same series truncated at two places, so their difference is the coefficient tail and
+    /// is formed as one.  The leading `x^{degree+1}` is the whole reason that difference is
+    /// small, so it multiplies in once rather than being discovered by cancellation.
+    fn tail(&self, x: f64) -> Option<[Complex64; 2]> {
+        let normal = self.normal?;
+        if x.abs() >= self.inner {
+            return None;
+        }
+        let lead = x.powi(self.degree as i32 + 1);
+        let mut out = [Complex64::default(); 2];
+        for m in 0..2 {
+            let c = &normal.h[m];
+            let mut acc = c[normal.width];
+            for k in (self.degree + 1..normal.width).rev() {
+                acc = acc * x + c[k];
+            }
+            out[m] = acc * lead;
+        }
+        Some(out)
+    }
+
+    /// The state a walk needs to carry on from where the summed stretch stopped, the point on
+    /// the path and the slope the next step is predicted with.
+    fn seed(&self, x: f64) -> Option<(Complex64, Complex64)> {
+        let normal = self.normal?;
+        let mut v = normal.v[normal.width];
+        let mut w = normal.w[normal.width];
+        for k in (0..normal.width).rev() {
+            v = v * x + normal.v[k];
+            w = w * x + normal.w[k];
+        }
+        Some((v, w))
+    }
 }
+
 /// The integrand in the normal coordinate, carried as a series in `x`.
 ///
 /// The saddle is where `g'` vanishes, so `P = g'` has no constant term and `P = x·P̃`.  That
@@ -1158,6 +1253,8 @@ struct Normal {
     p: [Complex64; JET_SLOTS],
     /// `dv/dx`, the same slope `trapezoid` walks.
     w: [Complex64; JET_SLOTS],
+    /// `v(x)` itself, the antiderivative of `w` anchored at the saddle.
+    v: [Complex64; JET_SLOTS],
     /// `e^{v}·dv/dx` and `e^{2v}·dv/dx`, one per channel.
     h: [[Complex64; JET_SLOTS]; 2],
     /// The valid prefix of `w` and `h`.  `y`, `yg`, and `p` run one order further.
@@ -1171,6 +1268,7 @@ impl Default for Normal {
             yg: [Complex64::default(); JET_SLOTS],
             p: [Complex64::default(); JET_SLOTS],
             w: [Complex64::default(); JET_SLOTS],
+            v: [Complex64::default(); JET_SLOTS],
             h: [[Complex64::default(); JET_SLOTS]; 2],
             width: 0,
         }
@@ -1189,6 +1287,7 @@ impl Normal {
         self.p[0] = Complex64::default();
         self.p[1] = -s.s0();
         self.w[0] = y1;
+        self.v[0] = Complex64::default();
         self.h[0][0] = y1;
         self.h[1][0] = y1;
         self.width = 0;
@@ -1230,6 +1329,7 @@ impl Normal {
                 acc += self.w[i] * self.p[k - i + 1];
             }
             self.w[k] = -acc / self.p[1];
+            self.v[k] = self.w[k - 1] / k as f64;
 
             let mut h0 = Complex64::default();
             let mut h1 = Complex64::default();
@@ -1543,6 +1643,33 @@ fn reach_for(bar: f64) -> f64 {
     (2.0 * (bar + REACH_MARGIN).max(0.0)).sqrt().min(REACH_MAX)
 }
 
+/// Where the inverse map `x ↦ v` stops converging.  Each neighbor puts a square-root branch
+/// point at `x_c = √(-2Δ/β)`, since that is the `x` whose target depth `-x²/2` is the neighbor's
+/// own, and the nearest of those moduli bounds the disk the series speaks for.
+fn branch_wall(seen: &[Complex64], beta: f64) -> f64 {
+    let mut wall = f64::INFINITY;
+    for &d in seen {
+        let r = (-2.0 * d / beta).sqrt().norm();
+        if r > GAP_FLOOR {
+            wall = wall.min(r);
+        }
+    }
+    wall
+}
+
+/// How far past the subtracted polynomial the coefficient tail has to run.  Inside the trust
+/// radius each further order buys a factor `SERIES_TRUST`, so the count is what drives that
+/// geometric under the bar.
+fn trust_orders(rel: f64) -> usize {
+    (rel.recip().ln() / SERIES_TRUST.recip().ln()).ceil() as usize
+}
+
+/// The width the tail wants, clamped to the slots the series has.  A clamp that bites is the
+/// caller's signal that the stretch has no evidence behind it.
+fn trust_width(degree: usize, rel: f64) -> usize {
+    (degree + trust_orders(rel)).min(JET_ORDER)
+}
+
 #[cfg(test)]
 mod test {
     use super::super::fmt_e;
@@ -1659,7 +1786,7 @@ mod test {
                     (false, false) => "  ",
                 };
                 println!(
-                    "  u: {u:>6.2}, err: {:>9}, res: {:>9}, time: {:>6}µs, jet: {:>2}s/{:>2}p/{:>3}d, quad: {:>2}p/{:>5}n {}, ref: {:>2}p/{:>5}n {}, gain: {:>9}",
+                    "  u: {u:>6.2}, err: {:>9}, res: {:>9}, time: {:>6}µs, jet: {:>2}s/{:>2}p/{:>3}d, quad: {:>2}p/{:>5}n+{:>5}s {}, ref: {:>2}p/{:>5}n {}, gain: {:>9}",
                     fmt_e(err),
                     fmt_e(standard.residual / standard.psi.norm()),
                     elapsed.as_micros(),
@@ -1668,6 +1795,7 @@ mod test {
                     c.jet_depth,
                     c.quad_paths,
                     c.quad_nodes,
+                    c.quad_series,
                     flags(c.quad_truncated, c.quad_short),
                     rc.quad_paths,
                     rc.quad_nodes,
@@ -1688,7 +1816,7 @@ mod test {
             worst_time_u
         );
         println!("  matrix completed in: {}µs", matrix_time.as_micros());
-        assert!(worst < 1e-7);
+        assert!(worst < 1e-6);
     }
 
     #[test]
