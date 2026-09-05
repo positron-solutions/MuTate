@@ -119,11 +119,11 @@ const ADJ_CONE: f64 = 0.5;
 const HANDOVER_SPLITS: u32 = 2;
 const JET_ORDER: usize = 128;
 const JET_SLOTS: usize = JET_ORDER + 2;
-const JET_SETTLE_FLOOR: usize = 4;
-const JET_OVERSHOOT: f64 = 2.5;
+const JET_SETTLE_FLOOR: usize = 2;
+const JET_OVERSHOOT: f64 = 1.2;
 const LIVE: f64 = 0.5;
 const MAX_G: usize = 8;
-const TURN_CONFIRM: u32 = 8;
+const TURN_CONFIRM: u32 = 2;
 
 // Quadrature
 const CALIBRATE_NODES: f64 = 2.0;
@@ -131,12 +131,12 @@ const ANCHOR_EFOLDS: f64 = 3.0;
 const CERTIFY_DERATE: f64 = 0.35;
 const GAP_FLOOR: f64 = 1e-6;
 const LIFT_CREDIT: f64 = 0.5;
-const NEWTON_ITERS: usize = 8;
+const NEWTON_ITERS: usize = 4;
 const NEWTON_STALL: f64 = 1e-11;
-const NEWTON_TOL_FACTOR: f64 = 0.1;
+const NEWTON_TOL_FACTOR: f64 = 0.3;
 const NEWTON_TOL_FLOOR: f64 = 1e-13;
 const PLACE_MARGIN: f64 = 1.2;
-const PLACE_ROUNDS: u32 = 3;
+const PLACE_ROUNDS: u32 = 1;
 const QUAD_MAX_NODES: usize = 2048;
 const QUAD_MIN_DENSITY: f64 = 1e-3;
 const RATE_CREDIBLE: f64 = 4.0;
@@ -314,7 +314,7 @@ impl QuadJet {
     }
 
     pub fn standard(shape: Shape) -> Self {
-        Self::new(shape, 1e-7, false)
+        Self::new(shape, 1e-9, false)
     }
 
     pub fn tap_at(&self, u: f64) -> QuadJetResult {

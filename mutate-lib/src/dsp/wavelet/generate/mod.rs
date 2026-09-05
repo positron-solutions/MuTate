@@ -74,8 +74,8 @@ use crate::dsp::wavelet::Shape;
 // focus on getting the nomenclature to presume the reader is familiar with a **good** model for
 // these problems and focus on getting across the choices in place for key conventions where most
 // people choose one or the other formalism.
-// NEXT  Self-evaluation precision convergence tests are eacty that.  DFT tests are the ultimate
-// discriminator and only DFT can verify accurate wavelet generation.   One may yet bet an
+// NEXT Self-evaluation precision convergence tests are exactly just that.  DFT tests are the
+// ultimate discriminator and only DFT can verify accurate wavelet generation.  One may yet bet an
 // imposter. 🥷🏿
 // NOTE We're interested in bias, not extra precision.  We can barely measure bias any more
 // accurately with extra precision, but a large bias, we have plenty of precision to measure.  Bias
