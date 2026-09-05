@@ -20,6 +20,7 @@ ash.workspace = true
 aligned = {workspace = true, optional = true}
 num-complex = {workspace = true, optional = true}
 num-traits = {workspace = true, optional = true}
+rustfft = {workspace = true, optional = true}
 
 # workbench dependencies
 clap = {workspace = true, features=["derive"], optional = true}
@@ -43,9 +44,15 @@ path = "src/pipewire.rs"
 
 [features]
 default = ["dsp"]
+vulkan = ["dep:mutate-vulkan"]
+
 # DEBT move tree into dsp
 dsp = ["dep:num-complex", "dep:num-traits", "dep:mutate-slide", "dep:aligned"]
-vulkan = ["dep:mutate-vulkan"]
+# Running alternative wavelet generation methods requires rustfft.  These
+# demonstrate accuracy up to the precision convergence of the alternative
+# methods.
+# LIES validation is a feature of DSP, not a dependent.
+validate = ["dep:rustfft", "dsp"]
 workbench = ["dep:clap", "dsp"]
 pmr = ["dep:pm-remez", "dep:clap", "dsp"]
 
