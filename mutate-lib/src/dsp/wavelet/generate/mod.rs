@@ -41,12 +41,21 @@
 //! - As seen elsewhere, `𝐮` is the normalized time coordinate, `𝛚𝐭`, periods at the wavelet's
 //!   angular velocity.
 //! - peak-2 normalization, which affects the IFFT evaluation.
+//! - Every generator differentiates in `u` and reports the derivative channels with a quarter turn
+//!   divided out, so `d = -i dψ/du` and `dd = -i dd(d)/du`.
 //!
 //! Because the mother wavelet will only be sampled over a fixed number of periods, there is one
 //! normalization.  The expression `1.0 / (2 * periods)` appears in several places and normalizes
 //! sample magnitude for the higher pitch of the wavelet necessary to fit the specified `periods`
 //! within the IFFT output.  The inverse Fourier integral matches this normalization to create
 //! regularity across the module.
+//!
+//! Rotating `d` (the `-i` factor) allows folded storage.  `ψ(-u) = conj ψ(u)`, and the honest
+//! derivative carries a sign instead, so removing the turn puts every channel under a single mirror
+//! rule `f(-u) = conj f(u)` and one half-length record with one reflection serves all three.  It
+//! also keeps the spectral weights real, since each successive channel picks up `ζ` rather than
+//! `iζ` and rides the same cosine and sine the channel below it did.  Consumers wanting a true
+//! slope for Hermite interpolation supply the `i`, which on the device is a lane swap and a negate.
 
 #[cfg(feature = "validate")]
 pub(crate) mod contour;
@@ -86,9 +95,58 @@ fn fmt_e(x: f64) -> String {
 mod test {
     use super::*;
 
+    const TRUST_DIGITS: f64 = 5.5;
+
+    // If bad > worst, worst = bad, location = u.
+    struct Extreme {
+        value: f64,
+        u: f64,
+        keep_min: bool,
+    }
+
+    impl Extreme {
+        fn min() -> Self {
+            Self {
+                value: f64::INFINITY,
+                u: 0.0,
+                keep_min: true,
+            }
+        }
+        fn max() -> Self {
+            Self {
+                value: f64::NEG_INFINITY,
+                u: 0.0,
+                keep_min: false,
+            }
+        }
+        fn see(&mut self, value: f64, u: f64) {
+            let better = if self.keep_min {
+                value < self.value
+            } else {
+                value > self.value
+            };
+            if better {
+                self.value = value;
+                self.u = u;
+            }
+        }
+    }
+
+    fn digits(x: f64) -> f64 {
+        if x <= 1e-17 {
+            17.0
+        } else {
+            -x.log10()
+        }
+    }
+
+    fn digits_complex(a: Complex64, b: Complex64, scale: f64) -> f64 {
+        digits((a - b).norm() / scale)
+    }
+
     #[cfg(feature = "validate")]
     #[test]
-    fn multi_cross_reference() {
+    fn multi_cross_reference_psi() {
         // We compare the standard jet to its quadrature-only reference behavior.  The reference is
         // then compared to contour and ifft.  Whichever of the three non-jet methods agrees better
         // is taken as the goal.  Standard jet sags versus the goal will be tracked as a precision
@@ -113,48 +171,9 @@ mod test {
         let ref_jet = quadjet::QuadJet::reference(shape);
         let std_jet = quadjet::QuadJet::standard(shape);
 
-        const TRUST_DIGITS: f64 = 5.5;
-
         let res = settings.resolution as f64;
         let stride = settings.resolution / 4;
         let last = (10.0 * res) as usize;
-
-        let digits = |x: f64| if x <= 1e-17 { 17.0 } else { -x.log10() };
-
-        // If bad > worst, worst = bad, location = u.
-        struct Extreme {
-            value: f64,
-            u: f64,
-            keep_min: bool,
-        }
-
-        impl Extreme {
-            fn min() -> Self {
-                Self {
-                    value: f64::INFINITY,
-                    u: 0.0,
-                    keep_min: true,
-                }
-            }
-            fn max() -> Self {
-                Self {
-                    value: f64::NEG_INFINITY,
-                    u: 0.0,
-                    keep_min: false,
-                }
-            }
-            fn see(&mut self, value: f64, u: f64) {
-                let better = if self.keep_min {
-                    value < self.value
-                } else {
-                    value > self.value
-                };
-                if better {
-                    self.value = value;
-                    self.u = u;
-                }
-            }
-        }
 
         let mut worst_qs_qr = Extreme::min();
         let mut worst_qr_c = Extreme::min();
@@ -193,12 +212,11 @@ mod test {
             taps += 1;
 
             let scale = ifft.norm().max(contour.value.norm());
-            let d = |a: Complex64, b: Complex64| digits((a - b).norm() / scale);
 
-            let qs_qr = d(standard.psi, reference.psi);
-            let qr_c = d(reference.psi, contour.value);
-            let qr_i = d(reference.psi, ifft);
-            let c_i = d(contour.value, ifft);
+            let qs_qr = digits_complex(standard.psi, reference.psi, scale);
+            let qr_c = digits_complex(reference.psi, contour.value, scale);
+            let qr_i = digits_complex(reference.psi, ifft, scale);
+            let c_i = digits_complex(contour.value, ifft, scale);
 
             worst_qs_qr.see(qs_qr, u);
             worst_qr_c.see(qr_c, u);
@@ -259,8 +277,141 @@ mod test {
         println!("  {:>22} | {:>8.3}", "quadjet (standard)", std_us_per_tap);
 
         assert!(worst_qr_c.value.max(worst_qr_i.value).max(worst_c_i.value) > 5.0);
-        assert!(worst_qs_qr.value > 5.0);
+        assert!(worst_qs_qr.value > 6.0);
+        // Pull this up as the remaining dips go away.
+        assert!(worst_qs_deficit.value < 8.0);
+    }
+
+    #[cfg(feature = "validate")]
+    #[test]
+    fn multi_cross_reference_d() {
+        // `d` channel check.  The quadrature-only jet is the reference and IFFT is its independent
+        // corroboration.  Where the two agree, the standard jet is expected to follow, and its sag
+        // is the deficit.
+
+        // use a slightly different q to smoke test without sweep.
+        let shape = Shape::from_q(4.5, 3.0);
+        let beta = shape.beta;
+
+        let settings = ifft::IfftSettings {
+            periods: 10,
+            ..ifft::IfftSettings::default()
+        };
+
+        let (_, d, _) = ifft::morse_half_taps(shape, settings);
+
+        let ref_jet = quadjet::QuadJet::reference(shape);
+        let std_jet = quadjet::QuadJet::standard(shape);
+
+        let res = settings.resolution as f64;
+        let stride = settings.resolution / 4;
+        // NOTE IFFT precision in `d` is likely falling off even faster than `psi`, so we just cap
+        // the test over a reasonable range to smoke test the conventions.  To investigate more
+        // thoroughly, implement `d` for the contour and add it to the test.
+        let last = (5.0 * res) as usize;
+
+        let mut worst_qs_qr = Extreme::min();
+        let mut worst_qr_i = Extreme::min();
+        let mut worst_qs_deficit = Extreme::max();
+
+        println!("\n=== pairwise agreement on d, beta {beta:3.2} ===");
+        println!(
+            "  {:>6} | {:>9} | {:>5} {:>5} | {:>5}",
+            "u", "scale", "qs-qr", "qr-i", "defct"
+        );
+
+        for k in (0..=last).step_by(stride) {
+            let u = k as f64 / res;
+
+            let ifft = d[k];
+            let reference = ref_jet.tap_at(u);
+            let standard = std_jet.tap_at(u);
+
+            let scale = ifft.norm().max(reference.d.norm());
+
+            let qs_qr = digits_complex(standard.d, reference.d, scale);
+            let qr_i = digits_complex(reference.d, ifft, scale);
+
+            worst_qs_qr.see(qs_qr, u);
+            worst_qr_i.see(qr_i, u);
+
+            // IFFT corroborating the reference sets the bar, and below TRUST_DIGITS nothing is
+            // corroborated well enough to trip.
+            let deficit = if qr_i > TRUST_DIGITS {
+                (qr_i - qs_qr).max(0.0)
+            } else {
+                0.0
+            };
+            worst_qs_deficit.see(deficit, u);
+
+            println!(
+                "  {u:>6.3} | {:>9} | {qs_qr:>5.1} {qr_i:>5.1} | {deficit:>5.1}",
+                fmt_e(scale),
+            );
+        }
+
+        println!(
+            "  worst qs-qr: {:.1} digits at u {:.3}",
+            worst_qs_qr.value, worst_qs_qr.u
+        );
+        println!(
+            "  worst qr-i:  {:.1} digits at u {:.3}",
+            worst_qr_i.value, worst_qr_i.u
+        );
+        println!(
+            "  worst qs deficit: {:.1} digits at u {:.3}",
+            worst_qs_deficit.value, worst_qs_deficit.u
+        );
+
+        assert!(worst_qr_i.value > 9.0);
+        assert!(worst_qs_qr.value > 7.0);
         // Pull this up as the remaining dips go away.
         assert!(worst_qs_deficit.value < 10.0);
+    }
+
+    #[cfg(feature = "validate")]
+    #[test]
+    fn omega_check() {
+        const TAPS: usize = 128;
+
+        let shape = Shape::from_q(3.5, 3.0);
+        let beta = shape.beta;
+
+        let settings = ifft::IfftSettings {
+            periods: 10,
+            ..ifft::IfftSettings::default()
+        };
+        let (psi, _, _) = ifft::morse_half_taps(shape, settings);
+
+        let std_jet = quadjet::QuadJet::standard(shape);
+        let res = settings.resolution as f64;
+
+        // Both methods are read on the ifft grid so the two omegas share an abscissa.
+        let taps: Vec<(Complex64, Complex64)> = (0..TAPS)
+            .map(|t| (psi[t], std_jet.tap_at(t as f64 / res).psi))
+            .collect();
+
+        println!("\n=== omega, ifft versus standard jet ===");
+        println!(
+            "  {:>3} {:>7} | {:>13} {:>10} | {:>13} {:>10} | {:>10}",
+            "t", "u", "omega i", "|psi| i", "omega qs", "|psi| qs", "d omega"
+        );
+
+        for t in 1..TAPS {
+            let (ifft, ifft_prev) = (taps[t].0, taps[t - 1].0);
+            let (std, std_prev) = (taps[t].1, taps[t - 1].1);
+
+            // Modulus cancels out of the argument, so it is reported only as a conditioning number.
+            let omega_i = (ifft * ifft_prev.conj()).arg();
+            let omega_s = (std * std_prev.conj()).arg();
+
+            println!(
+                "  {t:>3} {:>7.4} | {omega_i:>+13.9} {:>10} | {omega_s:>+13.9} {:>10} | {:>+10.2e}",
+                t as f64 / res,
+                fmt_e(ifft.norm()),
+                fmt_e(std.norm()),
+                omega_s - omega_i,
+            );
+        }
     }
 }
