@@ -131,6 +131,8 @@ const QUAD_MIN_DENSITY: f64 = 1e-3;
 const RATE_CREDIBLE: f64 = 4.0;
 const REACH_MARGIN: f64 = 3.0;
 const REACH_MAX: f64 = 16.0;
+const PREDICT_TRUST: f64 = 0.9;
+const PREDICT_DRIFT: f64 = 2.0;
 const SERIES_TRUST: f64 = 0.5;
 const TRACE_MAX_SPLIT: u32 = 8;
 
@@ -406,6 +408,7 @@ impl QuadJet {
                     degree: 0,
                     moments: [Complex64::default(); 2],
                     inner: 0.0,
+                    outer: 0.0,
                 };
                 // Nothing was subtracted, so the path owes the whole saddle in both the density
                 // it needs and the distance it walks.
@@ -440,8 +443,9 @@ impl QuadJet {
 
                     let width = trust_width(degree, rel);
                     normal.extend(s, frame, width);
+                    let wall = branch_wall(seen, beta);
                     let inner = if width >= trust_orders(rel) + degree {
-                        SERIES_TRUST * branch_wall(seen, beta)
+                        SERIES_TRUST * wall
                     } else {
                         0.0
                     };
@@ -451,6 +455,7 @@ impl QuadJet {
                         degree,
                         moments: normal.moments(frame.beta, degree / 2),
                         inner,
+                        outer: PREDICT_TRUST * wall,
                     };
 
                     let quad = s.quadrature(frame, local_bar, rel, scale, target, seen, &handoff);
@@ -971,6 +976,9 @@ impl Saddle {
                 let x0 = side * (j - 1) as f64 * h;
                 let x1 = side * j as f64 * h;
 
+                // Inside the trust radius the series is the node.  Past it the series is still
+                // the best guess Newton could start from, and only past that does the walk fall
+                // back on the tangent and its subdivision.
                 if summing {
                     if let Some(f) = hand.tail(x1) {
                         tally(x1, f);
@@ -978,11 +986,21 @@ impl Saddle {
                         last = j;
                         continue;
                     }
-                    if let Some(state) = hand.seed(x0) {
+                    if let Some(state) = hand.at(x0) {
                         at = state;
-                        splits = HANDOVER_SPLITS;
                     }
                     summing = false;
+                }
+
+                if let Some((guess, slope)) = hand.predict(x1) {
+                    let allow = PREDICT_DRIFT * slope.norm() * h;
+                    if let Some(next) = self.close(guess, allow, x1, rel) {
+                        at = next;
+                        walked += 1;
+                        tally(x1, traced(x1, at.0, at.1));
+                        last = j;
+                        continue;
+                    }
                 }
 
                 match self.walk(at, x0, x1, rel, &mut splits) {
@@ -1014,24 +1032,20 @@ impl Saddle {
         }
     }
 
-    /// One step along the path that `dv/dx = -x/g'(v)` predicts, closed by Newton on
-    /// `g(v) = -x²/2`.
+    /// Newton on `g(v) = -x²/2` from a guess, with the drift the caller is willing to see.
     ///
     /// Newton doubles its digits every pass, so a step that stops shrinking has found the floor
     /// the arithmetic allows rather than failing to arrive.  Both endings count as arrival while
-    /// the last step is small.  A step that is still large means the prediction overshot into a
-    /// neighboring valley and Newton landed on that saddle's sheet, and the caller is left to
-    /// approach more slowly or to stop.
-    fn advance(
+    /// the last step is small.  Landing far from the guess means the iteration crossed onto a
+    /// neighboring saddle's sheet, which is a wrong node rather than an inaccurate one.
+    fn close(
         &self,
-        v: Complex64,
-        slope: Complex64,
-        x0: f64,
+        guess: Complex64,
+        allow: f64,
         x1: f64,
         rel: f64,
     ) -> Option<(Complex64, Complex64)> {
-        let h = x1 - x0;
-        let mut w = v + slope * h;
+        let mut w = guess;
         let target = Complex64::new(-0.5 * x1 * x1, 0.0);
         let step_tol = (NEWTON_TOL_FACTOR * rel).max(NEWTON_TOL_FLOOR);
 
@@ -1056,10 +1070,26 @@ impl Saddle {
             prev = size;
         }
 
-        if !arrived || (w - v).norm() > 4.0 * slope.norm() * h.abs() + 0.25 {
+        if !arrived || (w - guess).norm() > allow {
             return None;
         }
         Some((w, -x1 / gp))
+    }
+
+    /// One step along the path that `dv/dx = -x/g'(v)` predicts, closed by Newton.  The tangent
+    /// is only as good as the step is short, so the drift it allows is the step it took.
+    fn advance(
+        &self,
+        v: Complex64,
+        slope: Complex64,
+        x0: f64,
+        x1: f64,
+        rel: f64,
+    ) -> Option<(Complex64, Complex64)> {
+        let h = x1 - x0;
+        let allow = 4.0 * slope.norm() * h.abs() + 0.25;
+        self.close(v + slope * h, allow, x1, rel)
+            .filter(|(w, _)| (w - v).norm() <= allow)
     }
 
     /// Subdivides a step until the path stays in its own valley, and reports the give-up rather
@@ -1179,6 +1209,8 @@ struct Handoff<'a> {
     moments: [Complex64; 2],
     /// How far out the jet series places nodes on its own.
     inner: f64,
+    /// How far out it is still worth asking the series where the path went.
+    outer: f64,
 }
 
 impl Handoff<'_> {
@@ -1227,6 +1259,31 @@ impl Handoff<'_> {
             w = w * x + normal.w[k];
         }
         Some((v, w))
+    }
+
+    /// Where the series says the path is at `x`, and the slope it arrives with.  Two radii read
+    /// this.  Inside `inner` it is the node, and out to `outer` it is only the guess Newton
+    /// starts from, which is a weaker thing to ask and so reaches farther.
+    fn at(&self, x: f64) -> Option<(Complex64, Complex64)> {
+        let normal = self.normal?;
+        let mut v = normal.v[normal.width];
+        let mut w = normal.w[normal.width];
+        for k in (0..normal.width).rev() {
+            v = v * x + normal.v[k];
+            w = w * x + normal.w[k];
+        }
+        Some((v, w))
+    }
+
+    /// The guess for a node the series cannot place but can still find.  Newton converges to
+    /// whichever root of `g(v) = -x²/2` it starts nearest, and every failure of the tangent
+    /// predictor is a landing on a neighbor's sheet, so a guess already in the right valley is
+    /// worth more than any amount of subdivision.
+    fn predict(&self, x: f64) -> Option<(Complex64, Complex64)> {
+        if x.abs() >= self.outer {
+            return None;
+        }
+        self.at(x)
     }
 }
 
