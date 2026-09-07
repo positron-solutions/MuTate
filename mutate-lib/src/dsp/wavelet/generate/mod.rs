@@ -33,29 +33,9 @@
 //!
 //! All generators evaluate the same one-sided inverse transform in the same
 //! units. `samples_per_period` (`S`) resolves the carrier into samples and *is* the 𝛚 in carrier
-//! radians per sample.  The output taps are `ψ/S` and `d/S²`.  The dilation step, where the
-//! daughter wavelet sample omega is known, applies both.
-//!
-//! ## Conventions
-//!
-//! - As seen elsewhere, `𝐮` is the normalized time coordinate, `𝛚𝐭`, periods at the wavelet's
-//!   angular velocity.
-//! - peak-2 normalization, which affects the IFFT evaluation.
-//! - Every generator differentiates in `u` and reports the derivative channels with a quarter turn
-//!   divided out, so `d = -i dψ/du` and `dd = -i dd(d)/du`.
-//!
-//! Because the mother wavelet will only be sampled over a fixed number of periods, there is one
-//! normalization.  The expression `1.0 / (2 * periods)` appears in several places and normalizes
-//! sample magnitude for the higher pitch of the wavelet necessary to fit the specified `periods`
-//! within the IFFT output.  The inverse Fourier integral matches this normalization to create
-//! regularity across the module.
-//!
-//! Rotating `d` (the `-i` factor) allows folded storage.  `ψ(-u) = conj ψ(u)`, and the honest
-//! derivative carries a sign instead, so removing the turn puts every channel under a single mirror
-//! rule `f(-u) = conj f(u)` and one half-length record with one reflection serves all three.  It
-//! also keeps the spectral weights real, since each successive channel picks up `ζ` rather than
-//! `iζ` and rides the same cosine and sine the channel below it did.  Consumers wanting a true
-//! slope for Hermite interpolation supply the `i`, which on the device is a lane swap and a negate.
+//! radians per sample.  The output taps are `ψ/S` and `-i d/S²`.  The dilation step, where the
+//! daughter wavelet sample omega is known, applies both.  Normalization and bank compensation are
+//! the caller's responsibility.
 
 #[cfg(feature = "validate")]
 pub(crate) mod contour;

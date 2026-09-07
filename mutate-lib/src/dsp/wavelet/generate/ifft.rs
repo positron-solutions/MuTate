@@ -12,6 +12,22 @@
 //! issues that affect precision convergence at high `u`.  The reference methods developed to
 //! confirm and characterize the precision and accuracy grew to replace Jane, so this poor module
 //! has been demoted behind the `validation` feature.
+//!
+//! ## Symbols and Relations
+//!
+//! See parent conventions for shared definitions.
+//!
+//! | symbol | Rust | object |
+//! |---|---|---|
+//! | `j` || bin index, one-sided, so bin `record` is the carrier |
+//! || `record` | periods plus padding periods, the transform's span in `u` | carrier periods |
+//! | `ζ` | `zeta` | `j/record`, the bin's rate in turns per `u` |
+//! | `n_fft` || transform size, `record·resolution` |
+//! | `dd` || `d²ψ/du²` under two quarter turns, the derivative of `d` |
+//! ...
+//!
+//! Bin weights are `mag`, `mag·ζ`, and `mag·ζ²`, one level of `ζ` per channel, which is the
+//! quarter turn and the `1/2π` together.  `reach` bounds the largest `u` a resample can index,
 
 use core::f64::consts::{LN_2, TAU};
 
@@ -21,11 +37,6 @@ use super::super::spec::Shape;
 
 use num_complex::Complex64;
 use rustfft::FftPlanner;
-
-// NEXT `periods` is not a good way to determine truncation of the result.  Q determines how many
-// points of any wavelet we will need, and the accuracy and precision track higher Q out to higher
-// `u`.  It's the skinny tail where the IFFT begins to struggle.  We don't use the tail, but we
-// don't use the IFFT either, so same same 이라고.
 
 /// Grid for the IFFT generator.
 ///
@@ -71,9 +82,8 @@ impl IfftSettings {
 }
 
 impl Default for IfftSettings {
-    /// Past both elbows in `ifft_precision_convergence` and `ifft_quadrature_precision`: pad is
-    /// into the flat rows around 1e-14 at the near lobes, and resolution 1024 puts Hermite
-    /// interpolation at ~2e-12 where the truncation floor no longer binds.
+    /// Standard settings are near the elbows of precision and will produce agreement with other
+    /// methods from about 1e-14 near the origin to 1e-8 near where padding begins.
     fn default() -> Self {
         Self {
             periods: 8,
@@ -90,9 +100,8 @@ impl Default for IfftSettings {
 ///
 /// `settings.n_fft()` is the transform size.
 ///
-/// Each successive array is the `u`-derivative of the one before it up to a quarter turn, so
-/// `dpsi/du == i * d` and `dd/du == i * dd`.  Consumers interpolating `psi` or `d` have exact
-/// slopes available.  This enables both `psi` and `d` to use Hermitian interpolation.
+/// Each array is the next in the storage convention, `dψ/du = 2πi·d` and `dd/du = 2πi·dd`, so
+/// `psi` and `d` both carry exact slopes for Hermite reconstruction.
 pub(crate) fn morse_half_taps(
     shape: Shape,
     settings: IfftSettings,
@@ -102,7 +111,7 @@ pub(crate) fn morse_half_taps(
     let resolution = settings.resolution as f64;
 
     let s_per_bin = shape.peak() / record;
-    let zeta_per_bin = TAU / record;
+    let zeta_per_bin = 1.0 / record;
 
     // Integer binade shift placing the spectral peak in [1, 2).  Exponent-only, so folding it
     // back out through `norm` restores the mantissa exactly.
@@ -113,11 +122,11 @@ pub(crate) fn morse_half_taps(
     // The envelope underflows well before the Nyquist bin, so the significant support is far
     // shorter than the transform would be.  Collect it once and reuse across all samples.
     let bins: Vec<[f64; 4]> = (1..settings.n_fft() / 2)
-        .map(|k| {
-            let s = k as f64 * s_per_bin;
+        .map(|j| {
+            let s = j as f64 * s_per_bin;
             let mag = ((shape.beta * s.ln() - s.powf(shape.gamma)) / LN_2 + shift).exp2();
-            let zeta = k as f64 * zeta_per_bin;
-            [k as f64, mag, mag * zeta, mag * zeta * zeta]
+            let zeta = j as f64 * zeta_per_bin;
+            [j as f64, mag, mag * zeta, mag * zeta * zeta]
         })
         .filter(|b| b[1] > 0.0)
         .collect();
@@ -131,8 +140,8 @@ pub(crate) fn morse_half_taps(
         let mut acc = [0.0f64; 6];
         let mut comp = [0.0f64; 6];
 
-        for &[k, w_psi, w_d, w_dd] in &bins {
-            let (sin, cos) = (TAU * frac_turns(k, u, record)).sin_cos();
+        for &[j, w_psi, w_d, w_dd] in &bins {
+            let (sin, cos) = (TAU * frac_turns(j, u, record)).sin_cos();
             for (j, (w, trig)) in [
                 (w_psi, cos),
                 (w_psi, sin),
@@ -162,14 +171,14 @@ pub(crate) fn morse_half_taps(
     (psi, d, dd)
 }
 
-/// Fractional turns of `k*u/record`, carrying the low half of the product.
+/// Fractional turns of `j*u/record`, carrying the low half of the product.
 ///
 /// The phase reaches tens of thousands of radians at high `u`; reducing in turns before
 /// scaling by TAU keeps the argument reduction out of `sin_cos`.
 #[inline]
-fn frac_turns(k: f64, u: f64, record: f64) -> f64 {
-    let p_hi = k * u;
-    let p_lo = k.mul_add(u, -p_hi);
+fn frac_turns(j: f64, u: f64, record: f64) -> f64 {
+    let p_hi = j * u;
+    let p_lo = j.mul_add(u, -p_hi);
     let q_hi = p_hi / record;
     let q_lo = ((-q_hi).mul_add(record, p_hi) + p_lo) / record;
     (q_hi - q_hi.floor()) + q_lo
@@ -276,8 +285,8 @@ mod test {
         let mut worst: f64 = 0.0;
         let mut worst_u: f64 = 0.0;
 
-        for k in 0..=150 {
-            let u = k as f64 * 0.05 + 0.011;
+        for j in 0..=150 {
+            let u = j as f64 * 0.05 + 0.011;
             let e = rel(
                 hermite::resample_hermite(
                     &psi,
@@ -297,7 +306,7 @@ mod test {
                 worst_u = u;
             }
 
-            if k % 10 == 0 {
+            if j % 10 == 0 {
                 println!("  u: {u:>6.2}, err: {:>9}", fmt_e(e));
             }
         }
@@ -325,13 +334,13 @@ mod test {
 
         let (ref_psi, ref_d, _) = morse_half_taps(shape, reference);
 
-        let bounds = |k: usize, resolution: usize| {
-            ((1 + 2 * k) * resolution / 4, (3 + 2 * k) * resolution / 4)
+        let bounds = |j: usize, resolution: usize| {
+            ((1 + 2 * j) * resolution / 4, (3 + 2 * j) * resolution / 4)
         };
 
         let refs: Vec<Complex64> = (0..LOBES)
-            .map(|k| {
-                let (i0, i1) = bounds(k, reference.resolution);
+            .map(|j| {
+                let (i0, i1) = bounds(j, reference.resolution);
                 hermite::hermite_integral(&ref_psi, &ref_d, i0, i1, reference.resolution)
             })
             .collect();
@@ -339,8 +348,8 @@ mod test {
         let sweep = |name: &str, knob: &str, vary: &dyn Fn(u32) -> IfftSettings, rows: u32| {
             println!("\n=== {name} ===");
             print!("  {knob:>10} |");
-            for k in 0..LOBES {
-                print!(" {:>9.2}", 0.25 + k as f64 * 0.5);
+            for j in 0..LOBES {
+                print!(" {:>9.2}", 0.25 + j as f64 * 0.5);
             }
             println!();
 
@@ -354,8 +363,8 @@ mod test {
                 let (psi, d, _) = morse_half_taps(shape, settings);
 
                 print!("  {label:>10} |");
-                for (k, &area_ref) in refs.iter().enumerate() {
-                    let (i0, i1) = bounds(k, settings.resolution);
+                for (j, &area_ref) in refs.iter().enumerate() {
+                    let (i0, i1) = bounds(j, settings.resolution);
                     let area = hermite::hermite_integral(&psi, &d, i0, i1, settings.resolution);
                     print!(" {:>9}", fmt_e((area - area_ref).norm() / area_ref.norm()));
                 }
@@ -393,15 +402,15 @@ mod test {
         let (psi, d, _) = morse_half_taps(shape, shipping);
         let mut worst: f64 = 0.0;
 
-        for (k, &area_ref) in refs.iter().enumerate() {
-            let (i0, i1) = bounds(k, shipping.resolution);
+        for (j, &area_ref) in refs.iter().enumerate() {
+            let (i0, i1) = bounds(j, shipping.resolution);
             let area = hermite::hermite_integral(&psi, &d, i0, i1, shipping.resolution);
             let e = (area - area_ref).norm() / area_ref.norm();
             worst = worst.max(e);
 
             println!(
                 "  u: {:>6.2}, area: {:+9.7}, err: {:>9}",
-                0.25 + k as f64 * 0.5,
+                0.25 + j as f64 * 0.5,
                 area,
                 fmt_e(e)
             );
@@ -603,8 +612,8 @@ mod test {
 
         let steps = ((reach - 0.011) / 0.05) as u32;
 
-        for k in 0..steps {
-            let u = k as f64 * 0.05 + 0.011;
+        for j in 0..steps {
+            let u = j as f64 * 0.05 + 0.011;
             let t = u * shipping.resolution as f64;
             let scale = local_scale(u);
 
@@ -620,7 +629,7 @@ mod test {
             let u_grid = idx as f64 / shipping.resolution as f64;
             let g = rel(psi[idx], oracle.tap_at(u_grid).psi, scale);
 
-            if k % 10 == 0 {
+            if j % 10 == 0 {
                 println!(
                     "  {u:>6.2} | {:>9} | {:>9} | {:>9}",
                     fmt_e(e),
@@ -659,22 +668,5 @@ mod test {
 
         assert!(worst.0 < TOL);
         assert!(live_to > 5.5);
-    }
-
-    // XXX get this tested and actually just make it a speed test, who can get us psi and d for n
-    // taps faster at a given error tolerance (where the IFFT is somewhat helpeless to control error
-    // beyond a certain u, but let's be generous)
-    #[ignore]
-    #[test]
-    fn full_resolution() {
-        let shape = Shape::from_q(3.5, 3.0);
-        let now = std::time::Instant::now();
-        let _ = morse_half_taps(shape, IfftSettings::default());
-
-        let elapsed = now.elapsed().as_micros();
-        println!("elapsed: {:?}", elapsed);
-
-        const SLOW_MICROS: u128 = 512000;
-        assert!(elapsed < SLOW_MICROS, "FFT slow: {}µs ", elapsed);
     }
 }

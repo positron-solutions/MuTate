@@ -13,17 +13,16 @@
 //! of sophistication.  The simpler IFFT and Contour methods are provided as evidence of this
 //! implementation's accuracy and precision.
 //!
-//! `∫₀^∞ ω^β e^{-ω^γ} e^{iωt} dω` by steepest descent in `z = ln(ω/ρ)`.  Working in the log
+//! `∫₀^∞ ω^β e^{-ω^γ} e^{iωt} dω` by steepest descent in `z = ln(ω/ω_p)`.  Working in the log
 //! coordinate carries the branch point at the origin out to infinity, so the saddle condition
-//! becomes the trinomial `u^γ - iτu - 1 = 0` and every derivative of the phase comes out affine
-//! in the single number `B = u^γ - 1`.
+//! becomes the trinomial `q^γ - iτq - 1 = 0` in the normalized frequency `q = ω/ω_p`, and every
+//! derivative of the phase comes out affine in the single number `B = q^γ - 1`.
 //!
-//! The original contour decomposes into some subset of those saddles, and which subset is a
-//! matter of membership rather than height.  At `τ = 0` the roots are the roots of unity and
-//! only one of them belongs.  Membership changes as `τ` grows only where two saddles exchange
-//! dominance, so it has to be marched from that seed rather than evaluated at a point, and the
-//! march happens once.  A tap is then a pure function of `t` and the caller owes us no grid
-//! continuity.
+//! The original contour decomposes into some subset of those saddles, and which subset is a matter
+//! of membership.  At `τ = 0` the roots are the roots of unity and only one of them belongs.
+//! Membership changes as `τ` grows only where two saddles exchange dominance, so it has to be
+//! marched from that seed rather than evaluated at a point, and the march happens once.  A tap is
+//! then a pure function of `t` and the caller owes us no grid continuity.
 //!
 //! Every saddle that survives is approached two ways.  A Watson jet expands around it and costs
 //! almost nothing, and a trapezoid traced along its steepest-descent path costs a great deal
@@ -33,6 +32,53 @@
 //! `γ ≥ 3` is the supported range.  At `γ = 2` two saddles collide on the real `τ` axis at
 //! `τ = 2` and `Φ''` vanishes with them, taking the normal coordinate the whole method is built
 //! on with it.
+//!
+//! ## Symbols
+//!
+//! This module uses specific coordinates for several steps and adopts conventions convenient to
+//! the integrand and its setup work, including log frequency saddle coordinates.
+//!
+//! ### Frequency and coordinates
+//!
+//! | symbol | Rust | object |
+//! |---|---|---|
+//! | `ω_p` | `peak` | `(β/γ)^{1/γ}`, the envelope's peak and the frequency scale `ω` is measured in |
+//! | `ω` | | the integration variable, frequency |
+//! | `q` | `q` | `ω/ω_p`, the normalized frequency |
+//! | `z` | | `ln(ω/ω_p) = ln q`, the log-frequency coordinate the descent runs in |
+//! | `v` | `v` | `z - z_j`, the local coordinate measured from saddle `j` |
+//! | `x` | `x` | the normal coordinate, where the phase is exactly `-x²/2` |
+//!
+//! ### Phase
+//!
+//! | symbol | Rust | object |
+//! |---|---|---|
+//! | `B` | `b` | `q^γ - 1`, the single number every derivative of the phase is affine in |
+//! | `g` | `g` | the phase in `v`, whose roots satisfy `g(v) = -x²/2` |
+//! | `Φ` | `phi` | the phase; at a root, `Φ = ln q + B(1 - 1/γ) - 1/γ` |
+//!
+//! ### Saddle geometry
+//!
+//! | symbol | Rust | object |
+//! |---|---|---|
+//! | `s₀` | `s0` | the resolved curvature at a saddle |
+//!
+//! ### Asymptotic / Stokes structure
+//!
+//! | symbol | Rust | object |
+//! |---|---|---|
+//! | `r*` | `r_star` | the nearest singulant modulus, where the jet's series turns |
+//! | `Δ` | `delta` | `β(Φ_j - Φ_i)`, the singulant a neighbor enters at |
+//! | `τ` | `tau` | `2πu/β`, the axis the Stokes march runs on |
+//!
+//! The coordinate chain is:
+//!
+//! `ω → q = ω/ω_p → z = ln q → v = z - z_j → x`
+//!
+//! with `x` chosen so that the local phase is exactly `-x²/2`.
+//!
+//! The Morse shape parameters, `beta` and `gamma` have their usual meaning.  The `u` periods from
+//! the center tap is unchanged in usage elsewhere in the parent module.
 
 // NEXT the biggest *easy* improvement (besides making comments useful) is to go back to the
 // quadrature ladder, sharing nodes while refining, perhaps refining more where curvature is
@@ -147,7 +193,7 @@ const PREDICT_DRIFT: f64 = 2.0;
 const SERIES_TRUST: f64 = 0.5;
 const TRACE_MAX_SPLIT: u32 = 8;
 
-/// The shape, together with the forms of it the rest of the file actually reads.  `ρ` is where
+/// The shape, together with the forms of it the rest of the file actually reads.  `ω_p` is where
 /// the saddle sits at `τ = 0` and sets the scale `ω` is measured in, and the two integer casts
 /// of `γ` are what the loop bounds and `powi` want.
 #[derive(Clone, Copy)]
@@ -156,7 +202,7 @@ struct Frame {
     gamma: f64,
     g: usize,
     gi: i32,
-    rho: f64,
+    peak: f64,
 }
 
 impl Frame {
@@ -167,15 +213,15 @@ impl Frame {
             gamma,
             g: gamma as usize,
             gi: gamma as i32,
-            rho: (beta / gamma).powf(1.0 / gamma),
+            peak: (beta / gamma).powf(1.0 / gamma),
         }
     }
 }
 
 pub struct QuadJetResult {
     pub psi: Complex64,
-    /// `-i dψ/du`, from the same roots and the same paths.   See module doc for details on the
-    /// folding convention.
+    /// `−(i/2π)·dψ/du`, from the same roots and the same paths.  See the parent module for the
+    /// storage convention.
     pub d: Complex64,
     /// What each saddle's own method could say about its own error, summed over the
     /// decomposition, in the units of the channel it describes.
@@ -232,7 +278,7 @@ impl std::ops::AddAssign for Cost {
 }
 
 /// Both channels, together with whatever the producing method could say about its own error in
-/// `ψ`.  Convergence is a question about `ψ` alone, so `dψ/dt` carries a value and no verdict.
+/// `ψ`.  Convergence is a question about `ψ` alone, so `dψ/du` carries a value and no verdict.
 struct Terms {
     value: [Complex64; 2],
     residual: f64,
@@ -323,9 +369,8 @@ impl QuadJet {
 
     fn integrate(&self, u: f64) -> QuadJetResult {
         let frame = &self.frame;
-        let Frame { beta, g, rho, .. } = *frame;
-        let t = TAU * u / rho;
-        let tau = rho * t.abs() / beta;
+        let Frame { beta, g, peak, .. } = *frame;
+        let tau = TAU * u.abs() / beta;
         let rel = relative(self.tol);
 
         let (roots, weights) = self.table.roots_at(tau);
@@ -351,7 +396,7 @@ impl QuadJet {
             .iter()
             .map(|&i| beta * saddles[i].phi.re)
             .fold(f64::NEG_INFINITY, f64::max)
-            + beta * rho.ln();
+            + beta * peak.ln();
 
         let mut scales = [[Complex64::default(); 2]; MAX_G];
         for &i in active {
@@ -491,13 +536,13 @@ impl QuadJet {
             d_im.add(qv.im);
         }
 
-        let unscale = log_scale.exp() / rho;
-        let unscale_d = unscale * TAU / rho;
+        let unscale = log_scale.exp() / peak;
+        let unscale_d = unscale / peak;
         let psi = Complex64::new(psi_re.sum(), psi_im.sum()) * unscale;
         let d = Complex64::new(d_re.sum(), d_im.sum()) * unscale_d;
         let residual = residual * unscale;
 
-        if t < 0.0 {
+        if u < 0.0 {
             QuadJetResult {
                 psi: psi.conj(),
                 d: d.conj(),
@@ -534,7 +579,7 @@ impl Descent {
 /// A root of the saddle condition, carrying the numbers every later step reads off it.
 #[derive(Clone, Copy, Default)]
 struct Saddle {
-    u: Complex64,
+    q: Complex64,
     b: Complex64,
     phi: Complex64,
     /// The curvature at the saddle, branch fixed so that `x` runs up the valley the contour
@@ -546,16 +591,16 @@ struct Saddle {
 }
 
 impl Saddle {
-    /// The phase `Φ = ln u + B(1 - 1/γ) - 1/γ` at a root, where the saddle condition collapses
-    /// `u^γ - 1` into `B = iτu`.  Integer power rather than `powf`, since the principal branch
-    /// of `u^γ` parts company with the polynomial over most of the root set.
-    fn new(u: Complex64, frame: &Frame) -> Self {
+    /// The phase `Φ = ln q + B(1 - 1/γ) - 1/γ` at a root, where the saddle condition collapses
+    /// `q^γ - 1` into `B = iτq`.  Integer power rather than `powf`, since the principal branch
+    /// of `q^γ` parts company with the polynomial over most of the root set.
+    fn new(q: Complex64, frame: &Frame) -> Self {
         let Frame { gamma, gi, .. } = *frame;
-        let b = u.powi(gi) - 1.0;
-        let phi = u.ln() + b * (1.0 - 1.0 / gamma) - 1.0 / gamma;
+        let b = q.powi(gi) - 1.0;
+        let phi = q.ln() + b * (1.0 - 1.0 / gamma) - 1.0 / gamma;
 
         Saddle {
-            u,
+            q,
             b,
             phi,
             s0: Descent::new((-(b * (1.0 - gamma) - gamma)).sqrt()),
@@ -640,7 +685,7 @@ impl Saddle {
     /// The series at one order.  Each even coefficient meets its Gaussian moment, and the two
     /// channels differ only in which `h` they read.
     ///
-    /// The envelope of the `ψ` terms is what decides where the sum ends.  `dψ/dt` is accumulated
+    /// The envelope of the `ψ` terms is what decides where the sum ends.  `dψ/du` is accumulated
     /// over exactly the orders `ψ` accepted, so it neither prolongs the sum nor cuts it short.
     /// Ending on the mathematics, having diverged or crossed under the bar or run into roundoff,
     /// means the series has said everything it is going to say.
@@ -762,7 +807,7 @@ impl Saddle {
     /// the model are the same passes that can retire it.
     ///
     /// The path is one contour and it carries no `m`, so the placement is decided by what `ψ`
-    /// still owes and `dψ/dt` is read off the same nodes.
+    /// still owes and `dψ/du` is read off the same nodes.
     ///
     /// How far the path walks is a different question with a different answer.  The reach belongs
     /// to the bar alone, and where a neighboring saddle sits on this path the trace runs out of
@@ -793,12 +838,16 @@ impl Saddle {
         let mut gap = 1.0_f64;
         let mut lift = 0.0_f64;
         let mut want = 0.0_f64;
-        for &d in seen {
-            let t = (-2.0 * d).sqrt().im.abs();
+        for &delta in seen {
+            let t = (-2.0 * delta).sqrt().im.abs();
             if t <= GAP_FLOOR {
                 continue;
             }
-            let l = if d.re > 0.0 { d.re } else { LIFT_CREDIT * d.re };
+            let l = if delta.re > 0.0 {
+                delta.re
+            } else {
+                LIFT_CREDIT * delta.re
+            };
             let need = (bar + l).max(0.0) / t;
             if need > want {
                 want = need;
@@ -1150,9 +1199,9 @@ impl Saddle {
     /// This saddle's prefactor for each channel, with the dominant `e^{βΦ}` already divided out
     /// so that the caller can restore it once at the end.
     fn scales(&self, frame: &Frame, log_scale: f64) -> [Complex64; 2] {
-        let Frame { beta, rho, .. } = *frame;
-        let base = (self.phi * beta + beta * rho.ln() - log_scale).exp();
-        [base * rho * self.u, base * rho * rho * self.u * self.u]
+        let Frame { beta, peak, .. } = *frame;
+        let base = (self.phi * beta + beta * peak.ln() - log_scale).exp();
+        [base * peak * self.q, base * peak * peak * self.q * self.q]
     }
 
     /// The phase `g(v) = v + B(e^v - 1) - ((B+1)/γ)(e^{γv} - 1)` measured from the saddle, along
@@ -1506,7 +1555,7 @@ struct StokesTable {
     /// Row-major `[node][root]`, labeled by continuation from the roots of unity.
     roots: Box<[Complex64]>,
     /// Row-major `[node][root]`.
-    m: Box<[f64]>,
+    weights: Box<[f64]>,
 }
 
 impl StokesTable {
@@ -1586,7 +1635,7 @@ impl StokesTable {
             g,
             s: s[..used].to_vec().into_boxed_slice(),
             roots: roots[..used * g].to_vec().into_boxed_slice(),
-            m: m[..used * g].to_vec().into_boxed_slice(),
+            weights: m[..used * g].to_vec().into_boxed_slice(),
         }
     }
 
@@ -1610,7 +1659,7 @@ impl StokesTable {
         r[..g].copy_from_slice(&self.roots[n * g..(n + 1) * g]);
 
         let mut w = [0.0_f64; MAX_G];
-        w[..g].copy_from_slice(&self.m[n * g..(n + 1) * g]);
+        w[..g].copy_from_slice(&self.weights[n * g..(n + 1) * g]);
 
         for k in 0..g {
             newton_trinomial(&mut r[k], g, tau);
@@ -1639,13 +1688,13 @@ impl StokesTable {
                 continue;
             }
 
-            let row = &self.m[n * self.g..(n + 1) * self.g];
+            let row = &self.weights[n * self.g..(n + 1) * self.g];
             let ragged = row.iter().any(|w| (w - w.round()).abs() > 1e-9);
 
             print!("  {n:>6} {tau:>8.4} |");
             for k in 0..self.g {
-                let u = self.roots[n * self.g + k];
-                let phi = Saddle::new(u, frame).phi;
+                let q = self.roots[n * self.g + k];
+                let phi = Saddle::new(q, frame).phi;
                 print!(" {:>8.4}{:+8.4}i", phi.re * frame.beta, phi.im * frame.beta);
             }
             print!("  ");
@@ -1662,14 +1711,14 @@ impl StokesTable {
 }
 
 /// Polishes a single root of `u^γ - iτu - 1` in place, quadratic from a table seed.
-fn newton_trinomial(u: &mut Complex64, g: usize, tau: f64) {
+fn newton_trinomial(q: &mut Complex64, g: usize, tau: f64) {
     let gi = g as i32;
     let it = Complex64::i() * tau;
     for _ in 0..TABLE_NEWTON_ITERS {
-        let p = u.powi(gi) - it * *u - 1.0;
-        let dp = u.powi(gi - 1) * g as f64 - it;
+        let p = q.powi(gi) - it * *q - 1.0;
+        let dp = q.powi(gi - 1) * g as f64 - it;
         let step = p / dp;
-        *u -= step;
+        *q -= step;
         if step.norm() < TABLE_NEWTON_TOL {
             break;
         }
@@ -1718,8 +1767,8 @@ fn reach_for(bar: f64) -> f64 {
 /// own, and the nearest of those moduli bounds the disk the series speaks for.
 fn branch_wall(seen: &[Complex64], beta: f64) -> f64 {
     let mut wall = f64::INFINITY;
-    for &d in seen {
-        let r = (-2.0 * d / beta).sqrt().norm();
+    for &delta in seen {
+        let r = (-2.0 * delta / beta).sqrt().norm();
         if r > GAP_FLOOR {
             wall = wall.min(r);
         }
@@ -1895,7 +1944,7 @@ mod test {
         let jet = QuadJet::standard(shape);
 
         // The band shows up in `u`, but the march lives in `τ`, and the two are related by
-        // `τ = 2πu/β` once `ρ` cancels.  Widening past the observed edges catches a flip that
+        // `τ = 2πu/β` once `ω_p` cancels.  Widening past the observed edges catches a flip that
         // fires early and gets corrected late.
         let tau_of = |u: f64| TAU * u / frame.beta;
         jet.table.dump(&frame, tau_of(1.0), tau_of(4.0));
