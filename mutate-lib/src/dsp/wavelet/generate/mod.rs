@@ -11,14 +11,14 @@
 //! > - Ttang Kong
 //!
 //! High resolution mother wavelets from which our highly tuned but fundamentally rough N-tap
-//! filters are made.  The moments and shape that the stencil and tapering solution attempts to
-//! restore are first measured from these high-fidelity inputs, so we try to make them good.
+//! filters are made.  What that the restriction attempts to preserve is first measured from these
+//! high-fidelity inputs, so we try to make them good.
 //!
 //! Ideally both quick and accurate, but perhaps split between debug and release or offline baking
-//! where tradeoffs must be made.  Downstream uses `f64` for several steps, but the stencil itself
-//! washes away *unbiased* noise during the reduction to `N` taps.  The final shape-aware rounding
-//! to `f32` forgets any inaccuracy accumulated below its own precision.  The final word is **avoid
-//! bias.**
+//! where tradeoffs must be made.  Downstream uses `f64` for several steps, but the restriction
+//! itself washes away *unbiased* noise during the reduction to `N` taps.  The final shape-aware
+//! rounding to `f32` forgets any inaccuracy accumulated below its own precision.  The final word is
+//! **avoid bias.**
 //!
 //! ## The Implementations
 //!

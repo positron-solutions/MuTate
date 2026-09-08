@@ -58,8 +58,9 @@
 // and if registers pressure / shuffling is different for consume compared to peek.  My bet is that
 // SIMD will later want a consume method that uses the fast path while peek has to avoid destroying
 // any compensators.  Peek is extremely useful for prefix summing.
-// NEXT We really need a way to return one compensator-residual set so that intermediate sums
-// retain acquired precision across intermediate calls to sum.
+// NEXT Multithreaded cases would need a way to return one compensator-residual set so that
+// intermediate sums retain acquired precision across boundaries.  In the single threaded case, a
+// by-ref accumulator is the best choice.
 
 use std::ops::{Add, Sub};
 
