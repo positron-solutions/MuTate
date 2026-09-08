@@ -153,6 +153,61 @@ impl<F: Float, const N: usize> Accumulator<F, N> {
     }
 }
 
+/// A stand-in **uncompensated** accumulator with the same interface but fully **uncompensated**
+/// implementation.  To use, just shadow the normal type in the scope under scrutiny and then
+/// compare the results.
+///
+/// ```ignore
+/// use whatsleft::NaiveSum as Accumulator;
+///
+/// // Quacks like a duck.  Is not a duck.
+/// let sum = Accumulator::new();
+///
+/// ```
+///
+/// Comment or remove the shadow to compare results and decide if the compensation is doing real
+/// work for the situation at hand.  This manner of testing is crude and not a substitute for error
+/// propagation analysis.  If downstream usage or *in situ* input will exposee or magnify lost
+/// precision from the uncompensated sum, eyeballing local testing may lead to a false negative.
+#[derive(Clone, Copy)]
+pub struct NaiveSum<F, const N: usize = 32> {
+    total: F,
+}
+
+impl<F: Float, const N: usize> Default for NaiveSum<F, N> {
+    fn default() -> Self {
+        Self { total: F::zero() }
+    }
+}
+
+impl<F: Float> NaiveSum<F> {
+    pub fn default() -> Self {
+        <Self as Default>::default()
+    }
+}
+
+impl<F: Float, const N: usize> NaiveSum<F, N> {
+    #[inline(always)]
+    fn insert(&mut self, x: F) {
+        self.total = self.total + x;
+    }
+
+    #[inline(always)]
+    pub fn add(&mut self, value: F) {
+        self.insert(value);
+    }
+
+    #[inline(always)]
+    pub fn sub(&mut self, value: F) {
+        self.insert(-value);
+    }
+
+    #[inline(always)]
+    pub fn sum(&self) -> F {
+        self.total
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -197,16 +252,16 @@ mod test {
         let (mut re, mut im) = (1.0_f64, 0.0_f64);
 
         let mut accum = Accumulator::<f32>::default();
-        let mut naive = 0.0_f32;
+        let mut naive = NaiveSum::<f32>::default();
 
         // Go ahead and destroy the precision scales
         accum.add(77.0);
-        naive += 77.0;
+        naive.add(77.0);
 
         for _ in 0..n {
             let sample = (amplitude * im) as f32;
             accum.add(sample);
-            naive += sample;
+            naive.add(sample);
 
             let next_re = re * cos_t - im * sin_t;
             let next_im = re * sin_t + im * cos_t;
@@ -223,9 +278,10 @@ mod test {
         // let expected = 1.0e4;
         let expected = 77.0;
         let accum_result = accum.sum();
+        let naive_result = naive.sum();
 
         let accum_err = (accum_result as f64 - expected).abs();
-        let naive_err = (naive as f64 - expected).abs();
+        let naive_err = (naive_result as f64 - expected).abs();
 
         // Several orders better on the accumulator
         println!(
@@ -235,7 +291,7 @@ mod test {
 
         assert!(
             accum_err < naive_err,
-            "accum ({accum_result:+0.4e}, err {accum_err:+0.4e}) should beat naive ({naive:+0.4e}, err {naive_err:+0.4e})"
+            "accum ({accum_result:+0.4e}, err {accum_err:+0.4e}) should beat naive ({naive_result:+0.4e}, err {naive_err:+0.4e})"
         );
         assert!(
             (naive_err > 1e-7),
