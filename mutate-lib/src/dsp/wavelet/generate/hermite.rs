@@ -123,8 +123,8 @@ pub fn hermite_integral(
     resolution: usize,
 ) -> Complex64 {
     let delta_u = 1.0 / resolution as f64;
-    let mut real: Accumulator<f64> = Accumulator::default();
-    let mut imag: Accumulator<f64> = Accumulator::default();
+    let mut real = Accumulator::default();
+    let mut imag = Accumulator::default();
 
     // The trapezoid plus the cubic's own correction, which the endpoint slopes supply exactly.
     for i in i0..i1 {

@@ -88,6 +88,13 @@ impl<F: Float, const N: usize> Default for Accumulator<F, N> {
     }
 }
 
+// Type inference anchor for the default band count.
+impl<F: Float> Accumulator<F> {
+    pub fn default() -> Self {
+        <Self as Default>::default()
+    }
+}
+
 fn two_sum<F: Float>(a: F, b: F) -> (F, F) {
     let s = a + b;
     let bb = s - a;
