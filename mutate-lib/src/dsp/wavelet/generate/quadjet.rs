@@ -213,7 +213,7 @@ impl Frame {
             gamma,
             g: gamma as usize,
             gi: gamma as i32,
-            peak: (beta / gamma).powf(1.0 / gamma),
+            peak: shape.peak(),
         }
     }
 }
