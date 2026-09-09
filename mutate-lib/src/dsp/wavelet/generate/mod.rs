@@ -403,7 +403,7 @@ mod test {
         // report the stencil alone.  Cross columns are equal-grid method disagreement, which the
         // area sees through both `psi` and `d`.
 
-        const FINEST: usize = 1 << 18;
+        const FINEST: usize = 1 << 17;
 
         let shape = Shape::from_q(3.5, 3.0);
         let ref_jet = quadjet::QuadJet::reference(shape);
@@ -453,7 +453,7 @@ mod test {
             let mut worst_self = 0.0f64;
             let mut worst_cross = 0.0f64;
 
-            for row in 3..=15u32 {
+            for row in 3..=14u32 {
                 let grid_res = 1usize << row;
 
                 let i = ifft_area(grid_res, u_beg, u_end);

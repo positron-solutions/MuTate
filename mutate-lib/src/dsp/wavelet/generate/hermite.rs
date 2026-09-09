@@ -59,17 +59,24 @@ fn two_diff(a: f64, b: f64) -> (f64, f64) {
     (s, (a - (s - bv)) + (-b - bv))
 }
 
+/// One-sided second differences of the cell, with the two-sum residuals folded back.
+///
+/// `a = Δ − m₀`, `b = m₁ − Δ`, `Δ = p₁ − p₀`.
+#[inline(always)]
+fn deltas(p0: f64, p1: f64, m0: f64, m1: f64) -> (f64, f64) {
+    let (delta, delta_err) = two_diff(p1, p0);
+    let (a, a_err) = two_diff(delta, m0);
+    let (b, b_err) = two_diff(m1, delta);
+    (a + (a_err + delta_err), b + (b_err - delta_err))
+}
+
 /// Hermite basis in delta form, anchored on the nearer endpoint.
 ///
 /// `a` and `b` are the one-sided second differences; they are the only place cancellation
 /// occurs, and the two-sum residuals are folded back before they reach the Horner chain.
 #[inline(always)]
 pub fn hermite_1d(p0: f64, p1: f64, m0: f64, m1: f64, f: f64) -> f64 {
-    let (delta, delta_err) = two_diff(p1, p0);
-    let (a, a_err) = two_diff(delta, m0);
-    let (b, b_err) = two_diff(m1, delta);
-    let a = a + (a_err + delta_err);
-    let b = b + (b_err - delta_err);
+    let (a, b) = deltas(p0, p1, m0, m1);
 
     if f <= 0.5 {
         p0 + f * (b - a).mul_add(f, 2.0 * a - b).mul_add(f, m0)
@@ -109,6 +116,13 @@ pub fn resample_hermite(
     )
 }
 
+/// The slope across one cell.  The stored channel is `−(i/2π) dψ/du`, so the quarter turn goes back on
+/// before the spacing does.
+#[inline(always)]
+fn tangent(d: Complex64, delta_u: f64) -> Complex64 {
+    Complex64::I * TAU * d * delta_u
+}
+
 /// Exact integral of the cubic Hermite reconstruction over the cells `i0..i1`, with `du` as the
 /// measure, so the result carries one power of periods.
 ///
@@ -138,16 +152,75 @@ pub fn hermite_integral(
     Complex64::new(real.sum(), imag.sum()) * delta_u
 }
 
-/// Antiderivative of the cell's cubic in delta form, `∫₀^f p`, in cell units.
+/// `∫_{f₀}^{f₁} p` in cell units, accumulated term by term.
 ///
-/// `p = p₀ + m₀f + (2a − b)f² + (b − a)f³` with `a = Δ − m₀`, `b = m₁ − Δ`, `Δ = p₁ − p₀`.
+/// `p = p₀ + m₀f + (2a − b)f² + (b − a)f³`, integrated with the power differences factored,
+/// `f₁ᵏ⁺¹ − f₀ᵏ⁺¹ = h·Sₖ₊₁`.
 #[inline(always)]
-fn cell_integral(p0: Complex64, p1: Complex64, m0: Complex64, m1: Complex64, f: f64) -> Complex64 {
-    let delta = p1 - p0;
-    let a = delta - m0;
-    let b = m1 - delta;
-    let f2 = f * f;
-    p0 * f + m0 * (f2 * 0.5) + (a * 2.0 - b) * (f2 * f / 3.0) + (b - a) * (f2 * f2 * 0.25)
+fn cell_span_1d(
+    acc: &mut Accumulator<f64>,
+    p0: f64,
+    m0: f64,
+    a: f64,
+    b: f64,
+    f0: f64,
+    f1: f64,
+    h: f64,
+) {
+    let f0_2 = f0 * f0;
+    let f1_2 = f1 * f1;
+
+    let s2 = f1 + f0;
+    let s3 = f1_2 + f1 * f0 + f0_2;
+    let s4 = s2 * (f1_2 + f0_2);
+
+    let q3 = h * s3 / 3.0;
+    let q4 = h * s4 * 0.25;
+
+    acc.add(h * p0);
+    acc.add(h * m0 * s2 * 0.5);
+    acc.add(2.0 * a * q3);
+    acc.add(-b * q3);
+    acc.add(b * q4);
+    acc.add(-a * q4);
+}
+
+#[inline(always)]
+fn cell_span(
+    real: &mut Accumulator<f64>,
+    imag: &mut Accumulator<f64>,
+    p0: Complex64,
+    p1: Complex64,
+    m0: Complex64,
+    m1: Complex64,
+    f0: f64,
+    f1: f64,
+    h: f64,
+) {
+    let (a_re, b_re) = deltas(p0.re, p1.re, m0.re, m1.re);
+    let (a_im, b_im) = deltas(p0.im, p1.im, m0.im, m1.im);
+    cell_span_1d(real, p0.re, m0.re, a_re, b_re, f0, f1, h);
+    cell_span_1d(imag, p0.im, m0.im, a_im, b_im, f0, f1, h);
+}
+
+/// A whole cell, trapezoid and cubic correction kept apart.
+#[inline(always)]
+fn whole_cell(
+    real: &mut Accumulator<f64>,
+    imag: &mut Accumulator<f64>,
+    p0: Complex64,
+    p1: Complex64,
+    m0: Complex64,
+    m1: Complex64,
+) {
+    real.add(p0.re * 0.5);
+    real.add(p1.re * 0.5);
+    real.add(m0.re / 12.0);
+    real.add(-m1.re / 12.0);
+    imag.add(p0.im * 0.5);
+    imag.add(p1.im * 0.5);
+    imag.add(m0.im / 12.0);
+    imag.add(-m1.im / 12.0);
 }
 
 /// Integral of the cubic Hermite reconstruction over `[u_beg, u_end]`, with `du` as the measure.
@@ -164,12 +237,13 @@ pub fn integrate(
     u_end: f64,
     rho_grid: f64,
 ) -> Complex64 {
-    let s_beg = u_beg / rho_grid;
-    let s_end = u_end / rho_grid;
-
     let last = taps.len() - 2;
-    let i_beg = (s_beg.floor() as usize).min(last);
-    let i_end = (s_end.floor() as usize).min(last);
+    let i_beg = ((u_beg / rho_grid).floor() as usize).min(last);
+    let i_end = ((u_end / rho_grid).floor() as usize).min(last);
+
+    // Fractions reduced against `u` so they carry no error from the grid position.
+    let f_beg = (-(i_beg as f64)).mul_add(rho_grid, u_beg) / rho_grid;
+    let f_end = (-(i_end as f64)).mul_add(rho_grid, u_end) / rho_grid;
 
     let cell = |i: usize| {
         (
@@ -180,41 +254,39 @@ pub fn integrate(
         )
     };
 
-    if i_beg == i_end {
-        let (p0, p1, m0, m1) = cell(i_beg);
-        let f0 = s_beg - i_beg as f64;
-        let f1 = s_end - i_beg as f64;
-        return (cell_integral(p0, p1, m0, m1, f1) - cell_integral(p0, p1, m0, m1, f0)) * rho_grid;
-    }
-
     let mut real = Accumulator::default();
     let mut imag = Accumulator::default();
-    let mut add = |seg: Complex64| {
-        real.add(seg.re);
-        imag.add(seg.im);
-    };
+
+    if i_beg == i_end {
+        let (p0, p1, m0, m1) = cell(i_beg);
+        let h = (u_end - u_beg) / rho_grid;
+        cell_span(&mut real, &mut imag, p0, p1, m0, m1, f_beg, f_end, h);
+        return Complex64::new(real.sum(), imag.sum()) * rho_grid;
+    }
 
     // Opening fraction.
     let (p0, p1, m0, m1) = cell(i_beg);
-    let f0 = s_beg - i_beg as f64;
-    add(cell_integral(p0, p1, m0, m1, 1.0) - cell_integral(p0, p1, m0, m1, f0));
+    cell_span(
+        &mut real,
+        &mut imag,
+        p0,
+        p1,
+        m0,
+        m1,
+        f_beg,
+        1.0,
+        1.0 - f_beg,
+    );
 
     // Whole cells.
     for i in (i_beg + 1)..i_end {
         let (p0, p1, m0, m1) = cell(i);
-        add((p0 + p1) * 0.5 + (m0 - m1) / 12.0);
+        whole_cell(&mut real, &mut imag, p0, p1, m0, m1);
     }
 
     // Closing fraction.
     let (p0, p1, m0, m1) = cell(i_end);
-    add(cell_integral(p0, p1, m0, m1, s_end - i_end as f64));
+    cell_span(&mut real, &mut imag, p0, p1, m0, m1, 0.0, f_end, f_end);
 
     Complex64::new(real.sum(), imag.sum()) * rho_grid
-}
-
-/// The slope across one cell.  The stored channel is `−(i/2π) dψ/du`, so the quarter turn goes back on
-/// before the spacing does.
-#[inline(always)]
-fn tangent(d: Complex64, delta_u: f64) -> Complex64 {
-    Complex64::I * TAU * d * delta_u
 }
