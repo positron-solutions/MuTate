@@ -21,6 +21,7 @@ aligned = {workspace = true, optional = true}
 num-complex = {workspace = true, optional = true}
 num-traits = {workspace = true, optional = true}
 rustfft = {workspace = true, optional = true}
+libm = {workspace = true, optional = true}
 
 # workbench dependencies
 clap = {workspace = true, features=["derive"], optional = true}
@@ -47,7 +48,7 @@ default = ["dsp"]
 vulkan = ["dep:mutate-vulkan"]
 
 # DEBT move tree into dsp
-dsp = ["dep:num-complex", "dep:num-traits", "dep:mutate-slide", "dep:aligned"]
+dsp = ["dep:num-complex", "dep:num-traits", "dep:mutate-slide", "dep:aligned", "dep:libm"]
 # Running alternative wavelet generation methods requires rustfft.  These
 # demonstrate accuracy up to the precision convergence of the alternative
 # methods.
