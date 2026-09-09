@@ -360,7 +360,7 @@ impl QuadJet {
     }
 
     pub fn standard(shape: Shape) -> Self {
-        Self::new(shape, 1e-9, false)
+        Self::new(shape, 1e-10, false)
     }
 
     pub fn tap_at(&self, u: f64) -> QuadJetResult {
