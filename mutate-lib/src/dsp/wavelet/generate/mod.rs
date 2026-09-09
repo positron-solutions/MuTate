@@ -394,4 +394,102 @@ mod test {
             );
         }
     }
+
+    #[cfg(feature = "validate")]
+    #[test]
+    fn hermite_precision_convergence() {
+        // Area under the Hermite stencil over two windows in half periods, one fully off-grid and
+        // one opening on a tap.  Self columns are each method against its own finest grid, so they
+        // report the stencil alone.  Cross columns are equal-grid method disagreement, which the
+        // area sees through both `psi` and `d`.
+
+        const FINEST: usize = 1 << 18;
+
+        let shape = Shape::from_q(3.5, 3.0);
+        let ref_jet = quadjet::QuadJet::reference(shape);
+        let std_jet = quadjet::QuadJet::standard(shape);
+
+        // Half period is 0.5 in `u`.
+        let windows = [
+            (0.5 / 3.0, 1.0 / 3.0),
+            (0.5, 2.0 / 3.0),
+            (1.5 + 1.0 / 7.0, 2.0 - 1.0 / 7.0),
+        ];
+
+        let jet_area = |jet: &quadjet::QuadJet, grid_res: usize, u_beg: f64, u_end: f64| {
+            let count = (u_end * grid_res as f64).ceil() as usize + 2;
+            let taps: Vec<_> = (0..=count)
+                .map(|i| jet.tap_at(i as f64 / grid_res as f64))
+                .collect();
+            let psi: Vec<Complex64> = taps.iter().map(|t| t.psi).collect();
+            let d: Vec<Complex64> = taps.iter().map(|t| t.d).collect();
+            hermite::integrate(&psi, &d, u_beg, u_end, 1.0 / grid_res as f64)
+        };
+
+        let ifft_area = |grid_res: usize, u_beg: f64, u_end: f64| {
+            let settings = ifft::IfftSettings {
+                periods: 2,
+                pad: 62,
+                resolution: grid_res,
+            };
+            let (psi, d, _) = ifft::morse_half_taps(shape, settings);
+            hermite::integrate(&psi, &d, u_beg, u_end, 1.0 / grid_res as f64)
+        };
+
+        for (u_beg, u_end) in windows {
+            println!("\n=== hermite area on [{u_beg:.4}, {u_end:.4}] ===");
+            println!(
+                "  {:>10} | {:>9} {:>9} {:>9} | {:>9} {:>9}",
+                "grid", "ifft", "qr", "qs", "qs-qr", "i-qr"
+            );
+
+            let ref_ifft = ifft_area(FINEST, u_beg, u_end);
+            let ref_qr = jet_area(&ref_jet, FINEST, u_beg, u_end);
+            let ref_qs = jet_area(&std_jet, FINEST, u_beg, u_end);
+            let scale = ref_qr.norm();
+
+            let rel = |v: Complex64, r: Complex64| (v - r).norm() / scale;
+
+            let mut worst_self = 0.0f64;
+            let mut worst_cross = 0.0f64;
+
+            for row in 3..=15u32 {
+                let grid_res = 1usize << row;
+
+                let i = ifft_area(grid_res, u_beg, u_end);
+                let qr = jet_area(&ref_jet, grid_res, u_beg, u_end);
+                let qs = jet_area(&std_jet, grid_res, u_beg, u_end);
+
+                let self_i = rel(i, ref_ifft);
+                let self_qr = rel(qr, ref_qr);
+                let self_qs = rel(qs, ref_qs);
+                let qs_qr = rel(qs, qr);
+                let i_qr = rel(i, qr);
+
+                println!(
+                    "  {grid_res:>10} | {:>9} {:>9} {:>9} | {:>9} {:>9}",
+                    fmt_e(self_i),
+                    fmt_e(self_qr),
+                    fmt_e(self_qs),
+                    fmt_e(qs_qr),
+                    fmt_e(i_qr),
+                );
+
+                // The finest rows are the ones that have to have arrived.
+                if row >= 9 {
+                    worst_self = worst_self.max(self_i.max(self_qr).max(self_qs));
+                    worst_cross = worst_cross.max(qs_qr.max(i_qr));
+                }
+            }
+
+            println!(
+                "  finest rows: worst self {}, worst cross {}",
+                fmt_e(worst_self),
+                fmt_e(worst_cross)
+            );
+
+            assert!(worst_self < 1e-9);
+            assert!(worst_cross < 1e-6);
+        }
+    }
 }

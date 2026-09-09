@@ -138,6 +138,80 @@ pub fn hermite_integral(
     Complex64::new(real.sum(), imag.sum()) * delta_u
 }
 
+/// Antiderivative of the cell's cubic in delta form, `∫₀^f p`, in cell units.
+///
+/// `p = p₀ + m₀f + (2a − b)f² + (b − a)f³` with `a = Δ − m₀`, `b = m₁ − Δ`, `Δ = p₁ − p₀`.
+#[inline(always)]
+fn cell_integral(p0: Complex64, p1: Complex64, m0: Complex64, m1: Complex64, f: f64) -> Complex64 {
+    let delta = p1 - p0;
+    let a = delta - m0;
+    let b = m1 - delta;
+    let f2 = f * f;
+    p0 * f + m0 * (f2 * 0.5) + (a * 2.0 - b) * (f2 * f / 3.0) + (b - a) * (f2 * f2 * 0.25)
+}
+
+/// Integral of the cubic Hermite reconstruction over `[u_beg, u_end]`, with `du` as the measure.
+///
+/// `rho_grid` is the tap spacing in periods, which places the endpoints in the grid.  Whole cells
+/// contribute their closed form and the two end cells contribute a fraction of theirs, so the sum
+/// is the exact area under the same stencil `resample_hermite` reconstructs.
+///
+/// Caller is responsible that `u_beg <= u_end` and that both lie within the taps' reach.
+pub fn integrate(
+    taps: &[Complex64],
+    d: &[Complex64],
+    u_beg: f64,
+    u_end: f64,
+    rho_grid: f64,
+) -> Complex64 {
+    let s_beg = u_beg / rho_grid;
+    let s_end = u_end / rho_grid;
+
+    let last = taps.len() - 2;
+    let i_beg = (s_beg.floor() as usize).min(last);
+    let i_end = (s_end.floor() as usize).min(last);
+
+    let cell = |i: usize| {
+        (
+            taps[i],
+            taps[i + 1],
+            tangent(d[i], rho_grid),
+            tangent(d[i + 1], rho_grid),
+        )
+    };
+
+    if i_beg == i_end {
+        let (p0, p1, m0, m1) = cell(i_beg);
+        let f0 = s_beg - i_beg as f64;
+        let f1 = s_end - i_beg as f64;
+        return (cell_integral(p0, p1, m0, m1, f1) - cell_integral(p0, p1, m0, m1, f0)) * rho_grid;
+    }
+
+    let mut real = Accumulator::default();
+    let mut imag = Accumulator::default();
+    let mut add = |seg: Complex64| {
+        real.add(seg.re);
+        imag.add(seg.im);
+    };
+
+    // Opening fraction.
+    let (p0, p1, m0, m1) = cell(i_beg);
+    let f0 = s_beg - i_beg as f64;
+    add(cell_integral(p0, p1, m0, m1, 1.0) - cell_integral(p0, p1, m0, m1, f0));
+
+    // Whole cells.
+    for i in (i_beg + 1)..i_end {
+        let (p0, p1, m0, m1) = cell(i);
+        add((p0 + p1) * 0.5 + (m0 - m1) / 12.0);
+    }
+
+    // Closing fraction.
+    let (p0, p1, m0, m1) = cell(i_end);
+    add(cell_integral(p0, p1, m0, m1, s_end - i_end as f64));
+
+    Complex64::new(real.sum(), imag.sum()) * rho_grid
+}
+
 /// The slope across one cell.  The stored channel is `−(i/2π) dψ/du`, so the quarter turn goes back on
 /// before the spacing does.
 #[inline(always)]
