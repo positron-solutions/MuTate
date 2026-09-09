@@ -18,17 +18,20 @@
 //!
 //! let spec = Spec::default()
 //!     .q(3.5)
-//!     .tail_db(-20.0);
+//!     .truncate(-20.0);
 //! ```
 
 // MAYBE Gamma = 4 is not that wild, but has a flatter top and a steeper main lobe, things we are
 // interested in.  It's possibly worth a bit of Q unless reassignment becomes broken.
 
-use super::Plan;
-
 use core::f64::consts::{LN_10, LN_2, PI, TAU};
 
-use num_complex;
+use libm::lgamma;
+use num_complex::Complex64;
+
+use super::generate::{hermite, quadjet::QuadJet};
+use super::Plan;
+use super::PEAK_GAIN;
 
 /// Controls Q and other critical tradeoffs of the Morse family wavelet parameters.  For exact
 /// details, consult [real graphs](https://arxiv.org/pdf/1203.3380).
@@ -69,39 +72,13 @@ impl Shape {
         self.p() / (2.0 * LN_2.sqrt())
     }
 
-    // XXX do we need this on the plan?
-    /// Argmax of the spectral envelope, in rad/sample.
+    /// `ω_p = (β/γ)^{1/γ}`, argmax of `ω^β e^{-ω^γ}` and the frequency `u` counts cycles of.
     pub fn peak(&self) -> f64 {
         if self.gamma == 3.0 {
             // cbrt is just the fast path
             (self.beta / 3.0).cbrt()
         } else {
             (self.beta / self.gamma).powf(1.0 / self.gamma)
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum Truncation {
-    /// Use `P` and yeah... some kind of weird math
-    Sigmas(f64),
-    /// Very approximate, uncalibrated.
-    FloorDb(f64),
-    ///
-    TailDb(f64),
-}
-
-/// Truncation leakage is bounded by the envelope tail, `exp(-n²/2)` at `n` sigmas.
-/// `10/ln(10)` is the dB conversion, so a floor request and a sigma request are the
-/// same number in two units.
-impl Truncation {
-    /// All tapers describe how much of the tail we are going to throw away, just in different ways.
-    /// Sigmas is
-    fn truncation_db(&self) -> f64 {
-        match *self {
-            Truncation::Sigmas(n) => n,
-            Truncation::FloorDb(db) => (db.abs() * LN_10 / 10.0).sqrt(),
-            Truncation::TailDb(db) => (1.0), // XXX lies.  Figuring out how to support.
         }
     }
 }
@@ -120,20 +97,27 @@ impl Truncation {
 #[derive(Clone, Copy)]
 pub struct Spec {
     shape: Shape,
-    /// Error tolerance for the spectrum.
-    grid_eps: f64,
-    /// Error tolerance for filter length truncation
-    truncation: Truncation,
-    max_taps: usize,
+    /// decibels of the truncated tail mass compared to the whole filter mass.
+    tail_db: f64,
+
+    /// The maximum load quantum that will be requested.  Load quantum space is used to taper taps
+    /// less aggressively, so the mother wavelet needs to include a bit more periods to dilate into
+    /// the longer time bought by load quantum.
     max_load_quantum: usize,
+
+    /// Error tolerance for the wavelet grid.
+    eps: f64,
+
+    /// A rough sizing estimate to avoid reallocation of scratch space.
+    max_taps: usize,
 }
 
 impl Default for Spec {
     fn default() -> Self {
         Spec {
             shape: Shape::from_q(3.0, 3.0),
-            grid_eps: 1e-14,
-            truncation: Truncation::Sigmas(4.0),
+            eps: 1e-14,
+            tail_db: -40.0,
             max_taps: 0,
             max_load_quantum: 1,
         }
@@ -141,17 +125,24 @@ impl Default for Spec {
 }
 
 impl Spec {
+    /// Set shape by quality factor, holding gamma.
+    pub fn q(mut self, q: f64) -> Self {
+        self.shape = Shape::from_q(q, self.shape.gamma);
+        self
+    }
+
     /// Set mother wavelet [`Shape`].
-    pub fn shape(mut self, shape: Shape) -> Self {
+    pub fn with_shape(mut self, shape: Shape) -> Self {
         self.shape = shape;
         self
     }
 
     /// `eps` is the spectral truncation floor relative to the peak. It sets how far the baked grid
     /// extends, and through that the tap count, but not the shape. 1e-8 lands near the f32 noise
-    /// floor of the output taps.  1e-10 has measurable effects at 5.5sigmas.
-    pub fn grid_eps(mut self, eps: f64) -> Self {
-        self.grid_eps = eps;
+    /// floor of the output taps.  1e-10 is where measurable effects usually begin appearing in
+    /// output filters.
+    pub fn eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
         self
     }
 
@@ -174,123 +165,172 @@ impl Spec {
     /// ship until a better numerical solver is available.  Values over 5.5 begin grinding up the
     /// dust of departed f32s.
     pub fn sigmas(mut self, sigmas: f64) -> Self {
-        self.truncation = Truncation::Sigmas(sigmas);
-        self
+        todo!()
     }
 
-    /// Set error tolerance by desired noise floor, which is **estimated** to an envelope geometry
-    /// and ultimately used to select a value for [`sigmas`].  A different way to attempt to say the
-    /// same thing.  State dB if you do not measure sigmas.
-    pub fn floor_db(mut self, db: f64) -> Self {
-        self.truncation = Truncation::FloorDb(db);
+    /// Truncate tail mass based on decibels relative to total mass.  -10dB truncates hard.  -80dB
+    /// truncates very weakly.
+    pub fn truncate(mut self, tail_db: f64) -> Self {
+        self.tail_db = -(tail_db.abs());
         self
-    }
-
-    /// Set error tolerance as the energy of the tail energy in decibels relative to the body.
-    /// -10dB truncates hard.  -80dB truncates very weakly.
-
-    /// Half-span that sets tap count, and the grid extent that feeds it.
-    fn spans(&self) -> (f64, f64) {
-        // XXX bUTCHERD
-        let taps = 1.0; // self.truncation.sigmas() * self.shape.p();
-        let grid = half_width_scaled(self.shape, self.grid_eps);
-
-        // Quantum rounding plus the center tap extend the emitted span by up to 2q+1 samples,
-        // worst at w0 = PI in scaled units.
-        let pad = (2 * self.max_load_quantum + 1) as f64 * PI;
-        // Rectangle rule on a uniform grid aliases rather than truncates: the error is the
-        // time-domain replica at period TAU/du. Placing it a full eps half-width past the
-        // emitted span puts the fold-back at eps.
-        (taps, TAU / (taps + pad + grid.max(taps)))
     }
 
     pub fn plan(self) -> Plan {
-        let (c, du) = self.spans();
-        let du = snap(du);
-        let (lo, m) = support(self.shape, du, self.grid_eps);
+        todo!()
+    }
 
-        // d = w*psi shares psi's support, so lo bounds both.
-        let env = log_env(self.shape);
-        let mut spec = vec![[0.0; 2]; m];
-        for (j, s) in spec.iter_mut().enumerate().skip(lo) {
-            let u = j as f64 * du;
-            let p = env(u).exp();
-            *s = [p, p * u];
-        }
+    pub(super) fn shape(&self) -> Shape {
+        self.shape
+    }
 
-        Plan {
-            shape: self.shape,
-            c,
-            du,
-            spec,
-            lo,
-            buf: Vec::with_capacity(2 * (self.max_taps / 2 + self.max_load_quantum + 1)),
-            max_load_quantum: self.max_load_quantum,
-            floor: 0.0,
-        }
+    pub(super) fn load_quantum(&self) -> usize {
+        self.max_load_quantum
+    }
+
+    /// Truncation point where the omitted tail of one side carries `tail_db` of the total energy.
+    ///
+    /// The magnitude of `tail_db` is used, since a tail cannot exceed the whole.
+    ///
+    ///     M(u) = μ,  μ = 10^(-|tail_db| / 10)
+    fn truncation_u(&self) -> f64 {
+        let Shape { beta, gamma } = self.shape;
+
+        let p = 2.0 * beta + 1.0;
+
+        // log C
+        let log_c = gamma.ln() + (p / gamma) * LN_2 + 2.0 * lgamma(beta + 1.0)
+            - TAU.ln()
+            - p.ln()
+            - lgamma(p / gamma);
+
+        // log u = (log C - log μ) / p
+        let log_u = (log_c + self.tail_db.abs() / 10.0 * LN_10) / p;
+
+        log_u.exp()
+    }
+
+    /// Realize a [`BinPlanner`].  Currently only used to generate testing weights.
+    pub fn bin_planner(self, center: f64, rate: f64) -> BinPlanner {
+        BinPlanner::new(self, center, rate)
     }
 }
 
-// XXX Envelop is going to die, so probably will this pretty soon
-/// g(u) = beta*ln(u) - (beta/gamma)*u^gamma, normalized so g(1) = 0.
-pub fn log_env(s: Shape) -> impl Fn(f64) -> f64 {
-    let bg = s.beta / s.gamma;
-    move |u| s.beta * u.ln() - bg * u.powf(s.gamma) + bg
+/// Grid points per tap.  Cell mass stops moving well before this.
+const RESOLUTION: usize = 256;
+
+/// One bin, planned and baked on its own.  Primarily used for testing.  Holds a mother wavelet
+/// resolved against this bin's `rho`.
+// XXX maximum truncation is a good thing to figure out on the spec.  That with load quantum and max
+// group delay can tell us how much *extra* mother wavelet we might need.  For tests where we are
+// using extra taps to sweep precision knobs, this will be valuable.
+pub struct BinPlanner {
+    w0: f64,
+    rho: f64,
+    half: usize,
+    du: f64,
+    mother: Vec<Complex64>,
+    slope: Vec<Complex64>,
 }
 
-// XXX Does not deserve to be free
-/// Largest power-of-two step at or below `du`. Grids at different steps are then nested, so a
-/// change to quantum or eps that doesn't cross a dyadic boundary leaves every u_j where it was.
-pub fn snap(du: f64) -> f64 {
-    du.log2().floor().exp2()
-}
+impl BinPlanner {
+    pub fn new(spec: Spec, center: f64, rate: f64) -> Self {
+        let rho = center / rate;
+        let quantum = spec.load_quantum();
+        let half = ((spec.truncation_u() / rho).ceil() as usize).div_ceil(quantum) * quantum;
 
-// XXX huh?
-/// Roots of g(u) = ln(eps). g rises to 0 at u = 1 and falls after, so Newton from each
-/// asymptotic branch converges monotonically inward.
-fn roots(s: Shape, eps: f64) -> (f64, f64) {
-    let g = log_env(s);
-    let le = eps.ln();
-    let dg = |u: f64| s.beta / u - s.beta * u.powf(s.gamma - 1.0);
+        let du = rho / RESOLUTION as f64;
+        let jet = QuadJet::standard(spec.shape());
 
-    let solve = |mut u: f64| {
-        for _ in 0..40 {
-            u -= (g(u) - le) / dg(u);
+        let (mother, slope) = (0..=RESOLUTION * (half + 1))
+            .map(|j| {
+                let t = jet.tap_at(j as f64 * du);
+                (t.psi, t.d)
+            })
+            .unzip();
+
+        BinPlanner {
+            w0: TAU * rho,
+            rho,
+            half,
+            du,
+            mother,
+            slope,
         }
-        u
-    };
-    (
-        solve(eps.powf(1.0 / s.beta)),
-        solve(1.0 + (2.0 * -le / s.beta).sqrt()),
-    )
-}
+    }
 
-// XXX  Um.. dilate & truncate will kill this.
-/// Grid indices bracketing the spectrum above `eps`: `[lo, m)`.
-pub fn support(shape: Shape, du: f64, eps: f64) -> (usize, usize) {
-    let (u_lo, u_hi) = roots(shape, eps);
-    let lo = ((u_lo / du).ceil() as usize).max(1);
-    (lo, (u_hi / du).floor() as usize + 1)
-}
+    /// Radial velocity.  Radians per input sample at the configured input sample rate.
+    pub fn velocity(&self) -> f64 {
+        self.w0
+    }
 
-// XXX inline this if it does anything.
-/// Half width in samples, times omega0. Pure function of shape and leakage.
-fn half_width_scaled(s: Shape, eps: f64) -> f64 {
-    let core = (2.0 * eps.recip().ln()).sqrt() * s.p();
-    let tail = eps.recip().powf(1.0 / (2.0 * s.beta + 1.0));
-    core.max(tail)
+    /// Periods `u` per tap.
+    pub fn rho(&self) -> f64 {
+        self.rho
+    }
+
+    /// Number of folded pairs and the center tap.
+    pub fn folded_taps(&self) -> usize {
+        self.half + 1
+    }
+
+    /// Total number of taps.
+    pub fn unfolded_taps(&self) -> usize {
+        2 * self.half + 1
+    }
+
+    /// Writes `folded_taps()` weights and returns that count.
+    ///
+    /// Upstream owes an `out` at least that long.
+    pub fn taps_into(&self, out: &mut [[f32; 4]]) -> usize {
+        let k = self.folded_taps();
+        let inv = self.rho.recip();
+
+        // psi at the cell edge above tap j
+        let edge = |j: usize| self.mother[RESOLUTION / 2 + j * RESOLUTION];
+
+        let mut psi = Vec::with_capacity(k);
+        let mut d = Vec::with_capacity(k);
+
+        // the center cell is symmetric about u = 0, so the odd parts cancel
+        psi.push(Complex64::new(
+            2.0 * inv * self.mass(0.0, 0.5 * self.rho).re,
+            0.0,
+        ));
+        d.push(Complex64::new(2.0 / self.w0 * edge(0).im, 0.0));
+
+        for j in 1..k {
+            let (lo, hi) = ((j as f64 - 0.5) * self.rho, (j as f64 + 0.5) * self.rho);
+            psi.push(inv * self.mass(lo, hi));
+            d.push(-Complex64::i() / self.w0 * (edge(j) - edge(j - 1)));
+        }
+
+        // H(w0) = psi_0 + 2 sum_k Re(psi_k e^{-i w0 k}), real by the fold
+        let gain = psi[0].re
+            + 2.0
+                * psi[1..]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, p)| {
+                        let (s, c) = (self.w0 * (j + 1) as f64).sin_cos();
+                        p.re * c + p.im * s
+                    })
+                    .sum::<f64>();
+        let scale = PEAK_GAIN / gain;
+
+        out[0] = [0.5 * scale * psi[0].re, 0.0, 0.5 * scale * d[0].re, 0.0].map(|v| v as f32);
+        for (o, (p, q)) in out[1..k].iter_mut().zip(psi[1..].iter().zip(&d[1..])) {
+            *o = [scale * p.re, scale * p.im, scale * q.re, scale * q.im].map(|v| v as f32);
+        }
+
+        k
+    }
+
+    fn mass(&self, u_beg: f64, u_end: f64) -> Complex64 {
+        hermite::integrate(&self.mother, &self.slope, u_beg, u_end, self.du)
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn unified_truncation_metric() {
-        // These expressions relate the ideas of where we truncate.  Truncation must move with Q or
-        // we lose the intended shoulder width by a mile.  More tail usually equals more accuracy,
-        // but ideas like "floor dB" are empirical while "tail dB" is unambiguous.  "Sigmas" is
-        // basically a **multiple** of the standard deviation of a half-span of the time envelope.
-        // We're not
-    }
 }

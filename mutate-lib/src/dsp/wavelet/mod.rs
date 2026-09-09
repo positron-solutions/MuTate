@@ -11,51 +11,53 @@
 //! >
 //! > - Anthony L. Ray
 //!
-//!                 ●
-//!                 ●
-//!                 •
-//!                 ·
-//!                ●··
-//!               ●●·
-//!              ●●●
-//!              ●••
-//!             ··••
-//!            ·····●
-//!            ·····●●●●●
-//!                ·●●●●●●●
-//!                 •••●●●●●
-//!                 ••••••··
-//!                 ···········
-//!          ●●●●●●●··········
-//!     ●●●●●●●●●●●●·····
-//!   ●●●●●●●●●●●•••
-//!      •••••••••••
-//! ·············•••
-//!  ···············●●●●●●
-//!        ·········●●●●●●●●●●●●●●
-//!                 ●●●●●●●●●●●●●●●●●
-//!                 •••••••••●●●●●
-//!                 ••••••·········
-//!              ●●●················
-//!      ●●●●●●●●●●●···········
-//!   ●●●●●●●●●●●●●●···
-//!     ●●●●●●●•••••
-//!       ···•••••••
-//!      ···········
-//!         ········●●●●●●
-//!              ···●●●●●●●●
-//!                 •●●●●●●
-//!                 •••••
-//!                 •····
-//!               ●●····
-//!              ●●●··
-//!              ●●●
-//!               ●•
-//!               ·•
+//!                ·
 //!                ·
 //!                ·●
 //!                 ●
+//!                 •●
+//!                 •·
+//!                ●···
+//!              ●●●··
+//!             ●●●●
+//!             ●•••
+//!            ···••
+//!           ······●●
+//!             ····●●●●●●
+//!                 ●●●●●●●●●
+//!                 ••••••●●
+//!                 •••·······
+//!             ●●●●···········
+//!       ●●●●●●●●●●·······
+//!    ●●●●●●●●●●●●●
+//!      ●●●••••••••
+//!   ··········••••
+//!   ··············●●●●●
+//!        ·········●●●●●●●●●●●●
+//!                 ●●●●●●●●●●●●●●●
+//!                 •••••••••●●●
+//!                 •••••·········
+//!             ●●●●··············
+//!      ●●●●●●●●●●●········
+//!    ●●●●●●●●●●●●●
+//!       ●●●•••••••
+//!      ·······••••
+//!       ··········●●●
+//!           ······●●●●●●●●
+//!                 ●●●●●●●●●
+//!                 ••••●●
+//!                 ••····
+//!               ●●·····
+//!             ●●●●···
+//!             ●●●●
+//!              ●••
+//!              ··•
+//!               ··●
+//!                ·●●
 //!                 ●
+//!                 •
+//!                 ·
+//!                 ·
 //!
 //! This module generates our wavelet tables.  The Morse wavelet is the chosen implementation.
 //!
@@ -325,6 +327,11 @@ impl Bin {
         self.w0
     }
 
+    /// Periods per tap, the cycle density of the output taps.
+    pub fn rho(&self) -> f64 {
+        todo!()
+    }
+
     pub fn quantum(&self) -> usize {
         self.quantum
     }
@@ -375,8 +382,9 @@ impl Plan {
             self.max_load_quantum
         );
 
-        // XXX here's where the turncation & everything comes in.
         let w0 = TAU * center / rate;
+
+        // XXX Fix here
         let span = (self.c / PI).round() * PI / w0;
         let n = (span / quantum as f64).ceil() as usize * quantum;
 
@@ -387,7 +395,7 @@ impl Plan {
         }
     }
 
-    /// Writes `bin.folded_taps()` weights and returns that count. Peak gain 2, DC removed.
+    /// Writes `bin.folded_taps()` weights and returns that count.
     ///
     /// Upstream owes an `out` at least that long.
     pub fn taps_into(&mut self, bin: Bin, out: &mut [[f32; 4]]) -> usize {
@@ -399,21 +407,18 @@ impl Plan {
         {
             let (psi, d) = buf.split_at_mut(k);
 
-            // todo!()
+            let rho = bin.w0;
 
-            Self::quantize(psi, d, bin.w0, out);
+            // Self::quantize(psi, d, bin.w0, out);
         }
         self.buf = buf;
         k
     }
 
-    /// Rounding functionals. Even lane (real) carries H(0) and H(w0); odd lane (imag)
-    /// carries H'(0) and the w0 quadrature. Pair multiplicity rides the row, matching
-    /// `condition`. DC curvature was tried here and dropped: those rows go as x² and x³,
-    /// so they vanish near the center where the ulps are coarse enough to steer, and only
-    /// gain magnitude in the tail where the steps are decades too fine to move anything.
-    /// `condition` nulls those moments in f64 and the cast's perturbation clears
-    /// `taps_are_conditioned` with room.
+    // XXX This will go away soon.  The idea that will stick around is we want to know the last f64
+    // goal that dipped below f32 representation and then round in a goal aware way.  This function
+    // never expressed the goal part.
+    /// Rounding functionals.
     fn rows(j: usize, inv: f64, w0: f64) -> ([f64; 2], [f64; 2]) {
         let c = if j == 0 { 1.0 } else { 2.0 };
         let (s, k) = (w0 * j as f64).sin_cos();
@@ -496,7 +501,7 @@ mod test {
     const RATE: f64 = 48_000.0;
 
     fn spec(q: f64, eps: f64) -> Spec {
-        Spec::default().shape(Shape::from_q(q, 3.0)).eps(eps)
+        Spec::default().with_shape(Shape::from_q(q, 3.0)).eps(eps)
     }
 
     // NOTE we have num_complex btw.  Just bing lazy.
@@ -729,7 +734,7 @@ mod test {
         }
     }
 
-    /// Hop levels the buckets cumulate over, dB below the loudest hop.
+    /// Hop levels the buckets accumulate over, dB below the loudest hop.
     const LEVELS: [f64; 3] = [-20.0, -40.0, -60.0];
 
     /// Worst |t̂ − t̂_ref| in samples per level bucket, plus the worst real leak in the top
@@ -888,7 +893,7 @@ mod test {
         let p = 4.0;
         for gamma in [1.0f64, 2.0, 3.0, 6.0] {
             let mut plan = Spec::default()
-                .shape(Shape {
+                .with_shape(Shape {
                     gamma,
                     beta: p * p / gamma,
                 })
@@ -946,7 +951,7 @@ mod test {
         let start = std::time::Instant::now();
         let mut plan = Spec::default()
             .max_taps(1024)
-            .shape(Shape::from_q(5.0, 3.0))
+            .with_shape(Shape::from_q(5.0, 3.0))
             .max_load_quantum(load_quantum)
             .plan();
         let bins = bank::bins(2_000.0, 20_000.0, BINS);
@@ -1170,7 +1175,7 @@ mod test {
         const PASS_PER_SIGMA: f64 = 0.001;
 
         let base = Spec::default()
-            .shape(Shape::from_q(Q, 3.0))
+            .with_shape(Shape::from_q(Q, 3.0))
             .sigmas(8.0)
             .max_load_quantum(QUANTUM);
         let mut full = base.plan();
@@ -1561,14 +1566,15 @@ mod test {
     #[test]
     fn t_hat_survives_transients() {
         const QUANTUM: usize = 4;
-        const REF_SIGMAS: f64 = 14.0;
-        const SIGMAS: f64 = 4.5;
+        const REF_TAIL_DB: f64 = -80.0;
+        const TAIL_DB: f64 = -40.0;
+
         // Samples, per level bucket. Calibrate from the first run; these are a starting bracket.
         const TOL: [f64; 3] = [0.05; 3];
 
         let mut plan = spec(3.5, 1e-10).max_load_quantum(QUANTUM).plan();
         let long = spec(3.5, 1e-14)
-            .sigmas(REF_SIGMAS)
+            .truncate(REF_TAIL_DB)
             .max_load_quantum(QUANTUM)
             .plan();
 
@@ -1645,12 +1651,12 @@ mod test {
             .max_load_quantum(QUANTUM)
             .plan();
 
-        // LIES nyq is a factor of the sample rate.  Nyq = 0.5, so that's a terrible variable name.
         for fcfs in OMEGAS {
             let w0 = TAU * fcfs;
             let bin = p.bin(fcfs, 1.0, QUANTUM);
             let mut w = vec![[0.0f32; 4]; bin.folded_taps()];
-            p.taps_into(bin, &mut w);
+
+            // p.taps_into(bin, &mut w);
 
             let psi = unfold(&w, 0);
             let w0 = bin.velocity();
@@ -1699,6 +1705,56 @@ mod test {
                     db,
                     "#".repeat(cells)
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn print_bin() {
+        const QUANTUM: usize = 4;
+
+        let spec = Spec::default()
+            .q(3.5)
+            .truncate(-60.0)
+            .max_load_quantum(QUANTUM);
+
+        for (fc, sr) in [(1000.0f64, 8000.0), (300.0, 3000.0), (12_000.0, RATE)] {
+            let p = spec.bin_planner(fc, sr);
+            let mut w = vec![[0.0f32; 4]; p.folded_taps()];
+            p.taps_into(&mut w);
+
+            let (psi, d) = (unfold(&w, 0), unfold(&w, 2));
+            let w0 = p.velocity();
+
+            print_wave(
+                &format!(
+                    "BIN fc {fc:.0} sr {sr:.0} w0 {w0:.6} rho {:.6} taps {}",
+                    p.rho(),
+                    p.unfolded_taps()
+                ),
+                &psi,
+                30,
+            );
+
+            let g = dtft(&psi, w0);
+            let gd = dtft(&d, w0);
+            let dc = psi.iter().map(|&(r, _)| r as f64).sum::<f64>();
+            let neg = dtft(&psi, -w0);
+
+            println!(
+                "  peak {g:.9}  d/psi {:.9}  dc {dc:.3e}  neg {:.2} dB",
+                gd / g,
+                20.0 * (neg / g).log10()
+            );
+
+            assert!((g - PEAK_GAIN).abs() < 1e-6);
+            assert!((gd / g - 1.0).abs() < 1e-6);
+            assert!(dc.abs() < 1e-5 * g);
+
+            let psi64 = widen(&psi);
+            for m in 0..8 {
+                let (re, im) = conv(&psi64, |k| (w0 * k as f64).cos(), m);
+                assert!((re.hypot(im) - 1.0).abs() < 1e-3, "fc {fc} phase {m}");
             }
         }
     }
