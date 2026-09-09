@@ -75,8 +75,8 @@ impl IfftSettings {
     pub fn reference() -> Self {
         Self {
             periods: 8,
-            pad: 64,
-            resolution: 256,
+            pad: 42,
+            resolution: 1024,
         }
     }
 }
@@ -88,7 +88,7 @@ impl Default for IfftSettings {
         Self {
             periods: 8,
             pad: 32,
-            resolution: 64,
+            resolution: 512,
         }
     }
 }
@@ -182,13 +182,6 @@ fn frac_turns(j: f64, u: f64, record: f64) -> f64 {
     let q_hi = p_hi / record;
     let q_lo = ((-q_hi).mul_add(record, p_hi) + p_lo) / record;
     (q_hi - q_hi.floor()) + q_lo
-}
-
-#[inline]
-fn two_sum_into(acc: &mut f64, comp: &mut f64, x: f64) {
-    let t = *acc + x;
-    *comp += (*acc - (t - x)) + (x - (t - *acc));
-    *acc = t;
 }
 
 #[cfg(test)]
@@ -334,14 +327,14 @@ mod test {
 
         let (ref_psi, ref_d, _) = morse_half_taps(shape, reference);
 
-        let bounds = |j: usize, resolution: usize| {
-            ((1 + 2 * j) * resolution / 4, (3 + 2 * j) * resolution / 4)
-        };
+        // One signed lobe, straddling the carrier's zero crossings.
+        let bounds = |j: usize| ((1 + 2 * j) as f64 * 0.25, (3 + 2 * j) as f64 * 0.25);
+        let rho = |s: IfftSettings| 1.0 / s.resolution as f64;
 
         let refs: Vec<Complex64> = (0..LOBES)
             .map(|j| {
-                let (i0, i1) = bounds(j, reference.resolution);
-                hermite::hermite_integral(&ref_psi, &ref_d, i0, i1, reference.resolution)
+                let (u0, u1) = bounds(j);
+                hermite::integrate(&ref_psi, &ref_d, u0, u1, rho(reference))
             })
             .collect();
 
@@ -364,8 +357,8 @@ mod test {
 
                 print!("  {label:>10} |");
                 for (j, &area_ref) in refs.iter().enumerate() {
-                    let (i0, i1) = bounds(j, settings.resolution);
-                    let area = hermite::hermite_integral(&psi, &d, i0, i1, settings.resolution);
+                    let (u0, u1) = bounds(j);
+                    let area = hermite::integrate(&psi, &d, u0, u1, rho(settings));
                     print!(" {:>9}", fmt_e((area - area_ref).norm() / area_ref.norm()));
                 }
                 println!();
@@ -376,11 +369,11 @@ mod test {
             "Cranking pad",
             "pad",
             &|i| IfftSettings {
-                pad: 2 * i as usize + 2,
-                resolution: 1 << 12,
+                pad: (i as usize + 1) * 1,
+                // resolution: 1 << 12,
                 ..reference
             },
-            12,
+            20,
         );
         // Truncation floor has to sit below the interpolation error at every row, so pad tracks the
         // resolution rather than sitting at a fixed over-provision.
@@ -388,11 +381,11 @@ mod test {
             "Cranking resolution",
             "resolution",
             &|i| IfftSettings {
-                pad: 32,
-                resolution: 4 + (i as usize * 4),
+                // pad: 32,
+                resolution: (i as usize + 1) * 8,
                 ..reference
             },
-            12,
+            32,
         );
 
         // Acceptance: the shipping grid sits past both elbows, so the area it carries differs from
@@ -403,8 +396,8 @@ mod test {
         let mut worst: f64 = 0.0;
 
         for (j, &area_ref) in refs.iter().enumerate() {
-            let (i0, i1) = bounds(j, shipping.resolution);
-            let area = hermite::hermite_integral(&psi, &d, i0, i1, shipping.resolution);
+            let (u0, u1) = bounds(j);
+            let area = hermite::integrate(&psi, &d, u0, u1, rho(shipping));
             let e = (area - area_ref).norm() / area_ref.norm();
             worst = worst.max(e);
 
@@ -437,11 +430,7 @@ mod test {
         let shape = Shape::from_q(3.5, 3.0);
         let oracle = quadjet::QuadJet::reference(shape);
 
-        let base = IfftSettings {
-            periods: 8,
-            pad: 56,
-            resolution: 1 << 8,
-        };
+        let reference = IfftSettings::reference();
 
         let rel = |v: Complex64, r: Complex64, scale: f64| (v - r).norm() / scale;
 
@@ -556,10 +545,10 @@ mod test {
                 "Cranking resolution",
                 "resolution",
                 &|i| IfftSettings {
-                    resolution: 4 + (i as usize * 4),
-                    ..base
+                    resolution: 8 + (i as usize * 16),
+                    ..reference
                 },
-                8,
+                17,
             );
 
             // Add padding to constant period count.
@@ -568,10 +557,10 @@ mod test {
                 "Cranking pad",
                 "pad",
                 &|i| IfftSettings {
-                    pad: (1usize << i) - 1,
-                    ..base
+                    pad: i as usize * 2 + 2,
+                    ..reference
                 },
-                8,
+                16,
             );
 
             // Fixed reach with a growing transform.  Once pad clears truncation the rows go flat
@@ -585,7 +574,7 @@ mod test {
                 &|i| IfftSettings {
                     periods: 6,
                     pad: (1usize << (i + 3)) - 6,
-                    ..base
+                    ..reference
                 },
                 8,
             );

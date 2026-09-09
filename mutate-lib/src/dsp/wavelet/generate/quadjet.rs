@@ -140,8 +140,9 @@
 // always obtains a correct result.  If a descent can be coaxed along a line that will fall into a
 // groove, a heuristic an be made to behave in a deterministic manner, and to pretend otherwise is
 // perhaps an instance of motivated failure to comprehend.
+use libm::erfc;
 use num_complex::Complex64;
-use std::f64::consts::TAU;
+use std::f64::consts::{SQRT_2, TAU};
 
 use super::super::spec::Shape;
 use super::super::whatsleft::Accumulator;
@@ -177,13 +178,12 @@ const ANCHOR_EFOLDS: f64 = 3.0;
 const CERTIFY_DERATE: f64 = 0.35;
 const GAP_FLOOR: f64 = 1e-6;
 const LIFT_CREDIT: f64 = 0.5;
-const NEWTON_ITERS: usize = 4;
-const NEWTON_STALL: f64 = 1e-11;
 const NEWTON_TOL_FACTOR: f64 = 0.3;
-const NEWTON_TOL_FLOOR: f64 = 1e-13;
+const NEWTON_SLACK: usize = 2;
+const NEWTON_STALL_ULPS: f64 = 8.0;
 const PLACE_MARGIN: f64 = 1.2;
-const PLACE_ROUNDS: u32 = 1;
-const QUAD_MAX_NODES: usize = 2048;
+const PLACE_ROUNDS: u32 = 6;
+const QUAD_MAX_NODES: usize = 4096;
 const QUAD_MIN_DENSITY: f64 = 1e-3;
 const RATE_CREDIBLE: f64 = 4.0;
 const REACH_MARGIN: f64 = 3.0;
@@ -316,6 +316,8 @@ struct Priced {
 struct Level {
     resid: [Complex64; 2],
     spans: [f64; 2],
+    /// The subtracted polynomial integrated back over the span this level covered.
+    moments: [Complex64; 2],
     full: bool,
     cost: Cost,
 }
@@ -360,7 +362,7 @@ impl QuadJet {
     }
 
     pub fn standard(shape: Shape) -> Self {
-        Self::new(shape, 1e-10, false)
+        Self::new(shape, 1e-9, false)
     }
 
     pub fn tap_at(&self, u: f64) -> QuadJetResult {
@@ -463,7 +465,6 @@ impl QuadJet {
                 let handoff = Handoff {
                     normal: None,
                     degree: 0,
-                    moments: [Complex64::default(); 2],
                     inner: 0.0,
                     outer: 0.0,
                 };
@@ -487,20 +488,13 @@ impl QuadJet {
                 }
 
                 if jet.terms.residual > target {
-                    // Every term of the polynomial peaks at `√k` in the standardized coordinate,
-                    // so a walk that stops short of `√degree` subtracts a shape whose own mass
-                    // sits outside it while the moments add that mass back over the whole line.
-                    // The degree stops where the path's footprint stops and the moments follow
-                    // the same truncation.
-                    let reach = reach_for(local_bar);
-                    let degree_cap = (reach * reach) as usize;
-                    // `degree` counts coefficients of `x` and the moments count orders, so the
-                    // even half is what puts back exactly the polynomial the path took out.
-                    let degree = (2 * jet.reached).min(degree_cap) & !1;
+                    // The series speaks inside its own disk, so that is what bounds the
+                    // subtraction.  How far the path walked is answered by the moments.
+                    let wall = branch_wall(seen, beta);
+                    let degree = (2 * jet.reached).min(wall_degree(wall, beta, local_bar, rel));
 
                     let width = trust_width(degree, rel);
                     normal.extend(s, frame, width);
-                    let wall = branch_wall(seen, beta);
                     let inner = if width >= trust_orders(rel) + degree {
                         SERIES_TRUST * wall
                     } else {
@@ -510,7 +504,6 @@ impl QuadJet {
                     let handoff = Handoff {
                         normal: Some(&normal),
                         degree,
-                        moments: normal.moments(frame.beta, degree / 2),
                         inner,
                         outer: PREDICT_TRUST * wall,
                     };
@@ -573,6 +566,23 @@ impl Descent {
             raw.im < 0.0
         };
         Self(if flip { -raw } else { raw })
+    }
+}
+
+/// Where a Newton solve is allowed to stop and what it is allowed to spend, both read off the
+/// accuracy the caller asked for.
+#[derive(Clone, Copy)]
+struct Solve {
+    step_tol: f64,
+    iters: usize,
+}
+
+impl Solve {
+    fn new(rel: f64) -> Self {
+        let step_tol = NEWTON_TOL_FACTOR * rel;
+        // Newton doubles its correct digits, so the passes are the log of the digits.
+        let iters = step_tol.recip().ln().log2().ceil() as usize + NEWTON_SLACK;
+        Self { step_tol, iters }
     }
 }
 
@@ -863,11 +873,17 @@ impl Saddle {
         let reach = reach_for(bar);
         let model_rate = TAU * gap;
         let ceiling = (QUAD_MAX_NODES as f64 / (2.0 * reach)).max(QUAD_MIN_DENSITY);
-        let ideal =
-            (PLACE_MARGIN * (bar + lift).max(0.0) / model_rate).clamp(QUAD_MIN_DENSITY, ceiling);
+        // The weight has no singularity for a neighbor term to find, and it is not band limited
+        // either.  `∫e^{-x²/2}` trapezoids to `e^{-2π²·density²}`, so `bar` e-folds of that is a
+        // floor no branch point speaks to.
+        let ideal = (PLACE_MARGIN * (bar + lift).max(0.0) / model_rate)
+            .max(reach / TAU)
+            .clamp(QUAD_MIN_DENSITY, ceiling);
 
-        let value = |resid: [Complex64; 2], m: usize| scales[m] * (resid[m] + hand.moments[m]);
-        let spread = |a: [Complex64; 2], b: [Complex64; 2]| (scales[0] * (a[0] - b[0])).norm();
+        let value = |lv: &Level, m: usize| scales[m] * (lv.resid[m] + lv.moments[m]);
+        let spread = |a: &Level, b: &Level| {
+            (scales[0] * (a.resid[0] + a.moments[0] - b.resid[0] - b.moments[0])).norm()
+        };
 
         let mut cost = Cost::default();
 
@@ -890,7 +906,7 @@ impl Saddle {
 
         let mut lo = anchor_density;
         let mut hi = fine_density;
-        let mut err_lo = spread(level.resid, anchor.resid);
+        let mut err_lo = spread(&level, &anchor);
         let mut rate = model_rate;
         let mut carried = f64::INFINITY;
 
@@ -901,7 +917,7 @@ impl Saddle {
             // and a model that flatters the neighbor should not be allowed to certify on the
             // strength of that flattery.
             let fade = (-CERTIFY_DERATE * rate * (hi - lo)).exp();
-            let bar_abs = target.max(EPS * value(level.resid, 0).norm());
+            let bar_abs = target.max(EPS * value(&level, 0).norm());
             carried = err_lo * fade;
             let short = carried > bar_abs;
             let place = lo + (err_lo / bar_abs).max(1.0).ln() / rate;
@@ -920,7 +936,7 @@ impl Saddle {
 
             let step = self.trapezoid(frame, reach, next, rel, hand);
             cost += step.cost;
-            let err_hi = spread(step.resid, level.resid);
+            let err_hi = spread(&step, &level);
 
             // Two consecutive levels name the suppression the path actually gets, which is the
             // number the model was standing in for.  A pair that failed to shrink has hit
@@ -951,10 +967,10 @@ impl Saddle {
             * level
                 .spans
                 .iter()
-                .map(|s| (-0.5 * s * s).exp())
+                .map(|s| libm::erfc(s / SQRT_2))
                 .sum::<f64>();
 
-        let value = [value(level.resid, 0), value(level.resid, 1)];
+        let value = [value(&level, 0), value(&level, 1)];
         let residual = (alias + tail * scales[0].norm()).max(EPS * value[0].norm());
 
         cost.quad_truncated = !level.full;
@@ -1056,7 +1072,8 @@ impl Saddle {
 
                 if let Some((guess, slope)) = hand.predict(x1) {
                     let allow = PREDICT_DRIFT * slope.norm() * h;
-                    if let Some(next) = self.close(guess, allow, x1, rel) {
+                    let solve = Solve::new(rel);
+                    if let Some(next) = self.close(guess, allow, x1, solve) {
                         at = next;
                         walked += 1;
                         tally(x1, traced(x1, at.0, at.1));
@@ -1078,12 +1095,18 @@ impl Saddle {
         }
         drop(tally);
 
+        let moments = match hand.normal {
+            Some(normal) => normal.moments_over(beta, hand.degree, spans),
+            None => [Complex64::default(); 2],
+        };
+
         Level {
             resid: [
                 Complex64::new(acc[0].0.sum(), acc[0].1.sum()) * h,
                 Complex64::new(acc[1].0.sum(), acc[1].1.sum()) * h,
             ],
             spans,
+            moments,
             full,
             cost: Cost {
                 quad_paths: 1,
@@ -1105,28 +1128,30 @@ impl Saddle {
         guess: Complex64,
         allow: f64,
         x1: f64,
-        rel: f64,
+        solve: Solve,
     ) -> Option<(Complex64, Complex64)> {
         let mut w = guess;
         let target = Complex64::new(-0.5 * x1 * x1, 0.0);
-        let step_tol = (NEWTON_TOL_FACTOR * rel).max(NEWTON_TOL_FLOOR);
 
         let mut arrived = false;
         let mut gp = Complex64::default();
         let mut prev = f64::INFINITY;
-        for _ in 0..NEWTON_ITERS {
+        for _ in 0..solve.iters {
             let (gv, gpv) = self.g(w);
             let step = (gv - target) / gpv;
             w -= step;
             gp = gpv;
 
             let size = step.norm();
-            if size < step_tol {
+            if size < solve.step_tol {
                 arrived = true;
                 break;
             }
             if size > 0.5 * prev {
-                arrived = size < NEWTON_STALL;
+                // A step that stopped halving is at the floor the arithmetic allows, which
+                // scales with the point rather than with the bar.
+                let floor = NEWTON_STALL_ULPS * EPS * w.norm().max(1.0);
+                arrived = size < solve.step_tol.max(floor);
                 break;
             }
             prev = size;
@@ -1150,7 +1175,8 @@ impl Saddle {
     ) -> Option<(Complex64, Complex64)> {
         let h = x1 - x0;
         let allow = 4.0 * slope.norm() * h.abs() + 0.25;
-        self.close(v + slope * h, allow, x1, rel)
+        let solve = Solve::new(rel);
+        self.close(v + slope * h, allow, x1, solve)
             .filter(|(w, _)| (w - v).norm() <= allow)
     }
 
@@ -1267,8 +1293,6 @@ struct Handoff<'a> {
     normal: Option<&'a Normal>,
     /// Degree in `x`, twice the order the series reached.  Unused when `normal` is `None`.
     degree: usize,
-    /// The Gaussian integral of that polynomial, pre-scale.  Zero when `normal` is `None`.
-    moments: [Complex64; 2],
     /// How far out the jet series places nodes on its own.
     inner: f64,
     /// How far out it is still worth asking the series where the path went.
@@ -1308,19 +1332,6 @@ impl Handoff<'_> {
             out[m] = acc * lead;
         }
         Some(out)
-    }
-
-    /// The state a walk needs to carry on from where the summed stretch stopped, the point on
-    /// the path and the slope the next step is predicted with.
-    fn seed(&self, x: f64) -> Option<(Complex64, Complex64)> {
-        let normal = self.normal?;
-        let mut v = normal.v[normal.width];
-        let mut w = normal.w[normal.width];
-        for k in (0..normal.width).rev() {
-            v = v * x + normal.v[k];
-            w = w * x + normal.w[k];
-        }
-        Some((v, w))
     }
 
     /// Where the series says the path is at `x`, and the slope it arrives with.  Two radii read
@@ -1465,17 +1476,38 @@ impl Normal {
         self.width = target;
     }
 
-    /// The Gaussian moments of the series truncated at order `n`, one per channel.  A path whose
-    /// reach cannot cover the whole polynomial subtracts fewer orders than the jet reached, and
-    /// what it adds back has to be the same truncation it took away.
-    fn moments(&self, beta: f64, n: usize) -> [Complex64; 2] {
+    /// `∫ x^k e^{-βx²/2}` over the span a level actually covered, one per channel, against the
+    /// same truncation the path subtracted.  Asymmetric spans keep the odd orders, which is why
+    /// `h` runs to full order rather than the even half.
+    ///
+    /// `M_k = ((k-1)M_{k-2} - [x^{k-1}e^{-βx²/2}])/β`
+    fn moments_over(&self, beta: f64, degree: usize, spans: [f64; 2]) -> [Complex64; 2] {
+        let rb = beta.sqrt();
+        let (b, a) = (spans[0] / rb, spans[1] / rb);
+        let (eb, ea) = (
+            (-0.5 * spans[0] * spans[0]).exp(),
+            (-0.5 * spans[1] * spans[1]).exp(),
+        );
+
+        let root = (TAU / beta).sqrt();
+        let mut prev2 = root * (1.0 - 0.5 * (erfc(spans[0] / SQRT_2) + erfc(spans[1] / SQRT_2)));
+        let mut prev1 = (ea - eb) / beta;
+
         let mut out = [Complex64::default(); 2];
-        for m in 0..2 {
-            let mut moment = (TAU / beta).sqrt();
-            for k in 0..=n {
-                out[m] += self.h[m][2 * k] * moment;
-                moment *= (2 * k + 1) as f64 / beta;
+        for ch in 0..2 {
+            out[ch] += self.h[ch][0] * prev2 + self.h[ch][1] * prev1;
+        }
+
+        let (mut pb, mut pa) = (1.0_f64, 1.0_f64);
+        for k in 2..=degree {
+            pb *= b;
+            pa *= -a;
+            let mk = ((k - 1) as f64 * prev2 - (pb * eb - pa * ea)) / beta;
+            for ch in 0..2 {
+                out[ch] += self.h[ch][k] * mk;
             }
+            prev2 = prev1;
+            prev1 = mk;
         }
         out
     }
@@ -1774,6 +1806,17 @@ fn branch_wall(seen: &[Complex64], beta: f64) -> f64 {
         }
     }
     wall
+}
+
+/// Where the subtracted polynomial stops being small at the farthest node the walk reaches.
+/// Past the wall the truncation grows like `ρ^k`, so the count is what holds that under the bar.
+/// A path that stays inside its own disk is unbounded here.
+fn wall_degree(wall: f64, beta: f64, bar: f64, rel: f64) -> usize {
+    let rho = reach_for(bar) / (beta.sqrt() * wall);
+    if rho <= 1.0 {
+        return JET_ORDER;
+    }
+    (rel.recip().ln() / rho.ln()) as usize
 }
 
 /// How far past the subtracted polynomial the coefficient tail has to run.  Inside the trust

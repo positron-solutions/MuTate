@@ -403,7 +403,7 @@ mod test {
         // report the stencil alone.  Cross columns are equal-grid method disagreement, which the
         // area sees through both `psi` and `d`.
 
-        const FINEST: usize = 1 << 17;
+        const FINEST: usize = 1 << 18;
 
         let shape = Shape::from_q(3.5, 3.0);
         let ref_jet = quadjet::QuadJet::reference(shape);
@@ -414,6 +414,8 @@ mod test {
             (0.5 / 3.0, 1.0 / 3.0),
             (0.5, 2.0 / 3.0),
             (1.5 + 1.0 / 7.0, 2.0 - 1.0 / 7.0),
+            // FIXME Agreement depends on saddle sheet identity things.  See blame.
+            // (2.5 + 1.0 / 7.0, 3.0 - 1.0 / 7.0),
         ];
 
         let jet_area = |jet: &quadjet::QuadJet, grid_res: usize, u_beg: f64, u_end: f64| {
@@ -453,7 +455,7 @@ mod test {
             let mut worst_self = 0.0f64;
             let mut worst_cross = 0.0f64;
 
-            for row in 3..=14u32 {
+            for row in 3..=16u32 {
                 let grid_res = 1usize << row;
 
                 let i = ifft_area(grid_res, u_beg, u_end);
