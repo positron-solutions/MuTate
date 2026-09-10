@@ -127,9 +127,9 @@ impl Shape {
 pub struct WaveletSpec {
     shape: Shape,
     resolution: usize,
-    tail_db: f64,
-    quantum: usize,
-    delay: usize,
+    max_tail_db: f64,
+    max_load_quantum: usize,
+    max_delay: usize,
 }
 
 impl Default for WaveletSpec {
@@ -137,9 +137,9 @@ impl Default for WaveletSpec {
         WaveletSpec {
             shape: Shape::from_q(defaults::Q, defaults::GAMMA),
             resolution: defaults::RESOLUTION,
-            tail_db: defaults::TAIL_DB,
-            quantum: defaults::LOAD_QUANTUM,
-            delay: 0,
+            max_tail_db: defaults::TAIL_DB,
+            max_load_quantum: defaults::LOAD_QUANTUM,
+            max_delay: 0,
         }
     }
 }
@@ -163,20 +163,21 @@ impl WaveletSpec {
     }
 
     /// Weakest truncation any bin will ask for.  -10dB truncates hard, -80dB very weakly.
-    pub fn truncate(mut self, tail_db: f64) -> Self {
-        self.tail_db = -tail_db.abs();
+    /// Supporting more truncation
+    pub fn max_truncation(mut self, tail_db: f64) -> Self {
+        self.max_tail_db = -tail_db.abs();
         self
     }
 
     /// Largest load quantum any bin will ask for.
     pub fn max_load_quantum(mut self, quantum: usize) -> Self {
-        self.quantum = quantum;
+        self.max_load_quantum = quantum;
         self
     }
 
     /// Largest group delay any bin will ask for, in taps.
     pub fn max_delay(mut self, delay: usize) -> Self {
-        self.delay = delay;
+        self.max_delay = delay;
         self
     }
 
@@ -184,8 +185,9 @@ impl WaveletSpec {
         let du = (self.resolution as f64).recip();
 
         // u_max = u_trunc + (quantum + delay + 1/2) rho,  rho < 1/2 at Nyquist
-        let u_max =
-            self.shape.truncation_u(self.tail_db) + 0.5 * (self.quantum + self.delay) as f64 + 0.25;
+        let u_max = self.shape.truncation_u(self.max_tail_db)
+            + 0.5 * (self.max_load_quantum + self.max_delay) as f64
+            + 0.25;
 
         let jet = QuadJet::standard(self.shape);
         let (psi, d) = (0..=(u_max / du).ceil() as usize + 1)
@@ -203,9 +205,9 @@ impl WaveletSpec {
             limits: BinSpec {
                 center: 0.0,
                 rate: 1.0,
-                quantum: self.quantum,
-                delay: self.delay,
-                tail_db: self.tail_db,
+                load_quantum: self.max_load_quantum,
+                delay: self.max_delay,
+                tail_db: self.max_tail_db,
             },
         }
     }
@@ -255,14 +257,39 @@ impl Wavelet {
     }
 }
 
-/// The record a runtime hydrates from.  No borrow, no realized geometry.
+/// The record a runtime `Bin` hydrates from.  No borrow, no realized geometry.
 #[derive(Clone, Copy)]
 pub struct BinSpec {
     center: f64,
     rate: f64,
-    quantum: usize,
+    load_quantum: usize,
+    /// Extra group delay, extra folded taps, padding that will be opportunistically used during
+    /// restriction.
+    // XXX has not be reconciled with load quantum!
     delay: usize,
     tail_db: f64,
+}
+
+impl BinSpec {
+    pub fn load_quantum(self, quantum: usize) -> Self {
+        Self {
+            load_quantum: quantum,
+            ..self
+        }
+    }
+
+    pub fn delay(self, delay: usize) -> Self {
+        Self { delay, ..self }
+    }
+
+    pub fn truncate(self, tail_db: f64) -> Self {
+        let tail_db = -tail_db.abs();
+        Self { tail_db, ..self }
+    }
+
+    pub fn bin<'w>(self, wavelet: &'w Wavelet) -> Bin<'w> {
+        Bin::new(wavelet, self)
+    }
 }
 
 /// A spec resolved against one bake.  Carrying the borrow keeps a bin off the wrong motherlet,
@@ -281,7 +308,7 @@ impl<'w> Bin<'w> {
     fn new(wavelet: &'w Wavelet, spec: BinSpec) -> Self {
         let rho = spec.center / spec.rate;
         let reach = (wavelet.shape.truncation_u(spec.tail_db) / rho).ceil() as usize;
-        let half = (reach + spec.delay).div_ceil(spec.quantum) * spec.quantum;
+        let half = (reach + spec.delay).div_ceil(spec.load_quantum) * spec.load_quantum;
 
         Bin {
             wavelet,
@@ -291,11 +318,11 @@ impl<'w> Bin<'w> {
         }
     }
 
-    pub fn quantum(self, quantum: usize) -> Self {
+    pub fn load_quantum(self, load_quantum: usize) -> Self {
         Self::new(
             self.wavelet,
             BinSpec {
-                quantum,
+                load_quantum,
                 ..self.spec
             },
         )

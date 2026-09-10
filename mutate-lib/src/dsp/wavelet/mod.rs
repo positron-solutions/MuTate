@@ -334,7 +334,7 @@ mod test {
         WaveletSpec::default()
             .with_shape(Shape::from_q(q, 3.0))
             .max_load_quantum(quantum)
-            .truncate(WEAKEST_TAIL_DB)
+            .max_truncation(WEAKEST_TAIL_DB)
             .bake()
     }
 
@@ -821,12 +821,12 @@ mod test {
         let w = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(8)
-            .truncate(TAIL_DB)
+            .max_truncation(TAIL_DB)
             .bake();
 
         for quantum in [1usize, 4, 8] {
             for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-                let bin = w.bin(fc, sr).quantum(quantum);
+                let bin = w.bin(fc, sr).load_quantum(quantum);
                 let psi = widen(&unfold(&bin.taps(), 0));
                 let w0 = bin.velocity();
 
@@ -861,7 +861,7 @@ mod test {
         let w = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
-            .truncate(TAIL_DB)
+            .max_truncation(TAIL_DB)
             .bake();
 
         println!("\n=== NOISE GAIN (Q = {Q}, sr = {RATE}, quantum {QUANTUM}) ===");
@@ -915,7 +915,7 @@ mod test {
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, SIGMAS))
             .max_load_quantum(QUANTUM)
-            .truncate(TAIL_DB)
+            .max_truncation(TAIL_DB)
             .bake();
 
         for (fc, sr) in [(2_000.0f64, RATE), (250.0, 3000.0), (12_000.0, RATE)] {
@@ -983,7 +983,7 @@ mod test {
         let w = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
-            .truncate(FULL_DB)
+            .max_truncation(FULL_DB)
             .bake();
 
         let db = |v: f64| 20.0 * (v / PEAK_GAIN).log10();
@@ -1133,7 +1133,7 @@ mod test {
         let w = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
-            .truncate(FULL_DB)
+            .max_truncation(FULL_DB)
             .bake();
 
         let db = |v: f64| 20.0 * v.log10();
@@ -1196,7 +1196,7 @@ mod test {
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, SIGMAS))
             .max_load_quantum(QUANTUM)
-            .truncate(TAIL_DB)
+            .max_truncation(TAIL_DB)
             .bake();
 
         for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
@@ -1269,12 +1269,12 @@ mod test {
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, SIGMAS))
             .max_load_quantum(QUANTUM)
-            .truncate(TAIL_DB)
+            .max_truncation(TAIL_DB)
             .bake();
         let long = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, SIGMAS))
             .max_load_quantum(QUANTUM)
-            .truncate(REF_TAIL_DB)
+            .max_truncation(REF_TAIL_DB)
             .bake();
 
         // NEXT adapt for same omegas as the quality assurance.
@@ -1353,7 +1353,7 @@ mod test {
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
-            .truncate(TAIL_DB)
+            .max_truncation(TAIL_DB)
             .bake();
 
         for rho in RHOS {
@@ -1428,7 +1428,7 @@ mod test {
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
-            .truncate(TAIL_DB)
+            .max_truncation(TAIL_DB)
             .bake();
 
         for (fc, sr) in [(1000.0f64, 8000.0), (300.0, 3000.0), (12_000.0, RATE)] {
@@ -1480,7 +1480,7 @@ mod test {
             println!("\n=== TABLE RESPONSE (Q = {Q}, quantum {quantum}) ===");
 
             for (fc, sr) in [(1000.0f64, 6000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-                let bin = w.bin(fc, sr).quantum(quantum).truncate(TAIL_DB);
+                let bin = w.bin(fc, sr).load_quantum(quantum).truncate(TAIL_DB);
                 let psi = unfold(&bin.taps(), 0);
 
                 let w0 = bin.velocity();
