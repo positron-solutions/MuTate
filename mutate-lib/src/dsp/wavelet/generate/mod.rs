@@ -75,6 +75,8 @@ fn fmt_e(x: f64) -> String {
 mod test {
     use super::*;
 
+    use core::f64::consts::TAU;
+
     const TRUST_DIGITS: f64 = 5.5;
 
     // If bad > worst, worst = bad, location = u.
@@ -491,6 +493,83 @@ mod test {
 
             assert!(worst_self < 1e-9);
             assert!(worst_cross < 1e-6);
+        }
+    }
+
+    /// Standard jet against IFFT on ψ, `d`, and Hermite area, swept over γ.
+    #[cfg(feature = "validate")]
+    #[test]
+    fn jet_tracks_ifft_across_gamma() {
+        const RES: usize = 512;
+
+        let windows = [
+            (0.5 / 3.0, 1.0 / 3.0),
+            (1.5 + 1.0 / 7.0, 2.0 - 1.0 / 7.0),
+            (2.5 + 1.0 / 7.0, 3.0 - 1.0 / 7.0),
+        ];
+
+        for (q, gamma) in [(4.5, 3.0), (8.5, 3.0), (3.5, 4.5), (8.5, 4.5)] {
+            let shape = Shape::from_q(q, gamma);
+            let settings = ifft::IfftSettings {
+                periods: 10,
+                pad: 42,
+                resolution: RES,
+            };
+            let (i_psi, i_d, _) = ifft::morse_half_taps(shape, settings);
+            let jet = quadjet::QuadJet::standard(shape);
+
+            let res = RES as f64;
+            let last = 5 * RES;
+            let taps: Vec<_> = (0..=last + 2).map(|k| jet.tap_at(k as f64 / res)).collect();
+            let j_psi: Vec<Complex64> = taps.iter().map(|t| t.psi).collect();
+            let j_d: Vec<Complex64> = taps.iter().map(|t| t.d).collect();
+
+            println!(
+                "\n=== jet vs ifft, q {q:.1} gamma {gamma:.1} beta {:.2} ===",
+                shape.beta
+            );
+            println!(
+                "  {:>6} | {:>9} | {:>5} {:>5} | {:>9}",
+                "u", "scale", "psi", "d", "d ratio"
+            );
+
+            let mut worst_psi = Extreme::min();
+            let mut worst_d = Extreme::min();
+
+            for k in (0..=last).step_by(RES / 4) {
+                let u = k as f64 / res;
+                let scale_psi = i_psi[k].norm().max(j_psi[k].norm());
+                let scale_d = i_d[k].norm().max(j_d[k].norm());
+
+                let psi = digits_complex(j_psi[k], i_psi[k], scale_psi);
+                let d = digits_complex(j_d[k], i_d[k], scale_d);
+                worst_psi.see(psi, u);
+                worst_d.see(d, u);
+
+                println!(
+                    "  {u:>6.3} | {:>9} | {psi:>5.1} {d:>5.1} | {:>9.6}",
+                    fmt_e(scale_d),
+                    (j_d[k] / i_d[k]).re,
+                );
+            }
+
+            for (u_beg, u_end) in windows {
+                let rho = 1.0 / res;
+                let i = hermite::integrate(&i_psi, &i_d, u_beg, u_end, rho);
+                let j = hermite::integrate(&j_psi, &j_d, u_beg, u_end, rho);
+                println!(
+                    "  area [{u_beg:.4}, {u_end:.4}]  rel {}",
+                    fmt_e((j - i).norm() / i.norm())
+                );
+            }
+
+            println!(
+                "  worst psi {:.1} digits at u {:.3}, worst d {:.1} digits at u {:.3}",
+                worst_psi.value, worst_psi.u, worst_d.value, worst_d.u
+            );
+
+            assert!(worst_psi.value > 7.0);
+            assert!(worst_d.value > 7.0);
         }
     }
 }
