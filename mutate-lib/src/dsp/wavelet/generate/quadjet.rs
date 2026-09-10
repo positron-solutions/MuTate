@@ -1682,8 +1682,10 @@ impl Singulants {
                         continue;
                     }
                     let dj = seen[j];
-                    if dj.norm() < dk.norm()
-                        && (dk * dj.conj()).re > ADJ_CONE * dk.norm() * dj.norm()
+                    let dot = (dk * dj.conj()).re;
+                    if dj.norm_sqr() < dk.norm_sqr()
+                        && dot > 0.0
+                        && dot * dot > ADJ_CONE * ADJ_CONE * dk.norm_sqr() * dj.norm_sqr()
                     {
                         shadowed = true;
                         break;
