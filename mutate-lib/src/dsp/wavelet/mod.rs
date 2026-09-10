@@ -391,7 +391,18 @@ mod test {
         acc
     }
 
-    // XXX What is this...
+    /// M_p = Σ_ν ν^p h_ν
+    fn moment(taps: &[Complex32], p: i32) -> Complex64 {
+        let half = (taps.len() / 2) as isize;
+        taps.iter()
+            .enumerate()
+            .map(|(j, h)| {
+                let nu = (j as isize - half) as f64;
+                Complex64::new(h.re as f64, h.im as f64) * nu.powi(p)
+            })
+            .sum()
+    }
+
     /// |H_d(w) − w·H_psi(w)|, the pairing the taper and the DC corrector both promise to
     /// preserve at every w. Absolute, because dividing by H_psi is exactly what turns a flat
     /// floor into a skirt blowup in the cents column.
@@ -399,26 +410,27 @@ mod test {
         (dtft(d, w) - dtft(psi, w) * w).norm()
     }
 
-    /// Max of `f` over `n` samples of [lo, hi].
-    fn sweep(lo: f64, hi: f64, n: usize, f: impl Fn(f64) -> f64) -> f64 {
+    /// |H(ω)| and |H(−ω)|, the passband and its image.
+    fn pair(taps: &[Complex32], w: f64) -> (f64, f64) {
+        (dtft(taps, w).norm(), dtft(taps, -w).norm())
+    }
+
+    /// Max of `f` over [lo, hi] at 16 samples per DTFT lobe of `len` taps.
+    fn sweep(lo: f64, hi: f64, len: usize, f: impl Fn(f64) -> f64) -> f64 {
+        let n = ((hi - lo) * (16 * len) as f64 / TAU).ceil().max(1.0) as usize;
         (0..=n)
             .map(|k| f(lo + (hi - lo) * k as f64 / n as f64))
             .fold(0.0f64, f64::max)
     }
 
-    /// Worst |H| gap over the middle half of the -3 dB band.
-    fn passband_gap(a: &[Complex32], b: &[Complex32], lo: f64, hi: f64) -> f64 {
-        let (mid, quarter) = (0.5 * (lo + hi), 0.25 * (hi - lo));
-        sweep(mid - quarter, mid + quarter, 2048, |w| {
-            (dtft(a, w).norm() - dtft(b, w).norm()).abs()
-        })
+    /// max |ΔH| over the -3 dB band.
+    fn passband_gap(d: &[Complex32], (lo, hi): (f64, f64)) -> f64 {
+        sweep(lo, hi, d.len(), |w| dtft(d, w).norm())
     }
 
-    /// Truncation floor, swept two octaves starting three octaves off center. Far
-    /// enough out that the skirt is gone. Both sides when the upper band fits under
-    /// Nyquist, low side alone otherwise.
-    fn stopband(a: &[Complex32], b: &[Complex32], w0: f64) -> f64 {
-        let gap = |w: f64| (dtft(a, w).norm() - dtft(b, w).norm()).abs();
+    /// max |ΔH| over two octaves starting three below center, mirrored above when it fits under Nyquist.
+    fn stopband(d: &[Complex32], w0: f64) -> f64 {
+        let gap = |w: f64| dtft(d, w).norm();
         let low = sweep(w0 / 32.0, w0 / 8.0, 2048, gap);
         if 32.0 * w0 < PI {
             low.max(sweep(8.0 * w0, 32.0 * w0, 2048, gap))
@@ -427,22 +439,53 @@ mod test {
         }
     }
 
-    /// Peak |H| from DC to 5% of center.
-    fn dc_leak(taps: &[Complex32], peak_w: f64) -> f64 {
-        const STEPS: usize = 64;
-
-        let top = 0.05 * peak_w;
-        (0..=STEPS)
-            .map(|k| dtft(taps, top * k as f64 / STEPS as f64).norm())
-            .fold(0.0f64, f64::max)
+    /// Worst envelope out per unit sine in at ω ≥ 0, image included.
+    ///
+    ///     ½|H(ω)| + ½|H(−ω)|
+    fn envelope(taps: &[Complex32], w: f64) -> f64 {
+        let (g, i) = sine(taps, w);
+        g + i
     }
 
-    /// Bisect for |H| = target on [a, b], target bracketed.
-    fn crossing(taps: &[Complex32], mut a: f64, mut b: f64, target: f64) -> f64 {
-        let above = dtft(taps, a).norm() > target;
+    /// Δh = a − b about a shared center.  `a` is at least as long.
+    fn gap(a: &[Complex32], b: &[Complex32]) -> Vec<Complex32> {
+        let off = (a.len() - b.len()) / 2;
+        let mut d = a.to_vec();
+        for (o, &h) in d[off..].iter_mut().zip(b) {
+            *o -= h;
+        }
+        d
+    }
+
+    /// Σ|h|, which bounds every envelope of `taps`.
+    fn l1(taps: &[Complex32]) -> f64 {
+        taps.iter().map(|h| h.norm() as f64).sum()
+    }
+
+    /// max |ΔH| on [−π, 0].
+    fn image(d: &[Complex32]) -> f64 {
+        sweep(-PI, 0.0, 2048, |w| dtft(d, w).norm())
+    }
+
+    /// max |H| on [−0.05 ω₀, 0.05 ω₀].
+    fn dc_leak(taps: &[Complex32], w0: f64) -> f64 {
+        let e = 0.05 * w0;
+        sweep(-e, e, taps.len(), |w| dtft(taps, w).norm())
+    }
+
+    /// Envelope out per unit sine in at ω, and the image it leaks at −ω.
+    ///
+    ///     cos ωn = ½ e^{iωn} + ½ e^{−iωn}
+    fn sine(taps: &[Complex32], w: f64) -> (f64, f64) {
+        (0.5 * dtft(taps, w).norm(), 0.5 * dtft(taps, -w).norm())
+    }
+
+    /// ω in `[a, b]` where `f` crosses `level`, with f(a) and f(b) on opposite sides.
+    fn crossing(f: impl Fn(f64) -> f64, mut a: f64, mut b: f64, level: f64) -> f64 {
+        let rising = f(a) < level;
         for _ in 0..60 {
             let m = 0.5 * (a + b);
-            if (dtft(taps, m).norm() > target) == above {
+            if (f(m) < level) == rising {
                 a = m;
             } else {
                 b = m;
@@ -519,6 +562,7 @@ mod test {
         let peak = hops.iter().fold(0.0f64, |a, h| a.max(h.0));
         let (mut worst, mut leak) = ([0.0f64; 3], 0.0f64);
         for (lvl, err, re) in hops {
+            // XXX check dB handling
             let db = 20.0 * (lvl / peak).log10();
             for (w, &l) in worst.iter_mut().zip(&LEVELS) {
                 if db >= l {
@@ -581,36 +625,33 @@ mod test {
 
     struct Response {
         peak_w: f64,
-        peak_h: f64,
+        /// |H(peak_w)|
+        gain: f64,
         edges: (f64, f64),
         rel_width: f64,
-        neg: f64,
+        /// max |H| on [−π, 0]
+        image: f64,
         floor: f64,
     }
 
-    /// Peak location and gain, -3 dB relative width, negative-frequency max, and the
-    /// floor outside three half-power widths. `w0` only sets the bracket for the edges.
+    /// Peak, -3 dB relative width, image, and the positive-axis floor outside three half-power widths.
+    /// `w0` only brackets the edges.
     fn characterize(taps: &[Complex32], w0: f64) -> Response {
         let sweep = (16 * taps.len()).next_power_of_two();
-        let omega = |k: usize| -PI + 2.0 * PI * k as f64 / sweep as f64;
+        let omega = |k: usize| PI * k as f64 / sweep as f64;
         let gain = |w: f64| dtft(taps, w).norm();
 
-        let mut mag = Vec::with_capacity(sweep + 1);
-        let (mut peak, mut neg) = ((0.0f64, 0.0f64), 0.0f64);
-        for k in 0..=sweep {
-            let w = omega(k);
-            let v = gain(w);
-            mag.push(v);
-            if w < 0.0 {
-                neg = neg.max(v);
-            }
-            if v > peak.1 {
-                peak = (w, v);
-            }
-        }
+        let resp: Vec<(f64, f64)> = (0..=sweep).map(|k| pair(taps, omega(k))).collect();
 
-        let cell = 2.0 * PI / sweep as f64;
-        let (mut a, mut b) = (peak.0 - cell, peak.0 + cell);
+        let (k_peak, _) =
+            resp.iter().enumerate().fold(
+                (0, 0.0f64),
+                |best, (k, &(g, _))| if g > best.1 { (k, g) } else { best },
+            );
+        let image = resp.iter().fold(0.0f64, |m, &(_, i)| m.max(i));
+
+        let cell = PI / sweep as f64;
+        let (mut a, mut b) = (omega(k_peak) - cell, omega(k_peak) + cell);
         for _ in 0..80 {
             let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
             if gain(m1) < gain(m2) {
@@ -620,25 +661,25 @@ mod test {
             }
         }
         let peak_w = 0.5 * (a + b);
-        let peak_h = gain(peak_w);
+        let peak = gain(peak_w);
 
-        let half = peak_h / 2.0f64.sqrt();
-        let lo = crossing(taps, peak_w - w0, peak_w, half);
-        let hi = crossing(taps, peak_w, (peak_w + w0).min(PI), half);
+        let half = peak / 2.0f64.sqrt();
+        let lo = crossing(gain, (peak_w - w0).max(0.0), peak_w, half);
+        let hi = crossing(gain, peak_w, (peak_w + w0).min(PI), half);
 
         let guard = 3.0 * (hi - lo);
-        let floor = mag
+        let floor = resp
             .iter()
             .enumerate()
             .filter(|&(k, _)| (omega(k) - peak_w).abs() > guard)
-            .fold(0.0f64, |f, (_, &v)| f.max(v));
+            .fold(0.0f64, |f, (_, &(g, _))| f.max(g));
 
         Response {
             peak_w,
-            peak_h,
+            gain: peak,
             edges: (lo, hi),
             rel_width: (hi - lo) / peak_w,
-            neg,
+            image,
             floor,
         }
     }
@@ -921,30 +962,23 @@ mod test {
         }
     }
 
-    /// Truncation cost against a full-length bake, swept over `tail_db`.  Stop band, DC leak,
-    /// ripple in the pass, width, and gain are all compared.  One motherlet serves the reference
-    /// and every cut, so a gap in the columns is truncation and nothing else.
+    /// Truncation cost against a full-length bake, swept over `tail_db`.  One motherlet serves the
+    /// reference and every cut, so a gap in the delta columns is truncation and nothing else.
     #[test]
     fn truncation_is_predictable() {
-        const QUANTUM: usize = 4;
+        const QUANTUM: usize = 1;
         const Q: f64 = 3.5;
 
         /// Weakest truncation in the sweep, and so the grid the wavelet is sized for.
         const FULL_DB: f64 = -160.0;
         const CUTS: [f64; 4] = [-60.0, -80.0, -100.0, -120.0];
+        const FCS: [f64; 4] = [2_000.0, 4_000.0, 8_000.0, 14_000.0];
 
         // NOTE these are empirically discovered values stored to catch regressions.
 
-        // Measured 0.9984 at Q = 3.5.
-        const WIDTH_Q: f64 = 0.998;
-        const WIDTH_TOL: f64 = 0.001;
-
-        // Stopband gap relative to PEAK_GAIN, against the requested tail.  Slack over the
-        // request because the quantum pads past it and the fold is not exactly the tail integral.
-        const LEAK_SLOP: f64 = 20.0;
-
-        // In-band relative error, same budget.
-        const PASS_SLOP: f64 = 200.0;
+        // Measured 0.9984 to 1.0020 across the sweep.
+        const WIDTH_Q: f64 = 1.0;
+        const WIDTH_TOL: f64 = 0.01;
 
         let w = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
@@ -953,116 +987,201 @@ mod test {
             .bake();
 
         let db = |v: f64| 20.0 * (v / PEAK_GAIN).log10();
+        let cents = |w: f64, w0: f64| 1200.0 * (w / w0).log2();
 
         println!(
-            "\n=== TRUNCATION (Q = {Q}, quantum {QUANTUM}) ===\n\
-            dB reference peak gain {PEAK_GAIN:.1}; values except DC are dB relative to full-length bake"
+            "\n=== TRUNCATION (Q = {Q}, quantum {QUANTUM}) ===\n\n\
+            - |H| is the response to a unit exponential.\n\
+            - gain is |H| at the peak. peak c is the peak offset from ω₀ in cents.\n\
+            - dc, image, and floor are in dB relative to PEAK_GAIN. image is the worst |H| on [−π, 0].\n\
+            - ratio is the tap count divided by the reference tap count."
         );
 
-        for fc in [2_000.0f64, 4_000.0, 8_000.0, 14_000.0] {
+        // Reference
+        println!("\n  reference, tail {FULL_DB:.1} dB");
+        println!(
+            "  {:>6} {:>5} {:>9} {:>8} {:>9} {:>8} {:>8} {:>8}",
+            "fc", "taps", "gain", "width·Q", "peak c", "dc", "image", "floor"
+        );
+
+        let mut refs = Vec::with_capacity(FCS.len());
+        for fc in FCS {
             let full = w.bin(fc, RATE).truncate(FULL_DB);
             let nf = full.folded_taps();
             let pf = unfold(&full.taps(), 0);
 
             let w0 = full.velocity();
             let rf = characterize(&pf, w0);
+            let dcf = dc_leak(&pf, w0);
 
             println!(
-                "\n  fc {fc:>6.0}  full weights {nf:>5}  peak {:.9}  rel width {:.5} \
-                 (x Q = {:.4})",
-                rf.peak_h,
-                rf.rel_width,
+                "  {fc:>6.0} {nf:>5} {:>9.6} {:>8.4} {:>+9.3} {:>8.2} {:>8.2} {:>8.2}",
+                rf.gain,
+                rf.rel_width * Q,
+                cents(rf.peak_w, w0),
+                db(dcf),
+                db(rf.image),
+                db(rf.floor)
+            );
+
+            // XXX There's some issue with the naive quadrature restriction that moves center
+            // frequency around
+
+            // Peak sits below ω₀ by the cell-average droop, gain rising as ½P²Δx².
+            // assert!(
+            //     (rf.gain - 1.0).abs() < 1e-5,
+            //     "fc {fc} full gain {:.9}",
+            //     rf.gain
+            // );
+            // assert!(dcf < 1e-5 * PEAK_GAIN, "fc {fc} full dc {:.2} dB", db(dcf));
+
+            // -3 dB width is set by P = sqrt(beta*gamma) and Q = P/1.6651.
+            assert!(
+                (rf.rel_width * Q / WIDTH_Q - 1.0).abs() < WIDTH_TOL,
+                "fc {fc} width x Q {:.4}",
                 rf.rel_width * Q
             );
 
-            // assert!(
-            //     (rf.peak_h / PEAK_GAIN - 1.0).abs() < 1e-5,
-            //     "fc {fc} full peak gain {:.9}",
-            //     rf.peak_h
-            // );
-            let dc = pf.iter().map(|h| h.re as f64).sum::<f64>();
-            // assert!(dc.abs() < 1e-5 * PEAK_GAIN, "fc {fc} full dc {dc:.3e}");
+            refs.push((fc, nf, rf, w0));
+        }
 
-            // // -3 dB width is set by P = sqrt(beta*gamma) and Q = P/1.6651. Nothing else
-            // // measures whether that conversion actually lands.
-            // assert!(
-            //     (rf.rel_width * Q / WIDTH_Q - 1.0).abs() < WIDTH_TOL,
-            //     "fc {fc} rel width {:.5} x Q = {:.4}",
-            //     rf.rel_width,
-            //     rf.rel_width * Q
-            // );
+        // Cuts
+        println!(
+            "\n  {:>6} {:>7} {:>5} {:>6} {:>9} {:>8} {:>9} {:>8} {:>8} {:>8}",
+            "fc", "tail", "taps", "ratio", "gain", "width·Q", "peak c", "dc", "image", "floor"
+        );
 
-            let (mut prev_taps, mut prev_stop) = (0usize, f64::INFINITY);
+        for (fc, nf, rf, w0) in &refs {
+            let (fc, nf, w0) = (*fc, *nf, *w0);
+            let (mut prev_taps, mut prev_floor) = (0usize, f64::INFINITY);
 
             for tail_db in CUTS {
                 let cut = w.bin(fc, RATE).truncate(tail_db);
                 let nc = cut.folded_taps();
                 let pc = unfold(&cut.taps(), 0);
-
-                let pass = passband_gap(&pf, &pc, rf.edges.0, rf.edges.1);
-                let stop = stopband(&pf, &pc, w0);
+                let rc = characterize(&pc, w0);
                 let dc = dc_leak(&pc, w0);
 
-                let rc = characterize(&pc, w0);
-                let cents = 1200.0 * (rc.peak_w / rf.peak_w).log2();
-
-                // amplitude of the requested tail mass
-                let tail = 10.0f64.powf(tail_db / 20.0);
-
                 println!(
-                    "    tail {tail_db:>6.1} dB  weights (folded) {nc:>4} ({:.3})  \
-                    pass {:>7.2} dB  stop {:>7.2} dB  dc {:>7.2} dB  peak {:+.4}c  width {:+.3}%",
+                    "  {fc:>6.0} {tail_db:>7.1} {nc:>5} {:>6.3} {:>9.6} {:>8.4} {:>+9.3} \
+                     {:>8.2} {:>8.2} {:>8.2}",
                     nc as f64 / nf as f64,
-                    db(pass),
-                    db(stop),
+                    rc.gain,
+                    rc.rel_width * Q,
+                    cents(rc.peak_w, w0),
                     db(dc),
-                    cents,
-                    100.0 * (rc.rel_width / rf.rel_width - 1.0)
+                    db(rc.image),
+                    db(rc.floor)
                 );
 
-                // assert!(
-                //     pass < PASS_SLOP * tail * PEAK_GAIN,
-                //     "fc {fc} tail {tail_db} passband {:.2} dB rel",
-                //     db(pass)
-                // );
-
-                // // Peak gain survives truncation, and the band neither moves nor widens.
-                // assert!(
-                //     cents.abs() < 8.0,
-                //     "fc {fc} tail {tail_db} peak moved {cents:+.4}c"
-                // );
+                // The band neither moves nor widens.
+                assert!(
+                    (cents(rc.peak_w, w0) - cents(rf.peak_w, w0)).abs() < 8.0,
+                    "fc {fc} tail {tail_db} peak moved {:+.4}c",
+                    cents(rc.peak_w, w0) - cents(rf.peak_w, w0)
+                );
                 // assert!(
                 //     (rc.rel_width / rf.rel_width - 1.0).abs() < 0.02,
                 //     "fc {fc} tail {tail_db} width {:+.3}%",
                 //     100.0 * (rc.rel_width / rf.rel_width - 1.0)
                 // );
 
-                // assert!(
-                //     dc < 1e-2 * PEAK_GAIN,
-                //     "fc {fc} tail {tail_db} dc {:.2} dB",
-                //     db(dc)
-                // );
+                // Gain near DC combines both positive and negative components, so use of PEAK_GAIN
+                // is apt here.
+                // ROLL DC centering
+                assert!(
+                    dc < 1e-1 * PEAK_GAIN,
+                    "fc {fc} tail {tail_db} dc {:.2} dB",
+                    db(dc)
+                );
 
-                // // Weaker truncation buys stopband with taps.  Taps may stay the same due to
-                // // quantum rounding.
-                // assert!(
-                //     nc >= prev_taps,
-                //     "fc {fc} tail {tail_db} taps {nc} < {prev_taps}"
-                // );
-                // assert!(
-                //     (nc == prev_taps && stop >= prev_stop) || stop < prev_stop,
-                //     "fc {fc} tail {tail_db} taps {prev_taps} -> {nc} without stopband gain"
-                // );
+                // Weaker truncation buys floor with taps.  Taps may hold under quantum rounding.
+                assert!(
+                    nc >= prev_taps,
+                    "fc {fc} tail {tail_db} taps {nc} < {prev_taps}"
+                );
+                assert!(
+                    (nc == prev_taps && rc.floor >= prev_floor) || rc.floor < prev_floor,
+                    "fc {fc} tail {tail_db} taps {prev_taps} -> {nc} without floor gain"
+                );
 
-                // assert!(
-                //     stop < LEAK_SLOP * tail * PEAK_GAIN,
-                //     "fc {fc} tail {tail_db} stop {:.2} dB",
-                //     db(stop)
-                // );
-
-                (prev_taps, prev_stop) = (nc, stop);
+                (prev_taps, prev_floor) = (nc, rc.floor);
             }
+            println!();
         }
+    }
+
+    /// Truncated tables carry the reference's low moments, so the cut tails live on in the body.
+    // ROLL until restriction restores moments, different dB will not have the same total
+    // response.
+    #[ignore]
+    #[test]
+    fn truncation_preserves_moments() {
+        const Q: f64 = 3.5;
+        const QUANTUM: usize = 4;
+
+        const FULL_DB: f64 = -160.0;
+        const CUTS: [f64; 4] = [-60.0, -80.0, -100.0, -120.0];
+        const FCS: [f64; 4] = [2_000.0, 4_000.0, 8_000.0, 14_000.0];
+
+        /// Moments the repair restores, M_0 through M_{ORDERS−1}.
+        const ORDERS: i32 = 4;
+
+        // NOTE calibrate once the repair lands.
+        const TOL: f64 = 1e-4;
+
+        let w = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, 3.0))
+            .max_load_quantum(QUANTUM)
+            .truncate(FULL_DB)
+            .bake();
+
+        let db = |v: f64| 20.0 * v.log10();
+
+        println!(
+            "\n=== MOMENTS (Q = {Q}, quantum {QUANTUM}) ===\n\
+            dB of |M_p(cut) − M_p(ref)| / Σ|ν|^p|h_ref|, reference tail {FULL_DB:.1} dB"
+        );
+        let header: String = (0..ORDERS)
+            .map(|p| format!(" {:>8}", format!("M{p}")))
+            .collect();
+        println!("\n  {:>6} {:>7} {:>5}{header}", "fc", "tail", "taps");
+
+        let mut worst = (0.0f64, 0.0f64, 0.0f64, 0i32);
+        for fc in FCS {
+            let pf = unfold(&w.bin(fc, RATE).truncate(FULL_DB).taps(), 0);
+            let half = (pf.len() / 2) as isize;
+
+            // Σ|ν|^p |h_ref|
+            let scale = |p: i32| -> f64 {
+                pf.iter()
+                    .enumerate()
+                    .map(|(j, h)| ((j as isize - half) as f64).abs().powi(p) * h.norm() as f64)
+                    .sum()
+            };
+
+            for tail_db in CUTS {
+                let cut = w.bin(fc, RATE).truncate(tail_db);
+                let pc = unfold(&cut.taps(), 0);
+
+                let errs: Vec<f64> = (0..ORDERS)
+                    .map(|p| (moment(&pc, p) - moment(&pf, p)).norm() / scale(p))
+                    .collect();
+
+                let row: String = errs.iter().map(|&e| format!(" {:>8.2}", db(e))).collect();
+                println!("  {fc:>6.0} {tail_db:>7.1} {:>5}{row}", cut.folded_taps());
+
+                for (p, &e) in errs.iter().enumerate() {
+                    if e > worst.0 {
+                        worst = (e, fc, tail_db, p as i32);
+                    }
+                }
+            }
+            println!();
+        }
+
+        let (e, fc, tail_db, p) = worst;
+        assert!(e < TOL, "fc {fc} tail {tail_db} M{p} error {:.2} dB", db(e));
     }
 
     /// Smoke test.  DC-free and correct peak gain, measured with the linear DTFT so a broken fold
@@ -1272,7 +1391,7 @@ mod test {
                     })
                     .sum::<f64>()
                     / ANTI_ALIAS as f64;
-                let db = 10.0 * (power / (r.peak_h * r.peak_h)).log10();
+                let db = 10.0 * (power / (r.gain * r.gain)).log10();
 
                 let cells = ((1.0 - db / FLOOR_DB) * COLS as f64)
                     .round()
@@ -1366,7 +1485,7 @@ mod test {
 
                 let w0 = bin.velocity();
                 let r = characterize(&psi, w0);
-                let db = |v: f64| 20.0 * (v / r.peak_h).log10();
+                let db = |v: f64| 20.0 * (v / r.gain).log10();
 
                 println!(
                     "\nfc {fc:>5.0} sr {sr:>5.0}  w0 {w0:.6}  quantized {:>3} (unfolded {:>3})",
@@ -1375,12 +1494,12 @@ mod test {
                 );
                 println!(
                     "  peak gain {:.9}  dev {:+.3e} rel",
-                    r.peak_h,
-                    r.peak_h / PEAK_GAIN - 1.0
+                    r.gain,
+                    r.gain / PEAK_GAIN - 1.0
                 );
                 println!("  rel width {:.5}", r.rel_width);
                 println!("  peak {:+.4} cents", 1200.0 * (r.peak_w / w0).log2());
-                println!("  negative-freq max {:>8.2} dB", db(r.neg));
+                println!("  image max        {:>8.2} dB", db(r.image));
                 println!("  stopband floor    {:>8.2} dB", db(r.floor));
 
                 // assert!(
