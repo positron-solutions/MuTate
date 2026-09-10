@@ -1928,18 +1928,19 @@ impl StokesTable {
 }
 
 /// Polishes a single root of `u^γ - iτu - 1` in place, quadratic from a table seed.
-fn newton_trinomial(q: &mut Complex64, g: usize, tau: f64) {
+fn newton_trinomial(q: &mut Complex64, g: usize, tau: f64) -> u32 {
     let gi = g as i32;
     let it = Complex64::i() * tau;
-    for _ in 0..TABLE_NEWTON_ITERS {
+    for k in 0..TABLE_NEWTON_ITERS {
         let p = q.powi(gi) - it * *q - 1.0;
         let dp = q.powi(gi - 1) * g as f64 - it;
         let step = p / dp;
         *q -= step;
         if step.norm() < TABLE_NEWTON_TOL {
-            break;
+            return k as u32 + 1;
         }
     }
+    TABLE_NEWTON_ITERS as u32
 }
 
 /// Solves the trinomial for all `γ` roots at once during the march, warm-started in place so
