@@ -171,7 +171,7 @@ const PROBE_TRIES: u32 = 8;
 // Jets
 const ADJ_CONE: f64 = 0.5;
 const HANDOVER_SPLITS: u32 = 2;
-const JET_ORDER: usize = 128;
+const JET_ORDER: usize = 32;
 const JET_SLOTS: usize = JET_ORDER + 2;
 const JET_SETTLE_FLOOR: usize = 2;
 const JET_OVERSHOOT: f64 = 1.2;
