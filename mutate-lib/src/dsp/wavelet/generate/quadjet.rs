@@ -1497,6 +1497,8 @@ impl Handoff<'_> {
 struct Normal {
     /// `e^{v(x)}`.
     y: [Complex64; JET_SLOTS],
+    /// `k·y_k`, the weight both the `y^γ` split and the `P` convolution read.
+    my: [Complex64; JET_SLOTS],
     /// `y^γ`, kept because `P` reads it at every order and rebuilding it is a convolution.
     yg: [Complex64; JET_SLOTS],
     /// `g'` along the path, `P_0 = 0` by construction.
@@ -1516,6 +1518,7 @@ impl Default for Normal {
         Self {
             y: [Complex64::default(); JET_SLOTS],
             yg: [Complex64::default(); JET_SLOTS],
+            my: [Complex64::default(); JET_SLOTS],
             p: [Complex64::default(); JET_SLOTS],
             w: [Complex64::default(); JET_SLOTS],
             v: [Complex64::default(); JET_SLOTS],
@@ -1532,6 +1535,8 @@ impl Normal {
         let y1 = s.s0().inv();
         self.y[0] = Complex64::new(1.0, 0.0);
         self.y[1] = y1;
+        self.my[0] = Complex64::default();
+        self.my[1] = y1;
         self.yg[0] = Complex64::new(1.0, 0.0);
         self.yg[1] = y1 * frame.gamma;
         self.p[0] = Complex64::default();
@@ -1550,24 +1555,26 @@ impl Normal {
         }
         let gamma = frame.gamma;
         let bp1 = s.b + 1.0;
-        let y1 = self.y[1];
+        let s0 = s.s0();
+        let lead = self.y[1] * bp1;
+        let gp1 = gamma + 1.0;
 
-        // Walk `y` up first, since `P` is a function of it and the slope reads `P` one order
-        // above its own.  `y^γ` splits into the part that carries `y_k` and the part that does
-        // not, and only the second half is known when the step begins.
         for k in (self.width + 2)..=(target + 1) {
-            let mut tail = Complex64::default();
+            let mut wtd = Complex64::default();
+            let mut plain = Complex64::default();
             for i in 1..k {
-                tail += (gamma * i as f64 - (k - i) as f64) * self.y[i] * self.yg[k - i];
+                wtd += self.my[i] * self.yg[k - i];
+                plain += self.y[i] * self.yg[k - i];
             }
-            tail /= k as f64;
+            let tail = (gp1 * wtd - (k as f64) * plain) / k as f64;
 
             let mut mid = Complex64::default();
             for j in 2..k {
-                mid += (k - j + 1) as f64 * self.y[k - j + 1] * self.p[j];
+                mid += self.my[k - j + 1] * self.p[j];
             }
 
-            self.y[k] = (self.y[k - 1] + mid - y1 * bp1 * tail) / ((k + 1) as f64 * s.s0());
+            self.y[k] = (self.y[k - 1] + mid - lead * tail) / ((k + 1) as f64 * s0);
+            self.my[k] = self.y[k] * k as f64;
             self.yg[k] = self.y[k] * gamma + tail;
             self.p[k] = self.y[k] * s.b - self.yg[k] * bp1;
         }
