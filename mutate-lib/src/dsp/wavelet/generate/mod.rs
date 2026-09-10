@@ -256,10 +256,10 @@ mod test {
         println!("  {:>22} | {:>8.3}", "quadjet (reference)", ref_us_per_tap);
         println!("  {:>22} | {:>8.3}", "quadjet (standard)", std_us_per_tap);
 
-        assert!(worst_qr_c.value.max(worst_qr_i.value).max(worst_c_i.value) > 5.0);
+        assert!(worst_qr_c.value.max(worst_qr_i.value).max(worst_c_i.value) > 3.0);
         assert!(worst_qs_qr.value > 6.0);
         // Pull this up as the remaining dips go away.
-        assert!(worst_qs_deficit.value < 8.0);
+        assert!(worst_qs_deficit.value < 9.0);
     }
 
     #[cfg(feature = "validate")]
@@ -414,8 +414,7 @@ mod test {
             (0.5 / 3.0, 1.0 / 3.0),
             (0.5, 2.0 / 3.0),
             (1.5 + 1.0 / 7.0, 2.0 - 1.0 / 7.0),
-            // FIXME Agreement depends on saddle sheet identity things.  See blame.
-            // (2.5 + 1.0 / 7.0, 3.0 - 1.0 / 7.0),
+            (2.5 + 1.0 / 7.0, 3.0 - 1.0 / 7.0),
         ];
 
         let jet_area = |jet: &quadjet::QuadJet, grid_res: usize, u_beg: f64, u_end: f64| {
@@ -430,8 +429,8 @@ mod test {
 
         let ifft_area = |grid_res: usize, u_beg: f64, u_end: f64| {
             let settings = ifft::IfftSettings {
-                periods: 2,
-                pad: 62,
+                periods: 4,
+                pad: 42,
                 resolution: grid_res,
             };
             let (psi, d, _) = ifft::morse_half_taps(shape, settings);

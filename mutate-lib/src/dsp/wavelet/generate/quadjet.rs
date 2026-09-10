@@ -161,6 +161,13 @@ const TABLE_TAU_MAX: f64 = 128.0;
 // Saddle orientation
 const DESCENT_AXIS_TIE: f64 = 1e-12;
 
+// Sheet probing
+const SHEET_COS: f64 = 0.5;
+const PROBE_CLIP: f64 = 1.0 / 64.0;
+const PROBE_REACH: f64 = 8.0;
+const PROBE_SPREAD: f64 = 2.5;
+const PROBE_TRIES: u32 = 8;
+
 // Jets
 const ADJ_CONE: f64 = 0.5;
 const HANDOVER_SPLITS: u32 = 2;
@@ -168,7 +175,8 @@ const JET_ORDER: usize = 128;
 const JET_SLOTS: usize = JET_ORDER + 2;
 const JET_SETTLE_FLOOR: usize = 2;
 const JET_OVERSHOOT: f64 = 1.2;
-const LIVE: f64 = 0.5;
+const LIVE: f64 = 1e-6;
+const STOKES_REACH: f64 = 4.0;
 const MAX_G: usize = 8;
 const TURN_CONFIRM: u32 = 2;
 
@@ -177,13 +185,14 @@ const CALIBRATE_NODES: f64 = 2.0;
 const ANCHOR_EFOLDS: f64 = 3.0;
 const CERTIFY_DERATE: f64 = 0.35;
 const GAP_FLOOR: f64 = 1e-6;
-const LIFT_CREDIT: f64 = 0.5;
+const LIFT_CREDIT: f64 = 1.0;
+const PLACE_MARGIN_EFOLDS: f64 = 2.0;
+const PLACE_STEP: f64 = 1.2;
 const NEWTON_TOL_FACTOR: f64 = 0.3;
 const NEWTON_SLACK: usize = 2;
-const NEWTON_STALL_ULPS: f64 = 8.0;
 const PLACE_MARGIN: f64 = 1.2;
 const PLACE_ROUNDS: u32 = 6;
-const QUAD_MAX_NODES: usize = 4096;
+const QUAD_MAX_NODES: usize = 1024 * 16;
 const QUAD_MIN_DENSITY: f64 = 1e-3;
 const RATE_CREDIBLE: f64 = 4.0;
 const REACH_MARGIN: f64 = 3.0;
@@ -362,7 +371,7 @@ impl QuadJet {
     }
 
     pub fn standard(shape: Shape) -> Self {
-        Self::new(shape, 1e-9, false)
+        Self::new(shape, 1e-7, false)
     }
 
     pub fn tap_at(&self, u: f64) -> QuadJetResult {
@@ -375,7 +384,12 @@ impl QuadJet {
         let tau = TAU * u.abs() / beta;
         let rel = relative(self.tol);
 
-        let (roots, weights) = self.table.roots_at(tau);
+        let Membership {
+            roots,
+            weights,
+            smooth,
+            partner,
+        } = self.table.roots_at(tau, frame);
 
         let mut saddles: [Saddle; MAX_G] = [Saddle::default(); MAX_G];
         for i in 0..g {
@@ -401,7 +415,7 @@ impl QuadJet {
             + beta * peak.ln();
 
         let mut scales = [[Complex64::default(); 2]; MAX_G];
-        for &i in active {
+        for i in 0..g {
             scales[i] = saddles[i].scales(frame, log_scale);
         }
 
@@ -410,7 +424,7 @@ impl QuadJet {
 
         // Sizes are read off `ψ` alone, since `ψ` is the channel the accuracy is owed to.
         let mut amps = [0.0_f64; MAX_G];
-        for &i in active {
+        for i in 0..g {
             amps[i] = saddles[i].amplitude(frame, scales[i][0]);
         }
 
@@ -427,6 +441,9 @@ impl QuadJet {
 
         let mut normal = Normal::default();
         let mut cost = Cost::default();
+
+        // What each saddle came back with, and whether a traced contour produced it.
+        let mut got: [Option<(Terms, bool)>; MAX_G] = std::array::from_fn(|_| None);
 
         for &i in active {
             let s = &saddles[i];
@@ -461,7 +478,7 @@ impl QuadJet {
                 continue;
             }
 
-            let terms = if self.quadrature_only {
+            let resolved = if self.quadrature_only {
                 let handoff = Handoff {
                     normal: None,
                     degree: 0,
@@ -472,9 +489,13 @@ impl QuadJet {
                 // it needs and the distance it walks.
                 let quad = s.quadrature(frame, local_bar, rel, scale, target, seen, &handoff);
                 cost += quad.cost;
-                quad.terms
+                (quad.terms, true)
             } else {
-                let mut jet = s.jet(frame, scale, target, r_star, local_bar, &mut normal);
+                // The pair's least term sits at the partner's singulant, which is not the nearest
+                // one the screen found.
+                let pin = partner[i].map(|k| seen[k].norm().ceil() as usize);
+
+                let mut jet = s.jet(frame, scale, target, r_star, local_bar, pin, &mut normal);
                 cost += jet.cost;
 
                 // A missed bar buys more series before it buys any nodes, but only where the
@@ -514,15 +535,33 @@ impl QuadJet {
                     let moved = (quad.terms.value[0] - jet.terms.value[0]).norm();
                     cost.quad_gain = cost.quad_gain.max(moved / target);
 
-                    quad.terms
+                    (quad.terms, true)
                 } else {
-                    jet.terms
+                    (jet.terms, false)
                 }
+            };
+
+            got[i] = Some(resolved);
+        }
+
+        // The smoothing splits one contribution across a pair, so it holds only where both
+        // members answered from a truncated series.  A traced contour is exact and its partner
+        // has no half to supply.
+        for &i in active {
+            let Some((terms, traced)) = &got[i] else {
+                continue;
+            };
+            let paired = partner[i].is_some_and(|k| got[k].as_ref().is_some_and(|g| !g.1));
+            let w = if !traced && paired {
+                smooth[i]
+            } else {
+                weights[i]
             };
 
             residual += terms.residual * w.abs();
             let pv = terms.value[0] * w;
             let qv = terms.value[1] * w;
+
             psi_re.add(pv.re);
             psi_im.add(pv.im);
             d_re.add(qv.re);
@@ -632,6 +671,7 @@ impl Saddle {
         target: f64,
         r_star: f64,
         bar: f64,
+        pin: Option<usize>,
         normal: &mut Normal,
     ) -> Expansion {
         normal.seed(self, frame);
@@ -641,6 +681,20 @@ impl Saddle {
             jet_saddles: 1,
             ..Default::default()
         };
+
+        // The order belongs to the pair, so the search that finds a bar has nothing to look for.
+        if let Some(n) = pin {
+            let n = n.clamp(JET_SETTLE_FLOOR, JET_ORDER / 2);
+            normal.extend(self, frame, 2 * n);
+            let pass = self.jet_sum(frame, scales, target, n, false, normal);
+            cost += pass.cost;
+            return Expansion {
+                terms: pass.terms,
+                reached: pass.reached,
+                exhausted: pass.spent,
+                cost,
+            };
+        }
 
         // A series whose own floor sits under its own bar is handing its polynomial to
         // quadrature no matter how far it climbs.  There is nothing to search for, so build it
@@ -876,7 +930,7 @@ impl Saddle {
         // The weight has no singularity for a neighbor term to find, and it is not band limited
         // either.  `∫e^{-x²/2}` trapezoids to `e^{-2π²·density²}`, so `bar` e-folds of that is a
         // floor no branch point speaks to.
-        let ideal = (PLACE_MARGIN * (bar + lift).max(0.0) / model_rate)
+        let ideal = (((bar + lift).max(0.0) + PLACE_MARGIN_EFOLDS) / model_rate)
             .max(reach / TAU)
             .clamp(QUAD_MIN_DENSITY, ceiling);
 
@@ -896,7 +950,7 @@ impl Saddle {
         let anchor_density = onset
             .max(CALIBRATE_NODES / reach)
             .clamp(QUAD_MIN_DENSITY, ceiling);
-        let fine_density = ideal.max(PLACE_MARGIN * anchor_density).min(ceiling);
+        let fine_density = ideal.max(PLACE_STEP * anchor_density).min(ceiling);
 
         let anchor = self.trapezoid(frame, reach, anchor_density, rel, hand);
         cost += anchor.cost;
@@ -910,7 +964,7 @@ impl Saddle {
         let mut rate = model_rate;
         let mut carried = f64::INFINITY;
 
-        for _ in 0..PLACE_ROUNDS {
+        for round in 0..PLACE_ROUNDS {
             // A difference between two levels bounds the error of the coarser one, so what the
             // finer still carries is that difference decayed across the step between them.  The
             // decay is derated, since the rate is the model's until a second difference exists
@@ -918,7 +972,11 @@ impl Saddle {
             // strength of that flattery.
             let fade = (-CERTIFY_DERATE * rate * (hi - lo)).exp();
             let bar_abs = target.max(EPS * value(&level, 0).norm());
-            carried = err_lo * fade;
+            carried = if hi > lo {
+                err_lo * (-CERTIFY_DERATE * rate * (hi - lo)).exp()
+            } else {
+                f64::INFINITY
+            };
             let short = carried > bar_abs;
             let place = lo + (err_lo / bar_abs).max(1.0).ln() / rate;
 
@@ -929,7 +987,7 @@ impl Saddle {
                 break;
             }
 
-            let next = (hi + PLACE_MARGIN * (place - hi)).min(ceiling);
+            let next = (hi + PLACE_STEP * (place - hi)).min(ceiling);
             if next <= hi {
                 break;
             }
@@ -943,8 +1001,9 @@ impl Saddle {
             // roundoff and has nothing left to say, and a rate far from the model's has been
             // read off terrain the model does not describe, so both leave the job with the model
             // rather than let one measurement steer the whole placement.
+            let mut measured = f64::NAN;
             if err_hi > 0.0 && err_lo > err_hi {
-                let measured = (err_lo / err_hi).ln() / (hi - lo);
+                measured = (err_lo / err_hi).ln() / (hi - lo);
                 rate = measured.clamp(model_rate / RATE_CREDIBLE, model_rate * RATE_CREDIBLE);
             }
 
@@ -957,7 +1016,9 @@ impl Saddle {
         cost.quad_density_ratio = hi / ideal;
         cost.quad_rate_ratio = rate / model_rate;
 
-        let alias = carried;
+        // A ceiling-bound pair measured nothing, so the level's own size is the only bound
+        // available.
+        let alias = carried.min(scales[0].norm() * level.resid[0].norm());
 
         // Each side stopped where its own valley gave out, so the Gaussian is charged twice at
         // two different edges rather than once at the shorter of them.
@@ -1042,9 +1103,8 @@ impl Saddle {
         let mut spans = [0.0_f64; 2];
         let mut full = true;
 
-        // Each side runs the summed stretch first and hands the path to Newton once, at the last
-        // node the series placed.  Difficulty grows outward, so the handover sits where the walk
-        // would have started climbing its split count anyway.
+        let mut seed = self.q.re.to_bits() | 1;
+
         for (which, side) in [1.0_f64, -1.0].into_iter().enumerate() {
             let mut at = apex;
             let mut splits = 1u32;
@@ -1054,9 +1114,6 @@ impl Saddle {
                 let x0 = side * (j - 1) as f64 * h;
                 let x1 = side * j as f64 * h;
 
-                // Inside the trust radius the series is the node.  Past it the series is still
-                // the best guess Newton could start from, and only past that does the walk fall
-                // back on the tangent and its subdivision.
                 if summing {
                     if let Some(f) = hand.tail(x1) {
                         tally(x1, f);
@@ -1073,7 +1130,7 @@ impl Saddle {
                 if let Some((guess, slope)) = hand.predict(x1) {
                     let allow = PREDICT_DRIFT * slope.norm() * h;
                     let solve = Solve::new(rel);
-                    if let Some(next) = self.close(guess, allow, x1, solve) {
+                    if let Some(next) = self.close(guess, allow, x1, at.1, solve) {
                         at = next;
                         walked += 1;
                         tally(x1, traced(x1, at.0, at.1));
@@ -1082,9 +1139,19 @@ impl Saddle {
                     }
                 }
 
+                if let Some(next) = self.probe(at, x0, x1, rel, &mut seed) {
+                    at = next;
+                    walked += 1;
+                    tally(x1, traced(x1, at.0, at.1));
+                    last = j;
+                    continue;
+                }
+
                 match self.walk(at, x0, x1, rel, &mut splits) {
                     Some(next) => at = next,
-                    None => break,
+                    None => {
+                        break;
+                    }
                 }
                 walked += 1;
                 tally(x1, traced(x1, at.0, at.1));
@@ -1093,6 +1160,7 @@ impl Saddle {
             full &= last == n;
             spans[which] = last as f64 / density;
         }
+
         drop(tally);
 
         let moments = match hand.normal {
@@ -1128,6 +1196,7 @@ impl Saddle {
         guess: Complex64,
         allow: f64,
         x1: f64,
+        from: Complex64,
         solve: Solve,
     ) -> Option<(Complex64, Complex64)> {
         let mut w = guess;
@@ -1147,20 +1216,23 @@ impl Saddle {
                 arrived = true;
                 break;
             }
+            // A step that stopped halving has reached the floor the cancellation in `g` allows.
+            // Where that floor sits is a property of `b` and `s0` rather than of `w`, so arrival
+            // is read off the halving and the landing answers to `allow` and the slope gate.
             if size > 0.5 * prev {
-                // A step that stopped halving is at the floor the arithmetic allows, which
-                // scales with the point rather than with the bar.
-                let floor = NEWTON_STALL_ULPS * EPS * w.norm().max(1.0);
-                arrived = size < solve.step_tol.max(floor);
+                arrived = true;
                 break;
             }
             prev = size;
         }
 
-        if !arrived || (w - guess).norm() > allow {
+        let slope = -x1 / gp;
+        let drift = (w - guess).norm();
+        let cos = (slope * from.conj()).re / (slope.norm() * from.norm());
+        if !arrived || drift > allow || cos <= SHEET_COS {
             return None;
         }
-        Some((w, -x1 / gp))
+        Some((w, slope))
     }
 
     /// One step along the path that `dv/dx = -x/g'(v)` predicts, closed by Newton.  The tangent
@@ -1176,7 +1248,7 @@ impl Saddle {
         let h = x1 - x0;
         let allow = 4.0 * slope.norm() * h.abs() + 0.25;
         let solve = Solve::new(rel);
-        self.close(v + slope * h, allow, x1, solve)
+        self.close(v + slope * h, allow, x1, slope, solve)
             .filter(|(w, _)| (w - v).norm() <= allow)
     }
 
@@ -1220,6 +1292,44 @@ impl Saddle {
             }
             *splits *= 2;
         }
+    }
+
+    /// A scatter of starting points where nothing can say where the path went.
+    ///
+    /// Newton lands on whichever sheet its guess sits nearest, so the guess is the whole
+    /// question and subdivision only answers it by accident.  A proposal costs one solve and
+    /// three dot products against the gates `close` already applies, and the shortest landing
+    /// wins.  The first proposal is the tangent itself.
+    fn probe(
+        &self,
+        from: (Complex64, Complex64),
+        x0: f64,
+        x1: f64,
+        rel: f64,
+        seed: &mut u64,
+    ) -> Option<(Complex64, Complex64)> {
+        let step = from.1 * (x1 - x0);
+        let spread = PROBE_SPREAD * step.norm();
+        let base = from.0 + step;
+        let leash = PROBE_REACH * step.norm() + spread;
+        let solve = Solve::new(rel);
+
+        for k in 0..PROBE_TRIES {
+            let (guess, allow) = if k == 0 {
+                (base, step.norm())
+            } else {
+                let off = spread * kick(seed);
+                (base + off, off.norm() + step.norm())
+            };
+            let Some(next) = self.close(guess, allow, x1, from.1, solve) else {
+                continue;
+            };
+            if (next.0 - from.0).norm() > leash {
+                continue;
+            }
+            return Some(next);
+        }
+        None
     }
 
     /// This saddle's prefactor for each channel, with the dominant `e^{βΦ}` already divided out
@@ -1571,6 +1681,16 @@ impl Singulants {
     }
 }
 
+/// What the march says at one `τ`.  A fractional weight is the remainder of a series stopped at
+/// the pair's least term, so a saddle inside the switching window carries the partner that order
+/// belongs to.
+struct Membership {
+    roots: [Complex64; MAX_G],
+    weights: [f64; MAX_G],
+    partner: [Option<usize>; MAX_G],
+    smooth: [f64; MAX_G],
+}
+
 /// Root identity and membership as functions of `τ`, resolved once.
 ///
 /// Membership changes only where two saddles exchange dominance, so it has to be marched from
@@ -1588,6 +1708,8 @@ struct StokesTable {
     roots: Box<[Complex64]>,
     /// Row-major `[node][root]`.
     weights: Box<[f64]>,
+    /// Row-major `[node][dominant][recessive]`, the sign the membership step carried.
+    flips: Box<[i8]>,
 }
 
 impl StokesTable {
@@ -1604,6 +1726,8 @@ impl StokesTable {
         }
         let mut weights = [0.0_f64; MAX_G];
         weights[0] = 1.0;
+        let mut sign = [0i8; MAX_G * MAX_G];
+        let mut flips = vec![0i8; TABLE_NODES * g * g].into_boxed_slice();
 
         let phis = |r: &[Complex64; MAX_G]| -> [Complex64; MAX_G] {
             let mut p = [Complex64::default(); MAX_G];
@@ -1645,6 +1769,7 @@ impl StokesTable {
                     let im = d.im;
                     if d.re > 0.0 && prev_im[idx] * im < 0.0 {
                         weights[k] += im.signum() * held[j];
+                        sign[idx] = im.signum() as i8;
                         last_flip_s = sn;
                     }
                     prev_im[idx] = im;
@@ -1654,6 +1779,7 @@ impl StokesTable {
             s[n] = sn;
             roots[n * g..(n + 1) * g].copy_from_slice(&r[..g]);
             m[n * g..(n + 1) * g].copy_from_slice(&weights[..g]);
+            flips[n * g * g..(n + 1) * g * g].copy_from_slice(&sign[..g * g]);
             used = n + 1;
 
             // Once the crossings have stopped coming the decomposition is settled and there is
@@ -1668,6 +1794,7 @@ impl StokesTable {
             s: s[..used].to_vec().into_boxed_slice(),
             roots: roots[..used * g].to_vec().into_boxed_slice(),
             weights: m[..used * g].to_vec().into_boxed_slice(),
+            flips,
         }
     }
 
@@ -1675,7 +1802,7 @@ impl StokesTable {
     /// node's roots as a seed, and let Newton close the rest.  Past the last node the
     /// membership is settled and the roots follow their asymptotics, so the final node goes on
     /// serving as a seed.
-    fn roots_at(&self, tau: f64) -> ([Complex64; MAX_G], [f64; MAX_G]) {
+    fn roots_at(&self, tau: f64, frame: &Frame) -> Membership {
         let g = self.g;
         let target = (1.0 + tau).ln();
 
@@ -1697,7 +1824,46 @@ impl StokesTable {
             newton_trinomial(&mut r[k], g, tau);
         }
 
-        (r, w)
+        let mut phi = [Complex64::default(); MAX_G];
+        for k in 0..g {
+            phi[k] = Saddle::new(r[k], frame).phi;
+        }
+
+        // `(1/2)erfc(-σ)`, `σ = Im Δ / √(2 Re Δ)`, less the step the march already took.
+        let mut smooth = w;
+        let mut partner = [None; MAX_G];
+        for j in 0..g {
+            if w[j].abs() <= LIVE {
+                continue;
+            }
+            for k in 0..g {
+                let s = self.flips[n * g * g + j * g + k];
+                if s == 0 {
+                    continue;
+                }
+                let d = (phi[j] - phi[k]) * frame.beta;
+                if d.re <= 0.0 {
+                    continue;
+                }
+                let s = s as f64;
+                let x = s * d.im / (2.0 * d.re).sqrt();
+
+                // The bracketed node already carries the whole step, so the smoothing replaces it.
+                smooth[k] += w[j] * s * (0.5 * erfc(-x) - 1.0);
+
+                if x.abs() < STOKES_REACH {
+                    partner[j] = Some(k);
+                    partner[k] = Some(j);
+                }
+            }
+        }
+
+        Membership {
+            roots: r,
+            weights: w,
+            smooth,
+            partner,
+        }
     }
 
     /// Prints the march's own record across a span of `τ`, every root and not just the live
@@ -1778,6 +1944,23 @@ fn durand_kerner(r: &mut [Complex64; MAX_G], g: usize, tau: f64) {
             break;
         }
     }
+}
+
+/// A heavy-tailed unit kick in the plane.  `t/(1 - |t|)` on a uniform `t`.
+fn kick(seed: &mut u64) -> Complex64 {
+    Complex64::new(tailed(uniform(seed)), tailed(uniform(seed)))
+}
+
+fn tailed(t: f64) -> f64 {
+    t / (1.0 - t.abs()).max(PROBE_CLIP)
+}
+
+/// xorshift64, on `(-1, 1)`.
+fn uniform(seed: &mut u64) -> f64 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    2.0 * ((*seed >> 11) as f64 / (1u64 << 53) as f64) - 1.0
 }
 
 /// The bar, as a fraction of the dominant contribution.  Half of `tol` leaves the other half for
@@ -1914,10 +2097,10 @@ mod test {
         // NOTE this is crude and depends on settings but provides some development signal.
         let mut matrix_time = std::time::Duration::default();
 
-        for k in 0..=4096 {
+        for k in 0..=2048 {
             let u = k as f64 * 0.00625 * 0.5;
             // for k in 0..=32 {
-            //    let u = k as f64 * 0.05 + 2.5;
+            // let u = k as f64 * 0.0025 + 2.9;
 
             let reference = ref_jet.tap_at(u);
             let rc = reference.cost;
@@ -1938,6 +2121,7 @@ mod test {
             }
 
             if k % 100 == 0 {
+                // {
                 let c = standard.cost;
                 // `T` is a trace that ran out of valley, `S` is a bar the placement never met.
                 let flags = |truncated: bool, short: bool| match (truncated, short) {
