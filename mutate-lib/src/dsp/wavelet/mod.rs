@@ -302,7 +302,7 @@ pub mod whatsleft;
 
 use core::f64::consts::{LN_10, LN_2, PI, TAU};
 
-use num_complex;
+use num_complex::{Complex32, Complex64};
 
 use spec::{Bin, BinSpec, Shape, Wavelet, WaveletSpec};
 
@@ -338,15 +338,34 @@ mod test {
             .bake()
     }
 
-    // NOTE we have num_complex btw.  Just bing lazy.
-    fn mag((re, im): (f32, f32)) -> f64 {
-        let (re, im) = (re as f64, im as f64);
-        (re * re + im * im).sqrt()
+    /// Folded weights back to centered taps. Lane `c` selects psi (0) or d (2).
+    /// The doubled center undoes the halving in `quantize`.
+    fn unfold(w: &[[f32; 4]], c: usize) -> Vec<Complex32> {
+        let k = w.len();
+        let mut out = vec![Complex32::default(); 2 * k - 1];
+        out[k - 1] = Complex32::new(2.0 * w[0][c], 0.0);
+        for (j, q) in w.iter().enumerate().skip(1) {
+            let h = Complex32::new(q[c], q[c + 1]);
+            out[k - 1 + j] = h;
+            out[k - 1 - j] = h.conj();
+        }
+        out
     }
 
-    // XXX combine these two and use num_complex
-    /// |H(w)| of centered taps, w in rad/sample.
-    fn dtft(taps: &[(f32, f32)], w: f64) -> f64 {
+    /// t_nu = -i*nu*psi_nu, matching what a consumer reconstructs per lane.
+    fn derive_t(psi: &[Complex64]) -> Vec<Complex64> {
+        let half = (psi.len() / 2) as isize;
+        psi.iter()
+            .enumerate()
+            .map(|(j, &h)| {
+                let nu = (j as isize - half) as f64;
+                -Complex64::i() * nu * h
+            })
+            .collect()
+    }
+
+    /// H(ω) of centered taps, ω in rad/sample.
+    fn dtft(taps: &[Complex32], w: f64) -> Complex64 {
         // Phase drift accumulates proportionate to sqrt(n), and reseed caps the walk.
         // Measured vs full re-seed out to about -270dB of difference, so well below what our
         // eventual storage is losing to f32 truncation already.
@@ -356,69 +375,28 @@ mod test {
         const RESEED: usize = 512;
 
         let half = (taps.len() / 2) as f64;
-        let (s, c) = w.sin_cos();
-        let (sh, ch) = (w * half).sin_cos();
-        let (mut cr, mut ci) = (ch, sh);
-        let (mut re, mut im) = (0.0f64, 0.0f64);
+        // e^{−iω}
+        let step = Complex64::from_polar(1.0, -w);
+        let (mut rot, mut acc) = (Complex64::default(), Complex64::default());
 
-        for (j, &(r, i)) in taps.iter().enumerate() {
+        for (j, h) in taps.iter().enumerate() {
             if j & (RESEED - 1) == 0 {
-                let (sj, cj) = (w * (half - j as f64)).sin_cos();
-                cr = cj;
-                ci = sj;
+                // e^{iω(half − j)}
+                rot = Complex64::from_polar(1.0, w * (half - j as f64));
             }
-            let (r, i) = (r as f64, i as f64);
-            re += r * cr - i * ci;
-            im += r * ci + i * cr;
-            let (nr, ni) = (cr * c + ci * s, ci * c - cr * s);
-            let k = 0.5 * (3.0 - (nr * nr + ni * ni));
-            cr = nr * k;
-            ci = ni * k;
+            acc += Complex64::new(h.re as f64, h.im as f64) * rot;
+            rot *= step;
+            rot *= 0.5 * (3.0 - rot.norm_sqr());
         }
-
-        (re * re + im * im).sqrt()
+        acc
     }
 
-    // XXX use num_complex
-    fn dtft_c(taps: &[(f32, f32)], w: f64) -> (f64, f64) {
-        // Phase drift accumulates proportionate to sqrt(n), and reseed caps the walk.
-        // Measured vs full re-seed out to about -270dB of difference, so well below what our
-        // eventual storage is losing to f32 truncation already.
-        //
-        // Set RESEED to 1 for full seeding if this test device is under scrutiny.  **Must be power
-        // of two for iteration mask.**
-        const RESEED: usize = 512;
-
-        let half = (taps.len() / 2) as f64;
-        let (s, c) = w.sin_cos();
-        let (sh, ch) = (w * half).sin_cos();
-        let (mut cr, mut ci) = (ch, sh);
-        let (mut re, mut im) = (0.0f64, 0.0f64);
-
-        for (j, &(r, i)) in taps.iter().enumerate() {
-            if j & (RESEED - 1) == 0 {
-                let (sj, cj) = (w * (half - j as f64)).sin_cos();
-                cr = cj;
-                ci = sj;
-            }
-            let (r, i) = (r as f64, i as f64);
-            re += r * cr - i * ci;
-            im += r * ci + i * cr;
-            let (nr, ni) = (cr * c + ci * s, ci * c - cr * s);
-            let k = 0.5 * (3.0 - (nr * nr + ni * ni));
-            cr = nr * k;
-            ci = ni * k;
-        }
-        (re, im)
-    }
-
+    // XXX What is this...
     /// |H_d(w) − w·H_psi(w)|, the pairing the taper and the DC corrector both promise to
     /// preserve at every w. Absolute, because dividing by H_psi is exactly what turns a flat
     /// floor into a skirt blowup in the cents column.
-    fn pairing_residual(psi: &[(f32, f32)], d: &[(f32, f32)], w: f64) -> f64 {
-        let (pr, pi) = dtft_c(psi, w);
-        let (dr, di) = dtft_c(d, w);
-        (dr - w * pr).hypot(di - w * pi)
+    fn pairing_residual(psi: &[Complex32], d: &[Complex32], w: f64) -> f64 {
+        (dtft(d, w) - dtft(psi, w) * w).norm()
     }
 
     /// Max of `f` over `n` samples of [lo, hi].
@@ -429,18 +407,18 @@ mod test {
     }
 
     /// Worst |H| gap over the middle half of the -3 dB band.
-    fn passband_gap(a: &[(f32, f32)], b: &[(f32, f32)], lo: f64, hi: f64) -> f64 {
+    fn passband_gap(a: &[Complex32], b: &[Complex32], lo: f64, hi: f64) -> f64 {
         let (mid, quarter) = (0.5 * (lo + hi), 0.25 * (hi - lo));
         sweep(mid - quarter, mid + quarter, 2048, |w| {
-            (dtft(a, w) - dtft(b, w)).abs()
+            (dtft(a, w).norm() - dtft(b, w).norm()).abs()
         })
     }
 
     /// Truncation floor, swept two octaves starting three octaves off center. Far
     /// enough out that the skirt is gone. Both sides when the upper band fits under
     /// Nyquist, low side alone otherwise.
-    fn stopband(a: &[(f32, f32)], b: &[(f32, f32)], w0: f64) -> f64 {
-        let gap = |w: f64| (dtft(a, w) - dtft(b, w)).abs();
+    fn stopband(a: &[Complex32], b: &[Complex32], w0: f64) -> f64 {
+        let gap = |w: f64| (dtft(a, w).norm() - dtft(b, w).norm()).abs();
         let low = sweep(w0 / 32.0, w0 / 8.0, 2048, gap);
         if 32.0 * w0 < PI {
             low.max(sweep(8.0 * w0, 32.0 * w0, 2048, gap))
@@ -450,48 +428,21 @@ mod test {
     }
 
     /// Peak |H| from DC to 5% of center.
-    fn dc_leak(taps: &[(f32, f32)], peak_w: f64) -> f64 {
+    fn dc_leak(taps: &[Complex32], peak_w: f64) -> f64 {
         const STEPS: usize = 64;
 
         let top = 0.05 * peak_w;
-        let mut peak = 0.0f64;
-        for k in 0..=STEPS {
-            peak = peak.max(dtft(taps, top * k as f64 / STEPS as f64));
-        }
-        peak
-    }
-
-    /// Folded weights back to centered taps. Lane `c` selects psi (0) or d (2).
-    /// The doubled center undoes the halving in `quantize`.
-    fn unfold(w: &[[f32; 4]], c: usize) -> Vec<(f32, f32)> {
-        let k = w.len();
-        let mut out = vec![(0.0f32, 0.0f32); 2 * k - 1];
-        out[k - 1] = (2.0 * w[0][c], 0.0);
-        for (j, q) in w.iter().enumerate().skip(1) {
-            out[k - 1 + j] = (q[c], q[c + 1]);
-            out[k - 1 - j] = (q[c], -q[c + 1]);
-        }
-        out
-    }
-
-    /// t_nu = -i*nu*psi_nu, matching what a consumer reconstructs per lane.
-    fn derive_t(psi: &[(f64, f64)]) -> Vec<(f64, f64)> {
-        let half = (psi.len() / 2) as isize;
-        psi.iter()
-            .enumerate()
-            .map(|(j, &(r, i))| {
-                let nu = (j as isize - half) as f64;
-                (nu * i, -nu * r)
-            })
-            .collect()
+        (0..=STEPS)
+            .map(|k| dtft(taps, top * k as f64 / STEPS as f64).norm())
+            .fold(0.0f64, f64::max)
     }
 
     /// Bisect for |H| = target on [a, b], target bracketed.
-    fn crossing(taps: &[(f32, f32)], mut a: f64, mut b: f64, target: f64) -> f64 {
-        let above = dtft(taps, a) > target;
+    fn crossing(taps: &[Complex32], mut a: f64, mut b: f64, target: f64) -> f64 {
+        let above = dtft(taps, a).norm() > target;
         for _ in 0..60 {
             let m = 0.5 * (a + b);
-            if (dtft(taps, m) > target) == above {
+            if (dtft(taps, m).norm() > target) == above {
                 a = m;
             } else {
                 b = m;
@@ -500,20 +451,19 @@ mod test {
         0.5 * (a + b)
     }
 
-    fn widen(taps: &[(f32, f32)]) -> Vec<(f64, f64)> {
-        taps.iter().map(|&(r, i)| (r as f64, i as f64)).collect()
+    fn widen(taps: &[Complex32]) -> Vec<Complex64> {
+        taps.iter()
+            .map(|h| Complex64::new(h.re as f64, h.im as f64))
+            .collect()
     }
 
     /// W(m) = sum_j x[m + half - j] * h[j], matching `unit_tone_reads_unity`.
-    fn conv(h: &[(f64, f64)], x: impl Fn(isize) -> f64, m: isize) -> (f64, f64) {
+    fn conv(h: &[Complex64], x: impl Fn(isize) -> f64, m: isize) -> Complex64 {
         let half = (h.len() / 2) as isize;
-        let (mut re, mut im) = (0.0f64, 0.0f64);
-        for (j, &(r, i)) in h.iter().enumerate() {
-            let s = x(m + half - j as isize);
-            re += s * r;
-            im += s * i;
-        }
-        (re, im)
+        h.iter()
+            .enumerate()
+            .map(|(j, &h)| h * x(m + half - j as isize))
+            .sum()
     }
 
     fn cdiv(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
@@ -523,14 +473,14 @@ mod test {
 
     /// Worst frequency bias in cents and worst quadrature leak of `d/psi` against a real tone
     /// detuned `cents` from `w0`, over eight carrier phases.
-    fn tone_bias(psi: &[(f64, f64)], d: &[(f64, f64)], w0: f64, cents: f64) -> (f64, f64) {
+    fn tone_bias(psi: &[Complex64], d: &[Complex64], w0: f64, cents: f64) -> (f64, f64) {
         let w = w0 * (cents / 1200.0).exp2();
         let tone = |k: isize| (w * k as f64).cos();
         let (mut bias, mut quad) = (0.0f64, 0.0f64);
         for m in 0..8 {
-            let (re, im) = cdiv(conv(d, tone, m), conv(psi, tone, m));
-            bias = bias.max((1200.0 * (re / w).log2()).abs());
-            quad = quad.max((im / w).abs());
+            let r = conv(d, tone, m) / conv(psi, tone, m);
+            bias = bias.max((1200.0 * (r.re / w).log2()).abs());
+            quad = quad.max((r.im / w).abs());
         }
         (bias, quad)
     }
@@ -543,26 +493,26 @@ mod test {
         }
     }
 
-    /// Hop levels the buckets accumulate over, dB below the loudest hop.
-    const LEVELS: [f64; 3] = [-20.0, -40.0, -60.0];
-
     /// Worst |t̂ − t̂_ref| in samples per level bucket, plus the worst real leak in the top
     /// bucket. Cumulative, so the -60 dB entry contains the -20 dB one. Reassignment only has
     /// to hold where the pixel is bright enough to see.
     fn t_hat_profile(
-        table: (&[(f64, f64)], &[(f64, f64)]),
-        reference: (&[(f64, f64)], &[(f64, f64)]),
+        table: (&[Complex64], &[Complex64]),
+        reference: (&[Complex64], &[Complex64]),
         x: impl Fn(isize) -> f64,
         span: isize,
     ) -> ([f64; 3], f64) {
+        /// Hop levels the buckets accumulate over, dB below the loudest hop.
+        const LEVELS: [f64; 3] = [-20.0, -40.0, -60.0];
+
         let ((psi, t), (rpsi, rt)) = (table, reference);
 
         let hops: Vec<(f64, f64, f64)> = (-span..=span)
             .map(|m| {
                 let wp = conv(psi, &x, m);
-                let (re, im) = cdiv(conv(t, &x, m), wp);
-                let r = cdiv(conv(rt, &x, m), conv(rpsi, &x, m));
-                (wp.0.hypot(wp.1), (im - r.1).abs(), (re - r.0).abs())
+                let q = conv(t, &x, m) / wp;
+                let r = conv(rt, &x, m) / conv(rpsi, &x, m);
+                (wp.norm(), (q.im - r.im).abs(), (q.re - r.re).abs())
             })
             .collect();
 
@@ -610,21 +560,21 @@ mod test {
     }
 
     /// Real and imaginary parts of `taps`, centered, on a shared scale.
-    fn print_wave(label: &str, taps: &[(f32, f32)], cols: usize) {
+    fn print_wave(label: &str, taps: &[Complex32], cols: usize) {
         let n = taps.len();
         println!("\n=== {label} ===");
         let max = taps
             .iter()
-            .map(|&(r, i)| (r as f64).abs().max((i as f64).abs()))
+            .map(|h| h.re.abs().max(h.im.abs()) as f64)
             .fold(0.0, f64::max);
 
-        for (j, &(re, im)) in taps.iter().enumerate() {
+        for (j, h) in taps.iter().enumerate() {
             println!(
                 "{:>6} {:>12.7} {:>12.7} {}",
                 j as isize - (n / 2) as isize,
-                re,
-                im,
-                bar(re as f64, im as f64, max, cols)
+                h.re,
+                h.im,
+                bar(h.re as f64, h.im as f64, max, cols)
             );
         }
     }
@@ -640,15 +590,16 @@ mod test {
 
     /// Peak location and gain, -3 dB relative width, negative-frequency max, and the
     /// floor outside three half-power widths. `w0` only sets the bracket for the edges.
-    fn characterize(taps: &[(f32, f32)], w0: f64) -> Response {
+    fn characterize(taps: &[Complex32], w0: f64) -> Response {
         let sweep = (16 * taps.len()).next_power_of_two();
         let omega = |k: usize| -PI + 2.0 * PI * k as f64 / sweep as f64;
+        let gain = |w: f64| dtft(taps, w).norm();
 
         let mut mag = Vec::with_capacity(sweep + 1);
         let (mut peak, mut neg) = ((0.0f64, 0.0f64), 0.0f64);
         for k in 0..=sweep {
             let w = omega(k);
-            let v = dtft(taps, w);
+            let v = gain(w);
             mag.push(v);
             if w < 0.0 {
                 neg = neg.max(v);
@@ -662,26 +613,25 @@ mod test {
         let (mut a, mut b) = (peak.0 - cell, peak.0 + cell);
         for _ in 0..80 {
             let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-            if dtft(taps, m1) < dtft(taps, m2) {
+            if gain(m1) < gain(m2) {
                 a = m1;
             } else {
                 b = m2;
             }
         }
         let peak_w = 0.5 * (a + b);
-        let peak_h = dtft(taps, peak_w);
+        let peak_h = gain(peak_w);
 
         let half = peak_h / 2.0f64.sqrt();
         let lo = crossing(taps, peak_w - w0, peak_w, half);
         let hi = crossing(taps, peak_w, (peak_w + w0).min(PI), half);
 
         let guard = 3.0 * (hi - lo);
-        let mut floor = 0.0f64;
-        for (k, &v) in mag.iter().enumerate() {
-            if (omega(k) - peak_w).abs() > guard {
-                floor = floor.max(v);
-            }
-        }
+        let floor = mag
+            .iter()
+            .enumerate()
+            .filter(|&(k, _)| (omega(k) - peak_w).abs() > guard)
+            .fold(0.0f64, |f, (_, &v)| f.max(v));
 
         Response {
             peak_w,
@@ -716,7 +666,7 @@ mod test {
             let t = unfold(&taps, 0);
             let n = t.len();
 
-            let mags: Vec<f64> = t.iter().copied().map(mag).collect();
+            let mags: Vec<f64> = t.iter().map(|h| h.norm() as f64).collect();
             let max = mags.iter().fold(0.0f64, |a, &b| a.max(b));
 
             // Σ (j − c)|ψ_j|² / Σ |ψ_j|²,  c = (n − 1)/2
@@ -789,7 +739,7 @@ mod test {
         let worst = voices
             .iter()
             .map(|(bin, r)| {
-                (dtft(&unfold(&weights[r.clone()], 0), bin.velocity()) - PEAK_GAIN).abs()
+                (dtft(&unfold(&weights[r.clone()], 0), bin.velocity()).norm() - PEAK_GAIN).abs()
             })
             .fold(0.0f64, f64::max);
         println!("worst peak gain error: {worst:.3e}");
@@ -836,20 +786,12 @@ mod test {
         for quantum in [1usize, 4, 8] {
             for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
                 let bin = w.bin(fc, sr).quantum(quantum);
-                let psi = unfold(&bin.taps(), 0);
-
-                let (n, w0) = (psi.len(), bin.velocity());
-                let half = (n / 2) as isize;
+                let psi = widen(&unfold(&bin.taps(), 0));
+                let w0 = bin.velocity();
 
                 // taps are centered, so m is the sample under tap index n/2.
                 for m in 0..8 {
-                    let (mut re, mut im) = (0.0f64, 0.0f64);
-                    for (j, &(r, i)) in psi.iter().enumerate() {
-                        let x = (w0 * (m as isize + half - j as isize) as f64).cos();
-                        re += x * r as f64;
-                        im += x * i as f64;
-                    }
-                    let env = re.hypot(im);
+                    let env = conv(&psi, |k| (w0 * k as f64).cos(), m).norm();
                     assert!(
                         (env - 1.0).abs() < 1e-3,
                         "quantum {quantum} fc {fc} phase {m} envelope {env:.6}"
@@ -887,10 +829,7 @@ mod test {
             let bin = w.bin(fc, RATE);
             let psi = unfold(&bin.taps(), 0);
 
-            let e: f64 = psi
-                .iter()
-                .map(|&(r, i)| (r as f64).powi(2) + (i as f64).powi(2))
-                .sum();
+            let e: f64 = widen(&psi).iter().map(Complex64::norm_sqr).sum();
             let ratio = e / bin.rho();
 
             println!(
@@ -954,7 +893,7 @@ mod test {
                 let cents = k as f64 * STEP;
                 // ω₀ · 2^(c/1200)
                 let wd = w0 * (cents / 1200.0).exp2();
-                let h = dtft(&psi32, wd);
+                let h = dtft(&psi32, wd).norm();
                 let h_db = 20.0 * (h / PEAK_GAIN).log10();
                 if h_db < GATE_DB {
                     continue;
@@ -1041,7 +980,7 @@ mod test {
             //     "fc {fc} full peak gain {:.9}",
             //     rf.peak_h
             // );
-            let dc = pf.iter().map(|&(r, _)| r as f64).sum::<f64>();
+            let dc = pf.iter().map(|h| h.re as f64).sum::<f64>();
             // assert!(dc.abs() < 1e-5 * PEAK_GAIN, "fc {fc} full dc {dc:.3e}");
 
             // // -3 dB width is set by P = sqrt(beta*gamma) and Q = P/1.6651. Nothing else
@@ -1148,23 +1087,22 @@ mod test {
             let (psi, d) = (unfold(&taps, 0), unfold(&taps, 2));
             let w0 = bin.velocity();
 
-            let g = dtft(&psi, w0);
+            let g = dtft(&psi, w0).norm();
             assert!((g - PEAK_GAIN).abs() < 1e-3, "fc {fc} peak gain {g:.6}");
 
             // Analytic taps: the mirror image is stopband, not signal.
-            let neg = dtft(&psi, -w0);
+            let neg = dtft(&psi, -w0).norm();
             assert!(
                 neg < 1e-3 * g,
                 "fc {fc} negative-freq leak {:.2} dB",
                 20.0 * (neg / g).log10()
             );
 
-            // XXX WTF is this?
-            let dc = psi.iter().map(|&(r, _)| r as f64).sum::<f64>();
+            let dc = psi.iter().map(|h| h.re as f64).sum::<f64>();
             assert!(dc.abs() < 1e-5 * g, "fc {fc} dc {dc:.3e}");
 
             // d carries w0/peak, so its ratio against psi reads in rad/sample.
-            let gd = dtft(&d, w0);
+            let gd = dtft(&d, w0).norm();
             // assert!(
             //     (gd / g - w0).abs() < 1e-3 * w0,
             //     "fc {fc} d/psi {:.6} want {w0:.6}",
@@ -1176,9 +1114,9 @@ mod test {
             let mom = |p: i32| {
                 psi.iter()
                     .enumerate()
-                    .map(|(j, &(r, i))| {
+                    .map(|(j, h)| {
                         let nu = (j as isize - center) as f64;
-                        nu.powi(p) * if p % 2 == 0 { r as f64 } else { i as f64 }
+                        nu.powi(p) * if p % 2 == 0 { h.re as f64 } else { h.im as f64 }
                     })
                     .sum::<f64>()
             };
@@ -1231,7 +1169,7 @@ mod test {
 
             let long_bin = long.at_rho(rho);
             let rpsi = widen(&unfold(&long_bin.taps(), 0));
-            let rt = derive_t(&psi);
+            let rt = derive_t(&rpsi);
 
             let half = (psi.len() / 2) as isize;
             println!(
@@ -1330,7 +1268,7 @@ mod test {
                 let power = (0..ANTI_ALIAS)
                     .map(|j| {
                         let u = w + step * ((j as f64 + 0.5) / ANTI_ALIAS as f64 - 0.5);
-                        dtft(&psi, u).powi(2)
+                        dtft(&psi, u).norm_sqr()
                     })
                     .sum::<f64>()
                     / ANTI_ALIAS as f64;
@@ -1391,18 +1329,15 @@ mod test {
                 30,
             );
 
-            let g = dtft(&psi, w0);
-            let gd = dtft(&d, w0);
-            let dc = psi.iter().map(|&(r, _)| r as f64).sum::<f64>();
-            let neg = dtft(&psi, -w0);
+            let g = dtft(&psi, w0).norm();
+            let gd = dtft(&d, w0).norm();
+            let dc = psi.iter().map(|h| h.re as f64).sum::<f64>();
+            let neg = dtft(&psi, -w0).norm();
 
             // max over m of | |ψ ∗ cos(ω₀k)|(m) − 1 |
             let psi64 = widen(&psi);
             let phase_err = (0..8)
-                .map(|m| {
-                    let (re, im) = conv(&psi64, |k| (w0 * k as f64).cos(), m);
-                    (re.hypot(im) - 1.0).abs()
-                })
+                .map(|m| (conv(&psi64, |k| (w0 * k as f64).cos(), m).norm() - 1.0).abs())
                 .fold(0.0f64, f64::max);
 
             println!(
