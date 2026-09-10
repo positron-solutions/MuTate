@@ -349,6 +349,12 @@ pub struct QuadJet {
     pub residual: f64,
     frame: Frame,
     table: StokesTable,
+
+    /// Scratch for the jet series, reused across taps.  `seed` resets `width` at every saddle,
+    /// and every reader is bounded by `width`, so nothing here survives into an answer.
+    scratch: std::cell::UnsafeCell<Box<Normal>>,
+    /// The scratch is one buffer, so a `QuadJet` is not shareable across threads.
+    _unsync: std::marker::PhantomData<*const ()>,
 }
 
 impl QuadJet {
@@ -363,6 +369,8 @@ impl QuadJet {
             frame,
             table,
             residual: 0.0,
+            scratch: std::cell::UnsafeCell::new(Box::new(Normal::default())),
+            _unsync: std::marker::PhantomData,
         }
     }
 
@@ -439,7 +447,9 @@ impl QuadJet {
         let mut d_im: Accumulator<f64> = Accumulator::default();
         let mut residual = 0.0_f64;
 
-        let mut normal = Normal::default();
+        // The borrow lives to the end of the tap and nothing else in the call tree reaches the
+        // cell, so no second reference to it exists.
+        let normal: &mut Normal = unsafe { &mut *self.scratch.get() };
         let mut cost = Cost::default();
 
         // What each saddle came back with, and whether a traced contour produced it.
@@ -495,7 +505,7 @@ impl QuadJet {
                 // one the screen found.
                 let pin = partner[i].map(|k| seen[k].norm().ceil() as usize);
 
-                let mut jet = s.jet(frame, scale, target, r_star, local_bar, pin, &mut normal);
+                let mut jet = s.jet(frame, scale, target, r_star, local_bar, pin, normal);
                 cost += jet.cost;
 
                 // A missed bar buys more series before it buys any nodes, but only where the
@@ -503,7 +513,7 @@ impl QuadJet {
                 // watched its terms turn or already reached the cap has nothing further to sell,
                 // and asking again reproduces it exactly.
                 if jet.terms.residual > target && !jet.exhausted {
-                    let deeper = s.deepen(frame, scale, target, r_star, &mut normal);
+                    let deeper = s.deepen(frame, scale, target, r_star, normal);
                     cost += deeper.cost;
                     jet = deeper;
                 }
