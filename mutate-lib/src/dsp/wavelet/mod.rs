@@ -107,7 +107,7 @@
 //! let bin = plan.bin(1000.0, 8000.0, QUANTUM);
 //! let mut weights = vec![[0.0f32; 4]; bin.folded_taps()];
 //!
-//! // float4(Re ψ, Im ψ, Re d, Im d); index 0 is the center, with Re halved.
+//! // float4(Re ψ, Im ψ, Re d, Im d); index 0 is the real center tap.
 //! plan.taps_into(bin, &mut weights);
 //! ```
 //!
@@ -338,12 +338,11 @@ mod test {
             .bake()
     }
 
-    /// Folded weights back to centered taps. Lane `c` selects psi (0) or d (2).
-    /// The doubled center undoes the halving in `quantize`.
+    /// Folded weights back to centered taps.  Lane `c` selects ψ (0) or d (2).
     fn unfold(w: &[[f32; 4]], c: usize) -> Vec<Complex32> {
         let k = w.len();
         let mut out = vec![Complex32::default(); 2 * k - 1];
-        out[k - 1] = Complex32::new(2.0 * w[0][c], 0.0);
+        out[k - 1] = Complex32::new(w[0][c], 0.0);
         for (j, q) in w.iter().enumerate().skip(1) {
             let h = Complex32::new(q[c], q[c + 1]);
             out[k - 1 + j] = h;
@@ -403,11 +402,10 @@ mod test {
             .sum()
     }
 
-    /// |H_d(w) − w·H_psi(w)|, the pairing the taper and the DC corrector both promise to
-    /// preserve at every w. Absolute, because dividing by H_psi is exactly what turns a flat
-    /// floor into a skirt blowup in the cents column.
-    fn pairing_residual(psi: &[Complex32], d: &[Complex32], w: f64) -> f64 {
-        (dtft(d, w) - dtft(psi, w) * w).norm()
+    /// |H_d(ω) − (ω/ω₀)·H_ψ(ω)|.  Absolute, because dividing by H_ψ is exactly what turns a
+    /// flat floor into a skirt blowup in the cents column.
+    fn pairing_residual(psi: &[Complex32], d: &[Complex32], w0: f64, w: f64) -> f64 {
+        (dtft(d, w) - dtft(psi, w) * (w / w0)).norm()
     }
 
     /// |H(ω)| and |H(−ω)|, the passband and its image.
@@ -509,21 +507,43 @@ mod test {
             .sum()
     }
 
+    /// Ψ, D, and T about center `m`, accumulated as the shader does.
+    fn project(w: &[[f32; 4]], x: impl Fn(isize) -> f64, m: isize) -> [Complex64; 3] {
+        let x0 = x(m);
+        let mut psi = Complex64::new(w[0][0] as f64 * x0, 0.0);
+        let mut dee = Complex64::new(w[0][2] as f64 * x0, 0.0);
+        let mut tee = Complex64::default();
+
+        for (k, c) in w.iter().enumerate().skip(1) {
+            let [a, b, p, q] = c.map(f64::from);
+            let (hi, lo) = (x(m + k as isize), x(m - k as isize));
+            let (sum, dif) = (hi + lo, hi - lo);
+
+            psi += Complex64::new(a * sum, -b * dif);
+            dee += Complex64::new(p * sum, -q * dif);
+            tee += k as f64 * Complex64::new(a * dif, -b * sum);
+        }
+        [psi, dee, tee]
+    }
+
     fn cdiv(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
         let q = b.0 * b.0 + b.1 * b.1;
         ((a.0 * b.0 + a.1 * b.1) / q, (a.1 * b.0 - a.0 * b.1) / q)
     }
 
-    /// Worst frequency bias in cents and worst quadrature leak of `d/psi` against a real tone
-    /// detuned `cents` from `w0`, over eight carrier phases.
-    fn tone_bias(psi: &[Complex64], d: &[Complex64], w0: f64, cents: f64) -> (f64, f64) {
-        let w = w0 * (cents / 1200.0).exp2();
-        let tone = |k: isize| (w * k as f64).cos();
+    /// Worst bias of `r̂` in cents and worst quadrature leak against a real tone detuned
+    /// `cents` from `w0`, over eight carrier phases.
+    fn tone_bias(table: &[[f32; 4]], w0: f64, cents: f64) -> (f64, f64) {
+        // ω₀ · 2^(c/1200)
+        let wd = w0 * (cents / 1200.0).exp2();
+        let tone = |n: isize| (wd * n as f64).cos();
         let (mut bias, mut quad) = (0.0f64, 0.0f64);
         for m in 0..8 {
-            let r = conv(d, tone, m) / conv(psi, tone, m);
-            bias = bias.max((1200.0 * (r.re / w).log2()).abs());
-            quad = quad.max((r.im / w).abs());
+            let [psi, dee, _] = project(table, tone, m);
+            // D/Ψ
+            let r = dee / psi;
+            bias = bias.max((1200.0 * r.re.log2() - cents).abs());
+            quad = quad.max(r.im.abs());
         }
         (bias, quad)
     }
@@ -536,33 +556,31 @@ mod test {
         }
     }
 
-    /// Worst |t̂ − t̂_ref| in samples per level bucket, plus the worst real leak in the top
-    /// bucket. Cumulative, so the -60 dB entry contains the -20 dB one. Reassignment only has
+    /// Worst |t̂ − t̂_ref| in samples per level bucket, plus the worst imaginary skew in the top
+    /// bucket.  Cumulative, so the -60 dB entry contains the -20 dB one.  Reassignment only has
     /// to hold where the pixel is bright enough to see.
     fn t_hat_profile(
-        table: (&[Complex64], &[Complex64]),
-        reference: (&[Complex64], &[Complex64]),
+        table: &[[f32; 4]],
+        reference: &[[f32; 4]],
         x: impl Fn(isize) -> f64,
         span: isize,
     ) -> ([f64; 3], f64) {
         /// Hop levels the buckets accumulate over, dB below the loudest hop.
         const LEVELS: [f64; 3] = [-20.0, -40.0, -60.0];
 
-        let ((psi, t), (rpsi, rt)) = (table, reference);
-
         let hops: Vec<(f64, f64, f64)> = (-span..=span)
             .map(|m| {
-                let wp = conv(psi, &x, m);
-                let q = conv(t, &x, m) / wp;
-                let r = conv(rt, &x, m) / conv(rpsi, &x, m);
-                (wp.norm(), (q.im - r.im).abs(), (q.re - r.re).abs())
+                let [p, _, t] = project(table, &x, m);
+                let [rp, _, rt] = project(reference, &x, m);
+                // T/Ψ
+                let (q, r) = (t / p, rt / rp);
+                (p.norm(), (q.re - r.re).abs(), q.im.abs())
             })
             .collect();
 
         let peak = hops.iter().fold(0.0f64, |a, h| a.max(h.0));
-        let (mut worst, mut leak) = ([0.0f64; 3], 0.0f64);
-        for (lvl, err, re) in hops {
-            // XXX check dB handling
+        let (mut worst, mut skew) = ([0.0f64; 3], 0.0f64);
+        for (lvl, err, im) in hops {
             let db = 20.0 * (lvl / peak).log10();
             for (w, &l) in worst.iter_mut().zip(&LEVELS) {
                 if db >= l {
@@ -570,10 +588,10 @@ mod test {
                 }
             }
             if db >= LEVELS[0] {
-                leak = leak.max(re);
+                skew = skew.max(im);
             }
         }
-        (worst, leak)
+        (worst, skew)
     }
 
     /// Signed bars for `re` and `im` overlaid on one axis, zero between cells `cols / 2 - 1` and
@@ -895,14 +913,13 @@ mod test {
     /// compared to the observed.  Too large of bias in the main lobe will trip the asserts.
     #[test]
     fn reassignment_is_unbiased() {
-        const Q: f64 = 3.5;
-        const SIGMAS: f64 = 4.5;
+        const Q: f64 = 8.5;
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -200.0;
+        const TAIL_DB: f64 = -160.0;
 
         /// Cents readings stop meaning anything once the skirt is down in truncation ripple.
         /// The denominator is no longer the envelope, so the ratio is measuring the stopband.
-        const GATE_DB: f64 = -20.0;
+        const GATE_DB: f64 = -50.0;
 
         /// `pred` is the bias the pairing residual alone implies.  The rest is the negative
         /// frequency image, flat in level and so stated absolutely.
@@ -913,44 +930,50 @@ mod test {
         const SPAN: isize = 12;
 
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, SIGMAS))
+            .with_shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
 
-        for (fc, sr) in [(2_000.0f64, RATE), (250.0, 3000.0), (12_000.0, RATE)] {
+        // XXX Use omegas to make this easier to read.
+        for (fc, sr) in [
+            (2_000.0f64, RATE),
+            (200.0, 3000.0),
+            (250.0, 3000.0),
+            (12_000.0, RATE),
+        ] {
             let bin = wav.at_rho(fc / sr);
             let taps = bin.taps();
-
-            let psi32 = unfold(&taps, 0);
-            let d32 = unfold(&taps, 2);
-            let psi = widen(&psi32);
-            let d = widen(&d32);
+            let (psi, d) = (unfold(&taps, 0), unfold(&taps, 2));
 
             let (n, w0) = (psi.len(), bin.velocity());
             println!("\n=== REASSIGN fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6} ===");
 
             for k in -SPAN..=SPAN {
                 let cents = k as f64 * STEP;
-                // ω₀ · 2^(c/1200)
-                let wd = w0 * (cents / 1200.0).exp2();
-                let h = dtft(&psi32, wd).norm();
+                // 2^(c/1200)
+                let ratio = (cents / 1200.0).exp2();
+                let wd = w0 * ratio;
+                let h = dtft(&psi, wd).norm();
                 let h_db = 20.0 * (h / PEAK_GAIN).log10();
                 if h_db < GATE_DB {
                     continue;
                 }
 
-                let (bias, quad) = tone_bias(&psi, &d, w0, cents);
-                let r = pairing_residual(&psi32, &d32, wd);
-                // (1200 / ln 2) · R / (ω · |H|)
-                let pred = 1200.0 / LN_2 * r / (wd * h);
+                let (bias, quad) = tone_bias(&taps, w0, cents);
+                let res = pairing_residual(&psi, &d, w0, wd);
+                // |H_ψ(−ω)|, |H_d(−ω)|
+                let (img_psi, img_d) = (dtft(&psi, -wd).norm(), dtft(&d, -wd).norm());
+                // (1200 / ln 2) · R / (r · |H|)
+                let pred = 1200.0 / LN_2 * res / (ratio * h);
                 let budget = SLOP * pred + MIRROR_C;
 
                 println!(
-                    "  {cents:+6.0}c  |H| {h_db:>6.1} dB  R {:>6.1} dB  \
-                     pred {pred:>8.3}c  bias {bias:>8.3}c  ({:.2}x)  quad {quad:.1e}",
-                    20.0 * (r / PEAK_GAIN).log10(),
-                    bias / budget,
+                    "  {cents:+6.0}c  |H| {h_db:>6.1} dB  R {:>6.1} dB  img ψ {:>6.1} dB  img d {:>6.1} dB  \
+                    pred {pred:>8.3}c  bias {bias:>8.3}c  quad {quad:.1e}",
+                    20.0 * (res / PEAK_GAIN).log10(),
+                    20.0 * (img_psi / PEAK_GAIN).log10(),
+                    20.0 * (img_d / PEAK_GAIN).log10(),
                 );
 
                 // assert!(
@@ -1220,13 +1243,9 @@ mod test {
             let dc = psi.iter().map(|h| h.re as f64).sum::<f64>();
             assert!(dc.abs() < 1e-5 * g, "fc {fc} dc {dc:.3e}");
 
-            // d carries w0/peak, so its ratio against psi reads in rad/sample.
+            // d/ψ reads ω/ω₀, unity at the carrier.
             let gd = dtft(&d, w0).norm();
-            // assert!(
-            //     (gd / g - w0).abs() < 1e-3 * w0,
-            //     "fc {fc} d/psi {:.6} want {w0:.6}",
-            //     gd / g
-            // );
+            // assert!((gd / g - 1.0).abs() < 1e-3, "fc {fc} d/psi {:.6}", gd / g);
 
             // Σ ν^p · (Re ψ if p even, Im ψ if p odd)
             let center = (psi.len() / 2) as isize;
@@ -1281,21 +1300,16 @@ mod test {
         for (fc, sr) in [(40.0f64, 3000.0), (200.0, 3000.0), (800.0, 3000.0)] {
             let rho = fc / sr;
             let bin = wav.at_rho(rho);
-
-            let psi = widen(&unfold(&bin.taps(), 0));
-            let t = derive_t(&psi);
+            let taps = bin.taps();
+            let reference = long.at_rho(rho).taps();
             let w0 = bin.velocity();
+            let half = (taps.len() - 1) as isize;
 
-            let long_bin = long.at_rho(rho);
-            let rpsi = widen(&unfold(&long_bin.taps(), 0));
-            let rt = derive_t(&rpsi);
-
-            let half = (psi.len() / 2) as isize;
             println!(
                 "\n=== T_HAT fc {fc:.0} sr {sr:.0} taps {} ref {} ({:.1}x) ===",
-                psi.len(),
-                rpsi.len(),
-                rpsi.len() as f64 / psi.len() as f64,
+                2 * taps.len() - 1,
+                2 * reference.len() - 1,
+                reference.len() as f64 / taps.len() as f64,
             );
 
             for frac in [0.02f64, 0.1, 0.35] {
@@ -1303,13 +1317,12 @@ mod test {
                 for detune in [0.0f64, 400.0] {
                     // ω₀ · 2^(c/1200)
                     let w = w0 * (detune / 1200.0).exp2();
-                    let (err, leak) =
-                        t_hat_profile((&psi, &t), (&rpsi, &rt), burst(w, sd, 0.0), 2 * half);
+                    let (err, skew) = t_hat_profile(&taps, &reference, burst(w, sd, 0.0), 2 * half);
 
                     let pct = |v: f64| 100.0 * v / half as f64;
                     println!(
                         "  sd {sd:>7.2}  detune {detune:>4.0}c  err {:.4} / {:.4} / {:.4} \
-                         ({:.3} / {:.3} / {:.3} %sup)  skew {leak:.2e}",
+                         ({:.3} / {:.3} / {:.3} %sup)  skew {skew:.2e}",
                         err[0],
                         err[1],
                         err[2],

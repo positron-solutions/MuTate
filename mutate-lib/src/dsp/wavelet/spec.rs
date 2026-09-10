@@ -372,10 +372,11 @@ impl<'w> Bin<'w> {
     }
 
     /// Writes `folded_taps()` weights and returns that count.  Each weight is
-    /// `[Re ψ, Im ψ, Re d, Im d]` with the center halved.
+    /// `[Re ψ, Im ψ, Re d, Im d]` and the center is `[Re ψ₀, 0, Re d₀, 0]`.
     ///
-    ///     H(ω) = 2 Re Σ_k ψ_k e^{-iωk}
+    ///     H(ω) = ψ₀ + 2 Re Σ_{k≥1} ψ_k e^{-iωk}
     ///     H(ω₀) = PEAK_GAIN
+    ///     H_d(ω) ≈ (ω/ω₀)·H(ω)
     ///
     /// A unit sine at the center frequency yields a unit envelope.
     ///
@@ -384,8 +385,14 @@ impl<'w> Bin<'w> {
         let (w, rho, k) = (self.wavelet, self.rho, self.k);
         let inv = rho.recip();
 
-        // ψ at the cell edge above tap j
-        let edge = |j: usize| w.at((j as f64 + 0.5) * rho);
+        // ψ_T at the upper edge of cell j, zero past the cut
+        let edge = |j: usize| {
+            if j + 1 < k {
+                w.at((j as f64 + 0.5) * rho)
+            } else {
+                Complex64::default()
+            }
+        };
 
         let mut psi = Vec::with_capacity(k);
         let mut d = Vec::with_capacity(k);
@@ -394,7 +401,7 @@ impl<'w> Bin<'w> {
         psi.push(Complex64::new(2.0 * inv * w.mass(0.0, 0.5 * rho).re, 0.0));
         d.push(Complex64::new(2.0 * inv / TAU * edge(0).im, 0.0));
 
-        // d telescopes to the cell edges, being the integral of a derivative
+        // d_k = −(i/2πρ)·(ψ_T(e_{k+½}) − ψ_T(e_{k−½}))
         let mut lo = edge(0);
         for j in 1..k {
             psi.push(inv * w.mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho));
@@ -416,7 +423,7 @@ impl<'w> Bin<'w> {
                     .sum::<f64>();
         let scale = PEAK_GAIN / gain;
 
-        out[0] = [0.5 * scale * psi[0].re, 0.0, 0.5 * scale * d[0].re, 0.0].map(|v| v as f32);
+        out[0] = [scale * psi[0].re, 0.0, scale * d[0].re, 0.0].map(|v| v as f32);
         for (o, (p, q)) in out[1..k].iter_mut().zip(psi[1..].iter().zip(&d[1..])) {
             *o = [scale * p.re, scale * p.im, scale * q.re, scale * q.im].map(|v| v as f32);
         }
