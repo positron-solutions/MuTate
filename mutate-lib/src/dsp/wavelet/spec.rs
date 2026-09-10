@@ -8,18 +8,36 @@
 //! >
 //! > - David "D" Clark
 //!
-//! Define wavelet families.  The [`Spec`] builds the [`Plan`], handing over the realized
-//! configuration choices in the process.  The primary knobs are the [`Truncation`] and the
-//! [`Shape`].  You probably want to set truncation with [`tail_db`] and shape with [`q`].  These
-//! control the filter length and pitch resolution.  T
+//! ## Usage
 //!
-//! ```rust
-//! # use mutate_lib::dsp::wavelet::Spec;
+//! Define a wavelet family with [`WaveletSpec`] and bake it into a [`Wavelet`].  Spec settings are
+//! maxima, and the bake is sized to serve every bin under them.
 //!
-//! let spec = Spec::default()
-//!     .q(3.5)
-//!     .truncate(-20.0);
 //! ```
+//! # use mutate_lib::dsp::wavelet::WaveletSpec;
+//! let wavelet = WaveletSpec::default()
+//!     .q(5.5)
+//!     .truncate(-140.0)
+//!     .bake();
+//! ```
+//!
+//! Resolve a bin with [`Wavelet::bin`] and realize its folded taps.  Bins may tighten the spec's
+//! maxima but not exceed them.
+//!
+//! ```
+//! # use mutate_lib::dsp::wavelet::WaveletSpec;
+//! # let wavelet = WaveletSpec::default().q(5.5).truncate(-140.0).bake();
+//! let bin = wavelet.bin(440.0, 48_000.0).truncate(-100.0);
+//! let mut taps = vec![[0.0f32; 4]; bin.folded_taps()];
+//! bin.taps_into(&mut taps);
+//! ```
+//!
+//! ## Customizing the Wavelet Family
+//!
+//! The primary knobs are [`WaveletSpec::truncate`] and [`WaveletSpec::with_shape`], which modulate
+//! filter length, bandwidth, stop band, and skirt depth.  All are inherently coupled.  At a fixed
+//! filter length, raising Q while truncating harder (smaller magnitude of tail dB) trades time
+//! precision for pitch precision.
 
 // MAYBE Gamma = 4 is not that wild, but has a flatter top and a steeper main lobe, things we are
 // interested in.  It's possibly worth a bit of Q unless reassignment becomes broken.
@@ -29,8 +47,8 @@ use core::f64::consts::{LN_10, LN_2, PI, TAU};
 use libm::lgamma;
 use num_complex::Complex64;
 
+use super::defaults;
 use super::generate::{hermite, quadjet::QuadJet};
-use super::Plan;
 use super::PEAK_GAIN;
 
 /// Controls Q and other critical tradeoffs of the Morse family wavelet parameters.  For exact
@@ -46,12 +64,11 @@ pub struct Shape {
 }
 
 impl Shape {
-    /// `q` is the quality factor on the -3 dB energy width. Higher `q` narrows the band and costs
-    /// proportionally more taps at a given center frequency.
+    /// `q` is the quality factor `fc / BW` on the half-power bandwidth.  Higher `q` narrows the
+    /// band and costs proportionally more taps at a given center frequency.
     ///
-    /// `q` is generally `bandwidth / center frequency`, and this can be used to estimate main lobe
-    /// width.  The width at the beginning of the skirt, which must be controlled to avoid
-    /// transition bands of downsampled inputs, is usually not more than twice as wide.
+    /// The width at the start of the skirt, which must be controlled to avoid transition bands of
+    /// downsampled inputs, is usually not more than `2 fc / q`.
     pub fn from_q(q: f64, gamma: f64) -> Self {
         // p = 2.0 * LN_2.sqrt() * q
         // beta = p * p / gamma
@@ -81,237 +98,292 @@ impl Shape {
             (self.beta / self.gamma).powf(1.0 / self.gamma)
         }
     }
+
+    /// Truncation point, in periods of the carrier, where the omitted tails carry `tail_db` of the
+    /// total energy of the entire wavelet.
+    ///
+    ///     M(t) = μ,  μ = 10^(-|tail_db| / 10)
+    ///     u = t ω_p / 2π
+    pub fn truncation_u(&self, tail_db: f64) -> f64 {
+        let Shape { beta, gamma } = *self;
+
+        let p = 2.0 * beta + 1.0;
+
+        // log 2C, both tails against the whole mass
+        let log_c = LN_2 + gamma.ln() + (p / gamma) * LN_2 + 2.0 * lgamma(beta + 1.0)
+            - TAU.ln()
+            - p.ln()
+            - lgamma(p / gamma);
+
+        // log t = (log 2C - log μ) / p
+        let log_t = (log_c + tail_db.abs() / 10.0 * LN_10) / p;
+
+        log_t.exp() * self.peak() / TAU
+    }
 }
 
-/// Use to build coherent choices for a [`Plan`].  Choices of accuracy tradeoffs and support for
-/// different `Q` and `load_quantum` are reconciled before building a `Plan`.  Re-use of these
-/// builders to create a range of related plans is a convenient way to sweep across settings.
-///
-/// ```
-/// # use mutate_lib::dsp::wavelet::Spec;
-///
-/// let spec = Spec::default();
-/// ```
-// Construction of incoherent choices should not be supported, but warning for incoherence or
-// panicking for degenerate choices are both acceptable.
+/// Maxima for the family. Every bin served by the bake sits under these.
 #[derive(Clone, Copy)]
-pub struct Spec {
+pub struct WaveletSpec {
     shape: Shape,
-    /// decibels of the truncated tail mass compared to the whole filter mass.
+    resolution: usize,
     tail_db: f64,
-
-    /// The maximum load quantum that will be requested.  Load quantum space is used to taper taps
-    /// less aggressively, so the mother wavelet needs to include a bit more periods to dilate into
-    /// the longer time bought by load quantum.
-    max_load_quantum: usize,
-
-    /// Error tolerance for the wavelet grid.
-    eps: f64,
-
-    /// A rough sizing estimate to avoid reallocation of scratch space.
-    max_taps: usize,
+    quantum: usize,
+    delay: usize,
 }
 
-impl Default for Spec {
+impl Default for WaveletSpec {
     fn default() -> Self {
-        Spec {
-            shape: Shape::from_q(3.0, 3.0),
-            eps: 1e-14,
-            tail_db: -40.0,
-            max_taps: 0,
-            max_load_quantum: 1,
+        WaveletSpec {
+            shape: Shape::from_q(defaults::Q, defaults::GAMMA),
+            resolution: defaults::RESOLUTION,
+            tail_db: defaults::TAIL_DB,
+            quantum: defaults::LOAD_QUANTUM,
+            delay: 0,
         }
     }
 }
 
-impl Spec {
+impl WaveletSpec {
     /// Set shape by quality factor, holding gamma.
     pub fn q(mut self, q: f64) -> Self {
         self.shape = Shape::from_q(q, self.shape.gamma);
         self
     }
 
-    /// Set mother wavelet [`Shape`].
     pub fn with_shape(mut self, shape: Shape) -> Self {
         self.shape = shape;
         self
     }
 
-    /// `eps` is the spectral truncation floor relative to the peak. It sets how far the baked grid
-    /// extends, and through that the tap count, but not the shape. 1e-8 lands near the f32 noise
-    /// floor of the output taps.  1e-10 is where measurable effects usually begin appearing in
-    /// output filters.
-    pub fn eps(mut self, eps: f64) -> Self {
-        self.eps = eps;
+    /// Grid points per period of `u`.
+    pub fn resolution(mut self, resolution: usize) -> Self {
+        self.resolution = resolution;
         self
     }
 
-    /// `max_taps` is a **hint** to allocate a larger scratch `Vec`, which will of course resize if
-    /// necessary.  Uses [`Vec::with_capacity`](std::vec::Vec::with_capacity).  No effect on quality.
-    pub fn max_taps(mut self, max_taps: usize) -> Self {
-        self.max_taps = max_taps;
-        self
-    }
-
-    /// Largest load quantum any bake will pass in. Sizes the rotor grid so the emitted span stays
-    /// clear of the time-domain replica.
-    pub fn max_load_quantum(mut self, q: usize) -> Self {
-        self.max_load_quantum = q;
-        self
-    }
-
-    /// Set error tolerance by envelope geometry.  This will control the selected N taps for each
-    /// [`Bin`], so it's one of the most powerful knobs.  Values below 3.0 truncate too hard to
-    /// ship until a better numerical solver is available.  Values over 5.5 begin grinding up the
-    /// dust of departed f32s.
-    pub fn sigmas(mut self, sigmas: f64) -> Self {
-        todo!()
-    }
-
-    /// Truncate tail mass based on decibels relative to total mass.  -10dB truncates hard.  -80dB
-    /// truncates very weakly.
+    /// Weakest truncation any bin will ask for.  -10dB truncates hard, -80dB very weakly.
     pub fn truncate(mut self, tail_db: f64) -> Self {
-        self.tail_db = -(tail_db.abs());
+        self.tail_db = -tail_db.abs();
         self
     }
 
-    pub fn plan(self) -> Plan {
-        todo!()
+    /// Largest load quantum any bin will ask for.
+    pub fn max_load_quantum(mut self, quantum: usize) -> Self {
+        self.quantum = quantum;
+        self
     }
 
-    pub(super) fn shape(&self) -> Shape {
-        self.shape
+    /// Largest group delay any bin will ask for, in taps.
+    pub fn max_delay(mut self, delay: usize) -> Self {
+        self.delay = delay;
+        self
     }
 
-    pub(super) fn load_quantum(&self) -> usize {
-        self.max_load_quantum
-    }
+    pub fn bake(self) -> Wavelet {
+        let du = (self.resolution as f64).recip();
 
-    /// Truncation point where the omitted tail of one side carries `tail_db` of the total energy.
-    ///
-    /// The magnitude of `tail_db` is used, since a tail cannot exceed the whole.
-    ///
-    ///     M(u) = μ,  μ = 10^(-|tail_db| / 10)
-    fn truncation_u(&self) -> f64 {
-        let Shape { beta, gamma } = self.shape;
+        // u_max = u_trunc + (quantum + delay + 1/2) rho,  rho < 1/2 at Nyquist
+        let u_max =
+            self.shape.truncation_u(self.tail_db) + 0.5 * (self.quantum + self.delay) as f64 + 0.25;
 
-        let p = 2.0 * beta + 1.0;
-
-        // log C
-        let log_c = gamma.ln() + (p / gamma) * LN_2 + 2.0 * lgamma(beta + 1.0)
-            - TAU.ln()
-            - p.ln()
-            - lgamma(p / gamma);
-
-        // log u = (log C - log μ) / p
-        let log_u = (log_c + self.tail_db.abs() / 10.0 * LN_10) / p;
-
-        log_u.exp()
-    }
-
-    /// Realize a [`BinPlanner`].  Currently only used to generate testing weights.
-    pub fn bin_planner(self, center: f64, rate: f64) -> BinPlanner {
-        BinPlanner::new(self, center, rate)
-    }
-}
-
-/// Grid points per tap.  Cell mass stops moving well before this.
-const RESOLUTION: usize = 256;
-
-/// One bin, planned and baked on its own.  Primarily used for testing.  Holds a mother wavelet
-/// resolved against this bin's `rho`.
-// XXX maximum truncation is a good thing to figure out on the spec.  That with load quantum and max
-// group delay can tell us how much *extra* mother wavelet we might need.  For tests where we are
-// using extra taps to sweep precision knobs, this will be valuable.
-pub struct BinPlanner {
-    w0: f64,
-    rho: f64,
-    half: usize,
-    du: f64,
-    mother: Vec<Complex64>,
-    slope: Vec<Complex64>,
-}
-
-impl BinPlanner {
-    pub fn new(spec: Spec, center: f64, rate: f64) -> Self {
-        let rho = center / rate;
-        let quantum = spec.load_quantum();
-        let half = ((spec.truncation_u() / rho).ceil() as usize).div_ceil(quantum) * quantum;
-
-        let du = rho / RESOLUTION as f64;
-        let jet = QuadJet::standard(spec.shape());
-
-        let (mother, slope) = (0..=RESOLUTION * (half + 1))
+        let jet = QuadJet::standard(self.shape);
+        let (psi, d) = (0..=(u_max / du).ceil() as usize + 1)
             .map(|j| {
                 let t = jet.tap_at(j as f64 * du);
                 (t.psi, t.d)
             })
             .unzip();
 
-        BinPlanner {
-            w0: TAU * rho,
-            rho,
-            half,
+        Wavelet {
+            shape: self.shape,
             du,
-            mother,
-            slope,
+            psi,
+            d,
+            limits: BinSpec {
+                center: 0.0,
+                rate: 1.0,
+                quantum: self.quantum,
+                delay: self.delay,
+                tail_db: self.tail_db,
+            },
+        }
+    }
+}
+
+/// One motherlet, resolved on `u` alone.  Serves every `(fc, fs)` under the spec's maxima.
+pub struct Wavelet {
+    shape: Shape,
+    /// Periods per grid point.
+    du: f64,
+    /// Ψ
+    psi: Vec<Complex64>,
+    /// `−(i/2π)·dψ/du`
+    d: Vec<Complex64>,
+    /// Bin defaults, and the ceiling the grid extent was sized against.
+    limits: BinSpec,
+}
+
+impl Wavelet {
+    /// Inherits quantum, delay, and tail_db from the spec that baked it.
+    pub fn bin(&self, center: f64, rate: f64) -> Bin<'_> {
+        Bin::new(
+            self,
+            BinSpec {
+                center,
+                rate,
+                ..self.limits
+            },
+        )
+    }
+
+    /// A bin named by ρ directly, periods per tap.  `bin(fc, fs)` is `at_rho(fc / fs)`.
+    pub fn at_rho(&self, rho: f64) -> Bin<'_> {
+        self.bin(rho, 1.0)
+    }
+
+    pub fn shape(&self) -> Shape {
+        self.shape
+    }
+
+    fn at(&self, u: f64) -> Complex64 {
+        hermite::eval(&self.psi, &self.d, u, self.du)
+    }
+
+    fn mass(&self, u_beg: f64, u_end: f64) -> Complex64 {
+        hermite::integrate(&self.psi, &self.d, u_beg, u_end, self.du)
+    }
+}
+
+/// The record a runtime hydrates from.  No borrow, no realized geometry.
+#[derive(Clone, Copy)]
+pub struct BinSpec {
+    center: f64,
+    rate: f64,
+    quantum: usize,
+    delay: usize,
+    tail_db: f64,
+}
+
+/// A spec resolved against one bake.  Carrying the borrow keeps a bin off the wrong motherlet,
+/// where the tap count would be wrong outright.
+#[derive(Clone, Copy)]
+pub struct Bin<'w> {
+    wavelet: &'w Wavelet,
+    spec: BinSpec,
+    /// Periods per tap, `fc / fs`.  The only bridge from sample rate into `u`.
+    rho: f64,
+    /// Folded weights including the center tap.
+    k: usize,
+}
+
+impl<'w> Bin<'w> {
+    fn new(wavelet: &'w Wavelet, spec: BinSpec) -> Self {
+        let rho = spec.center / spec.rate;
+        let reach = (wavelet.shape.truncation_u(spec.tail_db) / rho).ceil() as usize;
+        let half = (reach + spec.delay).div_ceil(spec.quantum) * spec.quantum;
+
+        Bin {
+            wavelet,
+            spec,
+            rho,
+            k: half + 1,
         }
     }
 
-    /// Radial velocity.  Radians per input sample at the configured input sample rate.
-    pub fn velocity(&self) -> f64 {
-        self.w0
+    pub fn quantum(self, quantum: usize) -> Self {
+        Self::new(
+            self.wavelet,
+            BinSpec {
+                quantum,
+                ..self.spec
+            },
+        )
     }
 
-    /// Periods `u` per tap.
+    pub fn delay(self, delay: usize) -> Self {
+        Self::new(self.wavelet, BinSpec { delay, ..self.spec })
+    }
+
+    pub fn truncate(self, tail_db: f64) -> Self {
+        let tail_db = -tail_db.abs();
+        Self::new(
+            self.wavelet,
+            BinSpec {
+                tail_db,
+                ..self.spec
+            },
+        )
+    }
+
+    pub fn spec(&self) -> BinSpec {
+        self.spec
+    }
+
+    /// Radians per sample.  `ω₀ = 2π·ρ`
+    pub fn velocity(&self) -> f64 {
+        TAU * self.rho
+    }
+
+    /// Periods per tap.
     pub fn rho(&self) -> f64 {
         self.rho
     }
 
-    /// Number of folded pairs and the center tap.
     pub fn folded_taps(&self) -> usize {
-        self.half + 1
+        self.k
     }
 
-    /// Total number of taps.
     pub fn unfolded_taps(&self) -> usize {
-        2 * self.half + 1
+        2 * self.k - 1
     }
 
-    /// Writes `folded_taps()` weights and returns that count.
+    pub fn taps(&self) -> Vec<[f32; 4]> {
+        let mut out = vec![[0.0f32; 4]; self.k];
+        self.taps_into(&mut out);
+        out
+    }
+
+    /// Writes `folded_taps()` weights and returns that count.  Each weight is
+    /// `[Re ψ, Im ψ, Re d, Im d]` with the center halved.
+    ///
+    ///     H(ω) = 2 Re Σ_k ψ_k e^{-iωk}
+    ///     H(ω₀) = PEAK_GAIN
+    ///
+    /// A unit sine at the center frequency yields a unit envelope.
     ///
     /// Upstream owes an `out` at least that long.
     pub fn taps_into(&self, out: &mut [[f32; 4]]) -> usize {
-        let k = self.folded_taps();
-        let inv = self.rho.recip();
+        let (w, rho, k) = (self.wavelet, self.rho, self.k);
+        let inv = rho.recip();
 
-        // psi at the cell edge above tap j
-        let edge = |j: usize| self.mother[RESOLUTION / 2 + j * RESOLUTION];
+        // ψ at the cell edge above tap j
+        let edge = |j: usize| w.at((j as f64 + 0.5) * rho);
 
         let mut psi = Vec::with_capacity(k);
         let mut d = Vec::with_capacity(k);
 
         // the center cell is symmetric about u = 0, so the odd parts cancel
-        psi.push(Complex64::new(
-            2.0 * inv * self.mass(0.0, 0.5 * self.rho).re,
-            0.0,
-        ));
-        d.push(Complex64::new(2.0 / self.w0 * edge(0).im, 0.0));
+        psi.push(Complex64::new(2.0 * inv * w.mass(0.0, 0.5 * rho).re, 0.0));
+        d.push(Complex64::new(2.0 * inv / TAU * edge(0).im, 0.0));
 
+        // d telescopes to the cell edges, being the integral of a derivative
+        let mut lo = edge(0);
         for j in 1..k {
-            let (lo, hi) = ((j as f64 - 0.5) * self.rho, (j as f64 + 0.5) * self.rho);
-            psi.push(inv * self.mass(lo, hi));
-            d.push(-Complex64::i() / self.w0 * (edge(j) - edge(j - 1)));
+            psi.push(inv * w.mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho));
+            let hi = edge(j);
+            d.push(-Complex64::i() * inv / TAU * (hi - lo));
+            lo = hi;
         }
 
-        // H(w0) = psi_0 + 2 sum_k Re(psi_k e^{-i w0 k}), real by the fold
+        // H(ω₀) = ψ₀ + 2 Σ_k Re(ψ_k e^{-2πi u_k}),  u_k = k ρ
         let gain = psi[0].re
             + 2.0
                 * psi[1..]
                     .iter()
                     .enumerate()
                     .map(|(j, p)| {
-                        let (s, c) = (self.w0 * (j + 1) as f64).sin_cos();
+                        let (s, c) = (TAU * (j + 1) as f64 * rho).sin_cos();
                         p.re * c + p.im * s
                     })
                     .sum::<f64>();
@@ -323,10 +395,6 @@ impl BinPlanner {
         }
 
         k
-    }
-
-    fn mass(&self, u_beg: f64, u_end: f64) -> Complex64 {
-        hermite::integrate(&self.mother, &self.slope, u_beg, u_end, self.du)
     }
 }
 

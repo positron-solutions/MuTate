@@ -290,3 +290,23 @@ pub fn integrate(
 
     Complex64::new(real.sum(), imag.sum()) * rho_grid
 }
+
+// XXX Decide if this is what we want
+/// ψ at `u` on a grid of spacing `delta_u`.
+///
+/// Caller is responsible that `u` lies within the taps' reach.
+#[inline(always)]
+pub fn eval(taps: &[Complex64], d: &[Complex64], u: f64, delta_u: f64) -> Complex64 {
+    let s = u / delta_u;
+    let cell = (s.floor() as usize).min(taps.len() - 2);
+    let f = s - cell as f64;
+
+    let m0 = tangent(d[cell], delta_u);
+    let m1 = tangent(d[cell + 1], delta_u);
+    let (p0, p1) = (taps[cell], taps[cell + 1]);
+
+    Complex64::new(
+        hermite_1d(p0.re, p1.re, m0.re, m1.re, f),
+        hermite_1d(p0.im, p1.im, m0.im, m1.im, f),
+    )
+}

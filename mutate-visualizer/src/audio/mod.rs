@@ -22,9 +22,10 @@
 // turn them on and off at runtime.  See blame.  We would like support for mixtures of pipelines,
 // and the resource runtime will need to orchestrate this.
 
-pub mod dft;
+pub mod cwt;
 pub mod downsample;
 pub mod plan;
+pub mod spectrum;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -43,7 +44,9 @@ pub struct CallbackResources {
     last_consumed: u32,
     outputs: Arc<Mutex<Option<AudioOutputs>>>,
     pool_ring: PoolRing<Graphics, 4>,
-    dft: dft::Dft,
+
+    cwt: cwt::Cwt,
+    spectrum: spectrum::Spectrum,
     downsample: downsample::Downsample,
 }
 
@@ -52,11 +55,13 @@ pub struct CallbackResources {
 /// parameters onto an input structure for the command recorder to pull.
 #[derive(Clone, Debug)]
 pub struct AudioOutputs {
-    pub dft: dft::DftOutput,
+    pub cwt: DeviceAddress, // CwtOutput struct in the header.
     pub downsample: downsample::DownsampleOutput,
+    pub spectrum: spectrum::Output,
     // Dynamic range gain factor location (on device)
     // Timing data for downstream buffered tracking
     pub timing: Option<AudioTiming>,
+    pub ready: WaitValue,
 }
 
 pub struct Audio {
@@ -111,23 +116,29 @@ impl Audio {
         let callback_outputs = outputs.clone();
         let pool_ring = PoolRing::new(device, &callback_queue)?;
 
-        let downsample = downsample::Downsample::new(device, ring_layout)?;
-        let dft = dft::Dft::new(device, downsample.level_layout(2))?;
+        // DEBT Made up channel and sample count.  Probably want to nail it to the AudioChoice, but
+        // maybe keep it on the callback to support pipewire re-negotiation.
+        let downsample = downsample::Downsample::new(device, 2, 48000)?;
+        // XXX we need levels from the downs sampler...
+        let cwt = cwt::Cwt::new(device, downsample.view())?;
+        let spectrum = spectrum::Spectrum::new(device, cwt.view())?;
+
         let resources = Box::into_raw(Box::new(CallbackResources {
             consume_head: 0,
             dead: false.into(),
             last_consumed: 0,
             outputs: outputs.clone(),
             pool_ring,
-            dft,
 
+            cwt,
             downsample,
+            spectrum,
         }));
 
         // Pass resources address into the callback.  Ownership and cleanup remain with us.
         let addr = resources as usize;
-            // Drive the audio pipeline (◕‿◕)♡
         let on_flush = move |state: &utate::audio::import::DeviceAudioView| {
+            // Just re-bindings of callback thread local data.
             let outputs = &callback_outputs;
             let device = &callback_device;
 
@@ -143,6 +154,7 @@ impl Audio {
                 return Ok(state.read_count());
             }
 
+            // Drive the audio pipeline (◕‿◕)♡
             let (pool, intent) = match res.pool_ring.acquire(device, 16_000_000_000) {
                 Ok(acquired) => acquired,
                 Err(e) => {
@@ -155,50 +167,35 @@ impl Audio {
 
             let downsample::DownsampleDispatch {
                 output: downsample_out,
-                ready: downsample_ready,
                 consumed: downsample_consumed,
+                ..
             } = res.downsample.dispatch(device, &cb, state)?;
-            let downsample_previous = downsample_ready.predecessor();
 
-            let dft_out_wait = vk::MemoryBarrier2::default()
+            // DEBT 🐷
+            let barrier = vk::MemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
                 .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .dst_access_mask(vk::AccessFlags2::SHADER_READ);
-            let barriers = [dft_out_wait];
+            let barriers = [barrier];
             let dep = vk::DependencyInfo::default().memory_barriers(&barriers);
             unsafe { device.cmd_pipeline_barrier2(**&cb, &dep) };
 
-            // TODO get downsample outputs for the DFT
+            let cwt::Dispatch { output: cwt_out } =
+                res.cwt.dispatch(device, &cb, &downsample_out)?;
 
-            let dft::DftDispatch {
-                consumed: dft_consumed,
-                ready: dft_ready,
-                output: dft_out,
-            } = res.dft.dispatch(device, &cb, &downsample_out)?;
-            let dft_previous = dft_ready.predecessor();
+            unsafe { device.cmd_pipeline_barrier2(**&cb, &dep) };
+            let ready = intent.wait_value();
 
-            // DFT dependents need this barrier.  The need is graph-detected later.
-            let dft_out_wait = vk::MemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .dst_access_mask(vk::AccessFlags2::SHADER_READ);
-            let barriers = [dft_out_wait];
-            let dep = vk::DependencyInfo::default().memory_barriers(&barriers);
             unsafe { device.cmd_pipeline_barrier2(**&cb, &dep) };
 
             // NEXT use shared on outputs and wait on the correct semaphores
             let done = cb.end(device)?;
             callback_queue
                 .submission()
-                .wait(downsample_previous, vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .wait(dft_previous, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .execute(done)
                 // XXX Rip out the individual semaphores.  Most consumers will prefer to see one
                 // consistent audio graph.
-                .signal(downsample_ready, vk::PipelineStageFlags2::COMPUTE_SHADER)
-                .signal(dft_ready, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .signal(intent, vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .submit(&callback_device, vk::Fence::null())?;
 
@@ -206,9 +203,11 @@ impl Audio {
             res.consume_head = state.write_head;
 
             *outputs.lock().unwrap() = Some(AudioOutputs {
-                dft: dft_out,
+                cwt: cwt_out,
                 downsample: downsample_out,
                 timing: state.timing,
+                ready,
+                spectrum: todo!(),
             });
 
             // XXX Super hack here, but consistent.  We should catch up a bit differently to try and
@@ -257,7 +256,7 @@ impl Audio {
         resources.pool_ring.drain(device, 1_000_000_000)?;
         resources.pool_ring.destroy(device);
         resources.downsample.destroy(device);
-        resources.dft.destroy(device);
+        resources.cwt.destroy(device);
         // context has no vulkan resources and may just drop.
         Ok(())
     }
