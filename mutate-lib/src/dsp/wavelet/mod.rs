@@ -312,7 +312,7 @@ pub mod defaults {
     #[cfg(not(debug_assertions))]
     pub const RESOLUTION: usize = 256;
     pub const GRID_EPS: f64 = 1e-9;
-    pub const TAIL_DB: f64 = -100.0;
+    pub const TAIL_DB: f64 = -40.0;
     pub const LOAD_QUANTUM: usize = 4;
     pub const GAMMA: f64 = 3.0;
     pub const Q: f64 = 3.5;
@@ -769,15 +769,12 @@ mod test {
         use crate::dsp::bank;
 
         const Q: f64 = 5.0;
-        const SIGMAS: f64 = 3.0;
-        const QUANTUM: usize = 4;
 
         let bins = bank::bins(2_000.0, 20_000.0, BINS);
 
         let start = std::time::Instant::now();
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, SIGMAS))
-            .max_load_quantum(QUANTUM)
+            .with_shape(Shape::from_q(Q, defaults::GAMMA))
             .bake();
         let bake_time = start.elapsed();
 
@@ -1211,17 +1208,10 @@ mod test {
     /// convention can't agree with itself.  First thing to look at if the bake goes sideways.
     #[test]
     fn taps_are_conditioned() {
-        const Q: f64 = 3.0;
-        const SIGMAS: f64 = 3.0;
-        const QUANTUM: usize = 4;
         // Use a rough tail dB so we can verify conditioning under challenging conditions.
         const TAIL_DB: f64 = -30.0;
 
-        let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, SIGMAS))
-            .max_load_quantum(QUANTUM)
-            .max_truncation(TAIL_DB)
-            .bake();
+        let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
 
         for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
             let bin = wav.at_rho(fc / sr);
@@ -1276,9 +1266,6 @@ mod test {
     /// wavelet's own support, which is where the pull toward the hop takes over.
     #[test]
     fn t_hat_survives_transients() {
-        const Q: f64 = 3.5;
-        const SIGMAS: f64 = 3.0;
-        const QUANTUM: usize = 4;
         const REF_TAIL_DB: f64 = -80.0;
         const TAIL_DB: f64 = -40.0;
 
@@ -1286,16 +1273,8 @@ mod test {
         /// a starting bracket.
         const TOL: [f64; 3] = [0.05; 3];
 
-        let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, SIGMAS))
-            .max_load_quantum(QUANTUM)
-            .max_truncation(TAIL_DB)
-            .bake();
-        let long = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, SIGMAS))
-            .max_load_quantum(QUANTUM)
-            .max_truncation(REF_TAIL_DB)
-            .bake();
+        let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
+        let long = WaveletSpec::default().max_truncation(REF_TAIL_DB).bake();
 
         // NEXT adapt for same omegas as the quality assurance.
         for (fc, sr) in [(40.0f64, 3000.0), (200.0, 3000.0), (800.0, 3000.0)] {
@@ -1434,16 +1413,9 @@ mod test {
     }
 
     #[test]
-    fn print_bin() {
-        const Q: f64 = 3.5;
-        const QUANTUM: usize = 4;
-
-        let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
-            .max_load_quantum(QUANTUM)
-            .max_truncation(TAIL_DB)
-            .bake();
+    fn print_waveform() {
         const TAIL_DB: f64 = -40.0;
+        let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
 
         for (fc, sr) in [(1000.0f64, 8000.0), (300.0, 3000.0), (12_000.0, RATE)] {
             let rho = fc / sr;
