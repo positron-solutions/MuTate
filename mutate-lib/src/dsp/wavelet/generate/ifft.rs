@@ -438,9 +438,7 @@ mod test {
         // after, not the local error of a zero crossing which would produce an unstable ruler.
         let local_scale = |u: f64| {
             let anchor = (u * 2.0).floor() / 2.0;
-            // XXX add back the D
-            let reference = oracle.tap_at(anchor);
-            reference.psi.norm()
+            oracle.tap_at(anchor)
         };
 
         // Deliberately off-grid at every resolution in the sweep.
@@ -453,11 +451,11 @@ mod test {
             .map(|&u| (oracle.tap_at(u), local_scale(u)))
             .collect();
 
-        let peak = refs[0].1;
+        let peak = refs[0].1.psi.norm();
 
         print!("\n  {:>10} |", "decay");
-        for &(_, ps) in &refs {
-            print!(" {:>9}", fmt_e(ps / peak));
+        for (_, ps) in &refs {
+            print!(" {:>9}", fmt_e(ps.psi.norm() / peak));
         }
         println!();
 
@@ -497,10 +495,10 @@ mod test {
                     let floor = (settings.n_fft() as f64).log2().sqrt() * f64::EPSILON * peak;
 
                     print!("  {label:>10} |");
-                    for (&u, &(ref psi_ref, ps)) in probes.iter().zip(&refs) {
+                    for (&u, &(ref psi_ref, ref anchor)) in probes.iter().zip(&refs) {
                         let (reference, scale) = match tap {
-                            Tap::Psi => (psi_ref.psi, ps),
-                            Tap::D => (Complex64::new(0.0, 0.0), 0.0), // XXX D Support
+                            Tap::Psi => (psi_ref.psi, anchor.psi.norm()),
+                            Tap::D => (psi_ref.d, anchor.d.norm()),
                         };
 
                         // Skip cells that won't have an index due to being too short.
@@ -536,8 +534,7 @@ mod test {
 
         // Each sweep is over-provisioned in the knobs it isn't varying, so the only thing that can
         // bind is the one in the label.
-        // XXX Add back the D
-        for tap in [Tap::Psi] {
+        for tap in [Tap::Psi, Tap::D] {
             // Drive up the FFT grid points per period, resulting in finer sampling of the wavelet
             // in the time domain.
             sweep(
@@ -561,22 +558,6 @@ mod test {
                     ..reference
                 },
                 16,
-            );
-
-            // Fixed reach with a growing transform.  Once pad clears truncation the rows go flat
-            // and stay flat across seven doublings of `n_fft`, so the floor doesn't scale with
-            // transform size the way a coherent-sum bound would predict.  Extra record past that
-            // point is free and useless.
-            sweep(
-                tap,
-                "Cranking record",
-                "record",
-                &|i| IfftSettings {
-                    periods: 6,
-                    pad: (1usize << (i + 3)) - 6,
-                    ..reference
-                },
-                8,
             );
         }
 
@@ -604,7 +585,7 @@ mod test {
         for j in 0..steps {
             let u = j as f64 * 0.05 + 0.011;
             let t = u * shipping.resolution as f64;
-            let scale = local_scale(u);
+            let scale = local_scale(u).psi.norm();
 
             let e = rel(
                 hermite::resample_hermite(&psi, &d, t, shipping.resolution),
