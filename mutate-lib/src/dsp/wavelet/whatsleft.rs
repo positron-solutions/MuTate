@@ -367,7 +367,7 @@ mod test {
     #[test]
     fn smoke_test_f64() {
         let mut a: Accumulator<f64> = Accumulator::default();
-        for i in 0..16_000_000 {
+        for _ in 0..16_000_000 {
             a.add(1e-6f64);
         }
         let result = a.sum();

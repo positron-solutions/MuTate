@@ -37,9 +37,9 @@
 //! daughter wavelet sample omega is known, applies both.  Normalization and bank compensation are
 //! the caller's responsibility.
 
-#[cfg(feature = "validate")]
+#[cfg(all(test, feature = "validate"))]
 pub(crate) mod contour;
-#[cfg(feature = "validate")]
+#[cfg(all(test, feature = "validate"))]
 pub(crate) mod ifft;
 
 pub(crate) mod hermite;
@@ -63,6 +63,7 @@ use crate::dsp::wavelet::Shape;
 // in the stencil and f32 truncation.
 // NEXT Did not compare any other FFT libraries, just went with stock standard.
 
+#[cfg(test)]
 fn fmt_e(x: f64) -> String {
     let s = format!("{x:+.2e}");
     // split "±m.mme±dd" into mantissa and exponent, then zero-pad the exponent

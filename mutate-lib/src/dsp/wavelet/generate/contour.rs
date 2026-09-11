@@ -35,8 +35,10 @@ const TAU_MAX: f64 = 4.0;
 pub struct DeformedContourEval {
     pub value: Complex64,
     /// log10(Σ|terms| / |Σ terms|).  Expect well under 1 here.
+    #[allow(unused)]
     pub digits_lost: f64,
     /// Relative change between the h and 2h double-exponential rules.
+    #[allow(unused)]
     pub residual: f64,
 }
 

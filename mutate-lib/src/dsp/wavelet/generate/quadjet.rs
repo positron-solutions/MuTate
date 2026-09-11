@@ -170,7 +170,6 @@ const PROBE_TRIES: u32 = 8;
 
 // Jets
 const ADJ_CONE: f64 = 0.5;
-const HANDOVER_SPLITS: u32 = 2;
 const JET_ORDER: usize = 32;
 const JET_SLOTS: usize = JET_ORDER + 2;
 const JET_SETTLE_FLOOR: usize = 2;
@@ -190,7 +189,6 @@ const PLACE_MARGIN_EFOLDS: f64 = 2.0;
 const PLACE_STEP: f64 = 1.2;
 const NEWTON_TOL_FACTOR: f64 = 0.3;
 const NEWTON_SLACK: usize = 2;
-const PLACE_MARGIN: f64 = 1.2;
 const PLACE_ROUNDS: u32 = 6;
 const QUAD_MAX_NODES: usize = 1024 * 16;
 const QUAD_MIN_DENSITY: f64 = 1e-3;
@@ -234,8 +232,10 @@ pub struct QuadJetResult {
     pub d: Complex64,
     /// What each saddle's own method could say about its own error, summed over the
     /// decomposition, in the units of the channel it describes.
+    #[allow(unused)]
     pub residual: f64,
     /// Approximate spend for this tap.
+    #[allow(unused)]
     pub cost: Cost,
 }
 
@@ -340,12 +340,14 @@ pub struct QuadJet {
     /// measured against and the point at which the jet's residual buys a traced path.
     pub tol: f64,
     /// Morse wavelet parameters.
+    #[allow(unused)]
     pub shape: Shape,
     /// Skip the jet's verdict and trace every saddle, which is the mode the IFFT and contour
     /// methods are compared against.
     pub quadrature_only: bool,
     /// What each saddle's own method could say about its error in `ψ`, summed over the
     /// decomposition.
+    #[allow(unused)]
     pub residual: f64,
     frame: Frame,
     table: StokesTable,
@@ -374,6 +376,7 @@ impl QuadJet {
         }
     }
 
+    #[allow(unused)]
     pub fn reference(shape: Shape) -> Self {
         Self::new(shape, 0.0, true)
     }
@@ -974,13 +977,12 @@ impl Saddle {
         let mut rate = model_rate;
         let mut carried = f64::INFINITY;
 
-        for round in 0..PLACE_ROUNDS {
+        for _round in 0..PLACE_ROUNDS {
             // A difference between two levels bounds the error of the coarser one, so what the
             // finer still carries is that difference decayed across the step between them.  The
             // decay is derated, since the rate is the model's until a second difference exists
             // and a model that flatters the neighbor should not be allowed to certify on the
             // strength of that flattery.
-            let fade = (-CERTIFY_DERATE * rate * (hi - lo)).exp();
             let bar_abs = target.max(EPS * value(&level, 0).norm());
             carried = if hi > lo {
                 err_lo * (-CERTIFY_DERATE * rate * (hi - lo)).exp()
