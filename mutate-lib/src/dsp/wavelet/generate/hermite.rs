@@ -35,7 +35,7 @@
 //! `m` here is a Hermite tangent and not the crate's center sample.  A tangent is `2π·i·d·Δu`,
 //! the storage convention reverted before the spacing goes on.
 //!
-//! `hermite_integral` integrates against `du`, so its result is `ψ` times periods.  The same sum
+//! `integrate` integrates against `du`, so its result is `ψ` times periods.  The same sum
 //! against `dν` is larger by `1/ρ`, which is what a consumer working in samples wants.
 
 // NEXT Some characterization of the error would be appreciated.  If we ask for 1e-9 but the Hermite
@@ -92,6 +92,7 @@ pub fn hermite_1d(p0: f64, p1: f64, m0: f64, m1: f64, f: f64) -> f64 {
 ///
 /// `s` indexes the grid, so `s = u·resolution`, and `Δu` is the spacing the exact `u`-derivatives
 /// are scaled into.
+#[cfg(test)]
 #[inline(always)]
 pub fn resample_hermite(
     taps: &[Complex64],
@@ -121,35 +122,6 @@ pub fn resample_hermite(
 #[inline(always)]
 fn tangent(d: Complex64, delta_u: f64) -> Complex64 {
     Complex64::I * TAU * d * delta_u
-}
-
-/// Exact integral of the cubic Hermite reconstruction over the cells `i0..i1`, with `du` as the
-/// measure, so the result carries one power of periods.
-///
-/// Same stencil as `resample_hermite`, so this measures the area under the curve consumers
-/// will actually see rather than the area under an independent quadrature rule.
-#[inline(always)]
-pub fn hermite_integral(
-    vals: &[Complex64],
-    d: &[Complex64],
-    i0: usize,
-    i1: usize,
-    resolution: usize,
-) -> Complex64 {
-    let delta_u = 1.0 / resolution as f64;
-    let mut real = Accumulator::default();
-    let mut imag = Accumulator::default();
-
-    // The trapezoid plus the cubic's own correction, which the endpoint slopes supply exactly.
-    for i in i0..i1 {
-        let m0 = tangent(d[i], delta_u);
-        let m1 = tangent(d[i + 1], delta_u);
-        let seg = (vals[i] + vals[i + 1]) * 0.5 + (m0 - m1) / 12.0;
-        real.add(seg.re);
-        imag.add(seg.im);
-    }
-
-    Complex64::new(real.sum(), imag.sum()) * delta_u
 }
 
 /// `∫_{f₀}^{f₁} p` in cell units, accumulated term by term.
