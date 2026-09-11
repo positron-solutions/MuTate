@@ -915,7 +915,7 @@ mod test {
     fn reassignment_is_unbiased() {
         const Q: f64 = 8.5;
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -160.0;
+        const TAIL_DB: f64 = -80.0;
 
         /// Cents readings stop meaning anything once the skirt is down in truncation ripple.
         /// The denominator is no longer the envelope, so the ratio is measuring the stopband.
@@ -993,8 +993,8 @@ mod test {
         const Q: f64 = 3.5;
 
         /// Weakest truncation in the sweep, and so the grid the wavelet is sized for.
-        const FULL_DB: f64 = -160.0;
-        const CUTS: [f64; 4] = [-60.0, -80.0, -100.0, -120.0];
+        const FULL_DB: f64 = -120.0;
+        const CUTS: [f64; 5] = [-20.0, -40.0, -60.0, -80.0, -100.0];
         const FCS: [f64; 4] = [2_000.0, 4_000.0, 8_000.0, 14_000.0];
 
         // NOTE these are empirically discovered values stored to catch regressions.
@@ -1214,7 +1214,8 @@ mod test {
         const Q: f64 = 3.0;
         const SIGMAS: f64 = 3.0;
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -200.0;
+        // Use a rough tail dB so we can verify conditioning under challenging conditions.
+        const TAIL_DB: f64 = -30.0;
 
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, SIGMAS))
@@ -1436,13 +1437,13 @@ mod test {
     fn print_bin() {
         const Q: f64 = 3.5;
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -100.0;
 
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
+        const TAIL_DB: f64 = -40.0;
 
         for (fc, sr) in [(1000.0f64, 8000.0), (300.0, 3000.0), (12_000.0, RATE)] {
             let rho = fc / sr;

@@ -42,9 +42,9 @@
 // MAYBE Gamma = 4 is not that wild, but has a flatter top and a steeper main lobe, things we are
 // interested in.  It's possibly worth a bit of Q unless reassignment becomes broken.
 
-use core::f64::consts::{LN_10, LN_2, PI, TAU};
+use core::f64::consts::{FRAC_2_SQRT_PI, LN_10, LN_2, PI, TAU};
 
-use libm::lgamma;
+use libm::{erfc, lgamma};
 use num_complex::Complex64;
 
 use super::defaults;
@@ -99,27 +99,39 @@ impl Shape {
         }
     }
 
-    /// Truncation point, in periods of the carrier, where the omitted tails carry `tail_db` of the
-    /// total energy of the entire wavelet.
+    /// Model estimate of the truncation point in carrier periods.
     ///
-    ///     M(t) = μ,  μ = 10^(-|tail_db| / 10)
+    ///     μ = 10^(-|tail_db| / 10)
+    ///     2C t^(-p) = μ
+    ///     erfc(t ω_p / P) = μ
     ///     u = t ω_p / 2π
     pub fn truncation_u(&self, tail_db: f64) -> f64 {
         let Shape { beta, gamma } = *self;
-
         let p = 2.0 * beta + 1.0;
+        let l = tail_db.abs() / 10.0 * LN_10;
 
-        // log 2C, both tails against the whole mass
+        // algebraic tails from the branch point at ω = 0
         let log_c = LN_2 + gamma.ln() + (p / gamma) * LN_2 + 2.0 * lgamma(beta + 1.0)
             - TAU.ln()
             - p.ln()
             - lgamma(p / gamma);
+        let u_alg = ((log_c + l) / p).exp() * self.peak() / TAU;
 
-        // log t = (log 2C - log μ) / p
-        let log_t = (log_c + tail_db.abs() / 10.0 * LN_10) / p;
+        // Gaussian bulk about ω_p
+        let u_gauss = erfc_inv_exp(l) * self.p() / TAU;
 
-        log_t.exp() * self.peak() / TAU
+        u_alg.max(u_gauss)
     }
+}
+
+/// erfc⁻¹(e^(-l))
+fn erfc_inv_exp(l: f64) -> f64 {
+    // x² + ½ ln(π x²) = l
+    let x = (l - 0.5 * (PI * l).ln()).sqrt();
+
+    // Newton on ln erfc
+    let le = erfc(x).ln();
+    x + (le + l) * (le + x * x).exp() / FRAC_2_SQRT_PI
 }
 
 /// Maxima for the family. Every bin served by the bake sits under these.
