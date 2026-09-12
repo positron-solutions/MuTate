@@ -202,6 +202,7 @@ impl WaveletSpec {
                 delay: self.max_delay,
                 tail_db: self.max_tail_db,
             },
+            restriction: self.restriction,
         }
     }
 }

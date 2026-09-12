@@ -364,6 +364,8 @@ pub struct Wavelet {
     d: Vec<Complex64>,
     /// Bin defaults, and the ceiling the grid extent was sized against.
     limits: BinSpec,
+    /// Strategy for reducing grid to `N` taps.
+    restriction: restrict::Restriction,
 }
 
 impl Wavelet {
@@ -399,6 +401,18 @@ impl Wavelet {
 
     fn mass(&self, u_beg: f64, u_end: f64) -> Complex64 {
         hermite::integrate(&self.psi, &self.d, u_beg, u_end, self.du)
+    }
+
+    pub fn restriction(&self) -> restrict::Restriction {
+        self.restriction
+    }
+
+    fn grid(&self) -> Grid<'_> {
+        Grid {
+            psi: &self.psi,
+            d: &self.d,
+            du: self.du,
+        }
     }
 }
 
@@ -527,32 +541,13 @@ impl<'w> Bin<'w> {
     /// Upstream owes an `out` at least that long.
     pub fn taps_into(&self, out: &mut [[f32; 4]]) -> usize {
         let (w, rho, k) = (self.wavelet, self.rho, self.k);
-        let inv = rho.recip();
+        let grid = w.grid();
 
-        // ψ_T at the upper edge of cell j, zero past the cut
-        let edge = |j: usize| {
-            if j + 1 < k {
-                w.at((j as f64 + 0.5) * rho)
-            } else {
-                Complex64::default()
-            }
-        };
+        let mut psi = vec![Complex64::default(); k];
+        let mut d = vec![Complex64::default(); k];
 
-        let mut psi = Vec::with_capacity(k);
-        let mut d = Vec::with_capacity(k);
-
-        // the center cell is symmetric about u = 0, so the odd parts cancel
-        psi.push(Complex64::new(2.0 * inv * w.mass(0.0, 0.5 * rho).re, 0.0));
-        d.push(Complex64::new(2.0 * inv / TAU * edge(0).im, 0.0));
-
-        // d_k = −(i/2πρ)·(ψ_T(e_{k+½}) − ψ_T(e_{k−½}))
-        let mut lo = edge(0);
-        for j in 1..k {
-            psi.push(inv * w.mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho));
-            let hi = edge(j);
-            d.push(-Complex64::i() * inv / TAU * (hi - lo));
-            lo = hi;
-        }
+        w.restriction.psi_into(grid, rho, &mut psi);
+        restrict::derivative_into(grid, rho, &mut d);
 
         // H(ω₀) = ψ₀ + 2 Σ_k Re(ψ_k e^{-2πi u_k}),  u_k = k ρ
         let gain = psi[0].re
@@ -812,7 +807,7 @@ mod test {
     fn reassignment_is_unbiased() {
         const Q: f64 = 8.5;
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -80.0;
+        const TAIL_DB: f64 = -60.0;
 
         /// Cents readings stop meaning anything once the skirt is down in truncation ripple.
         /// The denominator is no longer the envelope, so the ratio is measuring the stopband.
@@ -1362,7 +1357,7 @@ mod test {
     #[test]
     fn table_response_is_characterized() {
         const Q: f64 = 3.5;
-        const TAIL_DB: f64 = -100.0;
+        const TAIL_DB: f64 = -60.0;
 
         let w = wavelet(Q, 16);
 

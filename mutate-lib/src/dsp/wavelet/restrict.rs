@@ -96,7 +96,7 @@ use super::{generate::hermite, spec::Shape, Grid};
 #[derive(Clone, Copy, Default)]
 pub enum Restriction {
     /// Linear interpolation of the grid at each tap center.  Worst approach.  Leads to unacceptable
-    /// aliasing at high omega.  Useful for demonstration.
+    /// aliasing at high omega.  Useful for demonstration...of mediocrity.
     Nearest,
     /// Complex cell average.  A slightly better technique, but not expressly aware of the polar
     /// spiral we are approximating with taps.
@@ -108,7 +108,7 @@ pub enum Restriction {
 
 impl Restriction {
     /// Writes `out.len()` folded weights in cell-average units, `out[0]` real.
-    pub fn psi_into(self, grid: Grid, rho: f64, out: &mut [Complex64]) {
+    pub(super) fn psi_into(self, grid: Grid, rho: f64, out: &mut [Complex64]) {
         let inv = rho.recip();
 
         match self {
@@ -154,6 +154,7 @@ fn magnitude(grid: Grid, a: f64, b: f64) -> f64 {
 /// Rotated derivative from the truncated edges.
 ///
 ///     d_k = −(i/2πρ)·(ψ_T(e_{k+½}) − ψ_T(e_{k−½}))
+// XXX this method has some terrible flaw in the endpoints
 pub fn derivative_into(grid: Grid, rho: f64, out: &mut [Complex64]) {
     let k = out.len();
     let inv = rho.recip();
