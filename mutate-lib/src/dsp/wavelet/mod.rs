@@ -358,12 +358,10 @@ mod test {
 
     #[test]
     fn print_gamma_sweep() {
-        // XXX Completely busted.  And... envelope?
-
         const QUANTUM: usize = 4;
 
-        println!("\n=== ENVELOPE vs GAMMA (Q = 2.4) ===");
-        // P = 4.0 is Q = 2.4; holding it fixed keeps the -3 dB width constant across gamma.
+        println!("\n=== TAP PROFILE vs GAMMA (Q = 2.4) ===");
+        // P² = beta gamma
         let p = 4.0;
         for gamma in [1.0f64, 2.0, 3.0, 6.0] {
             let wav = WaveletSpec::default()
@@ -374,30 +372,25 @@ mod test {
                 .max_load_quantum(QUANTUM)
                 .bake();
             let bin = wav.at_rho(1000.0 / 8000.0);
-            let taps = bin.taps();
+            let w0 = bin.velocity();
+            let weights = bin.taps();
 
-            let t = unfold(&taps, 0);
-            let n = t.len();
+            let psi = unfold(&weights, 0);
+            let d = unfold(&weights, 2);
+            let n = psi.len();
 
-            let mags: Vec<f64> = t.iter().map(|h| h.norm() as f64).collect();
-            let max = mags.iter().fold(0.0f64, |a, &b| a.max(b));
-
-            // Σ (j − c)|ψ_j|² / Σ |ψ_j|²,  c = (n − 1)/2
-            let ctr = (n - 1) as f64 / 2.0;
-            let m: f64 = mags
-                .iter()
-                .enumerate()
-                .map(|(j, &v)| (j as f64 - ctr) * v * v)
-                .sum();
-            let e: f64 = mags.iter().map(|v| v * v).sum();
+            // M₁ / M₀
+            let delay = (moment(&psi, 1) / moment(&psi, 0)).re;
+            let pairing = pairing_residual(&psi, &d, w0, w0) / l1(&psi);
 
             println!(
-                "\ngamma = {:.1}  weights {}  taps {}  centroid offset = {:+.3}",
-                gamma,
-                taps.len(),
-                n,
-                m / e
+                "\ngamma = {gamma:.1}  weights {}  taps {n}  delay = {delay:+.3e}  pairing = {}",
+                weights.len(),
+                fmt_e(pairing),
             );
+
+            let mags: Vec<f64> = psi.iter().map(|h| h.norm() as f64).collect();
+            let max = mags.iter().fold(0.0f64, |a, &b| a.max(b));
             for (j, &v) in mags.iter().enumerate() {
                 println!(
                     "{:>4} {}",
@@ -405,7 +398,8 @@ mod test {
                     "#".repeat((v / max * 40.0).round() as usize)
                 );
             }
-            assert!((m / e).abs() < 1e-3, "gamma {gamma} centroid {:+.4}", m / e);
+
+            assert!(pairing < 1e-1, "gamma {gamma} pairing {pairing:.3e}");
         }
     }
 

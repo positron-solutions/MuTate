@@ -41,6 +41,8 @@
 pub(crate) mod contour;
 #[cfg(all(test, feature = "validate"))]
 pub(crate) mod ifft;
+#[cfg(test)]
+use super::fmt_e;
 
 pub(crate) mod hermite;
 pub(crate) mod quadjet;
@@ -62,15 +64,6 @@ use crate::dsp::wavelet::Shape;
 // will show up even after we squeeze the result through a stencil.  Noise will just get washed away
 // in the stencil and f32 truncation.
 // NEXT Did not compare any other FFT libraries, just went with stock standard.
-
-#[cfg(test)]
-fn fmt_e(x: f64) -> String {
-    let s = format!("{x:+.2e}");
-    // split "±m.mme±dd" into mantissa and exponent, then zero-pad the exponent
-    let (mantissa, exp) = s.split_once('e').unwrap_or(("999", "999"));
-    let exp: i32 = exp.parse().unwrap();
-    format!("{mantissa}e{exp:+03}")
-}
 
 #[cfg(test)]
 mod test {
