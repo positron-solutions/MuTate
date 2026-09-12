@@ -300,7 +300,7 @@ pub mod restrict;
 pub mod spec;
 pub mod whatsleft;
 
-use core::f64::consts::{LN_10, LN_2, PI, TAU};
+use core::f64::consts::{LN_2, PI, TAU};
 
 use num_complex::{Complex32, Complex64};
 
@@ -349,18 +349,6 @@ mod test {
             out[k - 1 - j] = h.conj();
         }
         out
-    }
-
-    /// t_nu = -i*nu*psi_nu, matching what a consumer reconstructs per lane.
-    fn derive_t(psi: &[Complex64]) -> Vec<Complex64> {
-        let half = (psi.len() / 2) as isize;
-        psi.iter()
-            .enumerate()
-            .map(|(j, &h)| {
-                let nu = (j as isize - half) as f64;
-                -Complex64::i() * nu * h
-            })
-            .collect()
     }
 
     /// H(ω) of centered taps, ω in rad/sample.
@@ -421,75 +409,15 @@ mod test {
             .fold(0.0f64, f64::max)
     }
 
-    /// max |ΔH| over the -3 dB band.
-    fn passband_gap(d: &[Complex32], (lo, hi): (f64, f64)) -> f64 {
-        sweep(lo, hi, d.len(), |w| dtft(d, w).norm())
-    }
-
-    /// max |ΔH| over two octaves starting three below center, mirrored above when it fits under Nyquist.
-    fn stopband(d: &[Complex32], w0: f64) -> f64 {
-        let gap = |w: f64| dtft(d, w).norm();
-        let low = sweep(w0 / 32.0, w0 / 8.0, 2048, gap);
-        if 32.0 * w0 < PI {
-            low.max(sweep(8.0 * w0, 32.0 * w0, 2048, gap))
-        } else {
-            low
-        }
-    }
-
-    /// Worst envelope out per unit sine in at ω ≥ 0, image included.
-    ///
-    ///     ½|H(ω)| + ½|H(−ω)|
-    fn envelope(taps: &[Complex32], w: f64) -> f64 {
-        let (g, i) = sine(taps, w);
-        g + i
-    }
-
-    /// Δh = a − b about a shared center.  `a` is at least as long.
-    fn gap(a: &[Complex32], b: &[Complex32]) -> Vec<Complex32> {
-        let off = (a.len() - b.len()) / 2;
-        let mut d = a.to_vec();
-        for (o, &h) in d[off..].iter_mut().zip(b) {
-            *o -= h;
-        }
-        d
-    }
-
     /// Σ|h|, which bounds every envelope of `taps`.
     fn l1(taps: &[Complex32]) -> f64 {
         taps.iter().map(|h| h.norm() as f64).sum()
-    }
-
-    /// max |ΔH| on [−π, 0].
-    fn image(d: &[Complex32]) -> f64 {
-        sweep(-PI, 0.0, 2048, |w| dtft(d, w).norm())
     }
 
     /// max |H| on [−0.05 ω₀, 0.05 ω₀].
     fn dc_leak(taps: &[Complex32], w0: f64) -> f64 {
         let e = 0.05 * w0;
         sweep(-e, e, taps.len(), |w| dtft(taps, w).norm())
-    }
-
-    /// Envelope out per unit sine in at ω, and the image it leaks at −ω.
-    ///
-    ///     cos ωn = ½ e^{iωn} + ½ e^{−iωn}
-    fn sine(taps: &[Complex32], w: f64) -> (f64, f64) {
-        (0.5 * dtft(taps, w).norm(), 0.5 * dtft(taps, -w).norm())
-    }
-
-    /// ω in `[a, b]` where `f` crosses `level`, with f(a) and f(b) on opposite sides.
-    fn crossing(f: impl Fn(f64) -> f64, mut a: f64, mut b: f64, level: f64) -> f64 {
-        let rising = f(a) < level;
-        for _ in 0..60 {
-            let m = 0.5 * (a + b);
-            if (f(m) < level) == rising {
-                a = m;
-            } else {
-                b = m;
-            }
-        }
-        0.5 * (a + b)
     }
 
     fn widen(taps: &[Complex32]) -> Vec<Complex64> {
@@ -524,11 +452,6 @@ mod test {
             tee += k as f64 * Complex64::new(a * dif, -b * sum);
         }
         [psi, dee, tee]
-    }
-
-    fn cdiv(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
-        let q = b.0 * b.0 + b.1 * b.1;
-        ((a.0 * b.0 + a.1 * b.1) / q, (a.1 * b.0 - a.0 * b.1) / q)
     }
 
     /// Worst bias of `r̂` in cents and worst quadrature leak against a real tone detuned
@@ -641,6 +564,376 @@ mod test {
         }
     }
 
+    /// ω and |H| at an extremum.
+    #[derive(Clone, Copy)]
+    struct Point {
+        w: f64,
+        h: f64,
+    }
+
+    /// Extremum of `f` on [a, b], a maximum for `sign` 1 and a minimum for −1.
+    fn refine(f: impl Fn(f64) -> f64, mut a: f64, mut b: f64, sign: f64) -> Point {
+        for _ in 0..80 {
+            let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+            if sign * f(m1) < sign * f(m2) {
+                a = m1;
+            } else {
+                b = m2;
+            }
+        }
+        let w = 0.5 * (a + b);
+        Point { w, h: f(w) }
+    }
+
+    /// ∫ h² dω on [lo, hi], h = max(0, 1 − dB/floor_db) with dB relative to `gain`.
+    fn level_moment(taps: &[Complex32], gain: f64, (lo, hi): (f64, f64), floor_db: f64) -> f64 {
+        let n = ((hi - lo) * (16 * taps.len()) as f64 / TAU).ceil().max(1.0) as usize;
+        let dw = (hi - lo) / n as f64;
+        (0..n)
+            .map(|k| {
+                let w = lo + dw * (k as f64 + 0.5);
+                let db = 20.0 * (dtft(taps, w).norm() / gain).log10();
+                (1.0 - db / floor_db).max(0.0).powi(2)
+            })
+            .sum::<f64>()
+            * dw
+    }
+
+    /// Edges either side of `peak_w` where the response first falls `level_db` below `peak`,
+    /// searched out to `span`, absent where no crossing lies inside it.
+    fn shoulders(
+        taps: &[Complex32],
+        peak: f64,
+        peak_w: f64,
+        level_db: f64,
+        span: f64,
+        h: f64,
+        density: f64,
+    ) -> (Option<f64>, Option<f64>) {
+        let db = |w: f64| 20.0 * dtft(taps, w).norm().log10();
+        let rel = |w: f64| db(w) - 20.0 * peak.log10();
+        let edge =
+            |stop: f64| level_crossing(&rel, level_db, peak_w, stop, 0.0, h, density).map(|p| p.w);
+        (
+            edge((peak_w - span).max(0.0)),
+            edge((peak_w + span).min(PI)),
+        )
+    }
+
+    /// −3 dB edges either side of `peak_w`, falling back to the bracket `w0` sets.
+    fn bandwidth(
+        taps: &[Complex32],
+        peak: f64,
+        peak_w: f64,
+        w0: f64,
+        h: f64,
+        density: f64,
+    ) -> (f64, f64) {
+        let half_db = -10.0 * 2.0f64.log10();
+        let (lo, hi) = shoulders(taps, peak, peak_w, half_db, w0, h, density);
+        (
+            lo.unwrap_or((peak_w - w0).max(0.0)),
+            hi.unwrap_or((peak_w + w0).min(PI)),
+        )
+    }
+
+    /// Extrema of |H| across one stopband, tallest first.
+    struct Skirt {
+        /// Largest local maximum, absent where the band holds none.
+        peak: Option<Point>,
+        /// Median local maximum, the ripple level the peak stands on.
+        median: f64,
+        /// Local maxima found.
+        lobes: usize,
+    }
+
+    impl Skirt {
+        /// 20 log10 (peak / median), how far the tallest lobe clears the ripple.
+        fn prominence_db(&self) -> Option<f64> {
+            self.peak.map(|p| 20.0 * (p.h / self.median).log10())
+        }
+    }
+
+    /// Samples per null spacing 2π/N.  Four resolves every extremum a degree N−1
+    /// trigonometric polynomial admits.
+    const SKIRT_OVERSAMPLE: usize = 8;
+
+    /// Local maxima refined before the tallest is chosen.
+    const SKIRT_REFINE: usize = 4;
+
+    /// Local maxima of `f` on a uniform grid over [lo, hi], as brackets.
+    fn crests(f: impl Fn(f64) -> f64, lo: f64, hi: f64, n: usize) -> Vec<(f64, f64, f64)> {
+        let at = |j: usize| lo + (hi - lo) * j as f64 / n as f64;
+        let g: Vec<f64> = (0..=n).map(|j| f(at(j))).collect();
+        (1..n)
+            .filter(|&j| g[j - 1] <= g[j] && g[j] > g[j + 1])
+            .map(|j| (at(j - 1), at(j + 1), g[j]))
+            .collect()
+    }
+
+    /// |H| over the stopband between `from` and `stop`, scanned whole.
+    fn skirt(
+        taps: &[Complex32],
+        from: f64,
+        stop: f64,
+        oversample: usize,
+        refine_top: usize,
+    ) -> Skirt {
+        let gain = |w: f64| dtft(taps, w).norm();
+        let (lo, hi) = (from.min(stop), from.max(stop));
+        let n = ((hi - lo) * (oversample * taps.len()) as f64 / TAU)
+            .ceil()
+            .max(2.0) as usize;
+
+        let mut found = crests(gain, lo, hi, n);
+        found.sort_by(|a, b| b.2.total_cmp(&a.2));
+
+        let peak = found
+            .iter()
+            .take(refine_top)
+            .map(|&(a, b, _)| refine(gain, a, b, 1.0))
+            .max_by(|a, b| a.h.total_cmp(&b.h));
+
+        let median = found.get(found.len() / 2).map_or(f64::NAN, |&(_, _, h)| h);
+
+        Skirt {
+            peak,
+            median,
+            lobes: found.len(),
+        }
+    }
+
+    /// Both stopbands outside the first nulls, lower then upper.
+    fn skirts(taps: &[Complex32], (lo, hi): (Point, Point)) -> (Skirt, Skirt) {
+        (
+            skirt(taps, lo.w, 0.0, SKIRT_OVERSAMPLE, SKIRT_REFINE),
+            skirt(taps, hi.w, PI, SKIRT_OVERSAMPLE, SKIRT_REFINE),
+        )
+    }
+
+    /// Shared stencil walk toward a level crossing of `resp − level`, from `from` toward `stop`,
+    /// within `tol`.
+    fn level_crossing(
+        resp: impl Fn(f64) -> f64,
+        level: f64,
+        from: f64,
+        stop: f64,
+        tol: f64,
+        h: f64,
+        density: f64,
+    ) -> Option<Point> {
+        let shifted = |w: f64| resp(w) - level;
+        let dir = (stop - from).signum();
+        let clamp = |w: f64| if dir * (w - stop) > 0.0 { stop } else { w };
+        let cap = 8.0 / density;
+
+        let root = |a: f64, b: f64| {
+            let w = bisect(&shifted, a, b);
+            Point {
+                w,
+                h: shifted(w).abs(),
+            }
+        };
+        let cross = |p: &[Sample]| first_pair(p, |a, b| (a.1 < 0.0) != (b.1 < 0.0));
+        let toward_dir = |l: &Local| l.toward(dir);
+        let scan = |a: f64, b: f64| {
+            let n = ((b - a).abs() * density).ceil().max(1.0) as usize;
+            let at = |j: usize| a + (b - a) * j as f64 / n as f64;
+            let p: Vec<Sample> = (0..=n).map(|j| (at(j), shifted(at(j)))).collect();
+            cross(&p).map_or(b, |(x, y)| root(x.0, y.0).w)
+        };
+
+        let old = Local::at(&shifted, from, h);
+        if old.g[1].abs() <= tol {
+            return Some(Point {
+                w: from,
+                h: old.g[1].abs(),
+            });
+        }
+
+        let mut old = old;
+        let mut jump = 2.0 * h;
+        loop {
+            jump = toward_dir(&old)
+                .map_or(2.0 * jump, |t| (t - old.w).abs())
+                .clamp(2.0 * h, cap);
+            let land = clamp(old.w + dir * jump);
+            let new = Local::at(&shifted, land, h);
+
+            if new.g[1].abs() <= tol && (old.g[1] < 0.0) != (new.g[1] < 0.0) {
+                return Some(Point {
+                    w: land,
+                    h: new.g[1].abs(),
+                });
+            }
+
+            if let Some(t) = cross(&order([old.points(), new.points()].concat(), dir)) {
+                let w = tighten(&shifted, t, old, h, density, toward_dir, cross, scan);
+                return Some(root(w - h, w + h));
+            }
+
+            let (lo, hi) = (old.w.min(land), old.w.max(land));
+            if new.toward(-dir).is_some_and(|t| t > lo && t < hi) {
+                let n = ((land - old.w).abs() * density).ceil().max(1.0) as usize;
+                let at = |j: usize| old.w + (land - old.w) * j as f64 / n as f64;
+                let p: Vec<Sample> = (0..=n).map(|j| (at(j), shifted(at(j)))).collect();
+                if let Some((a, b)) = cross(&p) {
+                    return Some(root(a.0, b.0));
+                }
+            }
+
+            if land == stop {
+                return None;
+            }
+            old = new;
+        }
+    }
+
+    /// First zero crossing of the real response H walking from `from` toward `stop`.
+    fn first_null(
+        taps: &[Complex32],
+        from: f64,
+        stop: f64,
+        null: f64,
+        h: f64,
+        density: f64,
+    ) -> Option<Point> {
+        let response = |w| dtft(taps, w).re;
+        level_crossing(response, 0.0, from, stop, null, h, density)
+    }
+
+    /// τ solving y + sτ + ½kτ² = r, non-finite where absent.
+    fn roots(y: f64, s: f64, k: f64, r: f64) -> [f64; 2] {
+        let c = r - y;
+        if k.abs() < f64::EPSILON {
+            return [c / s, f64::NAN];
+        }
+        // √(s² + 2kc)
+        let disc = (s * s + 2.0 * k * c).sqrt();
+        [(-s - disc) / k, (-s + disc) / k]
+    }
+
+    /// ω and a value there.
+    type Sample = (f64, f64);
+
+    /// A bracket around a feature, outer samples in walking order.
+    type Bracket = (Sample, Sample);
+
+    /// DTFTs one stencil costs, used to price scanning against tightening.
+    const STENCIL: f64 = 3.0;
+
+    /// Samples ordered along +dir.
+    fn order(mut p: Vec<Sample>, dir: f64) -> Vec<Sample> {
+        p.sort_by(|a, b| (dir * a.0).total_cmp(&(dir * b.0)));
+        p
+    }
+
+    /// First adjacent pair satisfying `hit`.
+    fn first_pair(p: &[Sample], hit: impl Fn(Sample, Sample) -> bool) -> Option<Bracket> {
+        p.windows(2).map(|w| (w[0], w[1])).find(|&(a, b)| hit(a, b))
+    }
+
+    /// First triple satisfying `hit`, reduced to its outer pair.
+    fn first_triple(p: &[Sample], hit: impl Fn(Sample, Sample, Sample) -> bool) -> Option<Bracket> {
+        p.windows(3)
+            .map(|w| (w[0], w[1], w[2]))
+            .find(|&(a, b, c)| hit(a, b, c))
+            .map(|(a, _, c)| (a, c))
+    }
+
+    /// Shrink `t` by aiming stencils with `predict`, re-witnessing with `witness` after each
+    /// landing, until a step stops saving more DTFTs than it costs, then hand the remainder
+    /// to `scan`.
+    fn tighten(
+        resp: impl Fn(f64) -> f64,
+        mut t: Bracket,
+        mut aim: Local,
+        h: f64,
+        density: f64,
+        predict: impl Fn(&Local) -> Option<f64>,
+        witness: impl Fn(&[Sample]) -> Option<Bracket>,
+        scan: impl Fn(f64, f64) -> f64,
+    ) -> f64 {
+        loop {
+            let width = (t.1 .0 - t.0 .0).abs() * density;
+            let inside = |v: f64| {
+                let (a, b) = (t.0 .0.min(t.1 .0) + h, t.0 .0.max(t.1 .0) - h);
+                v > a && v < b
+            };
+
+            let Some(v) = predict(&aim).filter(|&v| inside(v)) else {
+                return scan(t.0 .0, t.1 .0);
+            };
+            if width <= STENCIL {
+                return scan(t.0 .0, t.1 .0);
+            }
+
+            let next = Local::at(&resp, v, h);
+            let dir = (t.1 .0 - t.0 .0).signum();
+            let mut p = vec![t.0, t.1];
+            p.extend(next.points());
+            let Some(u) = witness(&order(p, dir)) else {
+                return scan(t.0 .0, t.1 .0);
+            };
+
+            if (u.1 .0 - u.0 .0).abs() * density > width - STENCIL {
+                return scan(u.0 .0, u.1 .0);
+            }
+            (t, aim) = (u, next);
+        }
+    }
+
+    /// ω of the highest `db` in the basin around `from`, within [lo, hi].
+    fn climb(taps: &[Complex32], from: f64, lo: f64, hi: f64, h: f64, density: f64) -> f64 {
+        let db = |w: f64| 20.0 * dtft(taps, w).norm().log10();
+        let cap = 8.0 / density;
+        let scan = |a: f64, b: f64| {
+            let n = ((b - a).abs() * density).ceil().max(2.0) as usize;
+            let at = |j: usize| (a + (b - a) * j as f64 / n as f64).clamp(lo, hi);
+            let p: Vec<Sample> = (0..=n).map(|j| (at(j), db(at(j)))).collect();
+            let (x, y) =
+                first_triple(&p, |a, b, c| a.1 <= b.1 && b.1 > c.1).unwrap_or((p[0], p[n]));
+            refine(&db, x.0.min(y.0), x.0.max(y.0), 1.0).w
+        };
+        let crest = |p: &[Sample]| first_triple(p, |a, b, c| a.1 <= b.1 && b.1 > c.1);
+        let concave_vertex = |l: &Local| (l.k < 0.0).then(|| l.vertex());
+
+        let old = Local::at(&db, from, h);
+        let dir = old.s.signum();
+        let stop = if dir > 0.0 { hi } else { lo };
+        let clamp = |w: f64| if dir * (w - stop) > 0.0 { stop } else { w };
+
+        if let Some(t) = crest(&order(old.points().to_vec(), dir)) {
+            return tighten(&db, t, old, h, density, concave_vertex, crest, scan);
+        }
+
+        let mut old = old;
+        let mut jump = 2.0 * h;
+        loop {
+            jump = concave_vertex(&old)
+                .map_or(2.0 * jump, |v| (v - old.w).abs())
+                .clamp(2.0 * h, cap);
+            let land = clamp(old.w + dir * jump);
+            let new = Local::at(&db, land, h);
+
+            if let Some(t) = crest(&order([old.points(), new.points()].concat(), dir)) {
+                let aim = if new.k < 0.0 { new } else { old };
+                return tighten(&db, t, aim, h, density, concave_vertex, crest, scan);
+            }
+
+            let (a, b) = (old.w.min(land), old.w.max(land));
+            let v = new.vertex();
+            if new.k > 0.0 && v > a && v < b {
+                return scan(old.w - dir * h, land);
+            }
+
+            if land == stop {
+                return stop;
+            }
+            old = new;
+        }
+    }
+
     struct Response {
         peak_w: f64,
         /// |H(peak_w)|
@@ -661,29 +954,14 @@ mod test {
 
         let resp: Vec<(f64, f64)> = (0..=sweep).map(|k| pair(taps, omega(k))).collect();
 
-        let (k_peak, _) =
-            resp.iter().enumerate().fold(
-                (0, 0.0f64),
-                |best, (k, &(g, _))| if g > best.1 { (k, g) } else { best },
-            );
         let image = resp.iter().fold(0.0f64, |m, &(_, i)| m.max(i));
 
-        let cell = PI / sweep as f64;
-        let (mut a, mut b) = (omega(k_peak) - cell, omega(k_peak) + cell);
-        for _ in 0..80 {
-            let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-            if gain(m1) < gain(m2) {
-                a = m1;
-            } else {
-                b = m2;
-            }
-        }
-        let peak_w = 0.5 * (a + b);
-        let peak = gain(peak_w);
+        let density = 16.0 * taps.len() as f64 / TAU;
+        let h = 4.0 / density;
 
-        let half = peak / 2.0f64.sqrt();
-        let lo = crossing(gain, (peak_w - w0).max(0.0), peak_w, half);
-        let hi = crossing(gain, peak_w, (peak_w + w0).min(PI), half);
+        let peak_w = climb(taps, w0, 0.0, PI, h, density);
+        let peak = dtft(taps, peak_w).norm();
+        let (lo, hi) = bandwidth(taps, peak, peak_w, w0, h, density);
 
         let guard = 3.0 * (hi - lo);
         let floor = resp
@@ -700,6 +978,77 @@ mod test {
             image,
             floor,
         }
+    }
+
+    /// Quadratic model of H on [w − h, w + h], slope and curvature along +ω.
+    #[derive(Clone, Copy)]
+    struct Local {
+        w: f64,
+        h: f64,
+        g: [f64; 3],
+        s: f64,
+        k: f64,
+    }
+
+    impl Local {
+        fn at(resp: impl Fn(f64) -> f64, w: f64, h: f64) -> Self {
+            let g = [resp(w - h), resp(w), resp(w + h)];
+            Local {
+                w,
+                h,
+                g,
+                // (g₊ − g₋) / 2h
+                s: (g[2] - g[0]) / (2.0 * h),
+                // (g₊ − 2g₀ + g₋) / h²
+                k: (g[2] - 2.0 * g[1] + g[0]) / (h * h),
+            }
+        }
+
+        /// Stencil samples along +ω.
+        fn points(&self) -> [Sample; 3] {
+            [
+                (self.w - self.h, self.g[0]),
+                (self.w, self.g[1]),
+                (self.w + self.h, self.g[2]),
+            ]
+        }
+
+        /// Vertex of the model.
+        fn vertex(&self) -> f64 {
+            // w − s/k
+            self.w - self.s / self.k
+        }
+
+        /// Nearest root of the model on the `dir` side of center, if any.
+        fn toward(&self, dir: f64) -> Option<f64> {
+            let [a, b] = roots(self.g[1], self.s, self.k, 0.0);
+            [a, b]
+                .into_iter()
+                .filter(|t| t.is_finite() && dir * *t > 0.0)
+                .map(|t| self.w + t)
+                .min_by(|a, b| (a - self.w).abs().total_cmp(&(b - self.w).abs()))
+        }
+    }
+
+    /// Root of `resp` in a sign-changing bracket.
+    fn bisect(resp: impl Fn(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
+        let fa = resp(a) < 0.0;
+        for _ in 0..64 {
+            let m = 0.5 * (a + b);
+            if m == a || m == b {
+                break;
+            }
+            let fm = resp(m);
+            if fm == 0.0 {
+                return m;
+            }
+            if (fm < 0.0) == fa {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        0.5 * (a + b)
     }
 
     #[test]
@@ -1250,14 +1599,17 @@ mod test {
                     .sum::<f64>()
             };
 
-            // measured: fc 1000 first moment -1.123e-7
-            let m1 = mom(1);
-            // assert!(m1.abs() < 1e-5 * g, "fc {fc} first moment {m1:.3e}");
+            #[allow(unused)]
+            {
+                // measured: fc 1000 first moment -1.123e-7
+                let m1 = mom(1);
+                // assert!(m1.abs() < 1e-5 * g, "fc {fc} first moment {m1:.3e}");
 
-            // H''(0) and H'''(0), the two the solve nulls that nothing else measures.
-            let (m2, m3) = (mom(2), mom(3));
-            // assert!(m2.abs() < 1e-3 * g, "fc {fc} second moment {m2:.3e}");
-            // assert!(m3.abs() < 1e-3 * g, "fc {fc} third moment {m3:.3e}");
+                // H''(0) and H'''(0), the two the solve nulls that nothing else measures.
+                let (m2, m3) = (mom(2), mom(3));
+                // assert!(m2.abs() < 1e-3 * g, "fc {fc} second moment {m2:.3e}");
+                // assert!(m3.abs() < 1e-3 * g, "fc {fc} third moment {m3:.3e}");
+            }
         }
     }
 
@@ -1328,20 +1680,21 @@ mod test {
     /// a row is a filter and not a sample rate.
     #[test]
     fn print_response() {
-        const Q: f64 = 12.5;
-        const QUANTUM: usize = 1;
-        const TAIL_DB: f64 = -100.0;
+        const Q: f64 = 8.5;
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -40.0;
 
-        const ROWS: usize = 64;
-        const COLS: usize = 80;
-        const ANTI_ALIAS: usize = 16;
-        const FLOOR_DB: f64 = -120.0;
-        const LOBES: f64 = 32.0;
+        const ROWS: usize = 384;
+        const COLS: usize = 140;
+        const ANTI_ALIAS: usize = 2;
+        const FLOOR_DB: f64 = -100.0;
+        const LOBES: f64 = 64.0;
 
         // Periods per tap, sweeping the downsample ladder from 20Hz at 3kHz to 15kHz at 48kHz.
         // Nyquist is 0.5.
         // const RHOS: [f64; 8] = [0.00667, 0.0116, 0.02, 0.035, 0.060, 0.104, 0.180, 0.312];
-        const RHOS: [f64; 1] = [0.180];
+
+        const RHOS: [f64; 1] = [0.312];
 
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
@@ -1495,5 +1848,225 @@ mod test {
                 // );
             }
         }
+    }
+
+    /// First dips, peak side lobes, and κ over Q × γ × ρ.
+    #[test]
+    fn skirt_is_characterized() {
+        const QS: [f64; 4] = [3.5, 5.0, 8.5, 12.5];
+        const GAMMAS: [f64; 2] = [3.0, 4.0];
+        const RHOS: [f64; 4] = [0.116, 0.189, 0.223, 0.384];
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -40.0;
+        /// Height zero, where the moment stops counting area.
+        const FLOOR_DB: f64 = -80.0;
+
+        println!(
+            "\n=== SKIRT (quantum {QUANTUM}, tail {TAIL_DB:.0} dB, floor {FLOOR_DB:.0} dB) ===\n\
+         offsets in −3 dB widths from the peak, levels in dB below the peak\n\
+         κ = ∫_band h² / ∫_dips h², h = 1 − dB/floor, unity for a brick wall\n"
+        );
+        println!(
+            "  {:>5} {:>4} {:>7} {:>5} {:>8} {:>8} {:>7} \
+            {:>8} {:>7} {:>6} {:>5} {:>8} {:>7} {:>6} {:>5} {:>7} {:>7}",
+            "Q",
+            "𝛄",
+            "𝛒",
+            "taps",
+            "lo off",
+            "hi off",
+            "spread",
+            "psl lo",
+            "off lo",
+            "prom",
+            "lobes",
+            "psl hi",
+            "off hi",
+            "prom",
+            "lobes",
+            "𝛋 lo",
+            "𝛋 hi"
+        );
+
+        for q in QS {
+            for gamma in GAMMAS {
+                let wav = WaveletSpec::default()
+                    .with_shape(Shape::from_q(q, gamma))
+                    .max_load_quantum(QUANTUM)
+                    .max_truncation(TAIL_DB)
+                    .bake();
+
+                for rho in RHOS {
+                    let bin = wav.at_rho(rho);
+                    let psi = unfold(&bin.taps(), 0);
+                    let r = characterize(&psi, bin.velocity());
+                    let lobe = r.edges.1 - r.edges.0;
+                    let db = |h: f64| 20.0 * (h / r.gain).log10();
+
+                    // 16ε Σ|h|
+                    let null = 16.0 * f64::EPSILON * l1(&psi);
+                    let density = 16.0 * psi.len() as f64 / TAU;
+                    let h = 1.0 / density;
+
+                    let lo = first_null(&psi, r.edges.0, r.edges.0 - PI, null, h, density)
+                        .unwrap_or_else(|| panic!("Q {q} γ {gamma} ρ {rho} lower dip not found"));
+                    let hi = first_null(&psi, r.edges.1, r.edges.1 + PI, null, h, density)
+                        .unwrap_or_else(|| panic!("Q {q} γ {gamma} ρ {rho} upper dip not found"));
+
+                    // ∫_band h² and ∫_dips h² on each side of the peak
+                    let band_lo = level_moment(&psi, r.gain, (r.edges.0, r.peak_w), FLOOR_DB);
+                    let band_hi = level_moment(&psi, r.gain, (r.peak_w, r.edges.1), FLOOR_DB);
+                    // XXX naming is way off.  This is roughly energy between first null and -3dB
+                    let dips_lo = level_moment(&psi, r.gain, (lo.w, r.peak_w), FLOOR_DB);
+                    let dips_hi = level_moment(&psi, r.gain, (r.peak_w, hi.w), FLOOR_DB);
+
+                    let (psl_lo, psl_hi) = skirts(&psi, (lo, hi));
+
+                    /// Level, offset, and prominence of one skirt, dashes where the band holds no lobe.
+                    let cols = |s: &Skirt| match (s.peak, s.prominence_db()) {
+                        (Some(p), Some(prom)) => format!(
+                            "{:>8.2} {:>+7.3} {:>6.1} {:>5}",
+                            db(p.h),
+                            (p.w - r.peak_w) / lobe,
+                            prom,
+                            s.lobes
+                        ),
+                        _ => format!("{:>8} {:>7} {:>6} {:>5}", "—", "—", "—", s.lobes),
+                    };
+
+                    println!(
+                        "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {:>+8.3} {:>+8.3} {:>7.3} {} {} {:>7.4} {:>7.4}",
+                        psi.len(),
+                        (lo.w - r.peak_w) / lobe,
+                        (hi.w - r.peak_w) / lobe,
+                        (hi.w - lo.w) / lobe,
+                        cols(&psl_lo),
+                        cols(&psl_hi),
+                        band_lo / dips_lo,
+                        band_hi / dips_hi,
+                    );
+
+                    let reaches = |s: &Skirt| s.peak.is_some_and(|p| p.h >= r.gain);
+                    assert!(
+                        !reaches(&psl_lo) && !reaches(&psl_hi),
+                        "Q {q} γ {gamma} ρ {rho} side lobe reaches the main lobe"
+                    );
+                }
+                println!();
+            }
+        }
+    }
+
+    /// First nulls of suspicious skirts against a brute-force sign scan of Re H.  Re-run this if
+    /// there is ever any doubt that our null finder is missing something that dense DTFT scan would
+    /// find.
+    #[ignore]
+    #[test]
+    fn first_null_matches_dense_scan() {
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -40.0;
+        /// Naive samples per bin 2π/N.
+        const PER_BIN: usize = 1024 * 8;
+
+        /// (Q, γ, ρ, dir), lower skirt at −1 and upper at +1.
+        const CASES: [(f64, f64, f64, f64); 8] = [
+            (12.5, 4.0, 0.116, -1.0),
+            (12.5, 4.0, 0.116, 1.0),
+            (3.5, 3.0, 0.384, 1.0),
+            (3.5, 3.0, 0.384, -1.0),
+            (3.5, 4.0, 0.384, 1.0),
+            (3.5, 3.0, 0.189, -1.0),
+            (3.5, 3.0, 0.223, 1.0),
+            (5.0, 4.0, 0.189, -1.0),
+        ];
+
+        println!(
+            "\n=== FIRST NULL vs DENSE (quantum {QUANTUM}, tail {TAIL_DB:.0} dB) ===\n\
+         offsets in −3 dB widths from the peak, Δ in naive steps\n"
+        );
+        println!(
+            "  {:>5} {:>4} {:>7} {:>5} {:>5} {:>11} {:>11} {:>10} {:>10} {:>10}",
+            "Q", "𝛄", "𝛒", "side", "taps", "scanner", "naive", "Δ", "|Im H|", "radius"
+        );
+
+        let mut failures = Vec::new();
+        for (q, gamma, rho, dir) in CASES {
+            let wav = WaveletSpec::default()
+                .with_shape(Shape::from_q(q, gamma))
+                .max_load_quantum(QUANTUM)
+                .max_truncation(TAIL_DB)
+                .bake();
+            let bin = wav.at_rho(rho);
+            let psi = unfold(&bin.taps(), 0);
+            let r = characterize(&psi, bin.velocity());
+            let lobe = r.edges.1 - r.edges.0;
+            let side = if dir < 0.0 { "lo" } else { "hi" };
+            let tag = format!("Q {q} γ {gamma} ρ {rho} {side}");
+
+            let resp = |w: f64| dtft(&psi, w).re;
+            // 16ε Σ|h|
+            let null = 16.0 * f64::EPSILON * l1(&psi);
+            let density = 16.0 * psi.len() as f64 / TAU;
+
+            let from = if dir < 0.0 { r.edges.0 } else { r.edges.1 };
+            let stop = from + dir * PI;
+
+            // Naive
+            let step = TAU / (PER_BIN * psi.len()) as f64;
+            let mut prev = (from, resp(from));
+            let naive = (1..)
+                .map(|j| from + dir * step * j as f64)
+                .take_while(|&w| dir * (stop - w) >= 0.0)
+                .find_map(|w| {
+                    let q = (w, resp(w));
+                    let hit = (prev.1 < 0.0) != (q.1 < 0.0);
+                    let pair = (prev.0, q.0);
+                    prev = q;
+                    hit.then_some(pair)
+                })
+                .map(|(a, b)| bisect(&resp, a, b));
+
+            let fast = first_null(&psi, from, stop, null, 1.0 / density, density);
+
+            let (Some(fast), Some(naive)) = (fast, naive) else {
+                println!(
+                    "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {side:>5} {:>5} missing",
+                    psi.len()
+                );
+                failures.push(format!(
+                    "{tag} scanner {fast:?} naive {naive:?}",
+                    fast = fast.map(|p| p.w)
+                ));
+                continue;
+            };
+
+            let off = |w: f64| (w - r.peak_w) / lobe;
+            let gap = (fast.w - naive).abs() / step;
+            let im = dtft(&psi, naive).im.abs();
+
+            let re_at_fast = resp(fast.w);
+            println!(
+                    "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {side:>5} {:>5} {:>+11.6} {:>+11.6} {gap:>10.3e} \
+                    {im:>10.3e} {null:>10.3e} {re_at_fast:>10.3e}",
+                    psi.len(),
+                    off(fast.w),
+                    off(naive),
+                );
+
+            if gap >= 1.0 {
+                failures.push(format!(
+                    "{tag} scanner {:+.4} lobes, naive {:+.4} lobes",
+                    off(fast.w),
+                    off(naive)
+                ));
+            }
+            if im > null {
+                failures.push(format!(
+                    "{tag} Im H {im:.3e} outside null radius {null:.3e}"
+                ));
+            }
+        }
+
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
     }
 }
