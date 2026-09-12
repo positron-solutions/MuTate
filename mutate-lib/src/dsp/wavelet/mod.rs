@@ -59,7 +59,8 @@
 //!                 ·
 //!                 ·
 //!
-//! This module generates our wavelet tables.  The Morse wavelet is the chosen implementation.
+//! This module generates families of wavelets for use in wavelet tables.  Our wavelets are Morse
+//! family:
 //!
 //! - Easy to generate
 //! - Regarded as nice for time and frequency reassignment
@@ -67,21 +68,40 @@
 //!
 //! ## Usage
 //!
-//! Configure a [`Spec`] and use it to build a [`Plan`]. Each [`Plan`] holds the intermediate data
-//! in a frequency independent form, so every voice sharing those settings may reuse one `Plan`.
+//! Define a wavelet family with [`WaveletSpec`] and bake it into a [`Wavelet`].  Spec settings are
+//! maxima, and the bake is sized to serve every bin under them.
 //!
 //! ```
 //! # use mutate_lib::dsp::wavelet::WaveletSpec;
-//! const QUANTUM: usize = 8;
-//!
-//! let mut plan = WaveletSpec::default()
-//!     .max_load_quantum(QUANTUM)
-//!     .plan();
-//!
-//! let bin = plan.bin(1000.0, 8000.0, QUANTUM);
-//! let mut weights = vec![[0.0f32; 4]; bin.folded_taps()];
-//! plan.taps_into(bin, &mut weights);
+//! let wavelet = WaveletSpec::default()
+//!     .q(5.5)
+//!     .truncate(-140.0)
+//!     .bake();
 //! ```
+//!
+//! Resolve a bin with [`Wavelet::bin`] and realize its folded taps.  Bins may use a tighter load
+//! quantum but may not exceed the [`Wavelet`].
+//!
+//! ```
+//! # use mutate_lib::dsp::wavelet::WaveletSpec;
+//! # let wavelet = WaveletSpec::default().q(5.5).truncate(-140.0).bake();
+//!
+//! let bin = wavelet.bin(440.0, 48_000.0).truncate(-100.0);
+//!
+//! // The `Bin` can be used to calculate allocation sizes.
+//! let mut taps = vec![[0.0f32; 4]; bin.folded_taps()];
+//! bin.taps_into(&mut taps);
+//!
+//! // float4(Re ψ, Im ψ, Re d, Im d); index 0 is the real center tap.
+//! assert!(taps[0][0].im == taps[0][2].im == 0.0);
+//! ```
+//!
+//! ## Customizing the Wavelet Family
+//!
+//! The primary knobs are [`WaveletSpec::max_truncation`] and [`WaveletSpec::with_shape`], which modulate
+//! filter length, bandwidth, stop band, and skirt depth.  All are inherently coupled.  At a fixed
+//! filter length, raising Q while truncating harder (smaller magnitude of tail dB) trades time
+//! precision for pitch precision for likely a bit of noise floor.
 //!
 //! The `max_load_quantum` adjusts truncation and conditioning to land the mirrored tap length
 //! (excluding center tap!) on a quantum matching the size you intend to load.  The center tap is
@@ -93,22 +113,22 @@
 //! - The if truncation for the configured options would normally lead to 17 *folded* weights, the
 //!   implementation will round up to 24 instead, meaning 48 *unfolded* taps and 49 including the
 //!   center.
-//! - The extra weights are used to shape truncation aggressively, increasing precision and
-//!   hopefully de-correlating some locally biased response to transients, smearing artifacts.
+//! - The extra weights are used to shape truncation less aggressively, increasing precision and
+//!   hopefully de-correlating some locally biased response to transients, diffusing artifacts.
+//!
+//! Setting [`max_load_quantum`] tells the motherlet (mother wavelet) to bake a longer grid so that
+//! if a wavelet's length is rounded up, there is enough grid to fill the `N` taps.
 //!
 //! ```
 //! # use mutate_lib::dsp::wavelet::WaveletSpec;
-//! const QUANTUM: usize = 8;
+//! # let wavelet = WaveletSpec::default().q(5.5).truncate(-140.0).bake();
 //!
-//! let mut plan = WaveletSpec::default()
-//!     .max_load_quantum(QUANTUM)
-//!     .plan();
+//! let bin = wavelet.bin(240.0, 3_000.0)
+//!     .max_load_quantum(32);
 //!
-//! let bin = plan.bin(1000.0, 8000.0, QUANTUM);
-//! let mut weights = vec![[0.0f32; 4]; bin.folded_taps()];
-//!
-//! // float4(Re ψ, Im ψ, Re d, Im d); index 0 is the real center tap.
-//! plan.taps_into(bin, &mut weights);
+//! let mut taps = vec![[0.0f32; 4]; bin.folded_taps()];
+//! let wrote = bin.taps_into(&mut taps);
+//! assert!(wrote % 32 == 0);
 //! ```
 //!
 //! ## Weight Table Format
@@ -165,7 +185,7 @@
 //! indexed grids using `ρ`, periods per tap or grid sample (depends on context, but the choice is
 //! always obvious).
 //!
-//! | symbol | Rust | object | units |
+//! | symbol | variable | object | units |
 //! |---|---|---|---|
 //! | `u` || periods from the wavelet's center, a real | carrier periods |
 //! | `ρ` | `rho` | the conversion ratio, a linear density | periods per tap |
@@ -173,9 +193,13 @@
 //! `resolution` is the number of grid points per period `u` and decides how finely each period of
 //! the mother wavelet will be resolved before restriction to `N` taps.
 //!
+//! `ρ` was intended to only be used when converting `u` periods to grid or sample points, but the
+//! same `ρ` in context turns out to be identical to `fc/fs` and a convenient way to write `ω` from
+//! `(0.0,0.5)` where `ρ = 0.5` is a function of the Nyquist, no `2π` in sight.
+//!
 //! There are additionally three integral coordinates distinguished by the use case:
 //!
-//! | symbol | Rust | object | units |
+//! | symbol | variable | object | units |
 //! |---|---|---|---|
 //! | `m` || center sample index of the analysis window, the origin | samples |
 //! | `ν` | `nu` | signed integer tap index relative to `m`, in `(-K, K)` | taps |
@@ -193,7 +217,7 @@
 //!
 //! Correlations of the signal `x` against each channel about center `m`.
 //!
-//! | symbol | Rust | object |
+//! | symbol | variable | object |
 //! |---|---|---|
 //! | `Ψ` | `psi_sum` | `Σ_ν conj(ψ_ν)·x_{m+ν}` |
 //! | `D` | `d_sum` | the same sum against `d_ν` |
@@ -201,7 +225,7 @@
 //!
 //! ### Estimators
 //!
-//! | symbol | Rust | object | units | frame |
+//! | symbol | variable | object | units | frame |
 //! |---|---|---|---|---|
 //! | `r̂` | `r_hat` | `Re(D/Ψ)`, the detuning | multiples of the carrier | `u` |
 //! | `t̂` | `t_hat` | `m + Re(T/Ψ)`, reassigned time | samples | `ν` |
@@ -245,6 +269,8 @@
 //! temporaries.  Audio is 8 bytes per sample at two channels and each 8 bytes of audio read can be
 //! re-used for `P` taps for each read.  Each mirrored tap applies to two audio samples per
 //! pipelined hop.
+
+#![warn(warnings, dead_code, unused_variables)]
 
 // 🤖 Heavy generation.  Should be pretty standard academic stuff, so not expecting a lot of
 // surprises.  We will, for the most part, swiftly and knowingly eat shit if the wavelet is busted.
@@ -307,7 +333,8 @@ use core::f64::consts::{LN_2, PI, TAU};
 
 use num_complex::{Complex32, Complex64};
 
-use spec::{Bin, BinSpec, Shape, Wavelet, WaveletSpec};
+use generate::hermite;
+pub use spec::{BinSpec, Shape, WaveletSpec};
 
 pub mod defaults {
     #[cfg(debug_assertions)]
@@ -325,6 +352,231 @@ pub mod defaults {
 /// read |W| = 1.
 const PEAK_GAIN: f64 = 2.0;
 
+/// The mother wavelet (aka Motherlet®) that has been densely sampled and can serve every [`Bin`]
+/// sharing a [`Shape`], up to the maxima specified in the [`WaveletSpec`].
+pub struct Wavelet {
+    shape: Shape,
+    /// Periods per grid point.
+    du: f64,
+    /// Ψ
+    psi: Vec<Complex64>,
+    /// Rotated (for symmetry) derivative, `−(i/2π)·dψ/du`.
+    d: Vec<Complex64>,
+    /// Bin defaults, and the ceiling the grid extent was sized against.
+    limits: BinSpec,
+}
+
+impl Wavelet {
+    /// Return a `Bin` definition that may be used to bake `N` taps into some destination memory.
+    /// New bin will use the limits from the `WaveletSpec`
+    pub fn bin(&self, center: f64, rate: f64) -> Bin<'_> {
+        Bin::new(
+            self,
+            BinSpec {
+                center,
+                rate,
+                ..self.limits
+            },
+        )
+    }
+
+    // NEXT `bin_with_spec` method.
+    // XXX Without debug checks against requesting a `BinSpec` that exceeds maxima, we are letting
+    // bad behavior through even runtime.
+
+    /// A bin named by ρ directly, periods per tap.  `bin(fc, fs)` is `at_rho(fc / fs)`.
+    pub fn at_rho(&self, rho: f64) -> Bin<'_> {
+        self.bin(rho, 1.0)
+    }
+
+    pub fn shape(&self) -> Shape {
+        self.shape
+    }
+
+    fn at(&self, u: f64) -> Complex64 {
+        hermite::eval(&self.psi, &self.d, u, self.du)
+    }
+
+    fn mass(&self, u_beg: f64, u_end: f64) -> Complex64 {
+        hermite::integrate(&self.psi, &self.d, u_beg, u_end, self.du)
+    }
+}
+
+/// The baked motherlet, resolved on `u`.
+#[derive(Clone, Copy)]
+struct Grid<'w> {
+    pub psi: &'w [Complex64],
+    pub d: &'w [Complex64],
+    pub du: f64,
+}
+
+impl<'w> Grid<'w> {
+    pub fn at(&self, u: f64) -> Complex64 {
+        hermite::eval(self.psi, self.d, u, self.du)
+    }
+
+    pub fn mass(&self, u_beg: f64, u_end: f64) -> Complex64 {
+        hermite::integrate(self.psi, self.d, u_beg, u_end, self.du)
+    }
+
+    fn linear(&self, u: f64) -> Complex64 {
+        let x = u / self.du;
+        let i = x as usize;
+        let f = x - i as f64;
+        self.psi[i] * (1.0 - f) + self.psi[i + 1] * f
+    }
+
+    /// ψ_T at the upper edge of cell j, zero past the cut
+    fn edge(&self, j: usize, k: usize, rho: f64) -> Complex64 {
+        if j + 1 < k {
+            self.at((j as f64 + 0.5) * rho)
+        } else {
+            Complex64::default()
+        }
+    }
+}
+
+/// A spec resolved against one bake.  Carrying the borrow keeps a bin off the wrong motherlet,
+/// where the tap count would be wrong outright.
+#[derive(Clone, Copy)]
+pub struct Bin<'w> {
+    wavelet: &'w Wavelet,
+    spec: BinSpec,
+    /// Periods per tap, `fc / fs`.  The only bridge from sample rate into `u`.
+    rho: f64,
+    /// Folded weights including the center tap.
+    k: usize,
+}
+
+impl<'w> Bin<'w> {
+    fn new(wavelet: &'w Wavelet, spec: BinSpec) -> Self {
+        let rho = spec.center / spec.rate;
+        let reach = (wavelet.shape.truncation_u(spec.tail_db) / rho).ceil() as usize;
+        let half = (reach + spec.delay).div_ceil(spec.load_quantum) * spec.load_quantum;
+
+        Bin {
+            wavelet,
+            spec,
+            rho,
+            k: half + 1,
+        }
+    }
+
+    pub fn load_quantum(self, load_quantum: usize) -> Self {
+        Self::new(
+            self.wavelet,
+            BinSpec {
+                load_quantum,
+                ..self.spec
+            },
+        )
+    }
+
+    pub fn delay(self, delay: usize) -> Self {
+        Self::new(self.wavelet, BinSpec { delay, ..self.spec })
+    }
+
+    pub fn truncate(self, tail_db: f64) -> Self {
+        let tail_db = -tail_db.abs();
+        Self::new(
+            self.wavelet,
+            BinSpec {
+                tail_db,
+                ..self.spec
+            },
+        )
+    }
+
+    pub fn spec(&self) -> BinSpec {
+        self.spec
+    }
+
+    /// Radians per sample.  `ω₀ = 2π·ρ`
+    pub fn velocity(&self) -> f64 {
+        TAU * self.rho
+    }
+
+    /// Periods per tap.
+    pub fn rho(&self) -> f64 {
+        self.rho
+    }
+
+    pub fn folded_taps(&self) -> usize {
+        self.k
+    }
+
+    pub fn unfolded_taps(&self) -> usize {
+        2 * self.k - 1
+    }
+
+    pub fn taps(&self) -> Vec<[f32; 4]> {
+        let mut out = vec![[0.0f32; 4]; self.k];
+        self.taps_into(&mut out);
+        out
+    }
+
+    /// Writes `folded_taps()` weights and returns that count.  Each weight is
+    /// `[Re ψ, Im ψ, Re d, Im d]` and the center is `[Re ψ₀, 0, Re d₀, 0]`.
+    ///
+    ///     H(ω) = ψ₀ + 2 Re Σ_{k≥1} ψ_k e^{-iωk}
+    ///     H(ω₀) = PEAK_GAIN
+    ///     H_d(ω) ≈ (ω/ω₀)·H(ω)
+    ///
+    /// A unit sine at the center frequency yields a unit envelope.
+    ///
+    /// Upstream owes an `out` at least that long.
+    pub fn taps_into(&self, out: &mut [[f32; 4]]) -> usize {
+        let (w, rho, k) = (self.wavelet, self.rho, self.k);
+        let inv = rho.recip();
+
+        // ψ_T at the upper edge of cell j, zero past the cut
+        let edge = |j: usize| {
+            if j + 1 < k {
+                w.at((j as f64 + 0.5) * rho)
+            } else {
+                Complex64::default()
+            }
+        };
+
+        let mut psi = Vec::with_capacity(k);
+        let mut d = Vec::with_capacity(k);
+
+        // the center cell is symmetric about u = 0, so the odd parts cancel
+        psi.push(Complex64::new(2.0 * inv * w.mass(0.0, 0.5 * rho).re, 0.0));
+        d.push(Complex64::new(2.0 * inv / TAU * edge(0).im, 0.0));
+
+        // d_k = −(i/2πρ)·(ψ_T(e_{k+½}) − ψ_T(e_{k−½}))
+        let mut lo = edge(0);
+        for j in 1..k {
+            psi.push(inv * w.mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho));
+            let hi = edge(j);
+            d.push(-Complex64::i() * inv / TAU * (hi - lo));
+            lo = hi;
+        }
+
+        // H(ω₀) = ψ₀ + 2 Σ_k Re(ψ_k e^{-2πi u_k}),  u_k = k ρ
+        let gain = psi[0].re
+            + 2.0
+                * psi[1..]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, p)| {
+                        let (s, c) = (TAU * (j + 1) as f64 * rho).sin_cos();
+                        p.re * c + p.im * s
+                    })
+                    .sum::<f64>();
+        let scale = PEAK_GAIN / gain;
+
+        out[0] = [scale * psi[0].re, 0.0, scale * d[0].re, 0.0].map(|v| v as f32);
+        for (o, (p, q)) in out[1..k].iter_mut().zip(psi[1..].iter().zip(&d[1..])) {
+            *o = [scale * p.re, scale * p.im, scale * q.re, scale * q.im].map(|v| v as f32);
+        }
+
+        k
+    }
+}
+
+// Proper location for this has become amorphous.  Burn something when convenient.
 #[cfg(test)]
 fn fmt_e(x: f64) -> String {
     let s = format!("{x:+.2e}");

@@ -1,0 +1,169 @@
+// Copyright 2026 The MuTate Contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! # Restrict
+//!
+//! Squeeze the high-resolution mother wavelet grid into `N` taps.
+//!
+//! > Lab-grown beef is not technology.  The real technology is *grinding* it.  We are bringing to
+//! > the world the first product of it's kind.  The narrow strings of beef are chopped, gathered by
+//! > real artisans into a flat, circular form, and finally smashed into smithereens.
+//! >
+//! > *applause*
+//! >
+//! > - Professor Arima Nayar, MSc in Mathematics
+//!
+//! Naively, we may sample the motherlet at the point nearest to `k`, and tell our boss that we have
+//! done the job.
+//!
+//! ## That is Not Good Enough
+//!
+//! At high omega, the motherlet is beginning to alias with N.  Her smooth curves will become
+//! reduced to formless points, like pushing Michelangelo's David through a cheese grater.
+//!
+//! Instead, we want the result of the cheese grater to *look* the same to audio as the ideal
+//! wavelet.  Since the audio has gone through roughly the same cheese grater, our job is made a
+//! little bit simpler.  In the restriction step, we are mainly concerned with ensuring that the
+//! shape of the wavelet we are refining is maximally well preserved every time we shove it through
+//! the grater.
+//!
+//! ## Restriction Math
+//!
+//! Each tap integrates the Morse **magnitude** uniformly over its time cell, then restores the
+//! exact center-frequency phase, strictly preserving both symmetry and the center frequency omega.
+//!
+//! `aₖ = (1 / Δt) ∫_{Cₖ} |ψ(t)| dt`
+//!
+//! `hₖ = aₖ · e⁻ⁱωᶜᵗᵏ`
+//!
+//! The restriction therefore separates envelope and phase:
+//!
+//! - `aₖ` represents the Morse envelope contained by the cell.
+//! - `e⁻ⁱωᶜᵗᵏ` fixes every tap to the same exact center-frequency rotation.
+//! - No envelope weighting can shift a tap's phase or local angular frequency.
+//! - Symmetric cells give `a₋ₖ = aₖ`.
+//!
+//! For a center-frequency input `x(t) = A · eⁱ(ωᶜt + θ)`, the response is
+//! phase-covariant:
+//!
+//! `y(θ) = eⁱθ · y(0)`
+//!
+//! and therefore its magnitude is independent of input phase:
+//!
+//! `|y(θ)| = |y(0)|`.
+//!
+//! The four cardinal input phases consequently remain equivalent in magnitude:
+//!
+//! `+A`, `+iA`, `−A`, `−iA`.
+//!
+//! Relative to the center frequency, an input detuning `Δω` sees only the restricted envelope:
+//!
+//! `H(ωᶜ + Δω) = Σₖ aₖ · e⁻ⁱΔωtₖ`
+//!
+//! With symmetric real envelope taps, the response is centered and even:
+//!
+//! `H(ωᶜ + Δω) = H(ωᶜ − Δω)`
+//!
+//! and the center frequency is stationary:
+//!
+//! `d|H| / dω | ω=ωᶜ = 0`
+//!
+//! At `Δω = 0`, all taps contribute coherently. Away from the center, progressive phase rotation
+//! produces cancellation according to the envelope's finite length and shape.
+//!
+//! For transient inputs, the response remains dependent on temporal overlap between the input
+//! envelope and the Morse envelope. Only the carrier phase is invariant.
+//!
+//! The restriction therefore has a single independent design quantity:
+//!
+//! `aₖ`
+//!
+//! The tap phase is fixed by the exact center frequency, while the tap magnitude is fixed by
+//! uniform integration of the Morse envelope.
+//!
+//! ## Reference Methods
+//!
+//! Alternative restrictions are supplied in order maintain a view of the relative effectiveness.
+
+use std::f64::consts::TAU;
+
+use libm::tgamma;
+use num_complex::{Complex32, Complex64};
+
+use super::{generate::hermite, spec::Shape, Grid};
+
+/// How the motherlet lands on taps.
+#[derive(Clone, Copy, Default)]
+pub enum Restriction {
+    /// Linear interpolation of the grid at each tap center.  Worst approach.  Leads to unacceptable
+    /// aliasing at high omega.  Useful for demonstration.
+    Nearest,
+    /// Complex cell average.  A slightly better technique, but not expressly aware of the polar
+    /// spiral we are approximating with taps.
+    Quadrature,
+    /// Cell average of |ψ| carried by the exact center-frequency rotation.
+    #[default]
+    Magnitude,
+}
+
+impl Restriction {
+    /// Writes `out.len()` folded weights in cell-average units, `out[0]` real.
+    pub fn psi_into(self, grid: Grid, rho: f64, out: &mut [Complex64]) {
+        let inv = rho.recip();
+
+        match self {
+            Restriction::Nearest => {
+                out[0] = Complex64::new(grid.linear(0.0).re, 0.0);
+                for (j, o) in out.iter_mut().enumerate().skip(1) {
+                    *o = grid.linear(j as f64 * rho);
+                }
+            }
+            Restriction::Quadrature => {
+                // the center cell is symmetric about u = 0, so the odd parts cancel
+                out[0] = Complex64::new(2.0 * inv * grid.mass(0.0, 0.5 * rho).re, 0.0);
+                for (j, o) in out.iter_mut().enumerate().skip(1) {
+                    *o = inv * grid.mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
+                }
+            }
+            Restriction::Magnitude => {
+                // a_k = (1/ρ) ∫_{C_k} |ψ|,  h_k = a_k e^{2πi kρ}
+                out[0] = Complex64::new(2.0 * inv * magnitude(grid, 0.0, 0.5 * rho), 0.0);
+                for (j, o) in out.iter_mut().enumerate().skip(1) {
+                    let a = inv * magnitude(grid, (j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
+                    let (s, c) = (TAU * j as f64 * rho).sin_cos();
+                    *o = a * Complex64::new(c, s);
+                }
+            }
+        }
+    }
+}
+
+/// ∫_a^b |ψ| by composite Simpson
+fn magnitude(grid: Grid, a: f64, b: f64) -> f64 {
+    const SUB: usize = 8;
+
+    let h = (b - a) / SUB as f64;
+    let f = |i: usize| grid.at(a + i as f64 * h).norm();
+
+    let odd: f64 = (1..SUB).step_by(2).map(f).sum();
+    let even: f64 = (2..SUB).step_by(2).map(f).sum();
+
+    h / 3.0 * (f(0) + f(SUB) + 4.0 * odd + 2.0 * even)
+}
+
+/// Rotated derivative from the truncated edges.
+///
+///     d_k = −(i/2πρ)·(ψ_T(e_{k+½}) − ψ_T(e_{k−½}))
+pub fn derivative_into(grid: Grid, rho: f64, out: &mut [Complex64]) {
+    let k = out.len();
+    let inv = rho.recip();
+
+    let mut lo = grid.edge(0, k, rho);
+    out[0] = Complex64::new(2.0 * inv / TAU * lo.im, 0.0);
+
+    for (j, o) in out.iter_mut().enumerate().skip(1) {
+        let hi = grid.edge(j, k, rho);
+        *o = -Complex64::i() * inv / TAU * (hi - lo);
+        lo = hi;
+    }
+}
