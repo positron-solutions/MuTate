@@ -1,0 +1,343 @@
+// Copyright 2026 The MuTate Contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! # Hermite Interpolation
+//!
+//! > Control! Control!
+//! >
+//! > - Darth Jar Jar
+//!
+//! Just some basic functions developed to interpolate and integrate with curvature awareness we
+//! already have.  Only intended for our usage, with rotated `dψ/du` and `resolution` describing the
+//! fineness of grid points between periods `u`.
+//!
+//! ## Motivations
+//!
+//! At first, we just needed a way to test IFFT convergence without requiring perfect grid point
+//! alignment.  Since most wavelet generation methods obtain `dψ/du` trivially, this allows a lower
+//! resolution `ψ` to do the job much more cheaply.  The anchors are usually already over-precise,
+//! so Hermite interpolation vs evaluating more grid points is probably a win.
+//!
+//! Of course interpolation adds error.  We slapped some compensation on top to *mitigate*.
+//!
+//! ## Lexicon
+//!
+//! See parent conventions for shared definitions.
+//!
+//! | symbol | Rust | object |
+//! |---|---|---|
+//! | `s` | `s` | position along the grid, `u·resolution`, so the cell is `⌊s⌋` |
+//! | `f` | `f` | fractional position within the cell, always on `[0.0, 1.0)` |
+//! | `Δu` | `delta_u` | grid spacing in `u`, `1/resolution` |
+//! | `p₀`, `p₁` | `p0`, `p1` | the bracketing tap values |
+//! | `m₀`, `m₁` | `m0`, `m1` | the tangents at those taps, scaled into cell units by `Δu` |
+//!
+//! `m` here is a Hermite tangent and not the crate's center sample.  A tangent is `2π·i·d·Δu`,
+//! the storage convention reverted before the spacing goes on.
+//!
+//! `integrate` integrates against `du`, so its result is `ψ` times periods.  The same sum
+//! against `dν` is larger by `1/ρ`, which is what a consumer working in samples wants.
+
+// NEXT Some characterization of the error would be appreciated.  If we ask for 1e-9 but the Hermite
+// points are 1e-5, we're losing.  Only if we can avoid creating more 1e-11 points achieve 1e-9 is
+// the trade worth it, and we need control!
+// NEXT healthy dose of renaming
+// MAYBE a newtype to protect rotated from de-rotated `d` from the storage channel?  Would affect all
+// users, but caller that know the storage situation would be tempted to manually derotate before
+// calling.
+
+use std::f64::consts::TAU;
+
+use num_complex::Complex64;
+
+use super::Accumulator;
+
+#[inline]
+fn two_diff(a: f64, b: f64) -> (f64, f64) {
+    let s = a - b;
+    let bv = s - a;
+    (s, (a - (s - bv)) + (-b - bv))
+}
+
+/// One-sided second differences of the cell, with the two-sum residuals folded back.
+///
+/// `a = Δ − m₀`, `b = m₁ − Δ`, `Δ = p₁ − p₀`.
+#[inline(always)]
+fn deltas(p0: f64, p1: f64, m0: f64, m1: f64) -> (f64, f64) {
+    let (delta, delta_err) = two_diff(p1, p0);
+    let (a, a_err) = two_diff(delta, m0);
+    let (b, b_err) = two_diff(m1, delta);
+    (a + (a_err + delta_err), b + (b_err - delta_err))
+}
+
+/// Hermite basis in delta form, anchored on the nearer endpoint.
+///
+/// `a` and `b` are the one-sided second differences; they are the only place cancellation
+/// occurs, and the two-sum residuals are folded back before they reach the Horner chain.
+#[inline(always)]
+pub fn hermite_1d(p0: f64, p1: f64, m0: f64, m1: f64, f: f64) -> f64 {
+    let (a, b) = deltas(p0, p1, m0, m1);
+
+    if f <= 0.5 {
+        p0 + f * (b - a).mul_add(f, 2.0 * a - b).mul_add(f, m0)
+    } else {
+        let g = 1.0 - f;
+        p1 + g * (a - b).mul_add(g, 2.0 * b - a).mul_add(g, -m1)
+    }
+}
+
+/// Cubic Hermite reconstruction from a tap and its derivative.
+///
+/// Exact slopes hold the stencil at two taps.  Error is `O(Δu⁴ |ψ''''|)`.
+///
+/// `s` indexes the grid, so `s = u·resolution`, and `Δu` is the spacing the exact `u`-derivatives
+/// are scaled into.
+#[cfg(test)]
+#[inline(always)]
+pub fn resample_hermite(
+    taps: &[Complex64],
+    d: &[Complex64],
+    s: f64,
+    resolution: usize,
+) -> Complex64 {
+    let cell = s.floor();
+    let f = s - cell;
+    let i = cell as usize;
+
+    let delta_u = 1.0 / resolution as f64;
+    let m0 = tangent(d[i], delta_u);
+    let m1 = tangent(d[i + 1], delta_u);
+
+    let p0 = taps[i];
+    let p1 = taps[i + 1];
+
+    Complex64::new(
+        hermite_1d(p0.re, p1.re, m0.re, m1.re, f),
+        hermite_1d(p0.im, p1.im, m0.im, m1.im, f),
+    )
+}
+
+/// The slope across one cell.  The stored channel is `−(i/2π) dψ/du`, so the quarter turn goes back on
+/// before the spacing does.
+#[inline(always)]
+fn tangent(d: Complex64, delta_u: f64) -> Complex64 {
+    Complex64::I * TAU * d * delta_u
+}
+
+/// `∫_{f₀}^{f₁} p` in cell units, accumulated term by term.
+///
+/// `p = p₀ + m₀f + (2a − b)f² + (b − a)f³`, integrated with the power differences factored,
+/// `f₁ᵏ⁺¹ − f₀ᵏ⁺¹ = h·Sₖ₊₁`.
+#[inline(always)]
+fn cell_span_1d(
+    acc: &mut Accumulator<f64>,
+    p0: f64,
+    m0: f64,
+    a: f64,
+    b: f64,
+    f0: f64,
+    f1: f64,
+    h: f64,
+) {
+    let f0_2 = f0 * f0;
+    let f1_2 = f1 * f1;
+
+    let s2 = f1 + f0;
+    let s3 = f1_2 + f1 * f0 + f0_2;
+    let s4 = s2 * (f1_2 + f0_2);
+
+    let q3 = h * s3 / 3.0;
+    let q4 = h * s4 * 0.25;
+
+    acc.add(h * p0);
+    acc.add(h * m0 * s2 * 0.5);
+    acc.add(2.0 * a * q3);
+    acc.add(-b * q3);
+    acc.add(b * q4);
+    acc.add(-a * q4);
+}
+
+#[inline(always)]
+fn cell_span(
+    real: &mut Accumulator<f64>,
+    imag: &mut Accumulator<f64>,
+    p0: Complex64,
+    p1: Complex64,
+    m0: Complex64,
+    m1: Complex64,
+    f0: f64,
+    f1: f64,
+    h: f64,
+) {
+    let (a_re, b_re) = deltas(p0.re, p1.re, m0.re, m1.re);
+    let (a_im, b_im) = deltas(p0.im, p1.im, m0.im, m1.im);
+    cell_span_1d(real, p0.re, m0.re, a_re, b_re, f0, f1, h);
+    cell_span_1d(imag, p0.im, m0.im, a_im, b_im, f0, f1, h);
+}
+
+/// A whole cell, trapezoid and cubic correction kept apart.
+#[inline(always)]
+fn whole_cell(
+    real: &mut Accumulator<f64>,
+    imag: &mut Accumulator<f64>,
+    p0: Complex64,
+    p1: Complex64,
+    m0: Complex64,
+    m1: Complex64,
+) {
+    real.add(p0.re * 0.5);
+    real.add(p1.re * 0.5);
+    real.add(m0.re / 12.0);
+    real.add(-m1.re / 12.0);
+    imag.add(p0.im * 0.5);
+    imag.add(p1.im * 0.5);
+    imag.add(m0.im / 12.0);
+    imag.add(-m1.im / 12.0);
+}
+
+/// Cells touched by `[u_beg, u_end]` and each endpoint reduced to a fraction of its cell.
+///
+/// Caller is responsible that both lie within the taps' reach, otherwise the end cell's cubic
+/// is extrapolated.
+#[inline(always)]
+fn span_cells(cells: usize, u_beg: f64, u_end: f64, du: f64) -> (usize, usize, f64, f64) {
+    let last = cells - 1;
+    let i_beg = ((u_beg / du).floor() as usize).min(last);
+    let i_end = ((u_end / du).floor() as usize).min(last);
+
+    // reduced against `u` so the fraction carries no error from the grid position
+    let f = |i: usize, u: f64| (-(i as f64)).mul_add(du, u) / du;
+
+    (i_beg, i_end, f(i_beg, u_beg), f(i_end, u_end))
+}
+
+/// `∫_{u_beg}^{u_end} p du` of the cubic Hermite reconstruction of a real channel.
+///
+/// `dp` is `dp/du` on the same grid, in plain units rather than the rotated storage convention.
+///
+/// Caller is responsible that `u_beg <= u_end` and that both lie within the taps' reach.
+pub fn integrate_1d(p: &[f64], dp: &[f64], u_beg: f64, u_end: f64, du: f64) -> f64 {
+    #[inline(always)]
+    fn span(
+        acc: &mut Accumulator<f64>,
+        p: &[f64],
+        dp: &[f64],
+        du: f64,
+        i: usize,
+        f0: f64,
+        f1: f64,
+        h: f64,
+    ) {
+        let (m0, m1) = (dp[i] * du, dp[i + 1] * du);
+        let (a, b) = deltas(p[i], p[i + 1], m0, m1);
+        cell_span_1d(acc, p[i], m0, a, b, f0, f1, h);
+    }
+
+    let (i_beg, i_end, f_beg, f_end) = span_cells(p.len() - 1, u_beg, u_end, du);
+
+    let mut acc = Accumulator::default();
+
+    if i_beg == i_end {
+        let h = (u_end - u_beg) / du;
+        span(&mut acc, p, dp, du, i_beg, f_beg, f_end, h);
+        return acc.sum() * du;
+    }
+
+    // Opening fraction.
+    span(&mut acc, p, dp, du, i_beg, f_beg, 1.0, 1.0 - f_beg);
+
+    // Whole cells, trapezoid and cubic correction kept apart.
+    for i in (i_beg + 1)..i_end {
+        acc.add(p[i] * 0.5);
+        acc.add(p[i + 1] * 0.5);
+        acc.add(dp[i] * du / 12.0);
+        acc.add(-dp[i + 1] * du / 12.0);
+    }
+
+    // Closing fraction.
+    span(&mut acc, p, dp, du, i_end, 0.0, f_end, f_end);
+
+    acc.sum() * du
+}
+
+/// Integral of the cubic Hermite reconstruction over `[u_beg, u_end]`, with `du` as the measure.
+///
+/// `rho_grid` is the tap spacing in periods, which places the endpoints in the grid.  Whole cells
+/// contribute their closed form and the two end cells contribute a fraction of theirs, so the sum
+/// is the exact area under the same stencil `resample_hermite` reconstructs.
+///
+/// Caller is responsible that `u_beg <= u_end` and that both lie within the taps' reach.
+pub fn integrate(
+    taps: &[Complex64],
+    d: &[Complex64],
+    u_beg: f64,
+    u_end: f64,
+    rho_grid: f64,
+) -> Complex64 {
+    let (i_beg, i_end, f_beg, f_end) = span_cells(taps.len() - 1, u_beg, u_end, rho_grid);
+
+    let cell = |i: usize| {
+        (
+            taps[i],
+            taps[i + 1],
+            tangent(d[i], rho_grid),
+            tangent(d[i + 1], rho_grid),
+        )
+    };
+
+    let mut real = Accumulator::default();
+    let mut imag = Accumulator::default();
+
+    if i_beg == i_end {
+        let (p0, p1, m0, m1) = cell(i_beg);
+        let h = (u_end - u_beg) / rho_grid;
+        cell_span(&mut real, &mut imag, p0, p1, m0, m1, f_beg, f_end, h);
+        return Complex64::new(real.sum(), imag.sum()) * rho_grid;
+    }
+
+    // Opening fraction.
+    let (p0, p1, m0, m1) = cell(i_beg);
+    cell_span(
+        &mut real,
+        &mut imag,
+        p0,
+        p1,
+        m0,
+        m1,
+        f_beg,
+        1.0,
+        1.0 - f_beg,
+    );
+
+    // Whole cells.
+    for i in (i_beg + 1)..i_end {
+        let (p0, p1, m0, m1) = cell(i);
+        whole_cell(&mut real, &mut imag, p0, p1, m0, m1);
+    }
+
+    // Closing fraction.
+    let (p0, p1, m0, m1) = cell(i_end);
+    cell_span(&mut real, &mut imag, p0, p1, m0, m1, 0.0, f_end, f_end);
+
+    Complex64::new(real.sum(), imag.sum()) * rho_grid
+}
+
+// XXX Decide if this is what we want
+/// ψ at `u` on a grid of spacing `delta_u`.
+///
+/// Caller is responsible that `u` lies within the taps' reach.
+#[inline(always)]
+pub fn eval(taps: &[Complex64], d: &[Complex64], u: f64, delta_u: f64) -> Complex64 {
+    let s = u / delta_u;
+    let cell = (s.floor() as usize).min(taps.len() - 2);
+    let f = s - cell as f64;
+
+    let m0 = tangent(d[cell], delta_u);
+    let m1 = tangent(d[cell + 1], delta_u);
+    let (p0, p1) = (taps[cell], taps[cell + 1]);
+
+    Complex64::new(
+        hermite_1d(p0.re, p1.re, m0.re, m1.re, f),
+        hermite_1d(p0.im, p1.im, m0.im, m1.im, f),
+    )
+}

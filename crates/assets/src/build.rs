@@ -5,6 +5,13 @@
 //!
 //! This module contains the build time functionality.
 
+// NEXT use -no-codegen -reflection-json to push forward library-vs-shader decisions and tie to
+// hash
+// DEBT shader libraries.  Without `-dep-file` testing, we have no idea which hashes to check and
+// therefore we don't know if we should recompile.  The "build system" metadata belongs in a
+// directory and maybe out of history, so maybe all of these files get a gitignore soon.
+// NEXT Going to fun times to Nixify 🫠
+
 use std::{
     ffi, fs,
     io::{BufReader, Read, Write},
@@ -15,7 +22,6 @@ use std::{
 use xxhash_rust::xxh3::Xxh3;
 
 /// Use slangc to recursively compile shaders from shaders to assets/shaders.
-// NEXT emit metadata from slangc
 pub fn build_shaders() {
     let manifest_dir = &std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let crate_root = Path::new(manifest_dir);
@@ -61,7 +67,7 @@ pub fn build_shaders() {
                 let status = process::Command::new("slangc")
                     .arg(path.as_os_str())
                     .arg("-I")
-                    .arg("shaders/lib")
+                    .arg(src_root.join("lib"))
                     .arg("-fvk-use-scalar-layout")
                     .arg("-o")
                     .arg(out)

@@ -251,7 +251,7 @@ mod test {
     use super::*;
 
     pub fn delete_some_semaphores() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             // XXX find some ways to test... Need API calls that don't explode so we can test
             // ticking and rotation
             let semaphore = device.make_timeline_semaphore().unwrap();

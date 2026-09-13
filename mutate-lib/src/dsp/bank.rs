@@ -10,6 +10,8 @@
 //! slots.  This module contains the data structures necessary to describe our bank so that it may
 //! be hardcoded into GPU control logic for execution.
 
+// XXX make bank definition center to center
+
 use super::iso226;
 
 #[derive(Debug)]

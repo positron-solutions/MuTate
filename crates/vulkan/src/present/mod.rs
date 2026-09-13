@@ -42,11 +42,11 @@ pub struct PresentRing {
 
 impl PresentRing {
     pub fn new(
-        device: &Device,
         instance: &Instance,
+        device: &Device,
         surface: &Surface,
     ) -> Result<Self, VulkanError> {
-        let swapchain = Swapchain::new(device, instance, surface)?;
+        let swapchain = Swapchain::new(instance, device, surface)?;
         // SAFETY: Present ring must live within the backing Device lifetime.
         let queue = device
             .queues

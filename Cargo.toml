@@ -37,8 +37,10 @@ winit = "0.30.12"
 
 # DSP
 aligned = "0.4.3"
+libm = "0.2.16"
 num-complex = "0.4.6"
 num-traits = "0.2.19"
+rustfft = "6.4.1"
 # PMR
 pm-remez = "0.2.5"
 

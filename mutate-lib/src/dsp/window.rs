@@ -3,7 +3,11 @@
 
 //! # Window Functions
 //!
-//! This module contains window functions used in many filters, especially DFTs.
+//! > Seeing is believing so you better change your specs
+//! >
+//! > - misattributed
+//!
+//! This module contains window functions for use in many filters.
 
 use std::f64::consts::{PI as PI64, TAU as TAU64};
 
@@ -60,7 +64,9 @@ pub enum WindowFunction {
     /// window length, this window offers the engineer maximum control and performance at every goal
     /// except possibly handling extremely high noise at extremely distant points, which can be
     /// readily suppressed with other simple zero-delay filters.
-    DolphChebyshev { attenuation_db: f64 },
+    DolphChebyshev {
+        attenuation_db: f64,
+    },
     // NEXT Kaiser, another tunable window with slightly better noise decay at extreme pitch
     // differences.  This can save an un-filtered DFT from registering a sudden super-loud pitch at
     // an unexpected, distant frequency.
@@ -70,9 +76,12 @@ pub enum WindowFunction {
     // Paired with another filter to suppress the side lobe growth, this may offer a more precise
     // main lobe.  Parameterized to 1, it *is* the Dolph-Chebyshev window.
     // Ultraspherical,
+    Bohman,
     /// A literal window for pre-calculated weights or just any obtained from another method.  This
     /// variant exists to enable using hardcoded windows in the same interface.
-    Literal { weights: &'static [f32] },
+    Literal {
+        weights: &'static [f32],
+    },
 }
 
 impl WindowFunction {
@@ -86,6 +95,7 @@ impl WindowFunction {
             Self::DolphChebyshev { attenuation_db } => {
                 dolph_chebyshev_window(size, *attenuation_db)
             }
+            Self::Bohman => bin_weights(&bohman, size),
             Self::Literal { weights } => weights.iter().map(|w| *w as f64).collect(),
         }
     }
@@ -125,6 +135,7 @@ impl WindowFunction {
             // MAYBE COLA values for Dolph Chebyshev need some experimental tuning.  Higher
             // attenuation was said to demand more overlap.  Workbench!
             Self::DolphChebyshev { attenuation_db } => (length as f64 / 4.0).ceil() as u32,
+            Self::Bohman => (length as f64 / 4.0).ceil() as u32,
             Self::Literal { weights } => (length as f64 / 4.0).ceil() as u32,
         }
     }
@@ -142,6 +153,7 @@ impl WindowFunction {
             Self::Hamming => 1.0,
             Self::DolphChebyshev { attenuation_db } => 1.0,
             Self::Literal { weights } => 1.0,
+            Self::Bohman => 1.0,
         }
     }
 
@@ -155,6 +167,7 @@ impl WindowFunction {
             Self::Hamming => 1.0,
             Self::DolphChebyshev { attenuation_db } => 1.0,
             Self::Literal { weights } => 1.0,
+            Self::Bohman => 1.0,
         }
     }
 }
@@ -168,6 +181,7 @@ impl std::fmt::Display for WindowFunction {
             Self::Hamming => "Hamming",
             Self::DolphChebyshev { attenuation_db } => "Dolph-Chebyshev",
             Self::Literal { weights } => "Literal",
+            Self::Bohman => "Bohman",
         };
         write!(f, "{name}")
     }
@@ -198,6 +212,21 @@ fn bartlett(x: f64) -> f64 {
     }
 }
 
+fn bohman(x: f64) -> f64 {
+    // All other windows are supported over [0.0, 1.0].  We are going to use the actual half-window
+    // definition in practice, so this maps over.
+    half_bohman(x * 2.0 - 1.0)
+}
+
+/// `x` is in [-1.0, 1.0] with 0.0 to either -1.0 or 1.0 being a symmetric single cosine half
+/// period, mapped from unity to zero.
+fn half_bohman(x: f64) -> f64 {
+    let x = x.abs();
+    let t = std::f64::consts::PI * x;
+    let (s, c) = t.sin_cos();
+    (1.0 - x) * c + s * core::f64::consts::FRAC_1_PI
+}
+
 // Our integration samples really close to both endpoints, but technically we're supposed to reach a
 // specific toe value.  Anyway.  Better than boxcar.
 fn hamming(x: f64) -> f64 {
@@ -206,8 +235,8 @@ fn hamming(x: f64) -> f64 {
     A0 - (1.0 - A0) * (2.0 * PI64 * x).cos()
 }
 
-/// Integrates discrete bin weights given a window_fn.  Will automatically normalize windows where
-/// normalization in the window_fn is hard.
+/// Integrates (first moment only) discrete bin weights given a `window_fn`.  Will automatically
+/// normalize windows where normalization in the `window_fn` is hard.
 pub fn bin_weights(window_fn: &impl Fn(f64) -> f64, bins: usize) -> Vec<f64> {
     #[cfg(debug_assertions)]
     let samples_per_bin = 1;
@@ -227,16 +256,10 @@ pub fn bin_weights(window_fn: &impl Fn(f64) -> f64, bins: usize) -> Vec<f64> {
         }
         weights.push(sum / samples_per_bin as f64);
     }
-    if !weights.iter().find(|x| **x == 1.0).is_some() {
-        let max = weights.iter().fold(0.0f64, |max, x| max.max(*x));
-        let norm = 1.0 / max;
-        weights.iter_mut().for_each(|x| {
-            *x = *x * norm;
-        });
-        weights
-    } else {
-        weights
-    }
+    let max = weights.iter().fold(f64::NEG_INFINITY, |max, x| max.max(*x));
+    let norm = 1.0 / max;
+    weights.iter_mut().for_each(|x| *x *= norm);
+    weights
 }
 
 // # The Dolph-Chebyshev Window
@@ -473,6 +496,15 @@ mod test {
     // NEXT anyone want to clean these up?  Valid windows must get pretty close to 1.0.  The
     // printing and everything could be checked via macro, but make printing vs not printing easy to
     // toggle.  The workbench is the best place for real testing.
+
+    #[test]
+    fn test_window_function_bohman() {
+        let weights = bin_weights(&(bohman as fn(f64) -> f64), 25);
+        // weights.iter().enumerate().for_each(|(i, b)| {
+        //   println!("Bohman: {:3}: {:0.8}", i, b);
+        // });
+        // assert!(weights.iter().all(|b| *b >= 0.0 && *b <= 1.0));
+    }
 
     #[test]
     fn test_window_function_hamming() {

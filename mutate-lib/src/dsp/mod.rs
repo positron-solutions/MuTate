@@ -67,6 +67,7 @@ pub mod fir;
 pub mod iir;
 pub mod iso226;
 pub mod spectrogram;
+pub mod wavelet;
 pub mod window;
 
 /// Old people and rock stars cannot hear above certain frequencies.  Even if the sampling rate will

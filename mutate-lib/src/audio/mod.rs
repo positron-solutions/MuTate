@@ -346,21 +346,20 @@ impl AudioContext {
         Ok(AudioConsumer { conn })
     }
 
-    /// Connect a stream and import it into a device-side ring.
+    /// Connect a stream and import it into a device-side set of ring buffers.
     ///
-    /// `CHANNELS` is the planar channel count laid out on the device; `sample_count`
-    /// is the per-channel ring length in samples. Both are fixed at call time.
+    ///  `sample_count` is the per-channel ring length in samples.
     #[cfg(feature = "vulkan")]
-    pub fn import_to_device<const CHANNELS: usize, S>(
+    pub fn import_to_device<S>(
         &self,
         device: &Device,
         choice: &AudioChoice,
         sample_count: u32,
         name: &str,
         import_sink: S,
-    ) -> Result<import::AudioImport<CHANNELS>, MutateError>
+    ) -> Result<import::AudioImport, MutateError>
     where
-        S: import::ImportSink<CHANNELS>,
+        S: import::ImportSink,
     {
         let rx = self.connect(choice, name)?;
         import::AudioImport::new(device, rx, sample_count, import_sink)
