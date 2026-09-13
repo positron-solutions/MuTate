@@ -322,7 +322,6 @@ pub fn integrate(
     Complex64::new(real.sum(), imag.sum()) * rho_grid
 }
 
-// XXX Decide if this is what we want
 /// ψ at `u` on a grid of spacing `delta_u`.
 ///
 /// Caller is responsible that `u` lies within the taps' reach.

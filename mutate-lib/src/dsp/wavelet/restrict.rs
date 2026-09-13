@@ -24,7 +24,7 @@
 //! Instead, we want the result of the cheese grater to *look* the same to audio as the ideal
 //! wavelet.  Since the audio has gone through roughly the same cheese grater, our job is made a
 //! little bit simpler.  In the restriction step, we are mainly concerned with ensuring that the
-//! shape of the wavelet we are refining is maximally well preserved every time we shove it through
+//! shape of the wavelet we will refine is maximally well preserved every time we shove it through
 //! the grater.
 //!
 //! ## Restriction Math
@@ -137,23 +137,15 @@ impl Restriction {
                     *o = inv * grid.mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
                 }
             }
-            Restriction::Magnitude => {
-                let (a, da) = envelope(grid);
-                let mass = |x: f64, y: f64| inv * hermite::integrate_1d(&a, &da, x, y, grid.du);
-
-                // a_k = (1/ρ) ∫_{C_k} |ψ|,  h_k = a_k e^{2πi kρ}
-                out[0] = Complex64::new(2.0 * mass(0.0, 0.5 * rho), 0.0);
-                for (j, o) in out.iter_mut().enumerate().skip(1) {
-                    let a = mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
-                    let (s, c) = (TAU * j as f64 * rho).sin_cos();
-                    *o = a * Complex64::new(c, s);
-                }
-            }
-            Restriction::Carrier => {
-                let (g, dg) = project(grid);
+            Restriction::Magnitude | Restriction::Carrier => {
+                // The two methods only differ by how they calculate `g` and `dg`.
+                let (g, dg) = match self {
+                    Restriction::Magnitude => magnitude(grid),
+                    _ => carrier(grid),
+                };
                 let mass = |a: f64, b: f64| inv * hermite::integrate_1d(&g, &dg, a, b, grid.du);
 
-                // a_k = (1/ρ) ∫_{C_k} Re(ψ e^{-2πiu}) du,  h_k = a_k e^{2πi kρ}
+                // a_k = (1/ρ) ∫_{C_k} g du,  h_k = a_k e^{2πi kρ}
                 out[0] = Complex64::new(2.0 * mass(0.0, 0.5 * rho), 0.0);
                 for (j, o) in out.iter_mut().enumerate().skip(1) {
                     let a = mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
@@ -165,26 +157,8 @@ impl Restriction {
     }
 }
 
-/// Rotated derivative from the truncated edges.
-///
-///     d_k = −(i/2πρ)·(ψ_T(e_{k+½}) − ψ_T(e_{k−½}))
-// XXX this method has some terrible flaw in the endpoints
-pub fn derivative_into(grid: Grid, rho: f64, out: &mut [Complex64]) {
-    let k = out.len();
-    let inv = rho.recip();
-
-    let mut lo = grid.edge(0, k, rho);
-    out[0] = Complex64::new(2.0 * inv / TAU * lo.im, 0.0);
-
-    for (j, o) in out.iter_mut().enumerate().skip(1) {
-        let hi = grid.edge(j, k, rho);
-        *o = -Complex64::i() * inv / TAU * (hi - lo);
-        lo = hi;
-    }
-}
-
 /// |ψ| and d|ψ|/du = Re(conj(ψ)·ψ')/|ψ| with ψ' = 2πi d.
-fn envelope(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
+fn magnitude(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
     grid.psi
         .iter()
         .zip(grid.d)
@@ -196,7 +170,7 @@ fn envelope(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
 }
 
 /// Re(ψ e^{-2πiu}) and its derivative.  ψ' = 2πi d, so the derivative is −2π Im((d − ψ) e^{-2πiu}).
-fn project(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
+fn carrier(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
     grid.psi
         .iter()
         .zip(grid.d)
@@ -207,6 +181,53 @@ fn project(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
             ((psi * turn).re, -TAU * ((d - psi) * turn).im)
         })
         .unzip()
+}
+
+/// Central first difference, order 2·len.
+const STENCIL: [f64; 3] = [0.75, -0.15, 1.0 / 60.0];
+
+/// Reach padding the stencil reads past the last tap.
+pub(super) const STENCIL_RADIUS: usize = STENCIL.len();
+
+/// d from the emitted ψ, satisfying D̂(ω) = (ω/ω₀)·Ψ̂(ω) for whatever envelope ψ carries.
+///
+///     ψ_k = a_k e^{2πikρ}
+///     b_k = Σ_m c_m (a_{k+m} − a_{k−m})
+///     d_k = (a_k − (i/ω₀) b_k) e^{2πikρ}
+pub(super) fn derivative_into(psi: &[Complex64], rho: f64, out: &mut [Complex64]) {
+    let k = psi.len();
+
+    // a_j = ψ_j e^{-2πijρ}, Hermitian
+    let at = |j: isize| {
+        let m = j.unsigned_abs();
+        if m >= k {
+            return Complex64::default();
+        }
+        let (s, c) = (TAU * m as f64 * rho).sin_cos();
+        let a = psi[m] * Complex64::new(c, -s);
+        if j < 0 {
+            a.conj()
+        } else {
+            a
+        }
+    };
+
+    let inv = (TAU * rho).recip();
+
+    for (j, o) in out.iter_mut().enumerate() {
+        let n = j as isize;
+        let b: Complex64 = STENCIL
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                let m = i as isize + 1;
+                c * (at(n + m) - at(n - m))
+            })
+            .sum();
+
+        let (s, c) = (TAU * j as f64 * rho).sin_cos();
+        *o = (at(n) - Complex64::i() * inv * b) * Complex64::new(c, s);
+    }
 }
 
 #[cfg(test)]
