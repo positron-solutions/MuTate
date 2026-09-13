@@ -592,8 +592,8 @@ mod test {
 
     use harness::{
         bandwidth, bisect, burst, characterize, conv, dc_leak, dtft, first_null, l1, level_moment,
-        moment, pairing_residual, print_wave, skirts, t_hat_profile, tone_bias, tone_response,
-        unfold, widen, Point, Skirt,
+        moment, pairing_residual, print_wave, shoulders, skirts, t_hat_profile, tone_bias,
+        tone_response, unfold, widen, Point, Skirt,
     };
 
     const BINS: usize = 1024;
@@ -886,24 +886,25 @@ mod test {
         }
     }
 
-    /// Pitch reassignment bias against steady tones.  Scans across the range where the
-    /// wavelet's ideal response is in `[-GATE_DB, GATE_DB)`.  The predicted bias is compared
-    /// to the observed.  Phase dependence lives in `reassignment_is_phase_independent`.
+    /// Reassignment error over the detuning each bin is responsible for.  A bank at `SPACING`
+    /// cents hands off at half that, so beyond it the reading belongs to a neighbor.
     #[test]
     fn reassignment_is_unbiased() {
         const Q: f64 = 8.5;
         const QUANTUM: usize = 4;
         const TAIL_DB: f64 = -60.0;
 
-        /// Cents readings stop meaning anything once the skirt is down in truncation ripple.
-        /// The denominator is no longer the envelope, so the ratio is measuring the stopband.
-        const GATE_DB: f64 = -50.0;
-
-        const RESIDUAL_C: f64 = 30.0; // XXX after d fixup
+        const SPACING: f64 = 100.0;
+        const STEPS: isize = 8;
         const RESOLUTION: f64 = 0.05;
 
-        const STEP: f64 = 100.0;
-        const SPAN: isize = 12;
+        /// Worst per hop error in cents, bias plus the swing across carrier phase.
+        const ERROR_C: f64 = 0.5;
+
+        const SKIRT_DB: f64 = -30.0;
+        const SKIRT_C: f64 = 10.0;
+        /// Reach of the crossing search, an octave either side.
+        const SPAN: f64 = 1.0;
 
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
@@ -912,7 +913,6 @@ mod test {
             .bake();
 
         println!("\n=== REASSIGN ===");
-        println!("  detune      |H|       R     pred      bias  unexplained");
 
         for (fc, sr) in [
             (2_000.0f64, RATE),
@@ -926,33 +926,44 @@ mod test {
 
             let (n, w0) = (psi.len(), bin.velocity());
             println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
+            println!("  detune      |H|     pred      bias     swing      leak");
 
-            for k in -SPAN..=SPAN {
-                let cents = k as f64 * STEP;
+            for k in -STEPS..=STEPS {
+                let cents = k as f64 * 0.5 * SPACING / STEPS as f64;
                 // 2^(c/1200)
                 let ratio = (cents / 1200.0).exp2();
-                let wd = w0 * ratio;
-                let h = dtft(&psi, wd).norm();
-                let h_db = 20.0 * (h / PEAK_GAIN).log10();
-                if h_db < GATE_DB {
-                    continue;
-                }
+                let h = dtft(&psi, w0 * ratio).norm();
 
-                let ((bias, _), _) = tone_bias(&taps, w0, cents, RESOLUTION);
-                let (res, dr) = pairing_residual(&psi, &d, w0, wd);
+                let ((bias, swing), (leak, _)) = tone_bias(&taps, w0, cents, RESOLUTION);
+                let (_, dr) = pairing_residual(&psi, &d, w0, w0 * ratio);
                 // (1200 / ln 2) · Re(R/Ψ̂) / r
                 let pred = 1200.0 / LN_2 * dr / ratio;
-                let unexplained = (bias - pred).abs();
 
                 println!(
-                "  {cents:+6.0}c {h_db:>7.1} {:>7.1} {pred:>8.3}c {bias:>9.3}c {unexplained:>9.4}c",
-                20.0 * (res / PEAK_GAIN).log10(),
-            );
+                    "  {cents:+6.1}c {:>7.1} {pred:>8.3}c {bias:>8.3}c {swing:>9.4}c {leak:>9.2e}",
+                    20.0 * (h / PEAK_GAIN).log10(),
+                );
 
-                // assert!(
-                //     unexplained < RESIDUAL_C + 0.02 * pred,
-                //     "fc {fc} detune {cents} unexplained {unexplained:.4}c"
-                // );
+                assert!(
+                    bias.abs() + swing < ERROR_C,
+                    "fc {fc} detune {cents} error {:.4}c",
+                    bias.abs() + swing
+                );
+            }
+
+            let peak = dtft(&psi, w0).norm();
+            let (lo, hi) = shoulders(&psi, peak, w0, SKIRT_DB, w0 * SPAN);
+
+            for w in [lo, hi].into_iter().flatten() {
+                // 1200 log2(ω/ω₀)
+                let cents = 1200.0 * (w / w0).log2();
+                let ((bias, swing), _) = tone_bias(&taps, w0, cents, RESOLUTION);
+                let worst = bias.abs() + swing;
+                println!("  skirt {cents:+7.1}c  bias {bias:+8.3}c  swing {swing:8.3}c");
+                assert!(
+                    worst < SKIRT_C,
+                    "fc {fc} skirt {cents:.1} worst {worst:.3}c"
+                );
             }
         }
     }
@@ -1609,12 +1620,10 @@ mod test {
 
                     // 16ε Σ|h|
                     let null = 16.0 * f64::EPSILON * l1(&psi);
-                    let density = 16.0 * psi.len() as f64 / TAU;
-                    let h = 1.0 / density;
 
-                    let lo = first_null(&psi, r.edges.0, r.edges.0 - PI, null, h, density)
+                    let lo = first_null(&psi, r.edges.0, r.edges.0 - PI, null)
                         .unwrap_or_else(|| panic!("Q {q} γ {gamma} ρ {rho} lower dip not found"));
-                    let hi = first_null(&psi, r.edges.1, r.edges.1 + PI, null, h, density)
+                    let hi = first_null(&psi, r.edges.1, r.edges.1 + PI, null)
                         .unwrap_or_else(|| panic!("Q {q} γ {gamma} ρ {rho} upper dip not found"));
 
                     // ∫_band h² and ∫_dips h² on each side of the peak

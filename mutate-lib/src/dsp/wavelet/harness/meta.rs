@@ -9,8 +9,13 @@
 
 use core::f64::consts::{PI, TAU};
 
-use super::super::spec::{Shape, WaveletSpec};
+use super::super::{
+    spec::{Shape, WaveletSpec},
+    PEAK_GAIN,
+};
 use super::*;
+
+const RATE: f64 = 48_000.0;
 
 /// First nulls of suspicious skirts against a brute-force sign scan of Re H.  Re-run this if
 /// there is ever any doubt that our null finder is missing something that dense DTFT scan would
@@ -81,7 +86,7 @@ fn first_null_matches_dense_scan() {
             })
             .map(|(a, b)| bisect(&resp, a, b));
 
-        let fast = first_null(&psi, from, stop, null, 1.0 / density, density);
+        let fast = first_null(&psi, from, stop, null);
 
         let (Some(fast), Some(naive)) = (fast, naive) else {
             println!(
@@ -123,4 +128,50 @@ fn first_null_matches_dense_scan() {
     }
 
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// The frequency domain model against the synthesized tone.  Validating this lets sweeps use
+/// `pairing_residual` alone, which needs no tone and no phase loop.
+#[ignore]
+#[test]
+fn reassignment_model_agrees() {
+    const Q: f64 = 8.5;
+    const TAIL_DB: f64 = -60.0;
+    const GATE_DB: f64 = -40.0;
+    const RESOLUTION: f64 = 0.05;
+    const STEP: f64 = 100.0;
+    const SPAN: isize = 12;
+    /// The model is linear and the tone is real, so the image sets the agreement floor.
+    const TOL_C: f64 = 5e-2;
+
+    let wav = WaveletSpec::default()
+        .with_shape(Shape::from_q(Q, 3.0))
+        .max_truncation(TAIL_DB)
+        .bake();
+
+    for (fc, sr) in [(2_000.0f64, RATE), (12_000.0, RATE)] {
+        let bin = wav.at_rho(fc / sr);
+        let taps = bin.taps();
+        let (psi, d) = (unfold(&taps, 0), unfold(&taps, 2));
+        let w0 = bin.velocity();
+
+        for k in -SPAN..=SPAN {
+            let cents = k as f64 * STEP;
+            let ratio = (cents / 1200.0).exp2();
+            let h = dtft(&psi, w0 * ratio).norm();
+            if 20.0 * (h / PEAK_GAIN).log10() < GATE_DB {
+                continue;
+            }
+
+            let ((bias, _), _) = tone_bias(&taps, w0, cents, RESOLUTION);
+            let (_, dr) = pairing_residual(&psi, &d, w0, w0 * ratio);
+            let pred = 1200.0 / LN_2 * dr / ratio;
+
+            assert!(
+                (bias - pred).abs() < TOL_C,
+                "fc {fc} detune {cents} model off {:.4}c",
+                (bias - pred).abs()
+            );
+        }
+    }
 }

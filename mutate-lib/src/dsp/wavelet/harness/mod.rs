@@ -332,17 +332,31 @@ pub(super) fn level_moment(
         * dw
 }
 
+/// Samples per null spacing 2π/n, the finest feature a degree n−1 trigonometric polynomial
+/// admits.
+const OVERSAMPLE: f64 = 16.0;
+
+/// Stencil arm in grid steps, putting [w − h, w + h] across half a null spacing.
+const STENCIL_ARM: f64 = 4.0;
+
+/// Sampling density in samples per radian and stencil arm in radians.
+///
+///     density = OVERSAMPLE·n / 2π,  h = STENCIL_ARM / density
+fn scale(n: usize) -> (f64, f64) {
+    let density = OVERSAMPLE * n as f64 / TAU;
+    (STENCIL_ARM / density, density)
+}
+
 /// Edges either side of `peak_w` where the response first falls `level_db` below `peak`,
 /// searched out to `span`, absent where no crossing lies inside it.
-fn shoulders(
+pub(super) fn shoulders(
     taps: &[Complex32],
     peak: f64,
     peak_w: f64,
     level_db: f64,
     span: f64,
-    h: f64,
-    density: f64,
 ) -> (Option<f64>, Option<f64>) {
+    let (h, density) = scale(taps.len());
     let db = |w: f64| 20.0 * dtft(taps, w).norm().log10();
     let rel = |w: f64| db(w) - 20.0 * peak.log10();
     let edge =
@@ -354,16 +368,9 @@ fn shoulders(
 }
 
 /// −3 dB edges either side of `peak_w`, falling back to the bracket `w0` sets.
-pub(super) fn bandwidth(
-    taps: &[Complex32],
-    peak: f64,
-    peak_w: f64,
-    w0: f64,
-    h: f64,
-    density: f64,
-) -> (f64, f64) {
+pub(super) fn bandwidth(taps: &[Complex32], peak: f64, peak_w: f64, w0: f64) -> (f64, f64) {
     let half_db = -10.0 * 2.0f64.log10();
-    let (lo, hi) = shoulders(taps, peak, peak_w, half_db, w0, h, density);
+    let (lo, hi) = shoulders(taps, peak, peak_w, half_db, w0);
     (
         lo.unwrap_or((peak_w - w0).max(0.0)),
         hi.unwrap_or((peak_w + w0).min(PI)),
@@ -517,14 +524,8 @@ fn level_crossing(
 }
 
 /// First zero crossing of the real response H walking from `from` toward `stop`.
-pub(super) fn first_null(
-    taps: &[Complex32],
-    from: f64,
-    stop: f64,
-    null: f64,
-    h: f64,
-    density: f64,
-) -> Option<Point> {
+pub(super) fn first_null(taps: &[Complex32], from: f64, stop: f64, null: f64) -> Option<Point> {
+    let (h, density) = scale(taps.len());
     let response = |w| dtft(taps, w).re;
     level_crossing(response, 0.0, from, stop, null, h, density)
 }
@@ -745,6 +746,7 @@ pub(super) struct Response {
 /// Peak, -3 dB relative width, image, and the positive-axis floor outside three half-power widths.
 /// `w0` only brackets the edges.
 pub(super) fn characterize(taps: &[Complex32], w0: f64) -> Response {
+    // XXX too fine btw
     let sweep = (16 * taps.len()).next_power_of_two();
     let omega = |k: usize| PI * k as f64 / sweep as f64;
     let gain = |w: f64| dtft(taps, w).norm();
@@ -753,12 +755,11 @@ pub(super) fn characterize(taps: &[Complex32], w0: f64) -> Response {
 
     let image = resp.iter().fold(0.0f64, |m, &(_, i)| m.max(i));
 
-    let density = 16.0 * taps.len() as f64 / TAU;
-    let h = 4.0 / density;
+    let (h, density) = scale(taps.len());
 
     let peak_w = climb(taps, w0, 0.0, PI, h, density);
     let peak = dtft(taps, peak_w).norm();
-    let (lo, hi) = bandwidth(taps, peak, peak_w, w0, h, density);
+    let (lo, hi) = bandwidth(taps, peak, peak_w, w0);
 
     let guard = 3.0 * (hi - lo);
     let floor = resp
