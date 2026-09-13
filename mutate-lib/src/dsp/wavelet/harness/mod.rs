@@ -73,12 +73,6 @@ pub(super) fn moment(taps: &[Complex32], p: i32) -> Complex64 {
         .sum()
 }
 
-/// |H_d(ω) − (ω/ω₀)·H_ψ(ω)|.  Absolute, because dividing by H_ψ is exactly what turns a
-/// flat floor into a skirt blowup in the cents column.
-pub(super) fn pairing_residual(psi: &[Complex32], d: &[Complex32], w0: f64, w: f64) -> f64 {
-    (dtft(d, w) - dtft(psi, w) * (w / w0)).norm()
-}
-
 /// |H(ω)| and |H(−ω)|, the passband and its image.
 fn pair(taps: &[Complex32], w: f64) -> (f64, f64) {
     (dtft(taps, w).norm(), dtft(taps, -w).norm())
@@ -129,6 +123,14 @@ fn project(w: &[[f32; 4]], x: impl Fn(isize) -> f64, m: isize) -> [Complex64; 3]
         tee += k as f64 * Complex64::new(a * dif, -b * sum);
     }
     [psi, dee, tee]
+}
+
+/// `|R|` and `Re(R/Ψ̂)` for `R = H_d(ω) − (ω/ω₀)·H_ψ(ω)`.  The projection is what lands in
+/// `r̂`, the magnitude is the floor.
+pub(super) fn pairing_residual(psi: &[Complex32], d: &[Complex32], w0: f64, w: f64) -> (f64, f64) {
+    let h = dtft(psi, w);
+    let r = dtft(d, w) - h * (w / w0);
+    (r.norm(), (r * h.conj()).re / h.norm_sqr())
 }
 
 /// Bias of `r̂` in cents and quadrature leak against a real tone detuned `cents` from `w0`,
