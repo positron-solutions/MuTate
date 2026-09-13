@@ -87,8 +87,7 @@
 
 use std::f64::consts::TAU;
 
-use libm::tgamma;
-use num_complex::{Complex32, Complex64};
+use num_complex::Complex64;
 
 use super::{generate::hermite, spec::Shape, Grid};
 
@@ -102,8 +101,21 @@ pub enum Restriction {
     /// spiral we are approximating with taps.
     Quadrature,
     /// Cell average of |ψ| carried by the exact center-frequency rotation.
-    #[default]
+    ///
+    /// `a_k = (1/ρ) ∫_{C_k} |ψ| du`
+    ///
+    /// Discarding the residual phase leaves `a_k` real, even, and non-negative, so `|H|` is even
+    /// about `ω₀` and the peak is stationary there.  [`Restriction::Carrier`] keeps that structure
+    /// and recovers the chirp this drops.
     Magnitude,
+    /// Cell projection of ψ onto the carrier, carried by the exact center-frequency rotation.
+    ///
+    /// `a_k = (1/ρ) ∫_{C_k} Re(ψ e^{-2πiu}) du`
+    ///
+    /// Linear in ψ, so the taps partition the matched filter's mass over the reach exactly and the
+    /// residual chirp survives into the tails that [`Restriction::Magnitude`] flattens.
+    #[default]
+    Carrier,
 }
 
 impl Restriction {
@@ -126,29 +138,31 @@ impl Restriction {
                 }
             }
             Restriction::Magnitude => {
+                let (a, da) = envelope(grid);
+                let mass = |x: f64, y: f64| inv * hermite::integrate_1d(&a, &da, x, y, grid.du);
+
                 // a_k = (1/ρ) ∫_{C_k} |ψ|,  h_k = a_k e^{2πi kρ}
-                out[0] = Complex64::new(2.0 * inv * magnitude(grid, 0.0, 0.5 * rho), 0.0);
+                out[0] = Complex64::new(2.0 * mass(0.0, 0.5 * rho), 0.0);
                 for (j, o) in out.iter_mut().enumerate().skip(1) {
-                    let a = inv * magnitude(grid, (j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
+                    let a = mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
+                    let (s, c) = (TAU * j as f64 * rho).sin_cos();
+                    *o = a * Complex64::new(c, s);
+                }
+            }
+            Restriction::Carrier => {
+                let (g, dg) = project(grid);
+                let mass = |a: f64, b: f64| inv * hermite::integrate_1d(&g, &dg, a, b, grid.du);
+
+                // a_k = (1/ρ) ∫_{C_k} Re(ψ e^{-2πiu}) du,  h_k = a_k e^{2πi kρ}
+                out[0] = Complex64::new(2.0 * mass(0.0, 0.5 * rho), 0.0);
+                for (j, o) in out.iter_mut().enumerate().skip(1) {
+                    let a = mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
                     let (s, c) = (TAU * j as f64 * rho).sin_cos();
                     *o = a * Complex64::new(c, s);
                 }
             }
         }
     }
-}
-
-/// ∫_a^b |ψ| by composite Simpson
-fn magnitude(grid: Grid, a: f64, b: f64) -> f64 {
-    const SUB: usize = 8;
-
-    let h = (b - a) / SUB as f64;
-    let f = |i: usize| grid.at(a + i as f64 * h).norm();
-
-    let odd: f64 = (1..SUB).step_by(2).map(f).sum();
-    let even: f64 = (2..SUB).step_by(2).map(f).sum();
-
-    h / 3.0 * (f(0) + f(SUB) + 4.0 * odd + 2.0 * even)
 }
 
 /// Rotated derivative from the truncated edges.
@@ -169,6 +183,32 @@ pub fn derivative_into(grid: Grid, rho: f64, out: &mut [Complex64]) {
     }
 }
 
+/// |ψ| and d|ψ|/du = Re(conj(ψ)·ψ')/|ψ| with ψ' = 2πi d.
+fn envelope(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
+    grid.psi
+        .iter()
+        .zip(grid.d)
+        .map(|(&psi, &d)| {
+            let a = psi.norm();
+            (a, TAU * (psi.im * d.re - psi.re * d.im) / a)
+        })
+        .unzip()
+}
+
+/// Re(ψ e^{-2πiu}) and its derivative.  ψ' = 2πi d, so the derivative is −2π Im((d − ψ) e^{-2πiu}).
+fn project(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
+    grid.psi
+        .iter()
+        .zip(grid.d)
+        .enumerate()
+        .map(|(i, (&psi, &d))| {
+            let (s, c) = (TAU * i as f64 * grid.du).sin_cos();
+            let turn = Complex64::new(c, -s);
+            ((psi * turn).re, -TAU * ((d - psi) * turn).im)
+        })
+        .unzip()
+}
+
 #[cfg(test)]
 mod test {
     use super::super::harness::{dtft, tone_response, unfold};
@@ -178,10 +218,11 @@ mod test {
     const Q: f64 = 3.5;
     const RHO: f64 = 0.116;
     const TAIL_DB: f64 = -60.0;
-    const METHODS: [Restriction; 3] = [
+    const METHODS: [Restriction; 4] = [
         Restriction::Nearest,
         Restriction::Quadrature,
         Restriction::Magnitude,
+        Restriction::Carrier,
     ];
 
     /// Folded ψ taps under one restriction, `(Re ψ, Im ψ)` from the emitted table.
@@ -214,20 +255,21 @@ mod test {
             "\n=== RESTRICTION OMEGA (Q = {Q}, rho {RHO}, tail {TAIL_DB:.0} dB) w0 {w0:.9} ==="
         );
         println!(
-            "  {:>4} {:>14} {:>14} {:>14}",
-            "k", "nearest", "quad", "mag"
+            "  {:>4} {:>14} {:>14} {:>14} {:>14}",
+            "k", "nearest", "quad", "mag", "carrier"
         );
 
         for j in 0..k - 1 {
             let w = |c: &(Vec<Complex64>, f64)| (c.0[j + 1] * c.0[j].conj()).arg();
             println!(
-                "  {j:>4} {:>14.9} {:>14.9} {:>14.9}",
+                "  {j:>4} {:>14.9} {:>14.9} {:>14.9} {:>14.9}",
                 w(&cols[0]),
                 w(&cols[1]),
-                w(&cols[2])
+                w(&cols[2]),
+                w(&cols[3])
             );
 
-            let dev = (w(&cols[2]) - w0).abs();
+            let dev = (w(&cols[3]) - w0).abs();
             assert!(dev < TOL, "tap {j} omega off by {dev:.3e}");
         }
     }
@@ -246,22 +288,23 @@ mod test {
 
         println!("\n=== RESTRICTION MAGNITUDE (Q = {Q}, rho {RHO}, tail {TAIL_DB:.0} dB) ===");
         println!(
-            "  {:>4} {:>14} {:>14} {:>14}",
-            "k", "nearest", "quad", "mag"
+            "  {:>4} {:>14} {:>14} {:>14} {:>14}",
+            "k", "nearest", "quad", "mag", "carrier"
         );
 
         for j in 0..psi.len() {
             let h = |c: &(Vec<Complex64>, f64)| c.0[j];
             let a = |c: &(Vec<Complex64>, f64)| c.0[j].norm();
             println!(
-                "  {j:>4} {:>14.9} {:>14.9} {:>14.9}",
+                "  {j:>4} {:>14.9} {:>14.9} {:>14.9} {:>14.9}",
                 h(&cols[0]).norm(),
                 h(&cols[1]).norm(),
-                h(&cols[2]).norm()
+                h(&cols[2]).norm(),
+                h(&cols[3]).norm(),
             );
 
-            for c in &cols[..2] {
-                let dev = (a(c) - a(&cols[2])).abs() / peak;
+            for c in &cols[..3] {
+                let dev = (a(c) - a(&cols[3])).abs() / peak;
                 assert!(dev < TOL, "tap {j} envelope off by {dev:.3e} of peak");
             }
 
@@ -319,7 +362,7 @@ mod test {
             // ρ · (ρ_hi / ρ)^(i / n), geometric so tap count steps evenly
             let rho = RHO * (RHO_HI / RHO).powf(i as f64 / (RHOS - 1) as f64);
 
-            for (name, &m) in ["nearest", "quad", "mag"].iter().zip(&METHODS) {
+            for (name, &m) in ["nearest", "quad", "mag", "carrier"].iter().zip(&METHODS) {
                 let c = table(m, rho);
 
                 // worst over detuning, which carries no trend of its own

@@ -195,6 +195,71 @@ fn whole_cell(
     imag.add(-m1.im / 12.0);
 }
 
+/// Cells touched by `[u_beg, u_end]` and each endpoint reduced to a fraction of its cell.
+///
+/// Caller is responsible that both lie within the taps' reach, otherwise the end cell's cubic
+/// is extrapolated.
+#[inline(always)]
+fn span_cells(cells: usize, u_beg: f64, u_end: f64, du: f64) -> (usize, usize, f64, f64) {
+    let last = cells - 1;
+    let i_beg = ((u_beg / du).floor() as usize).min(last);
+    let i_end = ((u_end / du).floor() as usize).min(last);
+
+    // reduced against `u` so the fraction carries no error from the grid position
+    let f = |i: usize, u: f64| (-(i as f64)).mul_add(du, u) / du;
+
+    (i_beg, i_end, f(i_beg, u_beg), f(i_end, u_end))
+}
+
+/// `∫_{u_beg}^{u_end} p du` of the cubic Hermite reconstruction of a real channel.
+///
+/// `dp` is `dp/du` on the same grid, in plain units rather than the rotated storage convention.
+///
+/// Caller is responsible that `u_beg <= u_end` and that both lie within the taps' reach.
+pub fn integrate_1d(p: &[f64], dp: &[f64], u_beg: f64, u_end: f64, du: f64) -> f64 {
+    #[inline(always)]
+    fn span(
+        acc: &mut Accumulator<f64>,
+        p: &[f64],
+        dp: &[f64],
+        du: f64,
+        i: usize,
+        f0: f64,
+        f1: f64,
+        h: f64,
+    ) {
+        let (m0, m1) = (dp[i] * du, dp[i + 1] * du);
+        let (a, b) = deltas(p[i], p[i + 1], m0, m1);
+        cell_span_1d(acc, p[i], m0, a, b, f0, f1, h);
+    }
+
+    let (i_beg, i_end, f_beg, f_end) = span_cells(p.len() - 1, u_beg, u_end, du);
+
+    let mut acc = Accumulator::default();
+
+    if i_beg == i_end {
+        let h = (u_end - u_beg) / du;
+        span(&mut acc, p, dp, du, i_beg, f_beg, f_end, h);
+        return acc.sum() * du;
+    }
+
+    // Opening fraction.
+    span(&mut acc, p, dp, du, i_beg, f_beg, 1.0, 1.0 - f_beg);
+
+    // Whole cells, trapezoid and cubic correction kept apart.
+    for i in (i_beg + 1)..i_end {
+        acc.add(p[i] * 0.5);
+        acc.add(p[i + 1] * 0.5);
+        acc.add(dp[i] * du / 12.0);
+        acc.add(-dp[i + 1] * du / 12.0);
+    }
+
+    // Closing fraction.
+    span(&mut acc, p, dp, du, i_end, 0.0, f_end, f_end);
+
+    acc.sum() * du
+}
+
 /// Integral of the cubic Hermite reconstruction over `[u_beg, u_end]`, with `du` as the measure.
 ///
 /// `rho_grid` is the tap spacing in periods, which places the endpoints in the grid.  Whole cells
@@ -209,13 +274,7 @@ pub fn integrate(
     u_end: f64,
     rho_grid: f64,
 ) -> Complex64 {
-    let last = taps.len() - 2;
-    let i_beg = ((u_beg / rho_grid).floor() as usize).min(last);
-    let i_end = ((u_end / rho_grid).floor() as usize).min(last);
-
-    // Fractions reduced against `u` so they carry no error from the grid position.
-    let f_beg = (-(i_beg as f64)).mul_add(rho_grid, u_beg) / rho_grid;
-    let f_end = (-(i_end as f64)).mul_add(rho_grid, u_end) / rho_grid;
+    let (i_beg, i_end, f_beg, f_end) = span_cells(taps.len() - 1, u_beg, u_end, rho_grid);
 
     let cell = |i: usize| {
         (

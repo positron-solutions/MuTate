@@ -298,32 +298,32 @@
 // NOTE Run time of the filter bank generation test (not reflective of actual sample rates and Q) is
 // about 30ms on a Zen2+ part in release.  This affects CWT startup time.
 
-// === TABLE RESPONSE (Q = 3.5, quantum 4) ===
+// === TABLE RESPONSE (Q = 3.5, quantum 8) ===
 //
 // fc  1000 sr  6000  w0 1.047198  quantized  25 (unfolded  49)
-//   peak gain 2.000000001  dev +3.297e-10 rel
-//   rel width 0.28523
-//   peak -0.0033 cents
-//   negative-freq max  -103.74 dB
-//   stopband floor     -103.69 dB
+//   peak gain 2.000000013  dev +6.312e-9 rel
+//   width 0.99697
+//   peak -0.0000 cents
+//   image max         -109.59 dB
+//   stopband floor     -109.21 dB
 //
 // fc   250 sr  3000  w0 0.523599  quantized  49 (unfolded  97)
-//   peak gain 2.000000000  dev +1.824e-10 rel
-//   rel width 0.28523
-//   peak -0.0041 cents
-//   negative-freq max  -102.57 dB
-//   stopband floor     -102.02 dB
+//   peak gain 1.999999989  dev -5.635e-9 rel
+//   width 0.99797
+//   peak -0.0000 cents
+//   image max         -107.93 dB
+//   stopband floor     -106.56 dB
 //
 // fc 12000 sr 48000  w0 1.570796  quantized  17 (unfolded  33)
-//   peak gain 1.999999996  dev -2.022e-9 rel
-//   rel width 0.28523
-//   peak -0.0028 cents
-//   negative-freq max  -105.28 dB
-//   stopband floor     -105.28 dB
+//   peak gain 1.999999988  dev -5.897e-9 rel
+//   width 0.99531
+//   peak -0.0000 cents
+//   image max         -111.15 dB
+//   stopband floor     -110.98 dB
 
-pub mod generate;
-pub mod restrict;
-pub mod spec;
+pub(self) mod generate;
+pub(self) mod restrict;
+pub(self) mod spec;
 pub mod whatsleft;
 
 #[cfg(test)]
@@ -1496,7 +1496,7 @@ mod test {
     #[test]
     fn table_response_is_characterized() {
         const Q: f64 = 3.5;
-        const TAIL_DB: f64 = -60.0;
+        const TAIL_DB: f64 = -65.0;
 
         let w = wavelet(Q, 16);
 
@@ -1521,7 +1521,8 @@ mod test {
                     r.gain,
                     r.gain / PEAK_GAIN - 1.0
                 );
-                println!("  rel width {:.5}", r.rel_width);
+
+                println!("  width {:.5}", r.rel_width * Q);
                 println!("  peak {:+.4} cents", 1200.0 * (r.peak_w / w0).log2());
                 println!("  image max        {:>8.2} dB", db(r.image));
                 println!("  stopband floor    {:>8.2} dB", db(r.floor));
