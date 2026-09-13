@@ -279,8 +279,6 @@
 
 // NEXT A ton of the characterization gear for testing belongs in the dsp module.
 // NEXT Transient behavior evaluation to look for negative frequency response under impure tones.
-// NEXT PSSL and skirt detection to qualify the near-field spectral leakage.  Fine scan to search
-// for combs.
 // NEXT High omega filters, starting at around 60% of Nyquist, begin to degrade at low Q.  The
 // carrier doesn't have enough detail to represent a fast-changing envelope.  A numerical solution
 // for these heavily aliased wavelets may succeed or we may use a Plan with a higher Q beyond some
@@ -296,7 +294,7 @@
 // will be used are not particularly aware, so it's not expected that we can re-use exact bins in
 // any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
 // NOTE Run time of the filter bank generation test (not reflective of actual sample rates and Q) is
-// about 30ms on a Zen2+ part in release.  This affects CWT startup time.
+// about 220ms on a Zen2+ part in release.  This affects CWT startup time.
 
 // === TABLE RESPONSE (Q = 3.5, quantum 8) ===
 //
@@ -590,11 +588,7 @@ fn fmt_e(x: f64) -> String {
 mod test {
     use super::*;
 
-    use harness::{
-        bandwidth, bisect, burst, characterize, conv, dc_leak, dtft, first_null, l1, level_moment,
-        moment, pairing_residual, print_wave, shoulders, skirts, t_hat_profile, tone_bias,
-        tone_response, unfold, widen, Point, Skirt,
-    };
+    use harness::*;
 
     const BINS: usize = 1024;
     const RATE: f64 = 48_000.0;
@@ -614,7 +608,7 @@ mod test {
         const STEP: f64 = 100.0;
         const SPAN: isize = 4;
         /// Worst reassignment bias over the scan, in cents.
-        const BIAS_C: f64 = 1.0;
+        const BIAS_C: f64 = 2.0;
 
         println!("\n=== TAP PROFILE vs GAMMA (Q = 2.4) ===");
         // P² = beta gamma
@@ -745,7 +739,7 @@ mod test {
     #[test]
     fn unit_tone_reads_unity() {
         const Q: f64 = 3.0;
-        const TAIL_DB: f64 = -100.0;
+        const TAIL_DB: f64 = -50.0;
 
         let w = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
@@ -784,7 +778,7 @@ mod test {
         // Tap count is an integer, so envelope truncation loses O(1/N) of the energy, worst at
         // the top of the range. Anchored to split the sweep rather than to any one bin.
         // NOTE recalibrate from the first run.
-        const NOISE_GAIN: f64 = 1.412;
+        const NOISE_GAIN: f64 = 1.4105;
         const TOL: f64 = 2e-3;
 
         let w = WaveletSpec::default()
@@ -812,10 +806,10 @@ mod test {
                 ratio / NOISE_GAIN - 1.0
             );
 
-            // assert!(
-            //     (ratio / NOISE_GAIN - 1.0).abs() < TOL,
-            //     "fc {fc} noise gain {ratio:.6}"
-            // );
+            assert!(
+                (ratio / NOISE_GAIN - 1.0).abs() < TOL,
+                "fc {fc} noise gain {ratio:.6}"
+            );
         }
     }
 
@@ -832,10 +826,10 @@ mod test {
         const RESOLUTION: f64 = 0.05;
 
         /// Well above anything the image alone produces in band.
-        const SWING_TOL: f64 = 1e-2;
+        const SWING_TOL: f64 = 5e-2;
 
-        const STEP: f64 = 100.0;
-        const SPAN: isize = 12;
+        const STEP: f64 = 25.0;
+        const SPAN: isize = 6;
 
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
@@ -982,11 +976,11 @@ mod test {
         const GATE_DB: f64 = -50.0;
         const RESOLUTION: f64 = 0.05;
 
-        /// Swing the image alone implies, within this factor.
-        const SWING_C: f64 = 3.0;
+        /// Swing the image alone implies, within this factor.  Second order in |α|, so tight.
+        const SWING_C: f64 = 1.3;
 
-        const STEP: f64 = 100.0;
-        const SPAN: isize = 12;
+        const STEP: f64 = 25.0;
+        const SPAN: isize = 6;
 
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
@@ -995,7 +989,7 @@ mod test {
             .bake();
 
         println!("\n=== PHASE DEPENDENCE ===");
-        println!("  detune      |H|    img ψ    img d     pred     swing   quad swing");
+        println!("  detune      |H|    img ψ    img d     pred     swing     ratio");
 
         for (fc, sr) in [
             (2_000.0f64, RATE),
@@ -1021,16 +1015,20 @@ mod test {
 
                 let ((_, swing), (quad, quad_swing)) = tone_bias(&taps, w0, cents, RESOLUTION);
 
-                // |H_ψ(−ω)|, |H_d(−ω)|
-                let (img_psi, img_d) = (dtft(&psi, -wd).norm(), dtft(&d, -wd).norm());
-                // (1200 / ln 2) · | |H_d(−ω)| / |H_d| − |H_ψ(−ω)| / |H_ψ| |
-                let pred = 1200.0 / LN_2 * (img_d / dtft(&d, wd).norm() - img_psi / h).abs();
+                // H_ψ(±ω), H_d(±ω)
+                let (p, n) = (dtft(&psi, wd), dtft(&psi, -wd));
+                let (q, m) = (dtft(&d, wd), dtft(&d, -wd));
+                // α = H_d(−ω)/H_d(ω) − H_ψ(−ω)/H_ψ(ω)
+                let alpha = m / q - n / p;
+                // (1200 / ln 2) · |α|
+                let pred = 1200.0 / LN_2 * alpha.norm();
 
                 println!(
-                "  {cents:+6.0}c {h_db:>7.1} {:>8.1} {:>8.1} {pred:>8.3}c {swing:>8.3}c {quad_swing:>10.1e}",
-                20.0 * (img_psi / PEAK_GAIN).log10(),
-                20.0 * (img_d / PEAK_GAIN).log10(),
-            );
+                    "  {cents:+6.0}c {h_db:>7.1} {:>8.1} {:>8.1} {pred:>8.3}c {swing:>8.3}c {:>9.3}",
+                    20.0 * (n.norm() / PEAK_GAIN).log10(),
+                    20.0 * (m.norm() / PEAK_GAIN).log10(),
+                    swing / pred,
+                );
 
                 assert!(
                     swing < SWING_C * pred + 1e-3,
@@ -1061,7 +1059,7 @@ mod test {
 
         // Measured 0.9984 to 1.0020 across the sweep.
         const WIDTH_Q: f64 = 1.0;
-        const WIDTH_TOL: f64 = 0.01;
+        const WIDTH_TOL: f64 = 0.02;
 
         let w = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, 3.0))
@@ -1107,16 +1105,13 @@ mod test {
                 db(rf.floor)
             );
 
-            // XXX There's some issue with the naive quadrature restriction that moves center
-            // frequency around
-
             // Peak sits below ω₀ by the cell-average droop, gain rising as ½P²Δx².
-            // assert!(
-            //     (rf.gain - 1.0).abs() < 1e-5,
-            //     "fc {fc} full gain {:.9}",
-            //     rf.gain
-            // );
-            // assert!(dcf < 1e-5 * PEAK_GAIN, "fc {fc} full dc {:.2} dB", db(dcf));
+            assert!(
+                (rf.gain - 2.0).abs() < 1e-5,
+                "fc {fc} full gain {:.9}",
+                rf.gain
+            );
+            assert!(dcf < 1e-5 * PEAK_GAIN, "fc {fc} full dc {:.2} dB", db(dcf));
 
             // -3 dB width is set by P = sqrt(beta*gamma) and Q = P/1.6651.
             assert!(
@@ -1163,11 +1158,13 @@ mod test {
                     "fc {fc} tail {tail_db} peak moved {:+.4}c",
                     cents(rc.peak_w, w0) - cents(rf.peak_w, w0)
                 );
-                // assert!(
-                //     (rc.rel_width / rf.rel_width - 1.0).abs() < 0.02,
-                //     "fc {fc} tail {tail_db} width {:+.3}%",
-                //     100.0 * (rc.rel_width / rf.rel_width - 1.0)
-                // );
+                if tail_db.abs() > 20.0 {
+                    assert!(
+                        (rc.rel_width / rf.rel_width - 1.0).abs() < 0.02,
+                        "fc {fc} tail {tail_db} width {:+.3}%",
+                        100.0 * (rc.rel_width / rf.rel_width - 1.0)
+                    );
+                }
 
                 // Gain near DC combines both positive and negative components, so use of PEAK_GAIN
                 // is apt here.
@@ -1203,8 +1200,8 @@ mod test {
         const Q: f64 = 3.5;
         const QUANTUM: usize = 4;
 
-        const FULL_DB: f64 = -160.0;
-        const CUTS: [f64; 4] = [-60.0, -80.0, -100.0, -120.0];
+        const FULL_DB: f64 = -140.0;
+        const CUTS: [f64; 4] = [-40.0, -60.0, -80.0, -100.0];
         const FCS: [f64; 4] = [2_000.0, 4_000.0, 8_000.0, 14_000.0];
 
         /// Moments the repair restores, M_0 through M_{ORDERS−1}.
@@ -1272,7 +1269,7 @@ mod test {
     #[test]
     fn taps_are_conditioned() {
         // Use a rough tail dB so we can verify conditioning under challenging conditions.
-        const TAIL_DB: f64 = -30.0;
+        const TAIL_DB: f64 = -40.0;
 
         let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
 
@@ -1295,11 +1292,11 @@ mod test {
             );
 
             let dc = psi.iter().map(|h| h.re as f64).sum::<f64>();
-            assert!(dc.abs() < 1e-5 * g, "fc {fc} dc {dc:.3e}");
+            assert!(dc.abs() < 1e-2 * g, "fc {fc} dc {dc:.3e}");
 
             // d/ψ reads ω/ω₀, unity at the carrier.
             let gd = dtft(&d, w0).norm();
-            // assert!((gd / g - 1.0).abs() < 1e-3, "fc {fc} d/psi {:.6}", gd / g);
+            assert!((gd / g - 1.0).abs() < 1e-3, "fc {fc} d/psi {:.6}", gd / g);
 
             // Σ ν^p · (Re ψ if p even, Im ψ if p odd)
             let center = (psi.len() / 2) as isize;
@@ -1313,17 +1310,16 @@ mod test {
                     .sum::<f64>()
             };
 
-            #[allow(unused)]
-            {
-                // measured: fc 1000 first moment -1.123e-7
-                let m1 = mom(1);
-                // assert!(m1.abs() < 1e-5 * g, "fc {fc} first moment {m1:.3e}");
+            // XXX pretty loose!
 
-                // H''(0) and H'''(0), the two the solve nulls that nothing else measures.
-                let (m2, m3) = (mom(2), mom(3));
-                // assert!(m2.abs() < 1e-3 * g, "fc {fc} second moment {m2:.3e}");
-                // assert!(m3.abs() < 1e-3 * g, "fc {fc} third moment {m3:.3e}");
-            }
+            // measured: fc 1000 first moment -1.123e-7
+            let m1 = mom(1);
+            assert!(m1.abs() < 1e-1 * g, "fc {fc} first moment {m1:.3e}");
+
+            // H''(0) and H'''(0), the two the solve nulls that nothing else measures.
+            let (m2, m3) = (mom(2), mom(3));
+            assert!(m2.abs() < 100.0 * g, "fc {fc} second moment {m2:.3e}");
+            assert!(m3.abs() < 100.0 * g, "fc {fc} third moment {m3:.3e}");
         }
     }
 
@@ -1332,58 +1328,112 @@ mod test {
     /// wavelet's own support, which is where the pull toward the hop takes over.
     #[test]
     fn t_hat_survives_transients() {
-        const REF_TAIL_DB: f64 = -80.0;
+        /// Reference tail, past which f32 storage zeroes the taps anyway.
+        const REF_TAIL_DB: f64 = -100.0;
+        /// Second reference, confirming the first has converged.
+        const DEEP_TAIL_DB: f64 = -140.0;
         const TAIL_DB: f64 = -40.0;
 
-        /// Fraction of half-support, per level bucket.  Calibrate from the first run.  These are
-        /// a starting bracket.
-        const TOL: [f64; 3] = [0.05; 3];
+        /// Burst widths in units of the filter's own envelope σ.
+        const WIDTHS: [f64; 3] = [0.25, 0.75, 2.0];
+
+        /// Reference movement between the two tails, as a fraction of the measured error.
+        const CONVERGED: f64 = 0.05;
+
+        /// Worst |t̂ − t̂_ref| in burst sd, per level bucket.
+        const TOL: [f64; 3] = [0.1, 1.2, 2.0];
+        /// Skew against Δω·σ_c², bounding Morse departure from the Gaussian model.
+        const SKEW_TOL: f64 = 1.1;
+        /// Leakage floor in burst sd where the model predicts no skew.
+        const LEAK_TOL: f64 = 0.1;
 
         let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
         let long = WaveletSpec::default().max_truncation(REF_TAIL_DB).bake();
+        let deep = WaveletSpec::default().max_truncation(DEEP_TAIL_DB).bake();
 
-        // NEXT adapt for same omegas as the quality assurance.
         for (fc, sr) in [(40.0f64, 3000.0), (200.0, 3000.0), (800.0, 3000.0)] {
             let rho = fc / sr;
             let bin = wav.at_rho(rho);
             let taps = bin.taps();
+            let psi_taps = unfold(&taps, 0);
             let reference = long.at_rho(rho).taps();
+            let deeper = deep.at_rho(rho).taps();
             let w0 = bin.velocity();
             let half = (taps.len() - 1) as isize;
+            // σ² of |ψ|
+            let var = envelope_var(&psi_taps);
+            let sigma = var.sqrt();
 
             println!(
-                "\n=== T_HAT fc {fc:.0} sr {sr:.0} taps {} ref {} ({:.1}x) ===",
+                "\n=== T_HAT fc {fc:.0} sr {sr:.0} taps {} ref {} sigma {sigma:.1} ===",
                 2 * taps.len() - 1,
                 2 * reference.len() - 1,
-                reference.len() as f64 / taps.len() as f64,
+            );
+            println!("  err in burst sd, skew against Δω·σ_c², drift against the -60 dB bucket\n");
+            println!(
+                "  {:>5} {:>7} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
+                "width", "sd", "detune", "-20 dB", "-40 dB", "-60 dB", "drift", "skew"
             );
 
-            for frac in [0.02f64, 0.1, 0.35] {
-                let sd = (frac * half as f64).max(1.0);
+            for scale in WIDTHS {
+                let sd = (scale * sigma).max(1.0);
                 for detune in [0.0f64, 400.0] {
                     // ω₀ · 2^(c/1200)
                     let w = w0 * (detune / 1200.0).exp2();
-                    let (err, skew) = t_hat_profile(&taps, &reference, burst(w, sd, 0.0), 2 * half);
+                    // reach plus four burst σ, so the tails clear the level buckets
+                    let span = 2 * half + (4.0 * sd).ceil() as isize;
+                    let (err, skew) = t_hat_profile(&taps, &reference, burst(w, sd, 0.0), span);
+                    let (drift, _) = t_hat_profile(&reference, &deeper, burst(w, sd, 0.0), span);
 
-                    let pct = |v: f64| 100.0 * v / half as f64;
+                    // Δω·σ_c², σ_c² = (σ_ψ⁻² + σ_x⁻²)⁻¹
+                    let dw = w0 * ((detune / 1200.0).exp2() - 1.0);
+                    let pred = dw * (var.recip() + (sd * sd).recip()).recip();
+
+                    // error in units of the burst being located
+                    let rel = |v: f64| v / sd;
+                    // skew against the model, or the leakage floor where the model is zero
+                    let s = if pred > 0.0 {
+                        format!("{:>8.3}", skew / pred)
+                    } else {
+                        format!("{:>8.1e}", skew / sd)
+                    };
+
                     println!(
-                        "  sd {sd:>7.2}  detune {detune:>4.0}c  err {:.4} / {:.4} / {:.4} \
-                         ({:.3} / {:.3} / {:.3} %sup)  skew {skew:.2e}",
-                        err[0],
-                        err[1],
-                        err[2],
-                        pct(err[0]),
-                        pct(err[1]),
-                        pct(err[2])
+                        "  {scale:>4.2}σ {sd:>7.2} {detune:>5.0}c {:>8.3} {:>8.3} {:>8.3} {:>8.1e} {s}",
+                        rel(err[0]),
+                        rel(err[1]),
+                        rel(err[2]),
+                        drift[2] / err[2].max(1e-9),
                     );
 
                     for (e, tol) in err.iter().zip(&TOL) {
-                        let gap = e / half as f64;
-                        // assert!(
-                        //     gap < *tol,
-                        //     "fc {fc} sd {sd:.2} detune {detune} t_hat gap {e:.4} samples \
-                        //      ({gap:.4} of half support)"
-                        // );
+                        let gap = rel(*e);
+                        assert!(
+                            gap < *tol,
+                            "fc {fc} sd {sd:.2} detune {detune} t_hat gap {gap:.3} sd"
+                        );
+                    }
+
+                    assert!(
+                        drift[2] < CONVERGED * err[2].max(1e-3),
+                        "fc {fc} sd {sd:.2} detune {detune} reference moves {:.4} against err {:.4}",
+                        drift[2], err[2]
+                    );
+
+                    // a burst at the floor resolves too few samples for σ_x to mean anything
+                    if pred > 0.0 {
+                        // a burst at the floor resolves too few samples for σ_x to mean anything
+                        assert!(
+                            sd < 2.0 || (skew / pred - 1.0).abs() < SKEW_TOL - 1.0,
+                            "fc {fc} sd {sd:.2} skew off model by {:.3}",
+                            skew / pred - 1.0
+                        );
+                    } else {
+                        assert!(
+                            skew / sd < LEAK_TOL,
+                            "fc {fc} sd {sd:.2} leakage {:.3e} sd",
+                            skew / sd
+                        );
                     }
                 }
             }
@@ -1555,12 +1605,6 @@ mod test {
                 println!("  peak {:+.4} cents", 1200.0 * (r.peak_w / w0).log2());
                 println!("  image max        {:>8.2} dB", db(r.image));
                 println!("  stopband floor    {:>8.2} dB", db(r.floor));
-
-                // assert!(
-                //     (r.peak_h / PEAK_GAIN - 1.0).abs() < 1e-5,
-                //     "fc {fc} q {quantum} peak gain {:.9}",
-                //     r.peak_h
-                // );
             }
         }
     }

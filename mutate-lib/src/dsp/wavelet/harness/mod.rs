@@ -209,6 +209,18 @@ pub(super) fn burst(w: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
     }
 }
 
+/// σ² of |h| about the center, in samples.  Σν²|h| / Σ|h|.  Used to size things relative to the
+/// envelope.
+pub(super) fn envelope_var(taps: &[Complex32]) -> f64 {
+    let half = (taps.len() / 2) as isize;
+    let (num, den) = taps.iter().enumerate().fold((0.0, 0.0), |(n, d), (j, h)| {
+        let nu = (j as isize - half) as f64;
+        let a = h.norm() as f64;
+        (n + nu * nu * a, d + a)
+    });
+    num / den
+}
+
 /// Worst |t̂ − t̂_ref| in samples per level bucket, plus the worst imaginary skew in the top
 /// bucket.  Cumulative, so the -60 dB entry contains the -20 dB one.  Reassignment only has
 /// to hold where the pixel is bright enough to see.
