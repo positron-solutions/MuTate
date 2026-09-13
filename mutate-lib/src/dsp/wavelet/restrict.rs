@@ -168,3 +168,113 @@ pub fn derivative_into(grid: Grid, rho: f64, out: &mut [Complex64]) {
         lo = hi;
     }
 }
+
+#[cfg(test)]
+#[cfg(test)]
+mod test {
+    use super::super::{Bin, BinSpec, Shape, Wavelet, WaveletSpec};
+    use super::*;
+
+    const Q: f64 = 3.5;
+    const RHO: f64 = 0.116;
+    const TAIL_DB: f64 = -60.0;
+    const METHODS: [Restriction; 3] = [
+        Restriction::Nearest,
+        Restriction::Quadrature,
+        Restriction::Magnitude,
+    ];
+
+    /// Folded ψ taps under one restriction, `(Re ψ, Im ψ)` from the emitted table.
+    fn psi(restriction: Restriction) -> (Vec<Complex64>, f64) {
+        let wav = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, 3.0))
+            .max_truncation(TAIL_DB)
+            .with_restriction(restriction)
+            .bake();
+        let bin = wav.at_rho(RHO);
+        let taps = bin
+            .taps()
+            .iter()
+            .map(|t| Complex64::new(t[0] as f64, t[1] as f64))
+            .collect();
+
+        (taps, bin.velocity())
+    }
+
+    /// Per tap phase advance against the carrier.  arg(h_{k+1} · conj h_k) = ω₀
+    #[test]
+    fn restriction_holds_omega() {
+        const TOL: f64 = 1e-5;
+
+        let cols: Vec<(Vec<Complex64>, f64)> = METHODS.iter().map(|&m| psi(m)).collect();
+        let (psi, w0) = &cols[2];
+        let k = psi.len();
+
+        println!(
+            "\n=== RESTRICTION OMEGA (Q = {Q}, rho {RHO}, tail {TAIL_DB:.0} dB) w0 {w0:.9} ==="
+        );
+        println!(
+            "  {:>4} {:>14} {:>14} {:>14}",
+            "k", "nearest", "quad", "mag"
+        );
+
+        for j in 0..k - 1 {
+            let w = |c: &(Vec<Complex64>, f64)| (c.0[j + 1] * c.0[j].conj()).arg();
+            println!(
+                "  {j:>4} {:>14.9} {:>14.9} {:>14.9}",
+                w(&cols[0]),
+                w(&cols[1]),
+                w(&cols[2])
+            );
+
+            let dev = (w(&cols[2]) - w0).abs();
+            assert!(dev < TOL, "tap {j} omega off by {dev:.3e}");
+        }
+    }
+
+    /// Tap magnitudes, and agreement on the sign of each component.
+    #[test]
+    fn restriction_holds_sign() {
+        /// relative error allowance between all three methods.
+        const TOL: f64 = 1e-2;
+        /// Below this the tap is truncation ripple and its sign is noise.
+        const FLOOR: f64 = 1e-5;
+
+        let cols: Vec<(Vec<Complex64>, f64)> = METHODS.iter().map(|&m| psi(m)).collect();
+        let psi = &cols[2].0;
+        let peak = psi[0].norm();
+
+        println!("\n=== RESTRICTION MAGNITUDE (Q = {Q}, rho {RHO}, tail {TAIL_DB:.0} dB) ===");
+        println!(
+            "  {:>4} {:>14} {:>14} {:>14}",
+            "k", "nearest", "quad", "mag"
+        );
+
+        for j in 0..psi.len() {
+            let h = |c: &(Vec<Complex64>, f64)| c.0[j];
+            let a = |c: &(Vec<Complex64>, f64)| c.0[j].norm();
+            println!(
+                "  {j:>4} {:>14.9} {:>14.9} {:>14.9}",
+                h(&cols[0]).norm(),
+                h(&cols[1]).norm(),
+                h(&cols[2]).norm()
+            );
+
+            for c in &cols[..2] {
+                let dev = (a(c) - a(&cols[2])).abs() / peak;
+                assert!(dev < TOL, "tap {j} envelope off by {dev:.3e} of peak");
+            }
+
+            if j > 0 {
+                for (i, c) in cols.iter().enumerate() {
+                    let next = c.0[j - 1].norm();
+                    assert!(
+                        next >= a(c),
+                        "method {i} tap {j} rises {:.9} -> {next:.9}",
+                        a(c)
+                    );
+                }
+            }
+        }
+    }
+}
