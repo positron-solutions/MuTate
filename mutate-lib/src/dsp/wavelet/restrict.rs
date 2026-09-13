@@ -170,8 +170,8 @@ pub fn derivative_into(grid: Grid, rho: f64, out: &mut [Complex64]) {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod test {
+    use super::super::harness::{dtft, tone_response, unfold};
     use super::super::{Bin, BinSpec, Shape, Wavelet, WaveletSpec};
     use super::*;
 
@@ -272,6 +272,74 @@ mod test {
                         next >= a(c),
                         "method {i} tap {j} rises {:.9} -> {next:.9}",
                         a(c)
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether each restriction answers the same at every input phase.  A tone is driven through
+    /// the full 2π of carrier phase and each lane is demodulated, so the reported number is the
+    /// worst relative departure from that lane's phase mean.  Zero is phase blind.
+    // Relatively slow.  Did detect, modestly, that the Restriciton::Nearest has the least
+    // phase-stable response, but its still pretty stable (FIRs amirite?)
+    #[ignore]
+    #[test]
+    fn restriction_holds_phase() {
+        const RESOLUTION: f64 = 0.05;
+        const STEP: f64 = 100.0;
+        const SPAN: isize = 3;
+
+        /// Dense enough to resolve a sawtooth in the carrier quantization of `Nearest`.
+        const RHOS: usize = 64;
+        /// Spanning an octave from `RHO`, where the tap count roughly halves.
+        const RHO_HI: f64 = 2.0 * RHO;
+
+        /// Nearest is coarse, so this only catches a method that has stopped working.
+        const SWING_TOL: f64 = 1e-2;
+
+        /// Emitted table and carrier at `rho` under one restriction.
+        fn table(restriction: Restriction, rho: f64) -> (Vec<[f32; 4]>, f64) {
+            let wav = WaveletSpec::default()
+                .with_shape(Shape::from_q(Q, 3.0))
+                .max_truncation(TAIL_DB)
+                .with_restriction(restriction)
+                .bake();
+            let bin = wav.at_rho(rho);
+            (bin.taps().to_vec(), bin.velocity())
+        }
+
+        println!("\n=== RESTRICTION PHASE (Q = {Q}, tail {TAIL_DB:.0} dB) ===");
+        println!(
+            "  {:>8} {:>6} {:>9} {:>11} {:>11} {:>11}",
+            "rho", "taps", "method", "psi", "d", "t"
+        );
+
+        for i in 0..RHOS {
+            // ρ · (ρ_hi / ρ)^(i / n), geometric so tap count steps evenly
+            let rho = RHO * (RHO_HI / RHO).powf(i as f64 / (RHOS - 1) as f64);
+
+            for (name, &m) in ["nearest", "quad", "mag"].iter().zip(&METHODS) {
+                let c = table(m, rho);
+
+                // worst over detuning, which carries no trend of its own
+                let worst = (-SPAN..=SPAN).fold([0.0f64; 3], |acc, k| {
+                    let s = tone_response(&c.0, c.1, k as f64 * STEP, RESOLUTION);
+                    core::array::from_fn(|l| acc[l].max(s[l]))
+                });
+
+                println!(
+                    "  {rho:>8.5} {:>6} {name:>9} {:>11.2e} {:>11.2e} {:>11.2e}",
+                    c.0.len(),
+                    worst[0],
+                    worst[1],
+                    worst[2]
+                );
+
+                for (lane, s) in ["psi", "d", "t"].iter().zip(worst) {
+                    assert!(
+                        s < SWING_TOL,
+                        "{name} rho {rho:.5} lane {lane} swing {s:.3e}"
                     );
                 }
             }

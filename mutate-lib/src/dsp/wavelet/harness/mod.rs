@@ -131,21 +131,72 @@ fn project(w: &[[f32; 4]], x: impl Fn(isize) -> f64, m: isize) -> [Complex64; 3]
     [psi, dee, tee]
 }
 
-/// Worst bias of `r̂` in cents and worst quadrature leak against a real tone detuned
-/// `cents` from `w0`, over eight carrier phases.
-pub(super) fn tone_bias(table: &[[f32; 4]], w0: f64, cents: f64) -> (f64, f64) {
+/// Bias of `r̂` in cents and quadrature leak against a real tone detuned `cents` from `w0`,
+/// each as its mean over the carrier phase and its worst departure from that mean.  Phases
+/// step no coarser than `min_resolution` radians across the full circle.
+pub(super) fn tone_bias(
+    table: &[[f32; 4]],
+    w0: f64,
+    cents: f64,
+    min_resolution: f64,
+) -> ((f64, f64), (f64, f64)) {
     // ω₀ · 2^(c/1200)
     let wd = w0 * (cents / 1200.0).exp2();
-    let tone = |n: isize| (wd * n as f64).cos();
-    let (mut bias, mut quad) = (0.0f64, 0.0f64);
-    for m in 0..8 {
-        let [psi, dee, _] = project(table, tone, m);
-        // D/Ψ
-        let r = dee / psi;
-        bias = bias.max((1200.0 * r.re.log2() - cents).abs());
-        quad = quad.max(r.im.abs());
-    }
-    (bias, quad)
+    let n = (TAU / min_resolution).ceil().max(2.0) as usize;
+
+    let r: Vec<Complex64> = (0..n)
+        .map(|j| {
+            let phase = TAU * j as f64 / n as f64;
+            let tone = |k: isize| (wd * k as f64 + phase).cos();
+            let [psi, dee, _] = project(table, tone, 0);
+            // D/Ψ
+            dee / psi
+        })
+        .collect();
+
+    let spread = |f: &dyn Fn(Complex64) -> f64| {
+        let mean = r.iter().map(|&v| f(v)).sum::<f64>() / n as f64;
+        let worst = r
+            .iter()
+            .map(|&v| (f(v) - mean).abs())
+            .fold(0.0f64, f64::max);
+        (mean, worst)
+    };
+
+    (spread(&|v| 1200.0 * v.re.log2() - cents), spread(&|v| v.im))
+}
+
+/// Departure of each lane from its phase mean, relative, after removing the carrier.
+/// Zero where the filter answers identically at every input phase.  Lanes are Ψ, D, T.
+pub(super) fn tone_response(
+    table: &[[f32; 4]],
+    w0: f64,
+    cents: f64,
+    min_resolution: f64,
+) -> [f64; 3] {
+    // ω₀ · 2^(c/1200)
+    let wd = w0 * (cents / 1200.0).exp2();
+    let n = (TAU / min_resolution).ceil().max(2.0) as usize;
+
+    // Ψ(θ) e^{−iθ}, D(θ) e^{−iθ}, T(θ) e^{−iθ}
+    let out: Vec<[Complex64; 3]> = (0..n)
+        .map(|j| {
+            let theta = TAU * j as f64 / n as f64;
+            let tone = |k: isize| (wd * k as f64 + theta).cos();
+            let carrier = Complex64::from_polar(1.0, -theta);
+            project(table, tone, 0).map(|v| v * carrier)
+        })
+        .collect();
+
+    // |Ψ̄|, the scale every lane is read against
+    let scale = (out.iter().map(|v| v[0]).sum::<Complex64>() / n as f64).norm();
+
+    core::array::from_fn(|lane| {
+        let mean = out.iter().map(|v| v[lane]).sum::<Complex64>() / n as f64;
+        out.iter()
+            .map(|v| (v[lane] - mean).norm() / scale)
+            .fold(0.0f64, f64::max)
+    })
 }
 
 /// Gaussian tone burst, carrier `w`, envelope sd in samples, centered at `p`.

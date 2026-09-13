@@ -587,8 +587,8 @@ mod test {
 
     use harness::{
         bandwidth, bisect, burst, characterize, conv, dc_leak, dtft, first_null, l1, level_moment,
-        moment, pairing_residual, print_wave, skirts, t_hat_profile, tone_bias, unfold, widen,
-        Point, Skirt,
+        moment, pairing_residual, print_wave, skirts, t_hat_profile, tone_bias, tone_response,
+        unfold, widen, Point, Skirt,
     };
 
     const BINS: usize = 1024;
@@ -800,23 +800,20 @@ mod test {
         }
     }
 
-    /// Pitch reassignment bias and quadrature leak against steady tones.  Scans across the range
-    /// where the wavelet's ideal response is in `[-GATE_DB, GATE_DB)`.  The predicted bias is
-    /// compared to the observed.  Too large of bias in the main lobe will trip the asserts.
+    /// Whether the filter answers the same at every input phase.  Each row drives a steady tone
+    /// through the full 2π of carrier phase and demodulates each lane, so the reported number is
+    /// the worst relative departure from that lane's phase mean.  Zero is phase blind.
     #[test]
-    fn reassignment_is_unbiased() {
+    fn response_is_phase_independent() {
         const Q: f64 = 8.5;
         const QUANTUM: usize = 4;
         const TAIL_DB: f64 = -60.0;
 
-        /// Cents readings stop meaning anything once the skirt is down in truncation ripple.
-        /// The denominator is no longer the envelope, so the ratio is measuring the stopband.
         const GATE_DB: f64 = -50.0;
+        const RESOLUTION: f64 = 0.05;
 
-        /// `pred` is the bias the pairing residual alone implies.  The rest is the negative
-        /// frequency image, flat in level and so stated absolutely.
-        const MIRROR_C: f64 = 0.25;
-        const SLOP: f64 = 10.0; // 🫠
+        /// Well above anything the image alone produces in band.
+        const SWING_TOL: f64 = 1e-2;
 
         const STEP: f64 = 100.0;
         const SPAN: isize = 12;
@@ -827,7 +824,77 @@ mod test {
             .max_truncation(TAIL_DB)
             .bake();
 
-        // XXX Use omegas to make this easier to read.
+        println!("\n=== RESPONSE PHASE DEPENDENCE ===");
+        println!("  detune      |H|    img ψ         psi           d           t");
+
+        for (fc, sr) in [
+            (2_000.0f64, RATE),
+            (200.0, 3000.0),
+            (250.0, 3000.0),
+            (12_000.0, RATE),
+        ] {
+            let bin = wav.at_rho(fc / sr);
+            let taps = bin.taps();
+            let psi = unfold(&taps, 0);
+
+            let (n, w0) = (psi.len(), bin.velocity());
+            println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
+
+            for k in -SPAN..=SPAN {
+                let cents = k as f64 * STEP;
+                let wd = w0 * (cents / 1200.0).exp2();
+                let h = dtft(&psi, wd).norm();
+                let h_db = 20.0 * (h / PEAK_GAIN).log10();
+                if h_db < GATE_DB {
+                    continue;
+                }
+
+                let [sp, sd, st] = tone_response(&taps, w0, cents, RESOLUTION);
+                let img = dtft(&psi, -wd).norm();
+
+                println!(
+                    "  {cents:+6.0}c {h_db:>7.1} {:>8.1} {sp:>11.2e} {sd:>11.2e} {st:>11.2e}",
+                    20.0 * (img / PEAK_GAIN).log10(),
+                );
+
+                for (lane, s) in ["psi", "d", "t"].iter().zip([sp, sd, st]) {
+                    assert!(
+                        s < SWING_TOL,
+                        "fc {fc} detune {cents} lane {lane} swing {s:.3e}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Pitch reassignment bias against steady tones.  Scans across the range where the
+    /// wavelet's ideal response is in `[-GATE_DB, GATE_DB)`.  The predicted bias is compared
+    /// to the observed.  Phase dependence lives in `reassignment_is_phase_independent`.
+    #[test]
+    fn reassignment_is_unbiased() {
+        const Q: f64 = 8.5;
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -60.0;
+
+        /// Cents readings stop meaning anything once the skirt is down in truncation ripple.
+        /// The denominator is no longer the envelope, so the ratio is measuring the stopband.
+        const GATE_DB: f64 = -50.0;
+
+        const RESIDUAL_C: f64 = 30.0; // XXX after d fixup
+        const RESOLUTION: f64 = 0.05;
+
+        const STEP: f64 = 100.0;
+        const SPAN: isize = 12;
+
+        let wav = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, 3.0))
+            .max_load_quantum(QUANTUM)
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        println!("\n=== REASSIGN ===");
+        println!("  detune      |H|       R     pred      bias  unexplained");
+
         for (fc, sr) in [
             (2_000.0f64, RATE),
             (200.0, 3000.0),
@@ -839,7 +906,7 @@ mod test {
             let (psi, d) = (unfold(&taps, 0), unfold(&taps, 2));
 
             let (n, w0) = (psi.len(), bin.velocity());
-            println!("\n=== REASSIGN fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6} ===");
+            println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
 
             for k in -SPAN..=SPAN {
                 let cents = k as f64 * STEP;
@@ -852,27 +919,99 @@ mod test {
                     continue;
                 }
 
-                let (bias, quad) = tone_bias(&taps, w0, cents);
+                let ((bias, _), _) = tone_bias(&taps, w0, cents, RESOLUTION);
                 let res = pairing_residual(&psi, &d, w0, wd);
-                // |H_ψ(−ω)|, |H_d(−ω)|
-                let (img_psi, img_d) = (dtft(&psi, -wd).norm(), dtft(&d, -wd).norm());
                 // (1200 / ln 2) · R / (r · |H|)
                 let pred = 1200.0 / LN_2 * res / (ratio * h);
-                let budget = SLOP * pred + MIRROR_C;
+                // bias + pred, the part the pairing residual does not explain
+                let unexplained = (bias + pred).abs();
 
                 println!(
-                    "  {cents:+6.0}c  |H| {h_db:>6.1} dB  R {:>6.1} dB  img ψ {:>6.1} dB  img d {:>6.1} dB  \
-                    pred {pred:>8.3}c  bias {bias:>8.3}c  quad {quad:.1e}",
-                    20.0 * (res / PEAK_GAIN).log10(),
-                    20.0 * (img_psi / PEAK_GAIN).log10(),
-                    20.0 * (img_d / PEAK_GAIN).log10(),
-                );
+                "  {cents:+6.0}c {h_db:>7.1} {:>7.1} {pred:>8.3}c {bias:>9.3}c {unexplained:>9.4}c",
+                20.0 * (res / PEAK_GAIN).log10(),
+            );
 
-                // assert!(
-                //     bias < budget,
-                //     "fc {fc} detune {cents} bias {bias:.3}c over {budget:.3}c"
-                // );
-                // assert!(quad < 5e-3, "fc {fc} detune {cents} quad {quad:.3e}");
+                assert!(
+                    unexplained < RESIDUAL_C + 0.02 * pred,
+                    "fc {fc} detune {cents} unexplained {unexplained:.4}c"
+                );
+            }
+        }
+    }
+
+    /// Whether the reported pitch and quadrature move with the carrier phase.  Each row sweeps
+    /// the full 2π of input phase at `RESOLUTION` and reports the departure from the phase mean,
+    /// so a filter that answers the same for every phase reads zero across the board.  The swing
+    /// is the negative frequency image beating against the signal, so the budget scales with
+    /// image over signal rather than being flat.
+    #[test]
+    fn reassignment_is_phase_independent() {
+        const Q: f64 = 8.5;
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -60.0;
+
+        const GATE_DB: f64 = -50.0;
+        const RESOLUTION: f64 = 0.05;
+
+        /// Swing the image alone implies, within this factor.
+        const SWING_C: f64 = 3.0;
+
+        const STEP: f64 = 100.0;
+        const SPAN: isize = 12;
+
+        let wav = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, 3.0))
+            .max_load_quantum(QUANTUM)
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        println!("\n=== PHASE DEPENDENCE ===");
+        println!("  detune      |H|    img ψ    img d     pred     swing   quad swing");
+
+        for (fc, sr) in [
+            (2_000.0f64, RATE),
+            (200.0, 3000.0),
+            (250.0, 3000.0),
+            (12_000.0, RATE),
+        ] {
+            let bin = wav.at_rho(fc / sr);
+            let taps = bin.taps();
+            let (psi, d) = (unfold(&taps, 0), unfold(&taps, 2));
+
+            let (n, w0) = (psi.len(), bin.velocity());
+            println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
+
+            for k in -SPAN..=SPAN {
+                let cents = k as f64 * STEP;
+                let wd = w0 * (cents / 1200.0).exp2();
+                let h = dtft(&psi, wd).norm();
+                let h_db = 20.0 * (h / PEAK_GAIN).log10();
+                if h_db < GATE_DB {
+                    continue;
+                }
+
+                let ((_, swing), (quad, quad_swing)) = tone_bias(&taps, w0, cents, RESOLUTION);
+
+                // |H_ψ(−ω)|, |H_d(−ω)|
+                let (img_psi, img_d) = (dtft(&psi, -wd).norm(), dtft(&d, -wd).norm());
+                // (1200 / ln 2) · | |H_d(−ω)| / |H_d| − |H_ψ(−ω)| / |H_ψ| |
+                let pred = 1200.0 / LN_2 * (img_d / dtft(&d, wd).norm() - img_psi / h).abs();
+
+                println!(
+                "  {cents:+6.0}c {h_db:>7.1} {:>8.1} {:>8.1} {pred:>8.3}c {swing:>8.3}c {quad_swing:>10.1e}",
+                20.0 * (img_psi / PEAK_GAIN).log10(),
+                20.0 * (img_d / PEAK_GAIN).log10(),
+            );
+
+                assert!(
+                    swing < SWING_C * pred + 1e-3,
+                    "fc {fc} detune {cents} swing {swing:.4}c over {:.4}c",
+                    SWING_C * pred + 1e-3
+                );
+                assert!(
+                    quad.abs() < 1e-12,
+                    "fc {fc} detune {cents} quad mean {quad:.3e}"
+                );
             }
         }
     }
