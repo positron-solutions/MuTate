@@ -1444,15 +1444,15 @@ mod test {
     /// a row is a filter and not a sample rate.
     #[test]
     fn print_response() {
-        const Q: f64 = 8.5;
+        const Q: f64 = 16.0; // XXX This can't go much higher without fixing something about this test.
         const QUANTUM: usize = 4;
         const TAIL_DB: f64 = -40.0;
 
-        const ROWS: usize = 384;
-        const COLS: usize = 140;
-        const ANTI_ALIAS: usize = 2;
+        const ROWS: usize = 200;
+        const COLS: usize = 200;
+        const ANTI_ALIAS: usize = 4;
         const FLOOR_DB: f64 = -100.0;
-        const LOBES: f64 = 64.0;
+        const LOBES: f64 = 96.0;
 
         // Periods per tap, sweeping the downsample ladder from 20Hz at 3kHz to 15kHz at 48kHz.
         // Nyquist is 0.5.

@@ -79,21 +79,36 @@ impl Shape {
     ///     erfc(t ω_p / P) = μ
     ///     u = t ω_p / 2π
     pub fn truncation_u(&self, tail_db: f64) -> f64 {
+        // NEXT we can absolutely switch over to a pre-baked empirical estimate.  The analytic
+        // estimates are just good enough to get off the ground.  Some combination of using the
+        // envelope estimation for its math and our high-quality generators can create something
+        // accurate to 1% or so pretty handily.  Given how load quantum must work, it's basically
+        // meaningless to chase further tail precision except that the noise floor estimates will
+        // tighten up.  The actual noise floor will not get any better for a given `tail_db`, but
+        // we will estimate it better.
+
         let Shape { beta, gamma } = *self;
         let p = 2.0 * beta + 1.0;
         let l = tail_db.abs() / 10.0 * LN_10;
+
+        // Gaussian bulk about ω_p
+        let u_gauss = erfc_inv_exp(l) * self.p() / TAU;
 
         // algebraic tails from the branch point at ω = 0
         let log_c = LN_2 + gamma.ln() + (p / gamma) * LN_2 + 2.0 * lgamma(beta + 1.0)
             - TAU.ln()
             - p.ln()
             - lgamma(p / gamma);
-        let u_alg = ((log_c + l) / p).exp() * self.peak() / TAU;
+        let t_alg = ((log_c + l) / p).exp();
 
-        // Gaussian bulk about ω_p
-        let u_gauss = erfc_inv_exp(l) * self.p() / TAU;
+        // Watson ratio Γ(β+1+γ) / Γ(β+1) t^γ = 1
+        let t_watson = ((lgamma(beta + 1.0 + gamma) - lgamma(beta + 1.0)) / gamma).exp();
 
-        u_alg.max(u_gauss)
+        if t_alg > t_watson {
+            u_gauss.max(t_alg * self.peak() / TAU)
+        } else {
+            u_gauss
+        }
     }
 }
 
