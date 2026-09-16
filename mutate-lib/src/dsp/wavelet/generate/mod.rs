@@ -348,7 +348,8 @@ mod test {
     #[cfg(feature = "validate")]
     #[test]
     fn omega_check() {
-        const TAPS: usize = 128;
+        const TAPS: usize = 256;
+        const DECIMATE: usize = 8;
 
         let shape = Shape::from_q(3.5, 3.0);
         let beta = shape.beta;
@@ -360,11 +361,11 @@ mod test {
         let (psi, _, _) = ifft::morse_half_taps(shape, settings);
 
         let std_jet = quadjet::QuadJet::standard(shape);
-        let res = settings.resolution as f64;
+        let res = settings.resolution as f64 / DECIMATE as f64;
 
         // Both methods are read on the ifft grid so the two omegas share an abscissa.
         let taps: Vec<(Complex64, Complex64)> = (0..TAPS)
-            .map(|t| (psi[t], std_jet.tap_at(t as f64 / res).psi))
+            .map(|t| (psi[t * DECIMATE], std_jet.tap_at(t as f64 / res).psi))
             .collect();
 
         println!("\n=== omega, ifft versus standard jet ===");
