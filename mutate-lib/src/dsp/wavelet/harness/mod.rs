@@ -76,11 +76,6 @@ pub(super) fn moment(taps: &[Complex32], p: i32) -> Complex64 {
         .sum()
 }
 
-/// |H(ω)| and |H(−ω)|, the passband and its image.
-fn pair(taps: &[Complex32], w: f64) -> (f64, f64) {
-    (dtft(taps, w).norm(), dtft(taps, -w).norm())
-}
-
 /// Max of `f` over [lo, hi] at 16 samples per DTFT lobe of `len` taps.
 fn sweep(lo: f64, hi: f64, len: usize, f: impl Fn(f64) -> f64) -> f64 {
     let n = ((hi - lo) * (16 * len) as f64 / TAU).ceil().max(1.0) as usize;
@@ -583,14 +578,6 @@ fn first_pair(p: &[Sample], hit: impl Fn(Sample, Sample) -> bool) -> Option<Brac
     p.windows(2).map(|w| (w[0], w[1])).find(|&(a, b)| hit(a, b))
 }
 
-/// First triple satisfying `hit`, reduced to its outer pair.
-fn first_triple(p: &[Sample], hit: impl Fn(Sample, Sample, Sample) -> bool) -> Option<Bracket> {
-    p.windows(3)
-        .map(|w| (w[0], w[1], w[2]))
-        .find(|&(a, b, c)| hit(a, b, c))
-        .map(|(a, _, c)| (a, c))
-}
-
 /// Root of `resp` in a sign-changing bracket.
 pub(super) fn bisect(resp: impl Fn(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
     let fa = resp(a) < 0.0;
@@ -654,59 +641,6 @@ fn tighten(
     }
 }
 
-/// ω of the highest `db` in the basin around `from`, within [lo, hi].
-fn climb(taps: &[Complex32], from: f64, lo: f64, hi: f64, h: f64, density: f64) -> f64 {
-    let db = |w: f64| 20.0 * dtft(taps, w).norm().log10();
-    let cap = 8.0 / density;
-    let scan = |a: f64, b: f64| {
-        let n = ((b - a).abs() * density).ceil().max(2.0) as usize;
-        let at = |j: usize| (a + (b - a) * j as f64 / n as f64).clamp(lo, hi);
-        let p: Vec<Sample> = (0..=n).map(|j| (at(j), db(at(j)))).collect();
-        let (x, y) = first_triple(&p, |a, b, c| a.1 <= b.1 && b.1 > c.1).unwrap_or((p[0], p[n]));
-        refine(&db, x.0.min(y.0), x.0.max(y.0), 1.0).w
-    };
-    let crest = |p: &[Sample]| first_triple(p, |a, b, c| a.1 <= b.1 && b.1 > c.1);
-    let concave_vertex = |l: &Local| (l.k < 0.0).then(|| l.vertex());
-
-    let old = Local::at(&db, from, h);
-    let dir = old.s.signum();
-    let stop = if dir > 0.0 { hi } else { lo };
-    let clamp = |w: f64| if dir * (w - stop) > 0.0 { stop } else { w };
-
-    if let Some(t) = crest(&order(old.points().to_vec(), dir)) {
-        return tighten(&db, t, old, h, density, concave_vertex, crest, scan);
-    }
-
-    let mut old = old;
-    let mut jump = 2.0 * h;
-    // HACK: step budget so a non-advancing walk bails instead of hanging.  Remove.
-    //    for _ in 0..64 {
-    for _ in 0..1024 * 16 {
-        jump = concave_vertex(&old)
-            .map_or(2.0 * jump, |v| (v - old.w).abs())
-            .clamp(2.0 * h, cap);
-        let land = clamp(old.w + dir * jump);
-        let new = Local::at(&db, land, h);
-
-        if let Some(t) = crest(&order([old.points(), new.points()].concat(), dir)) {
-            let aim = if new.k < 0.0 { new } else { old };
-            return tighten(&db, t, aim, h, density, concave_vertex, crest, scan);
-        }
-
-        let (a, b) = (old.w.min(land), old.w.max(land));
-        let v = new.vertex();
-        if new.k > 0.0 && v > a && v < b {
-            return scan(old.w - dir * h, land);
-        }
-
-        if land == stop {
-            return stop;
-        }
-        old = new;
-    }
-    old.w
-}
-
 /// Quadratic model of H on [w − h, w + h], slope and curvature along +ω.
 #[derive(Clone, Copy)]
 struct Local {
@@ -738,12 +672,6 @@ impl Local {
             (self.w, self.g[1]),
             (self.w + self.h, self.g[2]),
         ]
-    }
-
-    /// Vertex of the model.
-    fn vertex(&self) -> f64 {
-        // w − s/k
-        self.w - self.s / self.k
     }
 
     /// Nearest root of the model on the `dir` side of center, if any.
