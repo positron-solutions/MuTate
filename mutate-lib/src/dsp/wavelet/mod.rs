@@ -320,6 +320,7 @@
 //   stopband floor     -110.96 dB
 
 pub(self) mod generate;
+pub(self) mod inspect;
 pub(self) mod restrict;
 pub(self) mod spec;
 pub mod whatsleft;
@@ -332,6 +333,7 @@ use core::f64::consts::{LN_2, PI, TAU};
 use num_complex::{Complex32, Complex64};
 
 use generate::hermite;
+use inspect::{Inspect, Sample, OVERSAMPLE};
 pub use spec::{BinSpec, Shape, WaveletSpec};
 
 pub mod defaults {
@@ -391,14 +393,6 @@ impl Wavelet {
 
     pub fn shape(&self) -> Shape {
         self.shape
-    }
-
-    fn at(&self, u: f64) -> Complex64 {
-        hermite::eval(&self.psi, &self.d, u, self.du)
-    }
-
-    fn mass(&self, u_beg: f64, u_end: f64) -> Complex64 {
-        hermite::integrate(&self.psi, &self.d, u_beg, u_end, self.du)
     }
 
     pub fn restriction(&self) -> restrict::Restriction {
@@ -499,11 +493,12 @@ impl<'w> Bin<'w> {
         )
     }
 
+    /// Options used to create this bin.
     pub fn spec(&self) -> BinSpec {
         self.spec
     }
 
-    /// Radians per sample.  `ω₀ = 2π·ρ`
+    /// Radians per tap.  `ω₀ = 2π·ρ`
     pub fn velocity(&self) -> f64 {
         TAU * self.rho
     }
@@ -513,12 +508,46 @@ impl<'w> Bin<'w> {
         self.rho
     }
 
+    /// Number of folded taps, including a center tap.  In [0, K].
     pub fn folded_taps(&self) -> usize {
         self.k
     }
 
+    /// Number of real taps after unfolded, in [0, 2K - 1].  Center tap is still just one tap.
     pub fn unfolded_taps(&self) -> usize {
         2 * self.k - 1
+    }
+
+    /// ψ and d for this bin, normalized at the measured crest of |H|.
+    ///
+    ///     H(ω_peak) = PEAK_GAIN
+    ///     H_d(ω) ≈ (ω/ω₀)·H(ω)
+    pub fn write(&self, bake: &mut Bake) {
+        let (wav, rho, w0) = (self.wavelet, self.rho, self.velocity());
+        let Bake { weights: w, probe } = bake;
+
+        w.resize(self.k);
+        wav.restriction.psi_into(wav.grid(), rho, &mut w.psi);
+
+        // ω_peak and H(ω_peak)
+        let (peak, gain) = Inspect::new(w.psi(), probe, OVERSAMPLE)
+            .peak(w0, 0.0, PI)
+            .unwrap_or((w0, w.psi().dtft(w0)));
+
+        let scale = PEAK_GAIN / gain;
+        for p in w.psi.iter_mut() {
+            *p *= scale;
+        }
+
+        // XXX This needs to not presume any favored omega
+        restrict::derivative_into(&w.psi, peak / TAU, &mut w.d);
+    }
+
+    /// Upstream owes an `out` at least `folded_taps()` long.
+    pub fn taps_into(&self, out: &mut [[f32; 4]]) -> usize {
+        let mut bake = Bake::default();
+        self.write(&mut bake);
+        bake.weights.pack_into(out)
     }
 
     pub fn taps(&self) -> Vec<[f32; 4]> {
@@ -526,51 +555,209 @@ impl<'w> Bin<'w> {
         self.taps_into(&mut out);
         out
     }
+}
 
-    /// Writes `folded_taps()` weights and returns that count.  Each weight is
-    /// `[Re ψ, Im ψ, Re d, Im d]` and the center is `[Re ψ₀, 0, Re d₀, 0]`.
-    ///
-    ///     H(ω) = ψ₀ + 2 Re Σ_{k≥1} ψ_k e^{-iωk}
-    ///     H(ω₀) = PEAK_GAIN
-    ///     H_d(ω) ≈ (ω/ω₀)·H(ω)
-    ///
-    /// A unit sine at the center frequency yields a unit envelope.
-    ///
-    /// Upstream owes an `out` at least that long.
-    pub fn taps_into(&self, out: &mut [[f32; 4]]) -> usize {
-        let (w, rho, k) = (self.wavelet, self.rho, self.k);
-        let grid = w.grid();
+/// Folded ψ and d for one bin.
+#[derive(Default)]
+pub struct Weights {
+    psi: Vec<Complex64>,
+    d: Vec<Complex64>,
+}
 
-        let mut psi = vec![Complex64::default(); k];
-        let mut d = vec![Complex64::default(); k];
+impl Weights {
+    pub(super) fn psi(&self) -> Fold<'_> {
+        Fold::new(&self.psi)
+    }
 
-        w.restriction.psi_into(grid, rho, &mut psi);
+    pub(super) fn d(&self) -> Fold<'_> {
+        Fold::new(&self.d)
+    }
 
-        // H(ω₀) = ψ₀ + 2 Σ_k Re(ψ_k e^{-2πi u_k}),  u_k = k ρ
-        let gain = psi[0].re
-            + 2.0
-                * psi[1..]
-                    .iter()
-                    .enumerate()
-                    .map(|(j, p)| {
-                        let (s, c) = (TAU * (j + 1) as f64 * rho).sin_cos();
-                        p.re * c + p.im * s
-                    })
-                    .sum::<f64>();
+    fn resize(&mut self, k: usize) {
+        self.psi.clear();
+        self.d.clear();
+        self.psi.resize(k, Complex64::default());
+        self.d.resize(k, Complex64::default());
+    }
 
-        let scale = PEAK_GAIN / gain;
-        for p in psi.iter_mut() {
-            *p *= scale;
-        }
-
-        restrict::derivative_into(&psi, rho, &mut d);
-
-        out[0] = [psi[0].re, 0.0, d[0].re, 0.0].map(|v| v as f32);
-        for (o, (p, q)) in out[1..k].iter_mut().zip(psi[1..].iter().zip(&d[1..])) {
+    /// float4(Re ψ, Im ψ, Re d, Im d), index 0 real in both lanes.
+    pub fn pack_into(&self, out: &mut [[f32; 4]]) -> usize {
+        let k = self.psi.len();
+        out[0] = [self.psi[0].re, 0.0, self.d[0].re, 0.0].map(|v| v as f32);
+        for (o, (p, q)) in out[1..k]
+            .iter_mut()
+            .zip(self.psi[1..].iter().zip(&self.d[1..]))
+        {
             *o = [p.re, p.im, q.re, q.im].map(|v| v as f32);
         }
-
         k
+    }
+
+    /// Lanes recovered from a packed table, carrying its f32 rounding.
+    pub fn unpack(table: &[[f32; 4]]) -> Self {
+        let lane = |c: usize| {
+            table
+                .iter()
+                .map(|w| Complex64::new(w[c] as f64, w[c + 1] as f64))
+                .collect()
+        };
+        Weights {
+            psi: lane(0),
+            d: lane(2),
+        }
+    }
+
+    /// Ψ, D, T about center `m`, accumulated as the shader does.
+    pub(super) fn project(&self, x: impl Fn(isize) -> f64, m: isize) -> [Complex64; 3] {
+        let x0 = x(m);
+        let mut psi = Complex64::new(self.psi[0].re * x0, 0.0);
+        let mut dee = Complex64::new(self.d[0].re * x0, 0.0);
+        let mut tee = Complex64::default();
+
+        for (j, (p, q)) in self.psi[1..].iter().zip(&self.d[1..]).enumerate() {
+            let k = j as isize + 1;
+            let (hi, lo) = (x(m + k), x(m - k));
+            let (sum, dif) = (hi + lo, hi - lo);
+
+            psi += Complex64::new(p.re * sum, -p.im * dif);
+            dee += Complex64::new(q.re * sum, -q.im * dif);
+            tee += k as f64 * Complex64::new(p.re * dif, -p.im * sum);
+        }
+        [psi, dee, tee]
+    }
+}
+
+/// Reusable scratch for filling bins.  Separate fields so the probe stays borrowable while the
+/// weights are being read.
+#[derive(Default)]
+pub struct Bake {
+    weights: Weights,
+    probe: Vec<Sample>,
+}
+
+impl Bake {
+    pub fn weights(&self) -> &Weights {
+        &self.weights
+    }
+}
+
+/// A borrowed view of a single channel of [`Weights`].
+///
+/// ψ over [0, K), the mirror ψ₋ₖ = conj ψₖ implied.  Entry 0 is real.
+// Making the channel first class could prevent some kinds of mishandling
+#[derive(Clone, Copy)]
+pub(super) struct Fold<'a>(&'a [Complex64]);
+
+impl<'a> Fold<'a> {
+    pub(super) fn new(psi: &'a [Complex64]) -> Self {
+        Fold(psi)
+    }
+
+    /// 2K − 1
+    pub(super) fn taps(&self) -> usize {
+        2 * self.0.len() - 1
+    }
+
+    /// ψ₀ + 2 Σ_{k≥1} Re(ψ_k e^{−iωk})
+    pub(super) fn dtft(&self, w: f64) -> f64 {
+        // k = LANES·b + i + 1
+        const LANES: usize = 16;
+
+        // e^{−iω(i+1)}
+        let mut lane = [Complex64::default(); LANES];
+        for i in 0..LANES {
+            lane[i] = Complex64::from_polar(1.0, -w * (i + 1) as f64);
+        }
+        // e^{−iω·LANES}
+        let block = lane[LANES - 1];
+
+        let (mut a_re, mut a_im) = ([0.0; LANES], [0.0; LANES]);
+        let (mut b_re, mut b_im) = ([0.0; LANES], [0.0; LANES]);
+        let mut phi = Complex64::new(1.0, 0.0);
+
+        let (blocks, tail) = self.0[1..].as_chunks::<LANES>();
+
+        for c in blocks {
+            for i in 0..LANES {
+                a_re[i] += phi.re * c[i].re;
+                a_im[i] += phi.re * c[i].im;
+                b_re[i] += phi.im * c[i].re;
+                b_im[i] += phi.im * c[i].im;
+            }
+            phi *= block;
+            // Newton step toward |phi| = 1
+            phi *= 0.5 * (3.0 - phi.norm_sqr());
+        }
+
+        for (i, h) in tail.iter().enumerate() {
+            a_re[i] += phi.re * h.re;
+            a_im[i] += phi.re * h.im;
+            b_re[i] += phi.im * h.re;
+            b_im[i] += phi.im * h.im;
+        }
+
+        // cos(ωk) = pc − qs, sin(ωk) = −(ps + qc)
+        let mut sum = 0.0;
+        for i in 0..LANES {
+            let (c, s) = (lane[i].re, lane[i].im);
+            sum += a_re[i] * c - b_re[i] * s - a_im[i] * s - b_im[i] * c;
+        }
+
+        self.0[0].re + 2.0 * sum
+    }
+
+    /// M_p = Σ_ν ν^p ψ_ν
+    pub(super) fn moment(&self, p: i32) -> Complex64 {
+        let head = match p {
+            0 => self.0[0],
+            _ => Complex64::default(),
+        };
+        self.0[1..].iter().enumerate().fold(head, |m, (j, h)| {
+            let w = 2.0 * ((j + 1) as f64).powi(p);
+            m + w * match p % 2 == 0 {
+                true => Complex64::new(h.re, 0.0),
+                false => Complex64::new(0.0, h.im),
+            }
+        })
+    }
+
+    /// Σ_ν |ψ_ν|
+    pub(super) fn l1(&self) -> f64 {
+        self.0[0].norm() + 2.0 * self.0[1..].iter().map(|h| h.norm()).sum::<f64>()
+    }
+
+    /// Variance of the magnitude envelope.
+    ///
+    /// Σ ν²|ψ_ν| / Σ |ψ_ν|
+    pub(super) fn envelope_var(&self) -> f64 {
+        let num: f64 = self.0[1..]
+            .iter()
+            .enumerate()
+            .map(|(j, h)| {
+                let k = (j + 1) as f64;
+                2.0 * k * k * h.norm()
+            })
+            .sum();
+        num / self.l1()
+    }
+
+    /// Envelope under a fixed carrier.
+    ///
+    /// a_k = Re(ψ_k e^{−2πikρ})
+    pub(super) fn demodulate(&self, rho: f64) -> impl Iterator<Item = f64> + '_ {
+        self.0.iter().enumerate().map(move |(j, p)| {
+            let (s, c) = (TAU * j as f64 * rho).sin_cos();
+            p.re * c + p.im * s
+        })
+    }
+
+    /// ψ over [−K, K), for display.
+    pub(super) fn mirrored(&self) -> impl Iterator<Item = Complex64> + '_ {
+        let tail = self.0[1..].iter().copied();
+        tail.clone()
+            .rev()
+            .map(|h| h.conj())
+            .chain(self.0.iter().copied())
     }
 }
 

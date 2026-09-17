@@ -15,6 +15,8 @@ use core::f64::consts::{LN_2, PI, TAU};
 
 use num_complex::{Complex32, Complex64};
 
+use super::inspect::*;
+
 /// Folded weights back to centered taps.  Lane `c` selects ψ (0) or d (2).
 pub(super) fn unfold(w: &[[f32; 4]], c: usize) -> Vec<Complex32> {
     let k = w.len();
