@@ -313,6 +313,7 @@ pub(super) struct Point {
     pub h: f64,
 }
 
+// XXX super bad name
 /// Extremum of `f` on [a, b], a maximum for `sign` 1 and a minimum for −1.
 fn refine(f: impl Fn(f64) -> f64, mut a: f64, mut b: f64, sign: f64) -> Point {
     for _ in 0..80 {
@@ -357,6 +358,8 @@ const STENCIL_ARM: f64 = 4.0;
 ///
 ///     density = OVERSAMPLE·n / 2π,  h = STENCIL_ARM / density
 fn scale(n: usize) -> (f64, f64) {
+    // HACK: capped so long filters stop driving the walkers quadratic.  Remove.
+    // let density = OVERSAMPLE * n.min(32) as f64 / TAU;
     let density = OVERSAMPLE * n as f64 / TAU;
     (STENCIL_ARM / density, density)
 }
@@ -501,7 +504,8 @@ fn level_crossing(
 
     let mut old = old;
     let mut jump = 2.0 * h;
-    loop {
+    // HACK: step budget so a non-advancing walk bails instead of hanging.  Remove.
+    for _ in 0..1024 * 16 {
         jump = toward_dir(&old)
             .map_or(2.0 * jump, |t| (t - old.w).abs())
             .clamp(2.0 * h, cap);
@@ -535,6 +539,7 @@ fn level_crossing(
         }
         old = new;
     }
+    None
 }
 
 /// First zero crossing of the real response H walking from `from` toward `stop`.
@@ -671,7 +676,9 @@ fn climb(taps: &[Complex32], from: f64, lo: f64, hi: f64, h: f64, density: f64) 
 
     let mut old = old;
     let mut jump = 2.0 * h;
-    loop {
+    // HACK: step budget so a non-advancing walk bails instead of hanging.  Remove.
+    //    for _ in 0..64 {
+    for _ in 0..1024 * 16 {
         jump = concave_vertex(&old)
             .map_or(2.0 * jump, |v| (v - old.w).abs())
             .clamp(2.0 * h, cap);
@@ -694,6 +701,7 @@ fn climb(taps: &[Complex32], from: f64, lo: f64, hi: f64, h: f64, density: f64) 
         }
         old = new;
     }
+    old.w
 }
 
 /// Quadratic model of H on [w − h, w + h], slope and curvature along +ω.
@@ -761,7 +769,7 @@ pub(super) struct Response {
 /// `w0` only brackets the edges.
 pub(super) fn characterize(taps: &[Complex32], w0: f64) -> Response {
     // XXX too fine btw
-    let sweep = (16 * taps.len()).next_power_of_two();
+    let sweep = 32; // (16 * taps.len()).next_power_of_two();
     let omega = |k: usize| PI * k as f64 / sweep as f64;
     let gain = |w: f64| dtft(taps, w).norm();
 
