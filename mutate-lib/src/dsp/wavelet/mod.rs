@@ -1713,4 +1713,50 @@ mod test {
             }
         }
     }
+
+    #[test]
+    fn print_chirp_transform() {
+        // Make a little plot similar to the one show in this paper:
+        // https://jmlilly.net/papers/lilly09-itsp-cp.pdf
+        //
+        // The paper uses a beta and gamma we can't quite draw (betas this low are not generally
+        // supported yet), but our outputs are somewhat similar at relevant beta.
+
+        const TAIL_DB: f64 = -40.0;
+        const SPAN: isize = 400;
+        const SD: f64 = 90.0;
+        const ROWS: usize = 40;
+
+        // ρ of the top and bottom rows, the ridge reaching ρ_top at the window edge
+        const RHO_TOP: f64 = 0.10;
+        const RHO_BOT: f64 = 0.002;
+
+        let wav = WaveletSpec::default()
+            .with_shape(Shape {
+                beta: 3.0,
+                gamma: 3.0,
+            })
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        // ρ_top (ρ_bot/ρ_top)^(r/(ROWS−1))
+        let bins: Vec<_> = (0..ROWS)
+            .map(|r| {
+                let f = r as f64 / (ROWS - 1) as f64;
+                wav.at_rho(RHO_TOP * (RHO_BOT / RHO_TOP).powf(f))
+            })
+            .collect();
+        let tables: Vec<_> = bins.iter().map(|b| b.taps()).collect();
+        let bank: Vec<(f64, &[[f32; 4]])> = bins
+            .iter()
+            .zip(&tables)
+            .map(|(b, t)| (b.velocity(), t.as_slice()))
+            .collect();
+
+        // ω(t) = a·t
+        let a = bank[0].0 / SPAN as f64;
+        let x = chirp(a, SD, 0.0);
+
+        print_transform("MORSE", &bank, &x, SPAN, 160, -40.0);
+    }
 }

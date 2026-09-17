@@ -791,3 +791,66 @@ pub(super) fn characterize(taps: &[Complex32], w0: f64) -> Response {
         floor,
     }
 }
+
+/// Gaussian-enveloped chirp, sweep rate `a` rad/sample², envelope sd in samples, centered at
+/// `p`.  ω(k) = a(k − p), passing through zero at `p`.
+pub(super) fn chirp(a: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
+    move |k| {
+        let t = k as f64 - p;
+        let z = t / sd;
+        (-0.5 * z * z).exp() * (0.5 * a * t * t).cos()
+    }
+}
+
+/// Shading ramp, floor to peak.
+const SHADE: [char; 5] = [' ', '░', '▒', '▓', '█'];
+
+/// |W(t, ω₀)| over hops and bins, `floor_db` below the loudest cell.  Rows are `(ω₀, table)`
+/// in print order, columns are hops [−span, span].
+pub(super) fn print_transform(
+    label: &str,
+    bank: &[(f64, &[[f32; 4]])],
+    x: impl Fn(isize) -> f64,
+    span: isize,
+    cols: usize,
+    floor_db: f64,
+) {
+    let step = 2.0 * span as f64 / (cols - 1) as f64;
+    let at = |c: usize| -(span as f64) + step * c as f64;
+    let aa = step.ceil() as usize;
+
+    // (1/aa) Σ |Ψ(m)| over the hops a column covers
+    let mag: Vec<Vec<f64>> = bank
+        .iter()
+        .map(|&(_, table)| {
+            (0..cols)
+                .map(|c| {
+                    (0..aa)
+                        .map(|j| {
+                            let u = at(c) + step * ((j as f64 + 0.5) / aa as f64 - 0.5);
+                            project(table, &x, u.round() as isize)[0].norm()
+                        })
+                        .sum::<f64>()
+                        / aa as f64
+                })
+                .collect()
+        })
+        .collect();
+
+    let peak = mag.iter().flatten().fold(0.0f64, |m, &v| m.max(v));
+
+    println!("\n=== {label} ===");
+    println!("  {floor_db:.0} dB to peak over {} hops", 2 * span);
+
+    for (&(w0, _), row) in bank.iter().zip(&mag) {
+        let cells: String = row
+            .iter()
+            .map(|&v| {
+                let db = 20.0 * (v / peak).log10();
+                let q = (1.0 - db / floor_db).clamp(0.0, 1.0);
+                SHADE[(q * (SHADE.len() - 1) as f64).round() as usize]
+            })
+            .collect();
+        println!("{w0:>9.6} {:>9.5} |{cells}|", w0 / TAU);
+    }
+}
