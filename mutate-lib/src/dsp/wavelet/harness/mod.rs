@@ -583,6 +583,27 @@ fn first_triple(p: &[Sample], hit: impl Fn(Sample, Sample, Sample) -> bool) -> O
         .map(|(a, _, c)| (a, c))
 }
 
+/// Root of `resp` in a sign-changing bracket.
+pub(super) fn bisect(resp: impl Fn(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
+    let fa = resp(a) < 0.0;
+    for _ in 0..64 {
+        let m = 0.5 * (a + b);
+        if m == a || m == b {
+            break;
+        }
+        let fm = resp(m);
+        if fm == 0.0 {
+            return m;
+        }
+        if (fm < 0.0) == fa {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    0.5 * (a + b)
+}
+
 /// Shrink `t` by aiming stencils with `predict`, re-witnessing with `witness` after each
 /// landing, until a step stops saving more DTFTs than it costs, then hand the remainder
 /// to `scan`.
@@ -723,27 +744,6 @@ impl Local {
             .map(|t| self.w + t)
             .min_by(|a, b| (a - self.w).abs().total_cmp(&(b - self.w).abs()))
     }
-}
-
-/// Root of `resp` in a sign-changing bracket.
-pub(super) fn bisect(resp: impl Fn(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
-    let fa = resp(a) < 0.0;
-    for _ in 0..64 {
-        let m = 0.5 * (a + b);
-        if m == a || m == b {
-            break;
-        }
-        let fm = resp(m);
-        if fm == 0.0 {
-            return m;
-        }
-        if (fm < 0.0) == fa {
-            a = m;
-        } else {
-            b = m;
-        }
-    }
-    0.5 * (a + b)
 }
 
 pub(super) struct Response {
