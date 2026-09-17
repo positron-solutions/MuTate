@@ -1276,10 +1276,12 @@ mod test {
         for fc in FCS {
             let full = w.bin(fc, RATE).truncate(FULL_DB);
             let nf = full.folded_taps();
-            let pf = unfold(&full.taps(), 0);
+            let taps = full.taps();
+            let psi64 = lane(&taps, 0);
+            let pf = unfold(&taps, 0);
 
             let w0 = full.velocity();
-            let rf = characterize(&pf, w0);
+            let rf = characterize(Fold(&psi64), w0);
             let dcf = dc_leak(&pf, w0);
 
             println!(
@@ -1323,8 +1325,10 @@ mod test {
             for tail_db in CUTS {
                 let cut = w.bin(fc, RATE).truncate(tail_db);
                 let nc = cut.folded_taps();
-                let pc = unfold(&cut.taps(), 0);
-                let rc = characterize(&pc, w0);
+                let taps = cut.taps();
+                let psi64 = lane(&taps, 0);
+                let pc = unfold(&taps, 0);
+                let rc = characterize(Fold(&psi64), w0);
                 let dc = dc_leak(&pc, w0);
 
                 println!(
@@ -1655,9 +1659,11 @@ mod test {
 
         for rho in RHOS {
             let bin = wav.at_rho(rho);
-            let psi = unfold(&bin.taps(), 0);
+            let taps = &bin.taps();
+            let psi = unfold(taps, 0);
+            let psi64 = lane(taps, 0);
             let w0 = bin.velocity();
-            let r = characterize(&psi, w0);
+            let r = characterize(Fold(&psi64), w0);
 
             let lobe = r.edges.1 - r.edges.0;
             let span = LOBES * lobe;
@@ -1771,10 +1777,12 @@ mod test {
 
             for (fc, sr) in [(1000.0f64, 6000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
                 let bin = w.bin(fc, sr).load_quantum(quantum).truncate(TAIL_DB);
-                let psi = unfold(&bin.taps(), 0);
+                let taps = &bin.taps();
+                let psi = unfold(taps, 0);
+                let psi64 = lane(taps, 0);
 
                 let w0 = bin.velocity();
-                let r = characterize(&psi, w0);
+                let r = characterize(Fold(&psi64), w0);
                 let db = |v: f64| 20.0 * (v / r.gain).log10();
 
                 println!(
@@ -1844,8 +1852,10 @@ mod test {
 
                 for rho in RHOS {
                     let bin = wav.at_rho(rho);
-                    let psi = unfold(&bin.taps(), 0);
-                    let r = characterize(&psi, bin.velocity());
+                    let taps = &bin.taps();
+                    let psi = unfold(taps, 0);
+                    let psi64 = lane(taps, 0);
+                    let r = characterize(Fold(&psi64), bin.velocity());
                     let lobe = r.edges.1 - r.edges.0;
                     let db = |h: f64| 20.0 * (h / r.gain).log10();
 

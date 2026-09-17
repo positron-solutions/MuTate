@@ -57,8 +57,11 @@ fn first_null_matches_dense_scan() {
             .max_truncation(TAIL_DB)
             .bake();
         let bin = wav.at_rho(rho);
-        let psi = unfold(&bin.taps(), 0);
-        let r = characterize(&psi, bin.velocity());
+        let taps = bin.taps();
+        let psi = unfold(&taps, 0);
+        let psi64 = lane(&taps, 0);
+
+        let r = characterize(Fold(&psi64), bin.velocity());
         let lobe = r.edges.1 - r.edges.0;
         let side = if dir < 0.0 { "lo" } else { "hi" };
         let tag = format!("Q {q} γ {gamma} ρ {rho} {side}");

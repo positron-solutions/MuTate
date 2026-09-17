@@ -16,6 +16,7 @@ use core::f64::consts::{LN_2, PI, TAU};
 use num_complex::{Complex32, Complex64};
 
 use super::inspect::*;
+use super::Fold;
 
 /// Folded weights back to centered taps.  Lane `c` selects ψ (0) or d (2).
 pub(super) fn unfold(w: &[[f32; 4]], c: usize) -> Vec<Complex32> {
@@ -767,34 +768,47 @@ pub(super) struct Response {
     pub floor: f64,
 }
 
-/// Peak, -3 dB relative width, image, and the positive-axis floor outside three half-power widths.
-/// `w0` only brackets the edges.
-pub(super) fn characterize(taps: &[Complex32], w0: f64) -> Response {
-    // XXX too fine btw
-    let sweep = 32; // (16 * taps.len()).next_power_of_two();
+/// Select one channel from folded weights.   Lane `c` selects ψ (0) or d (2).
+// XXX very temporary, just to let some callers phase out.
+pub(super) fn lane(w: &[[f32; 4]], c: usize) -> Vec<Complex64> {
+    w.iter()
+        .map(|q| Complex64::new(q[c] as f64, q[c + 1] as f64))
+        .collect()
+}
+
+/// Peak, -3 dB relative width, image, and the positive-axis floor outside three half-power
+/// widths.  `w0` seeds the climb and brackets the edges.
+pub(super) fn characterize(psi: Fold<'_>, w0: f64) -> Response {
+    let mut buf = Vec::new();
+    let mut insp = Inspect::new(psi, &mut buf, super::inspect::OVERSAMPLE);
+
+    let (peak_w, gain) = insp.peak(w0, 0.0, PI).expect("no crest in [0, π]");
+
+    // |H(peak)| / √2
+    let half_power = db(gain) - 10.0 * 2.0f64.log10();
+    let (lo_stop, hi_stop) = ((peak_w - w0).max(0.0), (peak_w + w0).min(PI));
+    let lo = insp.cross(half_power, peak_w, lo_stop);
+    let hi = insp.cross(half_power, peak_w, hi_stop);
+    let (lo, hi) = (
+        lo.map_or(lo_stop, |(w, _)| w),
+        hi.map_or(hi_stop, |(w, _)| w),
+    );
+
+    let sweep = 32;
     let omega = |k: usize| PI * k as f64 / sweep as f64;
-    let gain = |w: f64| dtft(taps, w).norm();
-
-    let resp: Vec<(f64, f64)> = (0..=sweep).map(|k| pair(taps, omega(k))).collect();
-
-    let image = resp.iter().fold(0.0f64, |m, &(_, i)| m.max(i));
-
-    let (h, density) = scale(taps.len());
-
-    let peak_w = climb(taps, w0, 0.0, PI, h, density);
-    let peak = dtft(taps, peak_w).norm();
-    let (lo, hi) = bandwidth(taps, peak, peak_w, w0);
-
     let guard = 3.0 * (hi - lo);
-    let floor = resp
-        .iter()
-        .enumerate()
-        .filter(|&(k, _)| (omega(k) - peak_w).abs() > guard)
-        .fold(0.0f64, |f, (_, &(g, _))| f.max(g));
+    let (mut image, mut floor) = (0.0f64, 0.0f64);
+    for k in 0..=sweep {
+        let w = omega(k);
+        image = image.max(psi.dtft(-w).abs());
+        if (w - peak_w).abs() > guard {
+            floor = floor.max(psi.dtft(w).abs());
+        }
+    }
 
     Response {
         peak_w,
-        gain: peak,
+        gain,
         edges: (lo, hi),
         rel_width: (hi - lo) / peak_w,
         image,
