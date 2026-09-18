@@ -72,7 +72,7 @@ fn first_null_matches_dense_scan() {
         let stop = from + dir * PI;
 
         // Naive
-        let step = TAU / (PER_BIN * psi.taps()) as f64;
+        let step = TAU / (PER_BIN * psi.len_unfolded()) as f64;
         let mut prev = (from, resp(from));
         let naive = (1..)
             .map(|j| from + dir * step * j as f64)
@@ -94,7 +94,7 @@ fn first_null_matches_dense_scan() {
         let (Some(fast), Some(naive)) = (fast, naive) else {
             println!(
                 "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {side:>5} {:>5} missing",
-                psi.taps()
+                psi.len_unfolded()
             );
             failures.push(format!("{tag} scanner {fast:?} naive {naive:?}"));
             continue;
@@ -107,7 +107,7 @@ fn first_null_matches_dense_scan() {
         println!(
             "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {side:>5} {:>5} {:>+11.6} {:>+11.6} {gap:>10.3e} \
              {h_at_fast:>10.3e}",
-            psi.taps(),
+            psi.len_unfolded(),
             off(fast),
             off(naive),
         );

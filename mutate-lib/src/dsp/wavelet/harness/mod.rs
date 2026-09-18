@@ -29,12 +29,12 @@ fn sweep(lo: f64, hi: f64, taps: usize, f: impl Fn(f64) -> f64) -> f64 {
 /// max |H| on [−0.05 ω₀, 0.05 ω₀].
 pub(super) fn dc_leak(psi: Fold<'_>, w0: f64) -> f64 {
     let e = 0.05 * w0;
-    sweep(-e, e, psi.taps(), |w| psi.dtft(w).abs())
+    sweep(-e, e, psi.len_unfolded(), |w| psi.dtft(w).abs())
 }
 
 /// ∫ h² dω on [lo, hi], h = max(0, 1 − dB/floor_db) with dB relative to `gain`.
 pub(super) fn level_moment(psi: Fold<'_>, gain: f64, (lo, hi): (f64, f64), floor_db: f64) -> f64 {
-    let n = ((hi - lo) * OVERSAMPLE * psi.taps() as f64 / TAU)
+    let n = ((hi - lo) * OVERSAMPLE * psi.len_unfolded() as f64 / TAU)
         .ceil()
         .max(1.0) as usize;
     let dw = (hi - lo) / n as f64;
@@ -352,7 +352,7 @@ pub(super) fn chirp(a: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
 
 /// Real and imaginary parts of ψ, centered, on a shared scale.
 pub(super) fn print_wave(label: &str, psi: Fold<'_>, cols: usize) {
-    let n = psi.taps();
+    let n = psi.len_unfolded();
     println!("\n=== {label} ===");
     let max = psi
         .mirrored()

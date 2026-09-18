@@ -512,13 +512,14 @@ impl<'w> Bin<'w> {
         self.rho
     }
 
-    /// Number of folded taps, including a center tap.  In [0, K].
-    pub fn folded_taps(&self) -> usize {
+    /// Number of folded weights, including a center tap weighs.  In [0, K].
+    pub fn len_folded(&self) -> usize {
         self.k
     }
 
-    /// Number of real taps after unfolded, in [0, 2K - 1].  Center tap is still just one tap.
-    pub fn unfolded_taps(&self) -> usize {
+    /// Number of real taps after weights are unfolded, in [0, 2K - 1].  Center tap is still just
+    /// one tap.
+    pub fn len_unfolded(&self) -> usize {
         2 * self.k - 1
     }
 
@@ -667,13 +668,14 @@ impl<'a> Fold<'a> {
         Fold(psi)
     }
 
-    /// Number of taps when unfolded.
-    pub(super) fn taps(&self) -> usize {
+    /// Number of real taps after weights are unfolded, in `[0, 2K - 1]`.  Center tap is still just
+    /// one tap.
+    pub(super) fn len_unfolded(&self) -> usize {
         2 * self.0.len() - 1
     }
 
-    /// Number of physical weights that unfold into taps.
-    pub(super) fn weights(&self) -> usize {
+    /// Number of physical weights that unfold into taps.  Includes a center weight.  In `[0, K]`
+    pub(super) fn len_folded(&self) -> usize {
         self.0.len()
     }
 
@@ -847,7 +849,7 @@ mod test {
             let w0 = bin.velocity();
             let wts = bin.weights();
             let (psi, d) = (wts.psi(), wts.d());
-            let n = psi.taps();
+            let n = psi.len_unfolded();
 
             // M₁ / M₀
             let delay = (psi.moment(1) / psi.moment(0)).re;
@@ -866,7 +868,7 @@ mod test {
             println!(
                 "\ngamma = {gamma:.1}  weights {}  taps {n}  delay = {delay:+.3e}  \
              floor = {}  bias = {worst:.3}c",
-                psi.weights(),
+                psi.len_folded(),
                 fmt_e(floor),
             );
 
@@ -1025,7 +1027,7 @@ mod test {
             println!(
                 "  fc {:>6.0}  taps {:>5}  rho {:.6}  energy {:.6}  e/rho {:.6}  dev {:+.2e}",
                 fc,
-                bin.unfolded_taps(),
+                bin.len_unfolded(),
                 bin.rho(),
                 e,
                 ratio,
@@ -1076,7 +1078,7 @@ mod test {
             let wts = bin.weights();
             let psi = wts.psi();
 
-            let (n, w0) = (psi.taps(), bin.velocity());
+            let (n, w0) = (psi.len_unfolded(), bin.velocity());
             println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
 
             for k in -SPAN..=SPAN {
@@ -1143,7 +1145,7 @@ mod test {
             let wts = bin.weights();
             let (psi, d) = (wts.psi(), wts.d());
 
-            let (n, w0) = (psi.taps(), bin.velocity());
+            let (n, w0) = (psi.len_unfolded(), bin.velocity());
             println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
             println!("  detune      |H|     pred      bias     swing      leak");
 
@@ -1226,7 +1228,7 @@ mod test {
             let wts = bin.weights();
             let (psi, d) = (wts.psi(), wts.d());
 
-            let (n, w0) = (psi.taps(), bin.velocity());
+            let (n, w0) = (psi.len_unfolded(), bin.velocity());
             println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
 
             for k in -SPAN..=SPAN {
@@ -1312,7 +1314,7 @@ mod test {
         let mut refs = Vec::with_capacity(FCS.len());
         for fc in FCS {
             let full = w.bin(fc, RATE).truncate(FULL_DB);
-            let nf = full.folded_taps();
+            let nf = full.len_folded();
             let wts = full.weights();
             let psi = wts.psi();
 
@@ -1364,7 +1366,7 @@ mod test {
 
             for tail_db in CUTS {
                 let cut = w.bin(fc, RATE).truncate(tail_db);
-                let nc = cut.folded_taps();
+                let nc = cut.len_folded();
                 let wts = cut.weights();
                 let psi = wts.psi();
                 let rc = characterize(psi, w0);
@@ -1511,14 +1513,14 @@ mod test {
             let reference = long.at_rho(rho).weights();
             let deeper = deep.at_rho(rho).weights();
             let w0 = bin.velocity();
-            let half = (bin.folded_taps() - 1) as isize;
+            let half = (bin.len_folded() - 1) as isize;
             let var = psi.envelope_var();
             let sigma = var.sqrt();
 
             println!(
                 "\n=== T_HAT fc {fc:.0} sr {sr:.0} taps {} ref {} sigma {sigma:.1} ===",
-                psi.taps(),
-                reference.psi().taps(),
+                psi.len_unfolded(),
+                reference.psi().len_unfolded(),
             );
             println!("  err in burst sd, skew against Δω·σ_c², drift against the -60 dB bucket\n");
             println!(
@@ -1623,10 +1625,10 @@ mod test {
             let w0 = bin.velocity();
 
             // 2π/N against the −3 dB width Q asks for
-            let cell = TAU / psi.taps() as f64;
+            let cell = TAU / psi.len_unfolded() as f64;
             println!(
                 "rho {rho:.4} taps {} cell {cell:.6} requested width {:.6} ({:.2} cells)",
-                psi.taps(),
+                psi.len_unfolded(),
                 w0 / Q,
                 w0 / (Q * cell),
             );
@@ -1642,7 +1644,7 @@ mod test {
             println!(
                 "\n=== RESPONSE rho {rho:.4} taps {} w0 {w0:.6} \
                  lobe {lobe:.6} ({:.5} w/fs) ===",
-                psi.taps(),
+                psi.len_unfolded(),
                 lobe / TAU
             );
             println!(
@@ -1711,7 +1713,7 @@ mod test {
             print_wave(
                 &format!(
                     "BIN fc {fc:.0} sr {sr:.0} w0 {w0:.6} rho {rho:.6} taps {}",
-                    psi.taps()
+                    psi.len_unfolded()
                 ),
                 psi,
                 30,
@@ -1757,8 +1759,8 @@ mod test {
 
                 println!(
                     "\nfc {fc:>5.0} sr {sr:>5.0}  w0 {w0:.6}  quantized {:>3} (unfolded {:>3})",
-                    bin.folded_taps(),
-                    bin.unfolded_taps()
+                    bin.len_folded(),
+                    bin.len_unfolded()
                 );
                 println!(
                     "  peak gain {:.9}  dev {:+.3e} rel",
@@ -1871,7 +1873,7 @@ mod test {
 
                     println!(
                         "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {} {} {spread} {} {} {} {}",
-                        psi.taps(),
+                        psi.len_unfolded(),
                         off(lo),
                         off(hi),
                         cols(&psl_lo),

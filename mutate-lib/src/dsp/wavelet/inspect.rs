@@ -424,7 +424,7 @@ pub(super) struct Comb {
 impl Comb {
     /// `over` samples per cell.
     pub(super) fn new(psi: Fold<'_>, over: f64) -> Self {
-        let cell = TAU / psi.taps() as f64;
+        let cell = TAU / psi.len_unfolded() as f64;
         Comb {
             cell,
             step: cell / over,
