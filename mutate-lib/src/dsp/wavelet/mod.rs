@@ -287,13 +287,8 @@
 // carrier doesn't have enough detail to represent a fast-changing envelope.  A numerical solution
 // for these heavily aliased wavelets may succeed or we may use a Plan with a higher Q beyond some
 // empirical cutoff.  Truncating less aggressively can't help because the main lobe itself is
-// dominating the breakdown.
-// NEXT Noise floor performance, which provides our dynamic range resolution, is very sensitive to
-// the number of taps for a given Q.  We would like to improve Q without raising N taps and we would
-// like to make more use of our padding quantum, but only an integrated design process, one that
-// solves for measured goals, such as noise floor and reassignment accuracy, is going to squeeze
-// more f32 pixie dust out.  Several tapering schemes ranging from Plank envelope to a higher order
-// solution were tried, but none consistently improved the result of simple truncation.
+// dominating the breakdown.  The Weighted quadrature might be helpful if its drawbacks (center is
+// not precise) can be mitigated.
 // NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
 // will be used are not particularly aware, so it's not expected that we can re-use exact bins in
 // any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
@@ -303,25 +298,25 @@
 // === TABLE RESPONSE (Q = 3.5, quantum 8) ===
 //
 // fc  1000 sr  6000  w0 1.047198  quantized  25 (unfolded  49)
-//   peak gain 2.000000008  dev +3.910e-9 rel
-//   width 0.99697
-//   peak -0.0000 cents
-//   image max         -109.59 dB
-//   stopband floor     -109.20 dB
+//   peak gain 2.000000032  dev +1.578e-8 rel
+//   width 0.99725
+//   peak -0.0125 cents
+//   image max         -111.29 dB
+//   stopband floor     -109.30 dB
 //
 // fc   250 sr  3000  w0 0.523599  quantized  49 (unfolded  97)
-//   peak gain 1.999999991  dev -4.253e-9 rel
-//   width 0.99797
-//   peak -0.0000 cents
-//   image max         -107.93 dB
-//   stopband floor     -106.56 dB
+//   peak gain 2.000000003  dev +1.666e-9 rel
+//   width 0.99838
+//   peak -0.0164 cents
+//   image max         -110.83 dB
+//   stopband floor     -106.17 dB
 //
 // fc 12000 sr 48000  w0 1.570796  quantized  17 (unfolded  33)
-//   peak gain 2.000000009  dev +4.465e-9 rel
-//   width 0.99531
-//   peak -0.0000 cents
-//   image max         -111.14 dB
-//   stopband floor     -110.96 dB
+//   peak gain 1.999999994  dev -3.209e-9 rel
+//   width 0.99550
+//   peak -0.0088 cents
+//   image max         -111.95 dB
+//   stopband floor     -108.55 dB
 
 pub(self) mod generate;
 pub(self) mod inspect;
@@ -827,231 +822,6 @@ mod test {
             .bake()
     }
 
-    #[test]
-    fn print_gamma_sweep() {
-        const QUANTUM: usize = 4;
-        const STEP: f64 = 100.0;
-        const SPAN: isize = 4;
-        /// Worst reassignment bias over the scan, in cents.
-        const BIAS_C: f64 = 50.0; // XXX Tighten after no longer shit
-
-        println!("\n=== TAP PROFILE vs GAMMA (Q = 2.4) ===");
-        // P² = beta gamma
-        let p = 4.0;
-        for gamma in [1.0f64, 2.0, 3.0, 6.0] {
-            let wav = WaveletSpec::default()
-                .with_shape(Shape {
-                    gamma,
-                    beta: p * p / gamma,
-                })
-                .max_load_quantum(QUANTUM)
-                .bake();
-            let bin = wav.at_rho(1000.0 / 8000.0);
-            let w0 = bin.velocity();
-            let wts = bin.weights();
-            let (psi, d) = (wts.psi(), wts.d());
-            let n = psi.len_unfolded();
-
-            // M₁ / M₀
-            let delay = (psi.moment(1) / psi.moment(0)).re;
-
-            // worst over detuning of |R| / ‖ψ‖₁ and of (1200/ln 2)·(R/H)/r
-            let (floor, worst) = (-SPAN..=SPAN).fold((0.0f64, 0.0f64), |acc, k| {
-                let ratio = (k as f64 * STEP / 1200.0).exp2();
-                let (res, dr) = pairing_residual(psi, d, w0, w0 * ratio);
-                (
-                    acc.0.max(res / psi.l1()),
-                    // (1200 / ln 2) · (R/H) / r
-                    acc.1.max((1200.0 / LN_2 * dr / ratio).abs()),
-                )
-            });
-
-            println!(
-                "\ngamma = {gamma:.1}  weights {}  taps {n}  delay = {delay:+.3e}  \
-             floor = {}  bias = {worst:.3}c",
-                psi.len_folded(),
-                fmt_e(floor),
-            );
-
-            let mags: Vec<f64> = psi.mirrored().map(|h| h.norm()).collect();
-            let max = mags.iter().fold(0.0f64, |a, &b| a.max(b));
-            for (j, &v) in mags.iter().enumerate() {
-                println!(
-                    "{:>4} {}",
-                    j as isize - (n / 2) as isize,
-                    "#".repeat((v / max * 40.0).round() as usize)
-                );
-            }
-
-            assert!(worst < BIAS_C, "gamma {gamma} bias {worst:.3}c");
-        }
-    }
-
-    /// Bakes the full bank at production-ish scale.
-    ///
-    /// ```text
-    /// cargo test --release wavelet::test::bake_bank -- --ignored --nocapture
-    /// ```
-    // NEXT this should be a benchmark, but we don't have any set up.  Most of our GPU driven world
-    // will not care about the host code.  But faster, less UI delay, and lower power is always
-    // better.
-    #[test]
-    #[ignore]
-    fn bake_bank() {
-        use crate::dsp::bank;
-
-        const Q: f64 = 5.0;
-
-        let bins = bank::bins(2_000.0, 20_000.0, BINS);
-
-        let start = std::time::Instant::now();
-        let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, defaults::GAMMA))
-            .bake();
-        let bake_time = start.elapsed();
-
-        // Packed bank with per-voice tap ranges
-        let start = std::time::Instant::now();
-        let mut weights = Vec::new();
-        let mut voices = Vec::with_capacity(bins.len());
-        for b in &bins {
-            let bin = wav.at_rho(b.center / RATE);
-            let taps = bin.taps();
-            let range = weights.len()..weights.len() + taps.len();
-            weights.extend_from_slice(&taps);
-            voices.push((bin, range));
-        }
-        let fill_time = start.elapsed();
-
-        // max over voices of |H(ω₀) − PEAK_GAIN|
-        let worst = voices
-            .iter()
-            .map(|(bin, r)| {
-                (Weights::unpack(&weights[r.clone()])
-                    .psi()
-                    .dtft(bin.velocity())
-                    .abs()
-                    - PEAK_GAIN)
-                    .abs()
-            })
-            .fold(0.0f64, f64::max);
-
-        let (low_bin, low_range) = &voices[0];
-        let low = Weights::unpack(&weights[low_range.clone()]);
-        print_wave(
-            &format!(
-                "LOWEST BIN ({:.0}Hz, omega0 {:.5})",
-                bins[0].center,
-                low_bin.velocity()
-            ),
-            low.psi(),
-            30,
-        );
-
-        let lens = voices.iter().map(|(_, r)| r.len());
-        println!(
-            "voices {} of {}  weights {}  longest {}  shortest {}",
-            voices.len(),
-            BINS,
-            weights.len(),
-            lens.clone().max().unwrap(),
-            lens.min().unwrap(),
-        );
-
-        println!("bake time: {}µs", bake_time.as_micros());
-        println!("bin filling time: {}µs", fill_time.as_micros());
-    }
-
-    /// A real unit tone at the crest reads |W| = 1 even though |H| = 2: the analytic taps see only
-    /// the +ω half of the cosine, and the −ω half beats against it by ½|H(−ω)|.  Swept over the
-    /// quantum, which pads the emitted half-span.
-    #[test]
-    fn unit_tone_reads_unity() {
-        const Q: f64 = 3.0;
-        const TAIL_DB: f64 = -50.0;
-        /// f32 storage
-        const EPS: f64 = 1e-6;
-
-        let w = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
-            .max_load_quantum(8)
-            .max_truncation(TAIL_DB)
-            .bake();
-
-        let mut probe = Vec::new();
-        for quantum in [1usize, 4, 8] {
-            for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-                let bin = w.bin(fc, sr).load_quantum(quantum);
-                let wts = bin.weights();
-                let psi = wts.psi();
-
-                // ω_peak
-                let (wp, _) = Inspect::new(psi, &mut probe, OVERSAMPLE)
-                    .peak(bin.velocity(), 0.0, PI)
-                    .unwrap();
-                // ½|H(−ω_peak)|
-                let beat = 0.5 * psi.dtft(-wp).abs();
-
-                for m in 0..8 {
-                    let env = wts.project(|k| (wp * k as f64).cos(), m)[0].norm();
-                    assert!(
-                        (env - 1.0).abs() < beat + EPS,
-                        "quantum {quantum} fc {fc} phase {m} envelope {env:.9} beat {beat:.3e}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Peak-normalized constant-Q puts noise gain proportional to ρ: the ψ sum is pinned at
-    /// PEAK_GAIN, so the envelope's amplitude scales with ρ and its energy with ρ². Dividing that
-    /// back by the ρ⁻¹ taps per period leaves one power of ρ. White noise therefore floors at a
-    /// fixed level per bin once ρ is divided out.
-    #[test]
-    fn noise_gain_tracks_center() {
-        const Q: f64 = 3.0;
-        const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -100.0;
-
-        // Tap count is an integer, so envelope truncation loses O(1/N) of the energy, worst at
-        // the top of the range. Anchored to split the sweep rather than to any one bin.
-        // NOTE recalibrate from the first run.
-        const NOISE_GAIN: f64 = 1.4105;
-        const TOL: f64 = 2e-3;
-
-        let w = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
-            .max_load_quantum(QUANTUM)
-            .max_truncation(TAIL_DB)
-            .bake();
-
-        println!("\n=== NOISE GAIN (Q = {Q}, sr = {RATE}, quantum {QUANTUM}) ===");
-
-        for fc in [500.0f64, 1000.0, 2000.0, 4000.0, 8000.0] {
-            let bin = w.bin(fc, RATE);
-            let wts = bin.weights();
-            let psi = wts.psi();
-
-            let e = psi.energy();
-            let ratio = e / bin.rho();
-
-            println!(
-                "  fc {:>6.0}  taps {:>5}  rho {:.6}  energy {:.6}  e/rho {:.6}  dev {:+.2e}",
-                fc,
-                bin.len_unfolded(),
-                bin.rho(),
-                e,
-                ratio,
-                ratio / NOISE_GAIN - 1.0
-            );
-
-            assert!(
-                (ratio / NOISE_GAIN - 1.0).abs() < TOL,
-                "fc {fc} noise gain {ratio:.6}"
-            );
-        }
-    }
-
     /// Whether the filter answers the same at every input phase.  Each row drives a steady tone
     /// through the full 2π of carrier phase and demodulates each lane, so the reported number is
     /// the worst relative departure from that lane's phase mean.  Zero is phase blind.
@@ -1510,71 +1280,22 @@ mod test {
                 );
 
                 // Weaker truncation buys floor with taps.  Taps may hold under quantum rounding.
-                // assert!(
-                //     nc >= prev_taps,
-                //     "fc {fc} tail {tail_db} taps {nc} < {prev_taps}"
-                // );
+                assert!(
+                    nc >= prev_taps,
+                    "fc {fc} tail {tail_db} taps {nc} < {prev_taps}"
+                );
+
+                // XXX More reliable floor needed before we can assert this.
                 // assert!(
                 //     (nc == prev_taps && rc.floor >= prev_floor) || rc.floor < prev_floor,
-                //     "fc {fc} tail {tail_db} taps {prev_taps} -> {nc} without floor gain"
+                //     "fc {fc} tail {tail_db} taps {prev_taps} -> {nc} without floor gain: {} to {}",
+                //     prev_floor,
+                //     rc.floor,
                 // );
 
                 (prev_taps, prev_floor) = (nc, rc.floor);
             }
             println!();
-        }
-    }
-
-    /// Smoke test.  DC-free and correct peak gain, measured with the linear DTFT so a broken fold
-    /// convention can't agree with itself.  First thing to look at if the bake goes sideways.
-    #[test]
-    fn taps_are_conditioned() {
-        // Use a rough tail dB so we can verify conditioning under challenging conditions.
-        const TAIL_DB: f64 = -40.0;
-
-        let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
-
-        for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-            let bin = wav.at_rho(fc / sr);
-            let wts = bin.weights();
-            let (psi, d) = (wts.psi(), wts.d());
-
-            let w0 = bin.velocity();
-
-            let g = psi.dtft(w0).abs();
-            assert!((g - PEAK_GAIN).abs() < 1e-2, "fc {fc} peak gain {g:.6}");
-
-            // Analytic taps: the mirror image is stopband, not signal.
-            let neg = psi.dtft(-w0).abs();
-            assert!(
-                neg < 1e-3 * g,
-                "fc {fc} negative-freq leak {:.2} dB",
-                20.0 * (neg / g).log10()
-            );
-
-            let dc = psi.dtft(0.0);
-            assert!(dc.abs() < 1e-2 * g, "fc {fc} dc {dc:.3e}");
-
-            // d/ψ reads ω/ω₀, unity at the carrier.
-            let gd = d.dtft(w0).abs();
-            assert!((gd / g - 1.0).abs() < 1e-2, "fc {fc} d/psi {:.6}", gd / g);
-
-            // Σ ν^p · (Re ψ if p even, Im ψ if p odd)
-            let mom = |p: i32| match p % 2 == 0 {
-                true => psi.moment(p).re,
-                false => psi.moment(p).im,
-            };
-
-            // XXX pretty loose!
-
-            // measured: fc 1000 first moment -1.123e-7
-            let m1 = mom(1);
-            assert!(m1.abs() < 1e-1 * g, "fc {fc} first moment {m1:.3e}");
-
-            // H''(0) and H'''(0), the two the solve nulls that nothing else measures.
-            let (m2, m3) = (mom(2), mom(3));
-            assert!(m2.abs() < 100.0 * g, "fc {fc} second moment {m2:.3e}");
-            assert!(m3.abs() < 100.0 * g, "fc {fc} third moment {m3:.3e}");
         }
     }
 
@@ -1694,151 +1415,6 @@ mod test {
         }
     }
 
-    /// Rough magnitude response, centered on the measured peak.  The sweep names ρ directly, so
-    /// a row is a filter and not a sample rate.
-    #[test]
-    fn print_response() {
-        const Q: f64 = 8.5;
-        const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -60.0;
-
-        const ROWS: usize = 200;
-        const COLS: usize = 200;
-        const ANTI_ALIAS: usize = 8;
-        const FLOOR_DB: f64 = -120.0;
-        const LOBES: f64 = 96.0;
-
-        // Periods per tap, sweeping the downsample ladder from 20Hz at 3kHz to 15kHz at 48kHz.
-        // Nyquist is 0.5.
-        // const RHOS: [f64; 8] = [0.00667, 0.0116, 0.02, 0.035, 0.060, 0.104, 0.180, 0.312];
-
-        const RHOS: [f64; 1] = [0.312];
-
-        let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
-            .max_load_quantum(QUANTUM)
-            .max_truncation(TAIL_DB)
-            .bake();
-
-        for rho in RHOS {
-            let bin = wav.at_rho(rho);
-            let wts = bin.weights();
-            let psi = wts.psi();
-            let w0 = bin.velocity();
-
-            // 2π/N against the −3 dB width Q asks for
-            let cell = TAU / psi.len_unfolded() as f64;
-            println!(
-                "rho {rho:.4} taps {} cell {cell:.6} requested width {:.6} ({:.2} cells)",
-                psi.len_unfolded(),
-                w0 / Q,
-                w0 / (Q * cell),
-            );
-
-            let r = characterize(psi, w0);
-
-            let lobe = r.edges.1 - r.edges.0;
-            let span = LOBES * lobe;
-            let lo = (r.peak_w - 0.5 * span).max(-PI);
-            let hi = (r.peak_w + 0.5 * span).min(PI);
-            let step = (hi - lo) / ROWS as f64;
-
-            println!(
-                "\n=== RESPONSE rho {rho:.4} taps {} w0 {w0:.6} \
-                 lobe {lobe:.6} ({:.5} w/fs) ===",
-                psi.len_unfolded(),
-                lobe / TAU
-            );
-            println!(
-                "  columns span {FLOOR_DB:.0} dB (left) to peak (right); \
-                 {:.1} of {LOBES:.0} lobes in window",
-                (hi - lo) / lobe
-            );
-
-            for k in 0..=ROWS {
-                let w = lo + step * k as f64;
-
-                // (1/step) ∫ |H(ω)|² dω over [w − step/2, w + step/2]
-                let power = (0..ANTI_ALIAS)
-                    .map(|j| {
-                        let u = w + step * ((j as f64 + 0.5) / ANTI_ALIAS as f64 - 0.5);
-                        psi.dtft(u).powi(2)
-                    })
-                    .sum::<f64>()
-                    / ANTI_ALIAS as f64;
-                let level = 10.0 * (power / (r.gain * r.gain)).log10();
-
-                let cells = ((1.0 - level / FLOOR_DB) * COLS as f64)
-                    .round()
-                    .clamp(0.0, COLS as f64) as usize;
-
-                let near = |t: f64| (w - t).abs() <= 0.5 * step;
-                let tag = if near(r.peak_w) {
-                    '<'
-                } else if near(-r.peak_w) {
-                    '>'
-                } else if near(r.edges.0) || near(r.edges.1) {
-                    '-'
-                } else {
-                    ' '
-                };
-
-                println!(
-                    "{:>10.5} {:>9.5} {:>8.2} {tag}{}",
-                    w,
-                    w / TAU,
-                    level,
-                    "#".repeat(cells)
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn print_waveform() {
-        const TAIL_DB: f64 = -30.0;
-        let wav = WaveletSpec::default()
-            .with_shape(Shape {
-                beta: 8.5,
-                gamma: 3.0,
-            })
-            .max_truncation(TAIL_DB)
-            .bake();
-
-        for (fc, sr) in [(1000.0f64, 8000.0), (300.0, 3000.0), (12_000.0, RATE)] {
-            let rho = fc / sr;
-            let bin = wav.at_rho(rho);
-            let wts = bin.weights();
-            let (psi, d) = (wts.psi(), wts.d());
-            let w0 = bin.velocity();
-
-            print_wave(
-                &format!(
-                    "BIN fc {fc:.0} sr {sr:.0} w0 {w0:.6} rho {rho:.6} taps {}",
-                    psi.len_unfolded()
-                ),
-                psi,
-                30,
-            );
-
-            let g = psi.dtft(w0).abs();
-            let gd = d.dtft(w0).abs();
-            let dc = psi.dtft(0.0);
-            let neg = psi.dtft(-w0).abs();
-
-            // max over m of | |Ψ(m)| − 1 | against cos(ω₀k)
-            let phase_err = (0..8)
-                .map(|m| (wts.project(|k| (w0 * k as f64).cos(), m)[0].norm() - 1.0).abs())
-                .fold(0.0f64, f64::max);
-
-            println!(
-                "  peak {g:.9}  d/psi {:.9}  dc {dc:.3e}  neg {:.2} dB  phase err {phase_err:.3e}",
-                gd / g,
-                20.0 * (neg / g).log10()
-            );
-        }
-    }
-
     /// Same four numbers as `response_is_characterized`, measured on the folded weight table.
     /// Sweeps the load quantum, because the quantum pads the emitted half-span.
     #[test]
@@ -1875,6 +1451,209 @@ mod test {
                 println!("  image max        {:>8.2} dB", rel(r.image));
                 println!("  stopband floor    {:>8.2} dB", rel(r.floor));
             }
+        }
+    }
+
+    #[test]
+    fn print_gamma_sweep() {
+        const QUANTUM: usize = 4;
+        const STEP: f64 = 100.0;
+        const SPAN: isize = 4;
+        /// Worst reassignment bias over the scan, in cents.
+        const BIAS_C: f64 = 50.0; // XXX Tighten after no longer shit
+
+        println!("\n=== TAP PROFILE vs GAMMA (Q = 2.4) ===");
+        // P² = beta gamma
+        let p = 4.0;
+        for gamma in [1.0f64, 2.0, 3.0, 6.0] {
+            let wav = WaveletSpec::default()
+                .with_shape(Shape {
+                    gamma,
+                    beta: p * p / gamma,
+                })
+                .max_load_quantum(QUANTUM)
+                .bake();
+            let bin = wav.at_rho(1000.0 / 8000.0);
+            let w0 = bin.velocity();
+            let wts = bin.weights();
+            let (psi, d) = (wts.psi(), wts.d());
+            let n = psi.len_unfolded();
+
+            // M₁ / M₀
+            let delay = (psi.moment(1) / psi.moment(0)).re;
+
+            // worst over detuning of |R| / ‖ψ‖₁ and of (1200/ln 2)·(R/H)/r
+            let (floor, worst) = (-SPAN..=SPAN).fold((0.0f64, 0.0f64), |acc, k| {
+                let ratio = (k as f64 * STEP / 1200.0).exp2();
+                let (res, dr) = pairing_residual(psi, d, w0, w0 * ratio);
+                (
+                    acc.0.max(res / psi.l1()),
+                    // (1200 / ln 2) · (R/H) / r
+                    acc.1.max((1200.0 / LN_2 * dr / ratio).abs()),
+                )
+            });
+
+            println!(
+                "\ngamma = {gamma:.1}  weights {}  taps {n}  delay = {delay:+.3e}  \
+             floor = {}  bias = {worst:.3}c",
+                psi.len_folded(),
+                fmt_e(floor),
+            );
+
+            let mags: Vec<f64> = psi.mirrored().map(|h| h.norm()).collect();
+            let max = mags.iter().fold(0.0f64, |a, &b| a.max(b));
+            for (j, &v) in mags.iter().enumerate() {
+                println!(
+                    "{:>4} {}",
+                    j as isize - (n / 2) as isize,
+                    "#".repeat((v / max * 40.0).round() as usize)
+                );
+            }
+
+            assert!(worst < BIAS_C, "gamma {gamma} bias {worst:.3}c");
+        }
+    }
+
+    /// A real unit tone at the crest reads |W| = 1 even though |H| = 2: the analytic taps see only
+    /// the +ω half of the cosine, and the −ω half beats against it by ½|H(−ω)|.  Swept over the
+    /// quantum, which pads the emitted half-span.
+    #[test]
+    fn unit_tone_reads_unity() {
+        const Q: f64 = 3.0;
+        const TAIL_DB: f64 = -50.0;
+        /// f32 storage
+        const EPS: f64 = 1e-6;
+
+        let w = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, 3.0))
+            .max_load_quantum(8)
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        let mut probe = Vec::new();
+        for quantum in [1usize, 4, 8] {
+            for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
+                let bin = w.bin(fc, sr).load_quantum(quantum);
+                let wts = bin.weights();
+                let psi = wts.psi();
+
+                // ω_peak
+                let (wp, _) = Inspect::new(psi, &mut probe, OVERSAMPLE)
+                    .peak(bin.velocity(), 0.0, PI)
+                    .unwrap();
+                // ½|H(−ω_peak)|
+                let beat = 0.5 * psi.dtft(-wp).abs();
+
+                for m in 0..8 {
+                    let env = wts.project(|k| (wp * k as f64).cos(), m)[0].norm();
+                    assert!(
+                        (env - 1.0).abs() < beat + EPS,
+                        "quantum {quantum} fc {fc} phase {m} envelope {env:.9} beat {beat:.3e}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Peak-normalized constant-Q puts noise gain proportional to ρ: the ψ sum is pinned at
+    /// PEAK_GAIN, so the envelope's amplitude scales with ρ and its energy with ρ². Dividing that
+    /// back by the ρ⁻¹ taps per period leaves one power of ρ. White noise therefore floors at a
+    /// fixed level per bin once ρ is divided out.
+    #[test]
+    fn noise_gain_tracks_center() {
+        const Q: f64 = 3.0;
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -100.0;
+
+        // Tap count is an integer, so envelope truncation loses O(1/N) of the energy, worst at
+        // the top of the range. Anchored to split the sweep rather than to any one bin.
+        // NOTE recalibrate from the first run.
+        const NOISE_GAIN: f64 = 1.4105;
+        const TOL: f64 = 2e-3;
+
+        let w = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, 3.0))
+            .max_load_quantum(QUANTUM)
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        println!("\n=== NOISE GAIN (Q = {Q}, sr = {RATE}, quantum {QUANTUM}) ===");
+
+        for fc in [500.0f64, 1000.0, 2000.0, 4000.0, 8000.0] {
+            let bin = w.bin(fc, RATE);
+            let wts = bin.weights();
+            let psi = wts.psi();
+
+            let e = psi.energy();
+            let ratio = e / bin.rho();
+
+            println!(
+                "  fc {:>6.0}  taps {:>5}  rho {:.6}  energy {:.6}  e/rho {:.6}  dev {:+.2e}",
+                fc,
+                bin.len_unfolded(),
+                bin.rho(),
+                e,
+                ratio,
+                ratio / NOISE_GAIN - 1.0
+            );
+
+            assert!(
+                (ratio / NOISE_GAIN - 1.0).abs() < TOL,
+                "fc {fc} noise gain {ratio:.6}"
+            );
+        }
+    }
+
+    /// Smoke test.  DC-free and correct peak gain, measured with the linear DTFT so a broken fold
+    /// convention can't agree with itself.  First thing to look at if the bake goes sideways.
+    #[test]
+    fn taps_are_conditioned() {
+        // Use a rough tail dB so we can verify conditioning under challenging conditions.
+        const TAIL_DB: f64 = -40.0;
+
+        let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
+
+        for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
+            let bin = wav.at_rho(fc / sr);
+            let wts = bin.weights();
+            let (psi, d) = (wts.psi(), wts.d());
+
+            let w0 = bin.velocity();
+
+            let g = psi.dtft(w0).abs();
+            assert!((g - PEAK_GAIN).abs() < 1e-2, "fc {fc} peak gain {g:.6}");
+
+            // Analytic taps: the mirror image is stopband, not signal.
+            let neg = psi.dtft(-w0).abs();
+            assert!(
+                neg < 1e-3 * g,
+                "fc {fc} negative-freq leak {:.2} dB",
+                20.0 * (neg / g).log10()
+            );
+
+            let dc = psi.dtft(0.0);
+            assert!(dc.abs() < 1e-2 * g, "fc {fc} dc {dc:.3e}");
+
+            // d/ψ reads ω/ω₀, unity at the carrier.
+            let gd = d.dtft(w0).abs();
+            assert!((gd / g - 1.0).abs() < 1e-2, "fc {fc} d/psi {:.6}", gd / g);
+
+            // Σ ν^p · (Re ψ if p even, Im ψ if p odd)
+            let mom = |p: i32| match p % 2 == 0 {
+                true => psi.moment(p).re,
+                false => psi.moment(p).im,
+            };
+
+            // XXX pretty loose!
+
+            // measured: fc 1000 first moment -1.123e-7
+            let m1 = mom(1);
+            assert!(m1.abs() < 1e-1 * g, "fc {fc} first moment {m1:.3e}");
+
+            // H''(0) and H'''(0), the two the solve nulls that nothing else measures.
+            let (m2, m3) = (mom(2), mom(3));
+            assert!(m2.abs() < 100.0 * g, "fc {fc} second moment {m2:.3e}");
+            assert!(m3.abs() < 100.0 * g, "fc {fc} third moment {m3:.3e}");
         }
     }
 
@@ -1995,6 +1774,154 @@ mod test {
         }
     }
 
+    #[ignore]
+    #[test]
+    fn print_waveform() {
+        const TAIL_DB: f64 = -30.0;
+        let wav = WaveletSpec::default()
+            .with_shape(Shape {
+                beta: 8.5,
+                gamma: 3.0,
+            })
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        for (fc, sr) in [(1000.0f64, 8000.0), (300.0, 3000.0), (12_000.0, RATE)] {
+            let rho = fc / sr;
+            let bin = wav.at_rho(rho);
+            let wts = bin.weights();
+            let (psi, d) = (wts.psi(), wts.d());
+            let w0 = bin.velocity();
+
+            print_wave(
+                &format!(
+                    "BIN fc {fc:.0} sr {sr:.0} w0 {w0:.6} rho {rho:.6} taps {}",
+                    psi.len_unfolded()
+                ),
+                psi,
+                30,
+            );
+
+            let g = psi.dtft(w0).abs();
+            let gd = d.dtft(w0).abs();
+            let dc = psi.dtft(0.0);
+            let neg = psi.dtft(-w0).abs();
+
+            // max over m of | |Ψ(m)| − 1 | against cos(ω₀k)
+            let phase_err = (0..8)
+                .map(|m| (wts.project(|k| (w0 * k as f64).cos(), m)[0].norm() - 1.0).abs())
+                .fold(0.0f64, f64::max);
+
+            println!(
+                "  peak {g:.9}  d/psi {:.9}  dc {dc:.3e}  neg {:.2} dB  phase err {phase_err:.3e}",
+                gd / g,
+                20.0 * (neg / g).log10()
+            );
+        }
+    }
+
+    /// Rough magnitude response, centered on the measured peak.  The sweep names ρ directly, so
+    /// a row is a filter and not a sample rate.
+    #[ignore]
+    #[test]
+    fn print_response() {
+        const Q: f64 = 8.5;
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -60.0;
+
+        const ROWS: usize = 200;
+        const COLS: usize = 200;
+        const ANTI_ALIAS: usize = 8;
+        const FLOOR_DB: f64 = -120.0;
+        const LOBES: f64 = 96.0;
+
+        // Periods per tap, sweeping the downsample ladder from 20Hz at 3kHz to 15kHz at 48kHz.
+        // Nyquist is 0.5.
+        // const RHOS: [f64; 8] = [0.00667, 0.0116, 0.02, 0.035, 0.060, 0.104, 0.180, 0.312];
+
+        const RHOS: [f64; 1] = [0.312];
+
+        let wav = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, 3.0))
+            .max_load_quantum(QUANTUM)
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        for rho in RHOS {
+            let bin = wav.at_rho(rho);
+            let wts = bin.weights();
+            let psi = wts.psi();
+            let w0 = bin.velocity();
+
+            // 2π/N against the −3 dB width Q asks for
+            let cell = TAU / psi.len_unfolded() as f64;
+            println!(
+                "rho {rho:.4} taps {} cell {cell:.6} requested width {:.6} ({:.2} cells)",
+                psi.len_unfolded(),
+                w0 / Q,
+                w0 / (Q * cell),
+            );
+
+            let r = characterize(psi, w0);
+
+            let lobe = r.edges.1 - r.edges.0;
+            let span = LOBES * lobe;
+            let lo = (r.peak_w - 0.5 * span).max(-PI);
+            let hi = (r.peak_w + 0.5 * span).min(PI);
+            let step = (hi - lo) / ROWS as f64;
+
+            println!(
+                "\n=== RESPONSE rho {rho:.4} taps {} w0 {w0:.6} \
+                 lobe {lobe:.6} ({:.5} w/fs) ===",
+                psi.len_unfolded(),
+                lobe / TAU
+            );
+            println!(
+                "  columns span {FLOOR_DB:.0} dB (left) to peak (right); \
+                 {:.1} of {LOBES:.0} lobes in window",
+                (hi - lo) / lobe
+            );
+
+            for k in 0..=ROWS {
+                let w = lo + step * k as f64;
+
+                // (1/step) ∫ |H(ω)|² dω over [w − step/2, w + step/2]
+                let power = (0..ANTI_ALIAS)
+                    .map(|j| {
+                        let u = w + step * ((j as f64 + 0.5) / ANTI_ALIAS as f64 - 0.5);
+                        psi.dtft(u).powi(2)
+                    })
+                    .sum::<f64>()
+                    / ANTI_ALIAS as f64;
+                let level = 10.0 * (power / (r.gain * r.gain)).log10();
+
+                let cells = ((1.0 - level / FLOOR_DB) * COLS as f64)
+                    .round()
+                    .clamp(0.0, COLS as f64) as usize;
+
+                let near = |t: f64| (w - t).abs() <= 0.5 * step;
+                let tag = if near(r.peak_w) {
+                    '<'
+                } else if near(-r.peak_w) {
+                    '>'
+                } else if near(r.edges.0) || near(r.edges.1) {
+                    '-'
+                } else {
+                    ' '
+                };
+
+                println!(
+                    "{:>10.5} {:>9.5} {:>8.2} {tag}{}",
+                    w,
+                    w / TAU,
+                    level,
+                    "#".repeat(cells)
+                );
+            }
+        }
+    }
+
+    #[ignore]
     #[test]
     fn print_chirp_transform() {
         // Make a little plot similar to the one show in this paper:
@@ -2034,5 +1961,80 @@ mod test {
         let x = chirp(a, SD, 0.0);
 
         print_transform("MORSE", &bank, &x, SPAN, 160, -40.0);
+    }
+
+    /// Bakes the full bank at production-ish scale.
+    ///
+    /// ```text
+    /// cargo test --release wavelet::test::bake_bank -- --ignored --nocapture
+    /// ```
+    // NEXT this should be a benchmark, but we don't have any set up.  Most of our GPU driven world
+    // will not care about the host code.  But faster, less UI delay, and lower power is always
+    // better.
+    #[test]
+    #[ignore]
+    fn bake_bank() {
+        use crate::dsp::bank;
+
+        const Q: f64 = 5.0;
+
+        let bins = bank::bins(2_000.0, 20_000.0, BINS);
+
+        let start = std::time::Instant::now();
+        let wav = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, defaults::GAMMA))
+            .bake();
+        let bake_time = start.elapsed();
+
+        // Packed bank with per-voice tap ranges
+        let start = std::time::Instant::now();
+        let mut weights = Vec::new();
+        let mut voices = Vec::with_capacity(bins.len());
+        for b in &bins {
+            let bin = wav.at_rho(b.center / RATE);
+            let taps = bin.taps();
+            let range = weights.len()..weights.len() + taps.len();
+            weights.extend_from_slice(&taps);
+            voices.push((bin, range));
+        }
+        let fill_time = start.elapsed();
+
+        // max over voices of |H(ω₀) − PEAK_GAIN|
+        let worst = voices
+            .iter()
+            .map(|(bin, r)| {
+                (Weights::unpack(&weights[r.clone()])
+                    .psi()
+                    .dtft(bin.velocity())
+                    .abs()
+                    - PEAK_GAIN)
+                    .abs()
+            })
+            .fold(0.0f64, f64::max);
+
+        let (low_bin, low_range) = &voices[0];
+        let low = Weights::unpack(&weights[low_range.clone()]);
+        print_wave(
+            &format!(
+                "LOWEST BIN ({:.0}Hz, omega0 {:.5})",
+                bins[0].center,
+                low_bin.velocity()
+            ),
+            low.psi(),
+            30,
+        );
+
+        let lens = voices.iter().map(|(_, r)| r.len());
+        println!(
+            "voices {} of {}  weights {}  longest {}  shortest {}",
+            voices.len(),
+            BINS,
+            weights.len(),
+            lens.clone().max().unwrap(),
+            lens.min().unwrap(),
+        );
+
+        println!("bake time: {}µs", bake_time.as_micros());
+        println!("bin filling time: {}µs", fill_time.as_micros());
     }
 }
