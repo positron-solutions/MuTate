@@ -304,28 +304,6 @@ pub(super) fn print_wave(label: &str, taps: &[Complex32], cols: usize) {
     }
 }
 
-/// ω and |H| at an extremum.
-#[derive(Clone, Copy)]
-pub(super) struct Point {
-    pub w: f64,
-    pub h: f64,
-}
-
-// XXX super bad name
-/// Extremum of `f` on [a, b], a maximum for `sign` 1 and a minimum for −1.
-fn refine(f: impl Fn(f64) -> f64, mut a: f64, mut b: f64, sign: f64) -> Point {
-    for _ in 0..80 {
-        let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
-        if sign * f(m1) < sign * f(m2) {
-            a = m1;
-        } else {
-            b = m2;
-        }
-    }
-    let w = 0.5 * (a + b);
-    Point { w, h: f(w) }
-}
-
 /// ∫ h² dω on [lo, hi], h = max(0, 1 − dB/floor_db) with dB relative to `gain`.
 pub(super) fn level_moment(
     taps: &[Complex32],
@@ -367,7 +345,7 @@ pub(super) fn shoulders(
 /// Extrema of |H| across one stopband, tallest first.
 pub(super) struct Skirt {
     /// Largest local maximum, absent where the band holds none.
-    pub peak: Option<Point>,
+    pub peak: Option<Sample>,
     /// Median local maximum, the ripple level the peak stands on.
     pub median: f64,
     /// Local maxima found.
@@ -377,37 +355,16 @@ pub(super) struct Skirt {
 impl Skirt {
     /// 20 log10 (peak / median), how far the tallest lobe clears the ripple.
     pub fn prominence_db(&self) -> Option<f64> {
-        self.peak.map(|p| 20.0 * (p.h / self.median).log10())
+        self.peak.map(|(_, h)| db(h) - db(self.median))
     }
 }
 
-/// Samples per null spacing 2π/N.  Four resolves every extremum a degree N−1
-/// trigonometric polynomial admits.
-const SKIRT_OVERSAMPLE: usize = 8;
+/// Tallest lobes by comb height, pinned before the tallest is chosen.
+const SKIRT_PIN: usize = 4;
 
-/// Local maxima refined before the tallest is chosen.
-const SKIRT_REFINE: usize = 4;
-
-/// Local maxima of `f` on a uniform grid over [lo, hi], as brackets.
-fn crests(f: impl Fn(f64) -> f64, lo: f64, hi: f64, n: usize) -> Vec<(f64, f64, f64)> {
-    let at = |j: usize| lo + (hi - lo) * j as f64 / n as f64;
-    let g: Vec<f64> = (0..=n).map(|j| f(at(j))).collect();
-    (1..n)
-        .filter(|&j| g[j - 1] <= g[j] && g[j] > g[j + 1])
-        .map(|j| (at(j - 1), at(j + 1), g[j]))
-        .collect()
-}
-
-/// |H| over the stopband between `from` and `stop`, scanned whole.
 /// |H| over the stopband between `from` and `stop`, scanned whole.  Empty where no dip bounds
 /// the band.
-fn skirt(
-    taps: &[Complex32],
-    from: Option<f64>,
-    stop: f64,
-    oversample: usize,
-    refine_top: usize,
-) -> Skirt {
+fn skirt(psi: Fold<'_>, from: Option<f64>, stop: f64) -> Skirt {
     let Some(from) = from else {
         return Skirt {
             peak: None,
@@ -415,22 +372,20 @@ fn skirt(
             lobes: 0,
         };
     };
-    let gain = |w: f64| dtft(taps, w).norm();
-    let (lo, hi) = (from.min(stop), from.max(stop));
-    let n = ((hi - lo) * (oversample * taps.len()) as f64 / TAU)
-        .ceil()
-        .max(2.0) as usize;
 
-    let mut found = crests(gain, lo, hi, n);
-    found.sort_by(|a, b| b.2.total_cmp(&a.2));
+    let mut buf = Vec::new();
+    let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
+
+    let mut found = insp.crests(from, stop);
+    found.sort_by(|a, b| b.at.1.total_cmp(&a.at.1));
 
     let peak = found
         .iter()
-        .take(refine_top)
-        .map(|&(a, b, _)| refine(gain, a, b, 1.0))
-        .max_by(|a, b| a.h.total_cmp(&b.h));
+        .take(SKIRT_PIN)
+        .map(|&c| insp.pin_crest(c))
+        .max_by(|a, b| a.1.total_cmp(&b.1));
 
-    let median = found.get(found.len() / 2).map_or(f64::NAN, |&(_, _, h)| h);
+    let median = found.get(found.len() / 2).map_or(f64::NAN, |c| c.at.1);
 
     Skirt {
         peak,
@@ -440,11 +395,8 @@ fn skirt(
 }
 
 /// Both stopbands outside the first nulls, lower then upper.
-pub(super) fn skirts(taps: &[Complex32], (lo, hi): (Option<f64>, Option<f64>)) -> (Skirt, Skirt) {
-    (
-        skirt(taps, lo, 0.0, SKIRT_OVERSAMPLE, SKIRT_REFINE),
-        skirt(taps, hi, PI, SKIRT_OVERSAMPLE, SKIRT_REFINE),
-    )
+pub(super) fn skirts(psi: Fold<'_>, (lo, hi): (Option<f64>, Option<f64>)) -> (Skirt, Skirt) {
+    (skirt(psi, lo, 0.0), skirt(psi, hi, PI))
 }
 
 /// Root of `resp` in a sign-changing bracket.

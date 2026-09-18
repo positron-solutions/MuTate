@@ -1812,7 +1812,7 @@ mod test {
                     let band_lo = level_moment(&psi, r.gain, (r.edges.0, r.peak_w), FLOOR_DB);
                     let band_hi = level_moment(&psi, r.gain, (r.peak_w, r.edges.1), FLOOR_DB);
 
-                    let (psl_lo, psl_hi) = skirts(&psi, (lo, hi));
+                    let (psl_lo, psl_hi) = skirts(Fold(&psi64), (lo, hi));
 
                     /// Offset of a dip in −3 dB widths, dash where the skirt never reaches zero.
                     let off = |w: Option<f64>| match w {
@@ -1834,10 +1834,10 @@ mod test {
                     /// Level, offset, and prominence of one skirt, dashes where the band holds
                     /// no lobe.
                     let cols = |s: &Skirt| match (s.peak, s.prominence_db()) {
-                        (Some(p), Some(prom)) => format!(
+                        (Some((w, h)), Some(prom)) => format!(
                             "{:>8.2} {:>+7.3} {:>6.1} {:>5}",
-                            db(p.h),
-                            (p.w - r.peak_w) / lobe,
+                            db(h),
+                            (w - r.peak_w) / lobe,
                             prom,
                             s.lobes
                         ),
@@ -1855,7 +1855,7 @@ mod test {
                         kappa(band_hi, hi, (r.peak_w, hi.unwrap_or(r.peak_w))),
                     );
 
-                    let reaches = |s: &Skirt| s.peak.is_some_and(|p| p.h >= r.gain);
+                    let reaches = |s: &Skirt| s.peak.is_some_and(|(_, h)| h >= r.gain);
                     assert!(
                         !reaches(&psl_lo) && !reaches(&psl_hi),
                         "Q {q} γ {gamma} ρ {rho} side lobe reaches the main lobe"

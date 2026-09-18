@@ -145,6 +145,14 @@ fn aim_at(cands: [f64; 2], l: &Local, side: impl Fn(f64) -> bool) -> Option<f64>
         .min_by(|a, b| (a - l.w).abs().total_cmp(&(b - l.w).abs()))
 }
 
+/// A local maximum as the comb sees it, carrying the bracket that pins it.
+#[derive(Clone, Copy)]
+pub(super) struct Crest {
+    /// ω and |H| at the comb sample
+    pub at: Sample,
+    bracket: Bracket,
+}
+
 /// Taps, scratch, and the resolution every hunt over them shares.
 pub(super) struct Inspect<'a> {
     psi: Fold<'a>,
@@ -368,6 +376,30 @@ impl<'a> Inspect<'a> {
             }
             old = new;
         }
+    }
+
+    /// Every local maximum of |H| between `from` and `stop`, at comb density, in walking order.
+    pub(super) fn crests(&mut self, from: f64, stop: f64) -> Vec<Crest> {
+        let n = ((stop - from).abs() * self.comb.density).ceil().max(2.0) as usize;
+        self.buf.clear();
+        for j in 0..=n {
+            let w = from + (stop - from) * j as f64 / n as f64;
+            let s = self.eval(Level::Mag, w);
+            self.buf.push(s);
+        }
+        self.buf
+            .windows(3)
+            .filter(|w| w[0].1 <= w[1].1 && w[1].1 > w[2].1)
+            .map(|w| Crest {
+                at: w[1],
+                bracket: (w[0], w[2]),
+            })
+            .collect()
+    }
+
+    /// ω and |H| at a crest, to the f64 resolution of ω.
+    pub(super) fn pin_crest(&mut self, c: Crest) -> Sample {
+        self.pin(Level::Mag, Seek::Crest, c.bracket)
     }
 }
 
