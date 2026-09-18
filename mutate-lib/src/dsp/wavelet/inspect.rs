@@ -444,9 +444,7 @@ pub(super) fn db(mag: f64) -> f64 {
 mod test {
     use core::f64::consts::PI;
 
-    use num_complex::Complex64;
-
-    use super::super::{Shape, WaveletSpec, PEAK_GAIN};
+    use super::super::{Shape, WaveletSpec, Weights, PEAK_GAIN};
     use super::*;
 
     #[test]
@@ -460,16 +458,12 @@ mod test {
             .bake();
 
         let bin = wav.bin(2_000.0, 48_000.0);
-        let psi: Vec<Complex64> = bin
-            .taps()
-            .iter()
-            .map(|t| Complex64::new(t[0] as f64, t[1] as f64))
-            .collect();
+        let wts = bin.weights();
 
         let w0 = bin.velocity();
         let mut buf = Vec::new();
 
-        let (w, gain) = Inspect::new(Fold(&psi), &mut buf, OVERSAMPLE)
+        let (w, gain) = Inspect::new(wts.psi(), &mut buf, OVERSAMPLE)
             .peak(w0, 0.0, PI)
             .expect("no crest in [0, pi]");
 

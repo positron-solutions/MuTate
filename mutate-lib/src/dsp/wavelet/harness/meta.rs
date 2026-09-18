@@ -46,8 +46,8 @@ fn first_null_matches_dense_scan() {
          offsets in −3 dB widths from the peak, Δ in naive steps\n"
     );
     println!(
-        "  {:>5} {:>4} {:>7} {:>5} {:>5} {:>11} {:>11} {:>10} {:>10} {:>10} {:>10}",
-        "Q", "𝛄", "𝛒", "side", "taps", "scanner", "naive", "Δ", "|Im H|", "radius", "Re H"
+        "  {:>5} {:>4} {:>7} {:>5} {:>5} {:>11} {:>11} {:>10} {:>10}",
+        "Q", "𝛄", "𝛒", "side", "taps", "scanner", "naive", "Δ", "H"
     );
 
     let mut failures = Vec::new();
@@ -59,24 +59,20 @@ fn first_null_matches_dense_scan() {
             .bake();
         let bin = wav.at_rho(rho);
         let taps = bin.taps();
-        let psi = unfold(&taps, 0);
-        let psi64 = lane(&taps, 0);
-        let fold = Fold(&psi64);
+        let wts = Weights::unpack(&taps);
+        let (psi, d) = (wts.psi(), wts.d());
 
-        let r = characterize(fold, bin.velocity());
+        let r = characterize(psi, bin.velocity());
         let lobe = r.edges.1 - r.edges.0;
         let side = if dir < 0.0 { "lo" } else { "hi" };
         let tag = format!("Q {q} γ {gamma} ρ {rho} {side}");
 
-        let resp = |w: f64| dtft(&psi, w).re;
-        // 16ε Σ|h|
-        let null = 16.0 * f64::EPSILON * l1(&psi);
-
+        let resp = |w: f64| psi.dtft(w);
         let from = if dir < 0.0 { r.edges.0 } else { r.edges.1 };
         let stop = from + dir * PI;
 
         // Naive
-        let step = TAU / (PER_BIN * psi.len()) as f64;
+        let step = TAU / (PER_BIN * psi.taps()) as f64;
         let mut prev = (from, resp(from));
         let naive = (1..)
             .map(|j| from + dir * step * j as f64)
@@ -91,14 +87,14 @@ fn first_null_matches_dense_scan() {
             .map(|(a, b)| bisect(&resp, a, b));
 
         let mut buf = Vec::new();
-        let fast = Inspect::new(Fold(&psi64), &mut buf, OVERSAMPLE)
+        let fast = Inspect::new(psi, &mut buf, OVERSAMPLE)
             .null(from, stop)
             .map(|(w, _)| w);
 
         let (Some(fast), Some(naive)) = (fast, naive) else {
             println!(
                 "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {side:>5} {:>5} missing",
-                psi.len()
+                psi.taps()
             );
             failures.push(format!("{tag} scanner {fast:?} naive {naive:?}"));
             continue;
@@ -106,13 +102,12 @@ fn first_null_matches_dense_scan() {
 
         let off = |w: f64| (w - r.peak_w) / lobe;
         let gap = (fast - naive).abs() / step;
-        let im = dtft(&psi, naive).im.abs();
-        let re_at_fast = resp(fast);
+        let h_at_fast = resp(fast);
 
         println!(
             "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {side:>5} {:>5} {:>+11.6} {:>+11.6} {gap:>10.3e} \
-             {im:>10.3e} {null:>10.3e} {re_at_fast:>10.3e}",
-            psi.len(),
+             {h_at_fast:>10.3e}",
+            psi.taps(),
             off(fast),
             off(naive),
         );
@@ -122,11 +117,6 @@ fn first_null_matches_dense_scan() {
                 "{tag} scanner {:+.4} lobes, naive {:+.4} lobes",
                 off(fast),
                 off(naive)
-            ));
-        }
-        if im > null {
-            failures.push(format!(
-                "{tag} Im H {im:.3e} outside null radius {null:.3e}"
             ));
         }
     }
@@ -156,19 +146,21 @@ fn reassignment_model_agrees() {
     for (fc, sr) in [(2_000.0f64, RATE), (12_000.0, RATE)] {
         let bin = wav.at_rho(fc / sr);
         let taps = bin.taps();
-        let (psi, d) = (unfold(&taps, 0), unfold(&taps, 2));
+        let wts = Weights::unpack(&taps);
+        let (psi, d) = (wts.psi(), wts.d());
+
         let w0 = bin.velocity();
 
         for k in -SPAN..=SPAN {
             let cents = k as f64 * STEP;
             let ratio = (cents / 1200.0).exp2();
-            let h = dtft(&psi, w0 * ratio).norm();
+            let h = psi.dtft(w0 * ratio).abs();
             if 20.0 * (h / PEAK_GAIN).log10() < GATE_DB {
                 continue;
             }
 
-            let ((bias, _), _) = tone_bias(&taps, w0, cents, RESOLUTION);
-            let (_, dr) = pairing_residual(&psi, &d, w0, w0 * ratio);
+            let ((bias, _), _) = tone_bias(&wts, w0, cents, RESOLUTION);
+            let (_, dr) = pairing_residual(psi, d, w0, w0 * ratio);
             let pred = 1200.0 / LN_2 * dr / ratio;
 
             assert!(

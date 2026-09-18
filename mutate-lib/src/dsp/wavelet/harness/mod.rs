@@ -13,129 +13,54 @@ mod meta;
 
 use core::f64::consts::{LN_2, PI, TAU};
 
-use num_complex::{Complex32, Complex64};
+use num_complex::Complex64;
 
 use super::inspect::*;
-use super::Fold;
+use super::{Fold, Weights};
 
-/// Folded weights back to centered taps.  Lane `c` selects ψ (0) or d (2).
-pub(super) fn unfold(w: &[[f32; 4]], c: usize) -> Vec<Complex32> {
-    let k = w.len();
-    let mut out = vec![Complex32::default(); 2 * k - 1];
-    out[k - 1] = Complex32::new(w[0][c], 0.0);
-    for (j, q) in w.iter().enumerate().skip(1) {
-        let h = Complex32::new(q[c], q[c + 1]);
-        out[k - 1 + j] = h;
-        out[k - 1 - j] = h.conj();
-    }
-    out
-}
-
-pub(super) fn widen(taps: &[Complex32]) -> Vec<Complex64> {
-    taps.iter()
-        .map(|h| Complex64::new(h.re as f64, h.im as f64))
-        .collect()
-}
-
-/// H(ω) of centered taps, ω in rad/sample.
-pub(super) fn dtft(taps: &[Complex32], w: f64) -> Complex64 {
-    // Phase drift accumulates proportionate to sqrt(n), and reseed caps the walk.
-    // Measured vs full re-seed out to about -270dB of difference, so well below what our
-    // eventual storage is losing to f32 truncation already.
-    //
-    // Set RESEED to 1 for full seeding if this test device is under scrutiny.  **Must be power
-    // of two for iteration mask.**
-    const RESEED: usize = 512;
-
-    let half = (taps.len() / 2) as f64;
-    // e^{−iω}
-    let step = Complex64::from_polar(1.0, -w);
-    let (mut rot, mut acc) = (Complex64::default(), Complex64::default());
-
-    for (j, h) in taps.iter().enumerate() {
-        if j & (RESEED - 1) == 0 {
-            // e^{iω(half − j)}
-            rot = Complex64::from_polar(1.0, w * (half - j as f64));
-        }
-        acc += Complex64::new(h.re as f64, h.im as f64) * rot;
-        rot *= step;
-        rot *= 0.5 * (3.0 - rot.norm_sqr());
-    }
-    acc
-}
-
-/// M_p = Σ_ν ν^p h_ν
-pub(super) fn moment(taps: &[Complex32], p: i32) -> Complex64 {
-    let half = (taps.len() / 2) as isize;
-    taps.iter()
-        .enumerate()
-        .map(|(j, h)| {
-            let nu = (j as isize - half) as f64;
-            Complex64::new(h.re as f64, h.im as f64) * nu.powi(p)
-        })
-        .sum()
-}
-
-/// Max of `f` over [lo, hi] at 16 samples per DTFT lobe of `len` taps.
-fn sweep(lo: f64, hi: f64, len: usize, f: impl Fn(f64) -> f64) -> f64 {
-    let n = ((hi - lo) * (16 * len) as f64 / TAU).ceil().max(1.0) as usize;
+/// Max of `f` over [lo, hi] at comb density for `taps` taps.
+fn sweep(lo: f64, hi: f64, taps: usize, f: impl Fn(f64) -> f64) -> f64 {
+    let n = ((hi - lo) * OVERSAMPLE * taps as f64 / TAU).ceil().max(1.0) as usize;
     (0..=n)
         .map(|k| f(lo + (hi - lo) * k as f64 / n as f64))
         .fold(0.0f64, f64::max)
 }
 
-/// Σ|h|, which bounds every envelope of `taps`.
-pub(super) fn l1(taps: &[Complex32]) -> f64 {
-    taps.iter().map(|h| h.norm() as f64).sum()
-}
-
 /// max |H| on [−0.05 ω₀, 0.05 ω₀].
-pub(super) fn dc_leak(taps: &[Complex32], w0: f64) -> f64 {
+pub(super) fn dc_leak(psi: Fold<'_>, w0: f64) -> f64 {
     let e = 0.05 * w0;
-    sweep(-e, e, taps.len(), |w| dtft(taps, w).norm())
+    sweep(-e, e, psi.taps(), |w| psi.dtft(w).abs())
 }
 
-/// W(m) = sum_j x[m + half - j] * h[j], matching `unit_tone_reads_unity`.
-pub(super) fn conv(h: &[Complex64], x: impl Fn(isize) -> f64, m: isize) -> Complex64 {
-    let half = (h.len() / 2) as isize;
-    h.iter()
-        .enumerate()
-        .map(|(j, &h)| h * x(m + half - j as isize))
-        .sum()
+/// ∫ h² dω on [lo, hi], h = max(0, 1 − dB/floor_db) with dB relative to `gain`.
+pub(super) fn level_moment(psi: Fold<'_>, gain: f64, (lo, hi): (f64, f64), floor_db: f64) -> f64 {
+    let n = ((hi - lo) * OVERSAMPLE * psi.taps() as f64 / TAU)
+        .ceil()
+        .max(1.0) as usize;
+    let dw = (hi - lo) / n as f64;
+    (0..n)
+        .map(|k| {
+            let w = lo + dw * (k as f64 + 0.5);
+            let level = db(psi.dtft(w).abs()) - db(gain);
+            (1.0 - level / floor_db).max(0.0).powi(2)
+        })
+        .sum::<f64>()
+        * dw
 }
 
-/// Ψ, D, and T about center `m`, accumulated as the shader does.
-fn project(w: &[[f32; 4]], x: impl Fn(isize) -> f64, m: isize) -> [Complex64; 3] {
-    let x0 = x(m);
-    let mut psi = Complex64::new(w[0][0] as f64 * x0, 0.0);
-    let mut dee = Complex64::new(w[0][2] as f64 * x0, 0.0);
-    let mut tee = Complex64::default();
-
-    for (k, c) in w.iter().enumerate().skip(1) {
-        let [a, b, p, q] = c.map(f64::from);
-        let (hi, lo) = (x(m + k as isize), x(m - k as isize));
-        let (sum, dif) = (hi + lo, hi - lo);
-
-        psi += Complex64::new(a * sum, -b * dif);
-        dee += Complex64::new(p * sum, -q * dif);
-        tee += k as f64 * Complex64::new(a * dif, -b * sum);
-    }
-    [psi, dee, tee]
-}
-
-/// `|R|` and `Re(R/Ψ̂)` for `R = H_d(ω) − (ω/ω₀)·H_ψ(ω)`.  The projection is what lands in
-/// `r̂`, the magnitude is the floor.
-pub(super) fn pairing_residual(psi: &[Complex32], d: &[Complex32], w0: f64, w: f64) -> (f64, f64) {
-    let h = dtft(psi, w);
-    let r = dtft(d, w) - h * (w / w0);
-    (r.norm(), (r * h.conj()).re / h.norm_sqr())
+/// `|R|` and `R/Ψ` for `R = H_d(ω) − (ω/ω₀)·H_ψ(ω)`.  The ratio is what lands in `r̂`, the
+/// magnitude is the floor.
+pub(super) fn pairing_residual(psi: Fold<'_>, d: Fold<'_>, w0: f64, w: f64) -> (f64, f64) {
+    let h = psi.dtft(w);
+    let r = d.dtft(w) - h * (w / w0);
+    (r.abs(), r / h)
 }
 
 /// Bias of `r̂` in cents and quadrature leak against a real tone detuned `cents` from `w0`,
 /// each as its mean over the carrier phase and its worst departure from that mean.  Phases
 /// step no coarser than `min_resolution` radians across the full circle.
 pub(super) fn tone_bias(
-    table: &[[f32; 4]],
+    wts: &Weights,
     w0: f64,
     cents: f64,
     min_resolution: f64,
@@ -148,7 +73,7 @@ pub(super) fn tone_bias(
         .map(|j| {
             let phase = TAU * j as f64 / n as f64;
             let tone = |k: isize| (wd * k as f64 + phase).cos();
-            let [psi, dee, _] = project(table, tone, 0);
+            let [psi, dee, _] = wts.project(tone, 0);
             // D/Ψ
             dee / psi
         })
@@ -168,12 +93,7 @@ pub(super) fn tone_bias(
 
 /// Departure of each lane from its phase mean, relative, after removing the carrier.
 /// Zero where the filter answers identically at every input phase.  Lanes are Ψ, D, T.
-pub(super) fn tone_response(
-    table: &[[f32; 4]],
-    w0: f64,
-    cents: f64,
-    min_resolution: f64,
-) -> [f64; 3] {
+pub(super) fn tone_response(wts: &Weights, w0: f64, cents: f64, min_resolution: f64) -> [f64; 3] {
     // ω₀ · 2^(c/1200)
     let wd = w0 * (cents / 1200.0).exp2();
     let n = (TAU / min_resolution).ceil().max(2.0) as usize;
@@ -184,7 +104,7 @@ pub(super) fn tone_response(
             let theta = TAU * j as f64 / n as f64;
             let tone = |k: isize| (wd * k as f64 + theta).cos();
             let carrier = Complex64::from_polar(1.0, -theta);
-            project(table, tone, 0).map(|v| v * carrier)
+            wts.project(tone, 0).map(|v| v * carrier)
         })
         .collect();
 
@@ -207,24 +127,12 @@ pub(super) fn burst(w: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
     }
 }
 
-/// σ² of |h| about the center, in samples.  Σν²|h| / Σ|h|.  Used to size things relative to the
-/// envelope.
-pub(super) fn envelope_var(taps: &[Complex32]) -> f64 {
-    let half = (taps.len() / 2) as isize;
-    let (num, den) = taps.iter().enumerate().fold((0.0, 0.0), |(n, d), (j, h)| {
-        let nu = (j as isize - half) as f64;
-        let a = h.norm() as f64;
-        (n + nu * nu * a, d + a)
-    });
-    num / den
-}
-
 /// Worst |t̂ − t̂_ref| in samples per level bucket, plus the worst imaginary skew in the top
 /// bucket.  Cumulative, so the -60 dB entry contains the -20 dB one.  Reassignment only has
 /// to hold where the pixel is bright enough to see.
 pub(super) fn t_hat_profile(
-    table: &[[f32; 4]],
-    reference: &[[f32; 4]],
+    wts: &Weights,
+    reference: &Weights,
     x: impl Fn(isize) -> f64,
     span: isize,
 ) -> ([f64; 3], f64) {
@@ -233,8 +141,8 @@ pub(super) fn t_hat_profile(
 
     let hops: Vec<(f64, f64, f64)> = (-span..=span)
         .map(|m| {
-            let [p, _, t] = project(table, &x, m);
-            let [rp, _, rt] = project(reference, &x, m);
+            let [p, _, t] = wts.project(&x, m);
+            let [rp, _, rt] = reference.project(&x, m);
             // T/Ψ
             let (q, r) = (t / p, rt / rp);
             (p.norm(), (q.re - r.re).abs(), q.im.abs())
@@ -282,25 +190,6 @@ fn bar(re: f64, im: f64, max: f64, cols: usize) -> String {
         })
         .collect();
     cells.trim_end().to_string()
-}
-
-/// ∫ h² dω on [lo, hi], h = max(0, 1 − dB/floor_db) with dB relative to `gain`.
-pub(super) fn level_moment(
-    taps: &[Complex32],
-    gain: f64,
-    (lo, hi): (f64, f64),
-    floor_db: f64,
-) -> f64 {
-    let n = ((hi - lo) * (16 * taps.len()) as f64 / TAU).ceil().max(1.0) as usize;
-    let dw = (hi - lo) / n as f64;
-    (0..n)
-        .map(|k| {
-            let w = lo + dw * (k as f64 + 0.5);
-            let db = 20.0 * (dtft(taps, w).norm() / gain).log10();
-            (1.0 - db / floor_db).max(0.0).powi(2)
-        })
-        .sum::<f64>()
-        * dw
 }
 
 /// Edges either side of `peak_w` where the response first falls `level_db` below `peak`,
@@ -411,14 +300,6 @@ pub(super) struct Response {
     pub floor: f64,
 }
 
-/// Select one channel from folded weights.   Lane `c` selects ψ (0) or d (2).
-// XXX very temporary, just to let some callers phase out.
-pub(super) fn lane(w: &[[f32; 4]], c: usize) -> Vec<Complex64> {
-    w.iter()
-        .map(|q| Complex64::new(q[c] as f64, q[c + 1] as f64))
-        .collect()
-}
-
 /// Peak, -3 dB relative width, image, and the positive-axis floor outside three half-power
 /// widths.  `w0` seeds the climb and brackets the edges.
 pub(super) fn characterize(psi: Fold<'_>, w0: f64) -> Response {
@@ -469,22 +350,22 @@ pub(super) fn chirp(a: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
     }
 }
 
-/// Real and imaginary parts of `taps`, centered, on a shared scale.
-pub(super) fn print_wave(label: &str, taps: &[Complex32], cols: usize) {
-    let n = taps.len();
+/// Real and imaginary parts of ψ, centered, on a shared scale.
+pub(super) fn print_wave(label: &str, psi: Fold<'_>, cols: usize) {
+    let n = psi.taps();
     println!("\n=== {label} ===");
-    let max = taps
-        .iter()
-        .map(|h| h.re.abs().max(h.im.abs()) as f64)
-        .fold(0.0, f64::max);
+    let max = psi
+        .mirrored()
+        .map(|h| h.re.abs().max(h.im.abs()))
+        .fold(0.0f64, f64::max);
 
-    for (j, h) in taps.iter().enumerate() {
+    for (j, h) in psi.mirrored().enumerate() {
         println!(
             "{:>6} {:>12.7} {:>12.7} {}",
             j as isize - (n / 2) as isize,
             h.re,
             h.im,
-            bar(h.re as f64, h.im as f64, max, cols)
+            bar(h.re, h.im, max, cols)
         );
     }
 }
@@ -496,7 +377,7 @@ const SHADE: [char; 5] = [' ', '░', '▒', '▓', '█'];
 /// in print order, columns are hops [−span, span].
 pub(super) fn print_transform(
     label: &str,
-    bank: &[(f64, &[[f32; 4]])],
+    bank: &[(f64, Weights)],
     x: impl Fn(isize) -> f64,
     span: isize,
     cols: usize,
@@ -509,13 +390,13 @@ pub(super) fn print_transform(
     // (1/aa) Σ |Ψ(m)| over the hops a column covers
     let mag: Vec<Vec<f64>> = bank
         .iter()
-        .map(|&(_, table)| {
+        .map(|(_, wts)| {
             (0..cols)
                 .map(|c| {
                     (0..aa)
                         .map(|j| {
                             let u = at(c) + step * ((j as f64 + 0.5) / aa as f64 - 0.5);
-                            project(table, &x, u.round() as isize)[0].norm()
+                            wts.project(&x, u.round() as isize)[0].norm()
                         })
                         .sum::<f64>()
                         / aa as f64
