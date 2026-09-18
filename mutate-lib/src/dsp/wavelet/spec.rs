@@ -141,7 +141,13 @@ impl Default for WaveletSpec {
             max_tail_db: defaults::TAIL_DB,
             max_load_quantum: defaults::LOAD_QUANTUM,
             max_delay: 0,
-            restriction: restrict::Restriction::default(),
+            restriction: restrict::Restriction {
+                // quadrature: restrict::Quadrature::Weighted,
+                quadrature: restrict::Quadrature::Complex,
+                // taper: restrict::Taper::Knee { curvature: 4.0 },
+                taper: restrict::Taper::Cylinder,
+                // taper: restrict::Taper::Rectangle,
+            },
         }
     }
 }

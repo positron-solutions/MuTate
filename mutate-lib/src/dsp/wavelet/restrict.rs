@@ -26,64 +26,6 @@
 //! little bit simpler.  In the restriction step, we are mainly concerned with ensuring that the
 //! shape of the wavelet we will refine is maximally well preserved every time we shove it through
 //! the grater.
-//!
-//! ## Restriction Math
-//!
-//! Each tap integrates the Morse **magnitude** uniformly over its time cell, then restores the
-//! exact center-frequency phase, strictly preserving both symmetry and the center frequency omega.
-//!
-//! `aₖ = (1 / Δt) ∫_{Cₖ} |ψ(t)| dt`
-//!
-//! `hₖ = aₖ · e⁻ⁱωᶜᵗᵏ`
-//!
-//! The restriction therefore separates envelope and phase:
-//!
-//! - `aₖ` represents the Morse envelope contained by the cell.
-//! - `e⁻ⁱωᶜᵗᵏ` fixes every tap to the same exact center-frequency rotation.
-//! - No envelope weighting can shift a tap's phase or local angular frequency.
-//! - Symmetric cells give `a₋ₖ = aₖ`.
-//!
-//! For a center-frequency input `x(t) = A · eⁱ(ωᶜt + θ)`, the response is
-//! phase-covariant:
-//!
-//! `y(θ) = eⁱθ · y(0)`
-//!
-//! and therefore its magnitude is independent of input phase:
-//!
-//! `|y(θ)| = |y(0)|`.
-//!
-//! The four cardinal input phases consequently remain equivalent in magnitude:
-//!
-//! `+A`, `+iA`, `−A`, `−iA`.
-//!
-//! Relative to the center frequency, an input detuning `Δω` sees only the restricted envelope:
-//!
-//! `H(ωᶜ + Δω) = Σₖ aₖ · e⁻ⁱΔωtₖ`
-//!
-//! With symmetric real envelope taps, the response is centered and even:
-//!
-//! `H(ωᶜ + Δω) = H(ωᶜ − Δω)`
-//!
-//! and the center frequency is stationary:
-//!
-//! `d|H| / dω | ω=ωᶜ = 0`
-//!
-//! At `Δω = 0`, all taps contribute coherently. Away from the center, progressive phase rotation
-//! produces cancellation according to the envelope's finite length and shape.
-//!
-//! For transient inputs, the response remains dependent on temporal overlap between the input
-//! envelope and the Morse envelope. Only the carrier phase is invariant.
-//!
-//! The restriction therefore has a single independent design quantity:
-//!
-//! `aₖ`
-//!
-//! The tap phase is fixed by the exact center frequency, while the tap magnitude is fixed by
-//! uniform integration of the Morse envelope.
-//!
-//! ## Reference Methods
-//!
-//! Alternative restrictions are supplied in order maintain a view of the relative effectiveness.
 
 use std::f64::consts::TAU;
 
@@ -91,122 +33,174 @@ use num_complex::Complex64;
 
 use super::{generate::hermite, spec::Shape, Grid};
 
-/// How the motherlet lands on taps.
+/// How the motherlet lands on a cell.
 #[derive(Clone, Copy, Default)]
-pub enum Restriction {
-    /// Linear interpolation of the grid at each tap center.  Worst approach.  Leads to unacceptable
-    /// aliasing at high omega.  Useful for demonstration...of mediocrity.
+pub enum Quadrature {
+    /// ψ at the tap center.
+    ///
+    ///     h_k = ψ(kρ)
     Nearest,
-    /// Complex cell average.  A slightly better technique, but not expressly aware of the polar
-    /// spiral we are approximating with taps.
-    Quadrature,
-    /// Cell average of |ψ| carried by the exact center-frequency rotation.
+    /// Cell mean of ψ.
     ///
-    /// `a_k = (1/ρ) ∫_{C_k} |ψ| du`
+    ///     h_k = (1/ρ) ∫_{C_k} ψ du
     ///
-    /// Discarding the residual phase leaves `a_k` real, even, and non-negative, so `|H|` is even
-    /// about `ω₀` and the peak is stationary there.  [`Restriction::Carrier`] keeps that structure
-    /// and recovers the chirp this drops.
-    Magnitude,
-    /// Cell projection of ψ onto the carrier, carried by the exact center-frequency rotation.
-    ///
-    /// `a_k = (1/ρ) ∫_{C_k} Re(ψ e^{-2πiu}) du`
-    ///
-    /// Linear in ψ, so the taps partition the matched filter's mass over the reach exactly and the
-    /// residual chirp survives into the tails that [`Restriction::Magnitude`] flattens.
-    Carrier,
-    /// [`Restriction::Carrier`] with the first discarded tap's magnitude removed from the reach.
-    ///
-    /// `a_k = (1/ρ) ∫_{C_k} Re(ψ e^{-2πiu}) du − a_K`
-    ///
-    /// Truncation along the envelope axis rather than the time axis, so the reach ends at zero
-    /// amplitude instead of stepping off the pedestal `a_K`.  Drops `K · a_K` of mass.
+    /// The box is real and even about the cell, so the restriction commutes with input phase.
     #[default]
-    Carrier2,
-    /// Likely some bullshit
-    Carrier3,
+    Complex,
+    /// Cell means of |ψ| and of the phase residual against the carrier, recombined.
+    ///
+    ///     h_k = ā_k · e^{i(2πkρ + θ̄_k)},  θ = arg(ψ e^{-2πiu})
+    ///
+    /// Nonlinear.  Intra-cell rotation cannot cancel magnitude, so the crest keeps its height.
+    Axial,
+    /// Trapezoidal footprint of width 3ρ over the cell means.
+    ///
+    ///     h_k = (B_{k-1} + 2 B_k + B_{k+1}) / 4
+    Weighted,
 }
 
-const CURVATURE: f64 = 1.0;
+/// How the reach ends.
+#[derive(Clone, Copy, Default)]
+pub enum Taper {
+    /// Full amplitude to the last tap.
+    Rectangle,
+    /// The first discarded magnitude removed proportionally.
+    ///
+    ///     g_k = 1 − a_K / a_k
+    ///
+    /// `a_K < a_k` over the reach, so `g_k` is a gain in (0, 1) and no tap can change sign.
+    #[default]
+    Cylinder,
+    /// A profile through `a_K` with curvature `κ`.
+    ///
+    ///     g_k = 1 − c_k / a_k,  c_k = a_K (1 + (1 − (k/K)^n) / κ)
+    Knee { curvature: f64 },
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct Restriction {
+    pub quadrature: Quadrature,
+    pub taper: Taper,
+    pub derivative: Derivative,
+}
 
 impl Restriction {
-    /// Writes `out.len()` folded weights in cell-average units, `out[0]` real.
+    /// Writes `out.len()` folded weights, `out[0]` real.
     pub(super) fn psi_into(self, grid: Grid, rho: f64, out: &mut [Complex64]) {
+        let reach = out.len();
+        let mut cells = vec![Complex64::default(); reach + 1];
+        self.quadrature.cells_into(grid, rho, &mut cells);
+
+        let gain = self.taper.gains(&cells);
+        for (o, (c, g)) in out.iter_mut().zip(cells.iter().zip(gain)) {
+            *o = c * g;
+        }
+        out[0].im = 0.0;
+    }
+}
+
+impl Quadrature {
+    /// Cell values for `k` in `[0, out.len())`, the last being the first discarded.
+    fn cells_into(self, grid: Grid, rho: f64, out: &mut [Complex64]) {
         let inv = rho.recip();
 
         match self {
-            Restriction::Nearest => {
-                out[0] = Complex64::new(grid.linear(0.0).re, 0.0);
-                for (j, o) in out.iter_mut().enumerate().skip(1) {
-                    *o = grid.linear(j as f64 * rho);
+            Quadrature::Nearest => {
+                for (j, o) in out.iter_mut().enumerate() {
+                    *o = grid.at(j as f64 * rho);
                 }
             }
-            Restriction::Quadrature => {
+            Quadrature::Complex => {
                 // the center cell is symmetric about u = 0, so the odd parts cancel
                 out[0] = Complex64::new(2.0 * inv * grid.mass(0.0, 0.5 * rho).re, 0.0);
                 for (j, o) in out.iter_mut().enumerate().skip(1) {
                     *o = inv * grid.mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
                 }
             }
-            Restriction::Magnitude | Restriction::Carrier => {
-                // The two methods only differ by how they calculate `g` and `dg`.
-                let (g, dg) = match self {
-                    Restriction::Magnitude => magnitude(grid),
-                    _ => carrier(grid),
+            Quadrature::Axial => {
+                let (a, da) = magnitude(grid);
+                let (t, dt) = residual(grid);
+                let mean = |p: &[f64], dp: &[f64], lo: f64, hi: f64| {
+                    inv * hermite::integrate_1d(p, dp, lo, hi, grid.du)
                 };
-                let mass = |a: f64, b: f64| inv * hermite::integrate_1d(&g, &dg, a, b, grid.du);
 
-                // a_k = (1/ρ) ∫_{C_k} g du,  h_k = a_k e^{2πi kρ}
-                out[0] = Complex64::new(2.0 * mass(0.0, 0.5 * rho), 0.0);
+                out[0] = Complex64::new(2.0 * mean(&a, &da, 0.0, 0.5 * rho), 0.0);
                 for (j, o) in out.iter_mut().enumerate().skip(1) {
-                    let a = mass((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
-                    let (s, c) = (TAU * j as f64 * rho).sin_cos();
-                    *o = a * Complex64::new(c, s);
+                    let (lo, hi) = ((j as f64 - 0.5) * rho, (j as f64 + 0.5) * rho);
+                    let arg = TAU * j as f64 * rho + mean(&t, &dt, lo, hi);
+                    let (s, c) = arg.sin_cos();
+                    *o = mean(&a, &da, lo, hi) * Complex64::new(c, s);
                 }
             }
-            Restriction::Carrier2 => {
-                let (g, dg) = carrier(grid);
-                let mass = |a: f64, b: f64| inv * hermite::integrate_1d(&g, &dg, a, b, grid.du);
-                let cell = |j: f64| mass((j - 0.5) * rho, (j + 0.5) * rho);
+            Quadrature::Weighted => {
+                Quadrature::Complex.cells_into(grid, rho, out);
 
-                // a_K, the first discarded cell
-                let pedestal = cell(out.len() as f64).abs();
+                // B_{-1} = conj(B_1), and one cell past the reach to close the stencil
+                let past = inv
+                    * grid.mass(
+                        (out.len() as f64 - 0.5) * rho,
+                        (out.len() as f64 + 0.5) * rho,
+                    );
+                let at = |j: isize| match j {
+                    -1 => out[1].conj(),
+                    j if j as usize == out.len() => past,
+                    j => out[j as usize],
+                };
 
-                // a_k = max((1/ρ) ∫_{C_k} g du − a_K, 0),  h_k = a_k e^{2πi kρ}
-                out[0] = Complex64::new(2.0 * mass(0.0, 0.5 * rho) - pedestal, 0.0);
-                for (j, o) in out.iter_mut().enumerate().skip(1) {
-                    let a = (cell(j as f64) - pedestal).max(0.0);
-                    let (s, c) = (TAU * j as f64 * rho).sin_cos();
-                    *o = a * Complex64::new(c, s);
-                }
-            }
-            Restriction::Carrier3 => {
-                let (g, dg) = carrier(grid);
-                let mass = |a: f64, b: f64| inv * hermite::integrate_1d(&g, &dg, a, b, grid.du);
-                let cell = |j: f64| mass((j - 0.5) * rho, (j + 0.5) * rho);
-
-                // A = K + 1, a_A, a'_A
-                let axis = out.len() as f64;
-                let anchor = cell(axis).abs();
-                let slope = 0.5 * (cell(axis + 1.0).abs() - cell(axis - 1.0).abs());
-
-                // s = −A a'_A / a_A, the envelope's decay at the anchor
-                let decay = -axis * slope / anchor;
-                let n = CURVATURE * decay;
-
-                // c_j = a_A (1 + (1 − (j/A)^n) / κ)
-                let c = |j: f64| anchor * (1.0 + (1.0 - (j / axis).powf(n)) / CURVATURE);
-
-                // a_k = max((1/ρ) ∫_{C_k} g du − c_k, 0),  h_k = a_k e^{2πi kρ}
-                out[0] = Complex64::new(2.0 * mass(0.0, 0.5 * rho) - c(0.0), 0.0);
-                for (j, o) in out.iter_mut().enumerate().skip(1) {
-                    let a = (cell(j as f64) - c(j as f64)).max(0.0);
-                    let (s, c) = (TAU * j as f64 * rho).sin_cos();
-                    *o = a * Complex64::new(c, s);
-                }
+                const AXIS: [f64; 3] = [0.25, 0.5, 0.25];
+                let smooth: Vec<Complex64> = (0..out.len() as isize)
+                    .map(|j| {
+                        AXIS.iter()
+                            .enumerate()
+                            .map(|(i, &w)| w * at(j + i as isize - 1))
+                            .sum()
+                    })
+                    .collect();
+                out.copy_from_slice(&smooth);
             }
         }
     }
+}
+
+impl Taper {
+    /// One nonnegative real gain per written tap, from the reach's first discarded magnitude.
+    fn gains(self, cells: &[Complex64]) -> Vec<f64> {
+        let reach = cells.len() - 1;
+        let axis = reach as f64;
+        let pedestal = cells[reach].norm();
+
+        let profile: Box<dyn Fn(f64) -> f64> = match self {
+            Taper::Rectangle => return vec![1.0; reach],
+            Taper::Cylinder => Box::new(move |_| pedestal),
+            // s = −K a'_K / a_K, one-sided since K is the last cell held
+            Taper::Knee { curvature } => {
+                let slope = pedestal - cells[reach - 1].norm();
+                let n = curvature * (-axis * slope / pedestal);
+                Box::new(move |j: f64| pedestal * (1.0 + (1.0 - (j / axis).powf(n)) / curvature))
+            }
+        };
+
+        (0..reach)
+            .map(|j| 1.0 - profile(j as f64) / cells[j].norm())
+            .collect()
+    }
+}
+
+/// arg(ψ e^{-2πiu}) and its derivative.  φ' = 2π Re(conj(ψ)·d)/|ψ|², so the residual sheds 2π.
+fn residual(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
+    grid.psi
+        .iter()
+        .zip(grid.d)
+        .enumerate()
+        .map(|(i, (&psi, &d))| {
+            let (s, c) = (TAU * i as f64 * grid.du).sin_cos();
+            let turn = Complex64::new(c, -s);
+            (
+                (psi * turn).arg(),
+                TAU * ((psi.re * d.re + psi.im * d.im) / psi.norm_sqr() - 1.0),
+            )
+        })
+        .unzip()
 }
 
 /// |ψ| and d|ψ|/du = Re(conj(ψ)·ψ')/|ψ| with ψ' = 2πi d.
@@ -217,20 +211,6 @@ fn magnitude(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
         .map(|(&psi, &d)| {
             let a = psi.norm();
             (a, TAU * (psi.im * d.re - psi.re * d.im) / a)
-        })
-        .unzip()
-}
-
-/// Re(ψ e^{-2πiu}) and its derivative.  ψ' = 2πi d, so the derivative is −2π Im((d − ψ) e^{-2πiu}).
-fn carrier(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
-    grid.psi
-        .iter()
-        .zip(grid.d)
-        .enumerate()
-        .map(|(i, (&psi, &d))| {
-            let (s, c) = (TAU * i as f64 * grid.du).sin_cos();
-            let turn = Complex64::new(c, -s);
-            ((psi * turn).re, -TAU * ((d - psi) * turn).im)
         })
         .unzip()
 }
@@ -284,181 +264,193 @@ pub(super) fn derivative_into(psi: &[Complex64], rho: f64, out: &mut [Complex64]
 
 #[cfg(test)]
 mod test {
-    use super::super::harness::{dtft, tone_response, unfold};
-    use super::super::{Bin, BinSpec, Shape, Wavelet, WaveletSpec};
+    use super::super::{Bake, Fold, WaveletSpec, PEAK_GAIN};
     use super::*;
 
-    const Q: f64 = 3.5;
-    const RHO: f64 = 0.116;
     const TAIL_DB: f64 = -60.0;
-    const METHODS: [Restriction; 4] = [
-        Restriction::Nearest,
-        Restriction::Quadrature,
-        Restriction::Magnitude,
-        Restriction::Carrier,
+    const GAMMAS: [f64; 3] = [2.0, 3.0, 4.0];
+    const QS: [f64; 4] = [3.5, 5.0, 8.5, 12.5];
+    const RHOS: [f64; 7] = [0.02, 0.06, 0.116, 0.189, 0.25, 0.312, 0.384];
+
+    const QUADRATURES: [(&str, Quadrature); 4] = [
+        ("nearest", Quadrature::Nearest),
+        ("complex", Quadrature::Complex),
+        ("axial", Quadrature::Axial),
+        ("weighted", Quadrature::Weighted),
     ];
 
-    /// Folded ψ taps under one restriction, `(Re ψ, Im ψ)` from the emitted table.
-    fn psi(restriction: Restriction) -> (Vec<Complex64>, f64) {
-        let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
-            .max_truncation(TAIL_DB)
-            .with_restriction(restriction)
-            .bake();
-        let bin = wav.at_rho(RHO);
-        let taps = bin
-            .taps()
-            .iter()
-            .map(|t| Complex64::new(t[0] as f64, t[1] as f64))
-            .collect();
+    const TAPERS: [(&str, Taper); 3] = [
+        ("rect", Taper::Rectangle),
+        ("cyl", Taper::Cylinder),
+        ("knee", Taper::Knee { curvature: 1.0 }),
+    ];
 
-        (taps, bin.velocity())
+    fn methods() -> Vec<(String, Restriction)> {
+        QUADRATURES
+            .into_iter()
+            .flat_map(|(qn, quadrature)| {
+                TAPERS.into_iter().map(move |(tn, taper)| {
+                    let r = Restriction {
+                        quadrature,
+                        taper,
+                        derivative: Derivative::Envelope,
+                    };
+                    (format!("{qn}/{tn}"), r)
+                })
+            })
+            .collect()
     }
 
-    /// Per tap phase advance against the carrier.  arg(h_{k+1} · conj h_k) = ω₀
-    #[test]
-    fn restriction_holds_omega() {
-        // const TOL: f64 = 1e-5;
-
-        let cols: Vec<(Vec<Complex64>, f64)> = METHODS.iter().map(|&m| psi(m)).collect();
-        let (psi, w0) = &cols[2];
-        let k = psi.len();
-
-        println!(
-            "\n=== RESTRICTION OMEGA (Q = {Q}, rho {RHO}, tail {TAIL_DB:.0} dB) w0 {w0:.9} ==="
-        );
-        println!(
-            "  {:>4} {:>14} {:>14} {:>14} {:>14}",
-            "k", "nearest", "quad", "mag", "carrier"
-        );
-
-        for j in 0..k - 1 {
-            let w = |c: &(Vec<Complex64>, f64)| (c.0[j + 1] * c.0[j].conj()).arg();
-            println!(
-                "  {j:>4} {:>14.9} {:>14.9} {:>14.9} {:>14.9}",
-                w(&cols[0]),
-                w(&cols[1]),
-                w(&cols[2]),
-                w(&cols[3])
-            );
-
-            let dev = (w(&cols[3]) - w0).abs();
-            // assert!(dev < TOL, "tap {j} omega off by {dev:.3e}");
-        }
+    fn median(mut v: Vec<f64>) -> f64 {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
     }
 
-    /// Tap magnitudes, and agreement on the sign of each component.
+    /// Sanity across every quadrature and taper over γ × Q × ρ.  Differences by design pass.
+    /// A lane fails only when it is broken on its own terms and the consensus does not share it.
+    ///
+    ///     pass   H(ω₀) > ½ PEAK_GAIN
+    ///     image  |H(−ω₀)| < 0.1 H(ω₀)
+    ///     body   ‖|h| − ā‖ / ‖ā‖,  ā the per tap median envelope
+    ///     bump   r_k = ln(|h_{k+1}| / |h_k|) > 0  and  r_k − median r_k > tol
     #[test]
-    fn restriction_holds_sign() {
-        /// relative error allowance between all three methods.
-        const TOL: f64 = 1e-2;
-        /// Below this the tap is truncation ripple and its sign is noise.
-        const FLOOR: f64 = 1e-5;
+    fn restrictions_are_sane() {
+        /// Taps below this fraction of the lane's crest do not vote.
+        const FLOOR: f64 = 1e-6;
+        const PASS: f64 = 0.5;
+        const IMAGE: f64 = 0.1;
+        // NOTE initial guesses, recalibrate from the first run.
+        const BODY_TOL: f64 = 0.3;
+        const RISE_TOL: f64 = 0.05;
 
-        let cols: Vec<(Vec<Complex64>, f64)> = METHODS.iter().map(|&m| psi(m)).collect();
-        let psi = &cols[2].0;
-        let peak = psi[0].norm();
+        let methods = methods();
+        let mut bake = Bake::default();
+        let mut failures = Vec::new();
 
-        println!("\n=== RESTRICTION MAGNITUDE (Q = {Q}, rho {RHO}, tail {TAIL_DB:.0} dB) ===");
         println!(
-            "  {:>4} {:>14} {:>14} {:>14} {:>14}",
-            "k", "nearest", "quad", "mag", "carrier"
+            "\n=== RESTRICTION SANITY (tail {TAIL_DB:.0} dB, {} methods) ===",
+            methods.len()
+        );
+        println!(
+            "  {:>4} {:>5} {:>6} {:>5} {:>9} {:>16} {:>9} {:>16} {:>4}",
+            "γ", "Q", "ρ", "taps", "body", "worst", "bump", "worst", "k"
         );
 
-        for j in 0..psi.len() {
-            let h = |c: &(Vec<Complex64>, f64)| c.0[j];
-            let a = |c: &(Vec<Complex64>, f64)| c.0[j].norm();
-            println!(
-                "  {j:>4} {:>14.9} {:>14.9} {:>14.9} {:>14.9}",
-                h(&cols[0]).norm(),
-                h(&cols[1]).norm(),
-                h(&cols[2]).norm(),
-                h(&cols[3]).norm(),
-            );
+        for gamma in GAMMAS {
+            for q in QS {
+                let mut wav = WaveletSpec::default()
+                    .with_shape(Shape::from_q(q, gamma))
+                    .max_truncation(TAIL_DB)
+                    .bake();
 
-            for c in &cols[..3] {
-                let dev = (a(c) - a(&cols[3])).abs() / peak;
-                assert!(dev < TOL, "tap {j} envelope off by {dev:.3e} of peak");
-            }
+                for rho in RHOS {
+                    let w0 = TAU * rho;
 
-            if j > 0 {
-                for (i, c) in cols.iter().enumerate() {
-                    let next = c.0[j - 1].norm();
-                    assert!(
-                        next >= a(c),
-                        "method {i} tap {j} rises {:.9} -> {next:.9}",
-                        a(c)
+                    let lanes: Vec<Vec<Complex64>> = methods
+                        .iter()
+                        .map(|&(_, r)| {
+                            wav.restriction = r;
+                            wav.at_rho(rho).write(&mut bake);
+                            bake.weights.psi.clone()
+                        })
+                        .collect();
+                    let k = lanes[0].len();
+
+                    let mags: Vec<Vec<f64>> = lanes
+                        .iter()
+                        .map(|l| l.iter().map(|h| h.norm()).collect())
+                        .collect();
+
+                    // ā_k
+                    let env: Vec<f64> = (0..k)
+                        .map(|j| median(mags.iter().map(|m| m[j]).collect()))
+                        .collect();
+                    // ‖ā‖
+                    let env_l2 = env.iter().map(|a| a * a).sum::<f64>().sqrt();
+
+                    // ln(|h_{k+1}| / |h_k|)
+                    let rise = |m: &[f64], j: usize| (m[j + 1] / m[j]).ln();
+                    // median r_k
+                    let consensus: Vec<f64> = (0..k - 1)
+                        .map(|j| median(mags.iter().map(|m| rise(m, j)).collect()))
+                        .collect();
+
+                    let mut worst_body = (0.0f64, "");
+                    let mut worst_bump = (f64::NEG_INFINITY, "", 0usize);
+
+                    for ((name, _), (lane, mag)) in methods.iter().zip(lanes.iter().zip(&mags)) {
+                        let tag = format!("γ {gamma} Q {q} ρ {rho} {name}");
+
+                        if !lane.iter().all(|h| h.is_finite()) {
+                            failures.push(format!("{tag} non-finite tap"));
+                            continue;
+                        }
+
+                        // carrier and image
+                        let psi = Fold::new(lane);
+                        let (pass, image) = (psi.dtft(w0), psi.dtft(-w0).abs());
+                        if pass < PASS * PEAK_GAIN {
+                            failures.push(format!("{tag} H(ω₀) {pass:.4}"));
+                        }
+                        if image > IMAGE * pass.abs() {
+                            failures.push(format!(
+                                "{tag} image {:.2} dB",
+                                20.0 * (image / pass.abs()).log10()
+                            ));
+                        }
+
+                        // ‖|h| − ā‖ / ‖ā‖
+                        let body = mag
+                            .iter()
+                            .zip(&env)
+                            .map(|(a, e)| (a - e).powi(2))
+                            .sum::<f64>()
+                            .sqrt()
+                            / env_l2;
+                        if body > worst_body.0 {
+                            worst_body = (body, name);
+                        }
+                        if body > BODY_TOL {
+                            failures.push(format!("{tag} body {body:.3}"));
+                        }
+
+                        // outward rise beyond the consensus
+                        let crest = mag.iter().fold(0.0f64, |a, &b| a.max(b));
+                        for j in 0..k - 1 {
+                            if mag[j + 1] < FLOOR * crest {
+                                continue;
+                            }
+                            let r = rise(mag, j);
+                            if r <= 0.0 {
+                                continue;
+                            }
+                            let excess = r - consensus[j];
+                            if excess > worst_bump.0 {
+                                worst_bump = (excess, name, j + 1);
+                            }
+                            if excess > RISE_TOL {
+                                failures.push(format!(
+                                    "{tag} bump at k {} rise {r:.4} consensus {:.4}",
+                                    j + 1,
+                                    consensus[j]
+                                ));
+                            }
+                        }
+                    }
+
+                    println!(
+                        "  {gamma:>4.1} {q:>5.1} {rho:>6.3} {:>5} {:>9.2e} {:>16} {:>9.2e} {:>16} {:>4}",
+                        2 * k - 1,
+                        worst_body.0,
+                        worst_body.1,
+                        worst_bump.0.max(0.0),
+                        worst_bump.1,
+                        worst_bump.2,
                     );
                 }
             }
         }
-    }
 
-    /// Whether each restriction answers the same at every input phase.  A tone is driven through
-    /// the full 2π of carrier phase and each lane is demodulated, so the reported number is the
-    /// worst relative departure from that lane's phase mean.  Zero is phase blind.
-    // Relatively slow.  Did detect, modestly, that the Restriciton::Nearest has the least
-    // phase-stable response, but its still pretty stable (FIRs amirite?)
-    #[ignore]
-    #[test]
-    fn restriction_holds_phase() {
-        const RESOLUTION: f64 = 0.05;
-        const STEP: f64 = 100.0;
-        const SPAN: isize = 3;
-
-        /// Dense enough to resolve a sawtooth in the carrier quantization of `Nearest`.
-        const RHOS: usize = 64;
-        /// Spanning an octave from `RHO`, where the tap count roughly halves.
-        const RHO_HI: f64 = 2.0 * RHO;
-
-        /// Nearest is coarse, so this only catches a method that has stopped working.
-        const SWING_TOL: f64 = 1e-2;
-
-        /// Emitted table and carrier at `rho` under one restriction.
-        fn table(restriction: Restriction, rho: f64) -> (Vec<[f32; 4]>, f64) {
-            let wav = WaveletSpec::default()
-                .with_shape(Shape::from_q(Q, 3.0))
-                .max_truncation(TAIL_DB)
-                .with_restriction(restriction)
-                .bake();
-            let bin = wav.at_rho(rho);
-            (bin.taps().to_vec(), bin.velocity())
-        }
-
-        println!("\n=== RESTRICTION PHASE (Q = {Q}, tail {TAIL_DB:.0} dB) ===");
-        println!(
-            "  {:>8} {:>6} {:>9} {:>11} {:>11} {:>11}",
-            "rho", "taps", "method", "psi", "d", "t"
-        );
-
-        for i in 0..RHOS {
-            // ρ · (ρ_hi / ρ)^(i / n), geometric so tap count steps evenly
-            let rho = RHO * (RHO_HI / RHO).powf(i as f64 / (RHOS - 1) as f64);
-
-            for (name, &m) in ["nearest", "quad", "mag", "carrier"].iter().zip(&METHODS) {
-                let c = table(m, rho);
-
-                // worst over detuning, which carries no trend of its own
-                let worst = (-SPAN..=SPAN).fold([0.0f64; 3], |acc, k| {
-                    let s = tone_response(&c.0, c.1, k as f64 * STEP, RESOLUTION);
-                    core::array::from_fn(|l| acc[l].max(s[l]))
-                });
-
-                println!(
-                    "  {rho:>8.5} {:>6} {name:>9} {:>11.2e} {:>11.2e} {:>11.2e}",
-                    c.0.len(),
-                    worst[0],
-                    worst[1],
-                    worst[2]
-                );
-
-                for (lane, s) in ["psi", "d", "t"].iter().zip(worst) {
-                    assert!(
-                        s < SWING_TOL,
-                        "{name} rho {rho:.5} lane {lane} swing {s:.3e}"
-                    );
-                }
-            }
-        }
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
     }
 }
