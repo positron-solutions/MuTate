@@ -81,6 +81,15 @@ impl Seek {
                 .map(|w| (w[0], w[1])),
         }
     }
+
+    /// Whether a landing is evidence the walk has left the feature behind: below where it
+    /// started, convex, and rising back the way it came.
+    fn retreat(&self, start: &Local, new: &Local, dir: f64) -> bool {
+        match self {
+            Seek::Crest => new.g[1] < start.g[1] && new.k > 0.0 && dir * new.s < 0.0,
+            Seek::Zero => false,
+        }
+    }
 }
 
 /// Quadratic model of a response on [w − step, w + step].
@@ -156,11 +165,16 @@ impl<'a> Inspect<'a> {
         }
     }
 
-    /// ω and |H| at the highest point in the basin around `from`, within [lo, hi].
+    /// ω and |H| at the highest point in the basin around `from`, within [lo, hi].  The start
+    /// stencil only picks which side to try first.
     pub(super) fn peak(&mut self, from: f64, lo: f64, hi: f64) -> Option<Sample> {
         let start = self.local(Level::Mag, from);
-        let stop = if start.s > 0.0 { hi } else { lo };
-        self.hunt(Level::Mag, Seek::Crest, start, stop)
+        let (ahead, behind) = match start.s > 0.0 {
+            true => (hi, lo),
+            false => (lo, hi),
+        };
+        self.hunt(Level::Mag, Seek::Crest, start, ahead)
+            .or_else(|| self.hunt(Level::Mag, Seek::Crest, start, behind))
     }
 
     /// ω and |H| where the response first meets `level` dB, from `from` toward `stop`.
@@ -338,6 +352,10 @@ impl<'a> Inspect<'a> {
             if new.k.is_finite() && new.vertex() > lo && new.vertex() < hi {
                 let t = self.comb(what, seek, old.w, land)?;
                 return Some(self.pin(what, seek, t));
+            }
+
+            if seek.retreat(&start, &new, dir) {
+                return None;
             }
 
             if land == stop {
