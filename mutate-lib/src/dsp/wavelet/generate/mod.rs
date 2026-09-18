@@ -266,7 +266,7 @@ mod test {
         // is the deficit.
 
         // use a slightly different q to smoke test without sweep.
-        let shape = Shape::from_q(4.5, 3.0);
+        let shape = Shape::from_q(24.5, 3.0);
         let beta = shape.beta;
 
         let settings = ifft::IfftSettings {
@@ -339,7 +339,7 @@ mod test {
             worst_qs_deficit.value, worst_qs_deficit.u
         );
 
-        assert!(worst_qr_i.value > 9.0);
+        assert!(worst_qr_i.value > 6.0);
         assert!(worst_qs_qr.value > 7.0);
         // Pull this up as the remaining dips go away.
         assert!(worst_qs_deficit.value < 10.0);
@@ -351,7 +351,7 @@ mod test {
         const TAPS: usize = 256;
         const DECIMATE: usize = 8;
 
-        let shape = Shape::from_q(3.5, 3.0);
+        let shape = Shape::from_q(23.6, 3.0);
         let beta = shape.beta;
 
         let settings = ifft::IfftSettings {

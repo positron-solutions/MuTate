@@ -110,22 +110,26 @@ pub(crate) fn morse_half_taps(
     let half_len = settings.half_len();
     let resolution = settings.resolution as f64;
 
-    let s_per_bin = shape.peak() / record;
     let zeta_per_bin = 1.0 / record;
+    let beta_per_gamma = shape.beta / shape.gamma;
 
     // Integer binade shift placing the spectral peak in [1, 2).  Exponent-only, so folding it
     // back out through `norm` restores the mantissa exactly.
-    let peak = shape.peak();
-    let shift = -((shape.beta * peak.ln() - peak.powf(shape.gamma)) / LN_2).floor();
-    let norm = (-shift).exp2() / record;
+    // let peak = shape.peak();
+    // let shift = -((shape.beta * peak.ln() - peak.powf(shape.gamma)) / LN_2).floor();
+
+    // Ψ(1) = 2
+    let norm = 2.0 / record;
 
     // The envelope underflows well before the Nyquist bin, so the significant support is far
     // shorter than the transform would be.  Collect it once and reuse across all samples.
     let bins: Vec<[f64; 4]> = (1..settings.n_fft() / 2)
         .map(|j| {
-            let s = j as f64 * s_per_bin;
-            let mag = ((shape.beta * s.ln() - s.powf(shape.gamma)) / LN_2 + shift).exp2();
             let zeta = j as f64 * zeta_per_bin;
+            // y = γ ln ζ
+            let y = shape.gamma * ((j as f64 - record) / record).ln_1p();
+            // ln Ψ(ζ) = (β/γ)(y − (e^y − 1))
+            let mag = (beta_per_gamma * (y - y.exp_m1())).exp();
             [j as f64, mag, mag * zeta, mag * zeta * zeta]
         })
         .filter(|b| b[1] > 0.0)

@@ -528,6 +528,10 @@ impl<'w> Bin<'w> {
 
         w.resize(self.k);
         wav.restriction.psi_into(wav.grid(), rho, &mut w.psi);
+        debug_assert!(
+            w.psi.iter().all(|p| p.is_finite()),
+            "restriction produced a non-finite weight at rho {rho}"
+        );
 
         // ω_peak and H(ω_peak)
         let (peak, gain) = Inspect::new(w.psi(), probe, OVERSAMPLE)
@@ -764,6 +768,9 @@ impl<'a> Fold<'a> {
 // Proper location for this has become amorphous.  Burn something when convenient.
 #[cfg(test)]
 fn fmt_e(x: f64) -> String {
+    if !x.is_finite() {
+        return format!("{x:>9}");
+    }
     let s = format!("{x:+.2e}");
     // split "±m.mme±dd" into mantissa and exponent, then zero-pad the exponent
     let (mantissa, exp) = s.split_once('e').unwrap_or(("999", "999"));
@@ -1635,13 +1642,13 @@ mod test {
     /// a row is a filter and not a sample rate.
     #[test]
     fn print_response() {
-        const Q: f64 = 16.0; // XXX This can't go much higher without fixing something about this test.
+        const Q: f64 = 40.0;
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -40.0;
+        const TAIL_DB: f64 = -60.0;
 
         const ROWS: usize = 200;
         const COLS: usize = 200;
-        const ANTI_ALIAS: usize = 4;
+        const ANTI_ALIAS: usize = 8;
         const FLOOR_DB: f64 = -100.0;
         const LOBES: f64 = 96.0;
 

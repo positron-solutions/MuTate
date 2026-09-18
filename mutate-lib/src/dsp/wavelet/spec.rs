@@ -198,12 +198,26 @@ impl WaveletSpec {
             + 0.25;
 
         let jet = QuadJet::standard(self.shape);
-        let (psi, d) = (0..=(u_max / du).ceil() as usize + 1)
+        let (mut psi, mut d): (Vec<Complex64>, Vec<Complex64>) = (0..=(u_max / du).ceil() as usize
+            + 1)
             .map(|j| {
                 let t = jet.tap_at(j as f64 * du);
                 (t.psi, t.d)
             })
             .unzip();
+
+        // Normalize to [0,2) range without touching the mantissas.
+        let peak = psi
+            .iter()
+            .map(|p| p.re.abs().max(p.im.abs()))
+            .fold(0.0f64, f64::max);
+        debug_assert!(peak.is_normal());
+        let exponent = (peak.to_bits() >> 52 & 0x7ff) as i32 - 1023;
+        let scale = 2f64.powi(-exponent);
+        for (p, q) in psi.iter_mut().zip(&mut d) {
+            *p *= scale;
+            *q *= scale;
+        }
 
         Wavelet {
             shape: self.shape,

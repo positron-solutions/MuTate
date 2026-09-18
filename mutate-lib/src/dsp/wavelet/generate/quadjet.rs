@@ -55,7 +55,7 @@
 //! |---|---|---|
 //! | `B` | `b` | `q^γ - 1`, the single number every derivative of the phase is affine in |
 //! | `g` | `g` | the phase in `v`, whose roots satisfy `g(v) = -x²/2` |
-//! | `Φ` | `phi` | the phase; at a root, `Φ = ln q + B(1 - 1/γ) - 1/γ` |
+//! | `Φ` | `phi` | the phase, zero at the `τ = 0` seed; at a root, `Φ = ln q + B(1 - 1/γ)` |
 //!
 //! ### Saddle geometry
 //!
@@ -202,14 +202,13 @@ const TRACE_MAX_SPLIT: u32 = 8;
 
 /// The shape, together with the forms of it the rest of the file actually reads.  `ω_p` is where
 /// the saddle sits at `τ = 0` and sets the scale `ω` is measured in, and the two integer casts
-/// of `γ` are what the loop bounds and `powi` want.
+/// of `γ` are what the loop bounds and `powi` want.e
 #[derive(Clone, Copy)]
 struct Frame {
     beta: f64,
     gamma: f64,
     g: usize,
     gi: i32,
-    peak: f64,
 }
 
 impl Frame {
@@ -220,7 +219,6 @@ impl Frame {
             gamma,
             g: gamma as usize,
             gi: gamma as i32,
-            peak: shape.peak(),
         }
     }
 }
@@ -391,7 +389,7 @@ impl QuadJet {
 
     fn integrate(&self, u: f64) -> QuadJetResult {
         let frame = &self.frame;
-        let Frame { beta, g, peak, .. } = *frame;
+        let Frame { beta, g, .. } = *frame;
         let tau = TAU * u.abs() / beta;
         let rel = relative(self.tol);
 
@@ -416,14 +414,13 @@ impl QuadJet {
         }
         let active = &active[..live];
 
-        // Every scale carries `e^{βΦ}`, whose real part runs to hundreds before anything else in
-        // the tap goes wrong.  Dividing the dominant saddle's exponent out leaves ratios near
-        // unity for everything downstream to compare, and it goes back on once at the end.
+        // Every scale carries `e^{βΦ}`.  Dividing the dominant saddle's exponent out leaves
+        // ratios near unity for everything downstream to compare, and it goes back on once at
+        // the end.
         let log_scale = active
             .iter()
             .map(|&i| beta * saddles[i].phi.re)
-            .fold(f64::NEG_INFINITY, f64::max)
-            + beta * peak.ln();
+            .fold(f64::NEG_INFINITY, f64::max);
 
         let mut scales = [[Complex64::default(); 2]; MAX_G];
         for i in 0..g {
@@ -581,10 +578,10 @@ impl QuadJet {
             d_im.add(qv.im);
         }
 
-        let unscale = log_scale.exp() / peak;
-        let unscale_d = unscale / peak;
+        // a_{β,γ} = 2(eγ/β)^{β/γ}
+        let unscale = 2.0 * log_scale.exp();
         let psi = Complex64::new(psi_re.sum(), psi_im.sum()) * unscale;
-        let d = Complex64::new(d_re.sum(), d_im.sum()) * unscale_d;
+        let d = Complex64::new(d_re.sum(), d_im.sum()) * unscale;
         let residual = residual * unscale;
 
         if u < 0.0 {
@@ -653,13 +650,13 @@ struct Saddle {
 }
 
 impl Saddle {
-    /// The phase `Φ = ln q + B(1 - 1/γ) - 1/γ` at a root, where the saddle condition collapses
+    /// The phase `Φ = ln q + B(1 - 1/γ)` at a root, where the saddle condition collapses
     /// `q^γ - 1` into `B = iτq`.  Integer power rather than `powf`, since the principal branch
     /// of `q^γ` parts company with the polynomial over most of the root set.
     fn new(q: Complex64, frame: &Frame) -> Self {
         let Frame { gamma, gi, .. } = *frame;
         let b = q.powi(gi) - 1.0;
-        let phi = q.ln() + b * (1.0 - 1.0 / gamma) - 1.0 / gamma;
+        let phi = q.ln() + b * (1.0 - 1.0 / gamma);
 
         Saddle {
             q,
@@ -1347,9 +1344,8 @@ impl Saddle {
     /// This saddle's prefactor for each channel, with the dominant `e^{βΦ}` already divided out
     /// so that the caller can restore it once at the end.
     fn scales(&self, frame: &Frame, log_scale: f64) -> [Complex64; 2] {
-        let Frame { beta, peak, .. } = *frame;
-        let base = (self.phi * beta + beta * peak.ln() - log_scale).exp();
-        [base * peak * self.q, base * peak * peak * self.q * self.q]
+        let base = (self.phi * frame.beta - log_scale).exp();
+        [base * self.q, base * self.q * self.q]
     }
 
     /// The phase `g(v) = v + B(e^v - 1) - ((B+1)/γ)(e^{γv} - 1)` measured from the saddle, along

@@ -44,21 +44,24 @@ pub struct DeformedContourEval {
 
 /// # Deformed Contour Method
 ///
-/// Same integral as the Airy series, on a different path.  `[0, ∞)` becomes `0 → ω_s → ∞·e^{iθ}`,
-/// where `ω_s` is the saddle of `β ln ω − ω^γ + iωt` and `θ` is the steepest-descent direction
-/// clamped into the sector where `e^{-ω^γ}` still closes the contour at infinity.  The modulus is
-/// monotone along both legs, so there is no cancellation to fight and f64 keeps ~14 digits at any
-/// `u`.  No asymptotics: the integrand is exact everywhere on the path.
+/// Same integral as the Airy series, on a different path, in `ζ = ω/ω_p`.  `[0, ∞)` becomes
+/// `0 → ζ_s → ∞·e^{iθ}`, where `ζ_s` is the saddle of `β(ln ζ − (ζ^γ − 1)/γ) + iζt` and `θ` is
+/// the steepest-descent direction clamped into the sector where `e^{-ζ^γ}` still closes the
+/// contour at infinity.  The modulus is monotone along both legs, so there is no cancellation to
+/// fight and f64 keeps ~14 digits at any `u`.  No asymptotics: the integrand is exact everywhere
+/// on the path.
 ///
-/// `u` and the `1/peak` amplitude match the Airy module, so values are directly comparable.
+/// Amplitude follows Lilly's convention, `Ψ(1) = 2`.
 pub fn tap_at(shape: Shape, u: f64) -> DeformedContourEval {
-    let peak = (shape.beta / shape.gamma).powf(1.0 / shape.gamma);
-    let t = TAU * u / peak;
+    let t = TAU * u;
     let saddle = saddle(shape, t);
     let dir = tail_direction(shape, saddle);
 
+    // β(ln ζ − (ζ^γ − 1)/γ) + iζt
     let f = |w: Complex64| {
-        (shape.beta * w.ln() - w.powf(shape.gamma) + Complex64::new(0.0, t) * w).exp()
+        (shape.beta * (w.ln() - (w.powf(shape.gamma) - 1.0) / shape.gamma)
+            + Complex64::new(0.0, t) * w)
+            .exp()
     };
     let head = |x: f64| f(saddle * x) * saddle;
     let tail = |s: f64| f(saddle + dir * s) * dir;
@@ -72,7 +75,7 @@ pub fn tap_at(shape: Shape, u: f64) -> DeformedContourEval {
     let coarse = c0 + c1;
 
     DeformedContourEval {
-        value: fine / peak,
+        value: 2.0 * fine,
         digits_lost: ((m0 + m1) / fine.norm().max(f64::MIN_POSITIVE))
             .log10()
             .max(0.0),
@@ -80,24 +83,25 @@ pub fn tap_at(shape: Shape, u: f64) -> DeformedContourEval {
     }
 }
 
-/// Root of `φ'(ω) = β/ω − γω^(γ-1) + it`, seeded from the pure-oscillatory saddle offset by the
-/// peak frequency so small `t` lands on the real root instead of wandering.
+/// Root of `φ'(ζ) = β(1/ζ − ζ^(γ-1)) + it`, seeded from the pure-oscillatory saddle offset by the
+/// carrier so small `t` lands on the real root instead of wandering.
 fn saddle(shape: Shape, t: f64) -> Complex64 {
     let Shape { beta, gamma } = shape;
     let mut w = Complex64::from_polar(
-        (t / gamma).powf(1.0 / (gamma - 1.0)),
+        (t / beta).powf(1.0 / (gamma - 1.0)),
         PI / (2.0 * (gamma - 1.0)),
-    ) + Complex64::new((beta / gamma).powf(1.0 / gamma), 0.0);
+    ) + 1.0;
 
     for _ in 0..64 {
-        let d1 = beta / w - gamma * w.powf(gamma - 1.0) + Complex64::new(0.0, t);
+        let d1 = beta * (w.inv() - w.powf(gamma - 1.0)) + Complex64::new(0.0, t);
         w -= d1 / curvature(shape, w);
     }
     w
 }
 
+// φ''(ζ) = −β(1/ζ² + (γ−1)ζ^(γ−2))
 fn curvature(shape: Shape, w: Complex64) -> Complex64 {
-    -shape.beta / (w * w) - shape.gamma * (shape.gamma - 1.0) * w.powf(shape.gamma - 2.0)
+    -shape.beta * ((w * w).inv() + (shape.gamma - 1.0) * w.powf(shape.gamma - 2.0))
 }
 
 /// Steepest descent at the saddle, oriented away from the origin, clamped inside the sector where
