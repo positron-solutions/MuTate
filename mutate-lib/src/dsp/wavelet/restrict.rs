@@ -215,18 +215,37 @@ fn magnitude(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
         .unzip()
 }
 
+/// How d is drawn from the emitted ψ.
+#[derive(Clone, Copy, Default)]
+pub enum Derivative {
+    /// Stencil on the envelope demodulated at the carrier.
+    ///
+    ///     ψ_k = a_k e^{2πikρ}
+    ///     b_k = Σ_m c_m (a_{k+m} − a_{k−m})
+    ///     d_k = (a_k − (i/ω₀) b_k) e^{2πikρ}
+    #[default]
+    Envelope,
+}
+
+impl Derivative {
+    /// Writes `psi.len()` folded weights of d, demodulated at `rho` and reading ω/ω₀.
+    pub(super) fn write(self, psi: &[Complex64], rho: f64, w0: f64, out: &mut [Complex64]) {
+        match self {
+            Derivative::Envelope => envelope(psi, rho, w0, out),
+        }
+    }
+}
+
 /// Central first difference, order 2·len.
 const STENCIL: [f64; 3] = [0.75, -0.15, 1.0 / 60.0];
 
 /// Reach padding the stencil reads past the last tap.
 pub(super) const STENCIL_RADIUS: usize = STENCIL.len();
 
-/// d from the emitted ψ, satisfying D̂(ω) = (ω/ω₀)·Ψ̂(ω) for whatever envelope ψ carries.
-///
-///     ψ_k = a_k e^{2πikρ}
-///     b_k = Σ_m c_m (a_{k+m} − a_{k−m})
-///     d_k = (a_k − (i/ω₀) b_k) e^{2πikρ}
-pub(super) fn derivative_into(psi: &[Complex64], rho: f64, out: &mut [Complex64]) {
+/// ψ_k = a_k e^{2πikρ}
+/// b_k = Σ_m c_m (a_{k+m} − a_{k−m})
+/// d_k = (2πρ a_k − i b_k) e^{2πikρ} / ω₀
+fn envelope(psi: &[Complex64], rho: f64, w0: f64, out: &mut [Complex64]) {
     let k = psi.len();
 
     // a_j = ψ_j e^{-2πijρ}, Hermitian
@@ -244,7 +263,8 @@ pub(super) fn derivative_into(psi: &[Complex64], rho: f64, out: &mut [Complex64]
         }
     };
 
-    let inv = (TAU * rho).recip();
+    let carrier = TAU * rho;
+    let inv = w0.recip();
 
     for (j, o) in out.iter_mut().enumerate() {
         let n = j as isize;
@@ -258,7 +278,7 @@ pub(super) fn derivative_into(psi: &[Complex64], rho: f64, out: &mut [Complex64]
             .sum();
 
         let (s, c) = (TAU * j as f64 * rho).sin_cos();
-        *o = (at(n) - Complex64::i() * inv * b) * Complex64::new(c, s);
+        *o = (carrier * at(n) - Complex64::i() * b) * inv * Complex64::new(c, s);
     }
 }
 

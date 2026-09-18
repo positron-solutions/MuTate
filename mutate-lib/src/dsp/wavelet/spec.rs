@@ -147,6 +147,7 @@ impl Default for WaveletSpec {
                 // taper: restrict::Taper::Knee { curvature: 4.0 },
                 taper: restrict::Taper::Cylinder,
                 // taper: restrict::Taper::Rectangle,
+                derivative: restrict::Derivative::Envelope,
             },
         }
     }

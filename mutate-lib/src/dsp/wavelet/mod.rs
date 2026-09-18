@@ -548,8 +548,9 @@ impl<'w> Bin<'w> {
             *p *= scale;
         }
 
-        // XXX This needs to not presume any favored omega
-        restrict::derivative_into(&w.psi, peak / TAU, &mut w.d);
+        wav.restriction
+            .derivative
+            .write(&w.psi, peak / TAU, w0, &mut w.d);
     }
 
     /// Upstream owes an `out` at least `folded_taps()` long.
@@ -1277,6 +1278,97 @@ mod test {
                 );
             }
         }
+    }
+
+    /// Amplitude a linear chirp sends to the wrong bin, read at its reassigned point.
+    ///
+    ///     e = 1200 log2(ω̂ / (ω₀ + a t̂))
+    ///     G = Σ |Ψ| min(|e| / bin, 1) / Σ |Ψ|
+    ///
+    /// Rates are c = a σ², σ² the envelope variance in samples.  A constant-Q wavelet reads the
+    /// same cents at every pitch for a given c, so rows should be flat.
+    #[test]
+    fn chirp_garbage() {
+        /// Bank spacing the misplacement is counted in.
+        const BIN_C: f64 = 25.0;
+        const RATES: [f64; 3] = [0.05, 0.2, 0.5];
+        const PITCHES: usize = 128;
+        const RHO_LO: f64 = 0.01;
+        const RHO_HI: f64 = 0.375;
+        /// Instantaneous detune either side of ω₀ the readings cover.
+        const SPAN_C: f64 = 400.0;
+        const READINGS: usize = 64;
+        const PHASES: usize = 8;
+        const GARBAGE_DB: f64 = -30.0;
+
+        let wav = WaveletSpec::default().q(8.0).bake();
+
+        println!("\n=== CHIRP GARBAGE (bin {BIN_C}c, span ±{SPAN_C}c) ===");
+        println!("  garbage in dB of amplitude sent to the wrong bin, q3 in cents\n");
+        print!("  {:>7} {:>5}", "rho", "taps");
+        for c in RATES {
+            print!(" {:>8}", format!("c {c}"));
+        }
+        println!(" {:>8} {:>8}", "pooled", "q3");
+
+        let mut rows = Vec::with_capacity(PITCHES);
+        for i in 0..PITCHES {
+            // ρ_lo (ρ_hi / ρ_lo)^(i / (n − 1))
+            let rho = RHO_LO * (RHO_HI / RHO_LO).powf(i as f64 / (PITCHES - 1) as f64);
+            let bin = wav.at_rho(rho);
+            let wts = bin.weights();
+            let w0 = bin.velocity();
+            let var = wts.psi().envelope_var();
+
+            let mut readings = Vec::with_capacity(RATES.len() * READINGS * PHASES);
+            let by_rate = RATES.map(|c| {
+                let a = c / var;
+                let start = readings.len();
+                for j in 0..READINGS {
+                    // ω₀ 2^(δ/1200) = ω₀ + a m
+                    let detune = SPAN_C * (2.0 * j as f64 / (READINGS - 1) as f64 - 1.0);
+                    let m = (w0 * ((detune / 1200.0).exp2() - 1.0) / a).round() as isize;
+
+                    for q in 0..PHASES {
+                        let theta = TAU * q as f64 / PHASES as f64;
+                        // φ(k) = ω₀k + ½ak² + θ
+                        let x = |k: isize| {
+                            let k = k as f64;
+                            (w0 * k + 0.5 * a * k * k + theta).cos()
+                        };
+                        let [psi, dee, tee] = wts.project(x, m);
+                        let w_hat = w0 * (dee / psi).re;
+                        let t_hat = m as f64 + (tee / psi).re;
+                        let err = 1200.0 * (w_hat / (w0 + a * t_hat)).log2();
+                        readings.push((psi.norm(), err.abs()));
+                    }
+                }
+                garbage(&readings[start..], BIN_C)
+            });
+
+            let pooled = garbage(&readings, BIN_C);
+            let q3 = upper_quartile(&mut readings);
+
+            print!("  {rho:>7.4} {:>5}", bin.len_unfolded());
+            for g in by_rate {
+                print!(" {:>8.2}", db(g));
+            }
+            println!(" {:>8.2} {q3:>8.3}", db(pooled));
+
+            rows.push((rho, pooled));
+        }
+
+        let (weak_rho, weak) = rows
+            .iter()
+            .copied()
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        let score = db(rows.iter().map(|r| r.1).sum::<f64>() / PITCHES as f64);
+
+        println!("\n  weakest rho {weak_rho:.4} at {:.2} dB", db(weak));
+        println!("  garbage {score:.2} dB");
+
+        assert!(score < GARBAGE_DB, "chirp garbage {score:.2} dB");
     }
 
     /// Truncation cost against a full-length bake, swept over `tail_db`.  One motherlet serves the
