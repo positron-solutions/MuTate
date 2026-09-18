@@ -284,26 +284,6 @@ fn bar(re: f64, im: f64, max: f64, cols: usize) -> String {
     cells.trim_end().to_string()
 }
 
-/// Real and imaginary parts of `taps`, centered, on a shared scale.
-pub(super) fn print_wave(label: &str, taps: &[Complex32], cols: usize) {
-    let n = taps.len();
-    println!("\n=== {label} ===");
-    let max = taps
-        .iter()
-        .map(|h| h.re.abs().max(h.im.abs()) as f64)
-        .fold(0.0, f64::max);
-
-    for (j, h) in taps.iter().enumerate() {
-        println!(
-            "{:>6} {:>12.7} {:>12.7} {}",
-            j as isize - (n / 2) as isize,
-            h.re,
-            h.im,
-            bar(h.re as f64, h.im as f64, max, cols)
-        );
-    }
-}
-
 /// ∫ h² dω on [lo, hi], h = max(0, 1 − dB/floor_db) with dB relative to `gain`.
 pub(super) fn level_moment(
     taps: &[Complex32],
@@ -486,6 +466,26 @@ pub(super) fn chirp(a: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
         let t = k as f64 - p;
         let z = t / sd;
         (-0.5 * z * z).exp() * (0.5 * a * t * t).cos()
+    }
+}
+
+/// Real and imaginary parts of `taps`, centered, on a shared scale.
+pub(super) fn print_wave(label: &str, taps: &[Complex32], cols: usize) {
+    let n = taps.len();
+    println!("\n=== {label} ===");
+    let max = taps
+        .iter()
+        .map(|h| h.re.abs().max(h.im.abs()) as f64)
+        .fold(0.0, f64::max);
+
+    for (j, h) in taps.iter().enumerate() {
+        println!(
+            "{:>6} {:>12.7} {:>12.7} {}",
+            j as isize - (n / 2) as isize,
+            h.re,
+            h.im,
+            bar(h.re as f64, h.im as f64, max, cols)
+        );
     }
 }
 
