@@ -277,6 +277,10 @@
 // Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
 // formalism.
 
+// MAYBE The `d` provided for Hermite interpolation is basically not used at all for the actual `N`
+// tap outputs.  It may be appropriate to remove the turn from everywhere upstream of `taps_into`,
+// but that's also a ton of little edits that I want to think about before committing to.  Obvious
+// LLM task.  Tell the young, impressionable puritans to cry more into my cup.
 // NEXT A ton of the characterization gear for testing belongs in the dsp module.
 // NEXT Transient behavior evaluation to look for negative frequency response under impure tones.
 // NEXT High omega filters, starting at around 60% of Nyquist, begin to degrade at low Q.  The
@@ -796,6 +800,13 @@ fn fmt_e(x: f64) -> String {
 
 #[cfg(test)]
 mod test {
+    // DEBT a lot of the matrix code is becoming pretty redundant.  It's simple, but every test
+    // builds a matrix slightly differently.
+    // DEBT the print tests are secretly being used in a manner that the workbench binary is
+    // intended for.  As things are becoming mature enough, moving some features over to the
+    // workbench tools would be welcome, although it may need some redesign since basically all IIR
+    // solutions and therefore most of the tests with time dependency are DoA on the GPU.
+
     use super::*;
 
     use harness::*;
