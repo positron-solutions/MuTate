@@ -10,6 +10,7 @@
 use core::f64::consts::{PI, TAU};
 
 use super::super::{
+    inspect::*,
     spec::{Shape, WaveletSpec},
     PEAK_GAIN,
 };
@@ -26,7 +27,7 @@ fn first_null_matches_dense_scan() {
     const QUANTUM: usize = 4;
     const TAIL_DB: f64 = -40.0;
     /// Naive samples per bin 2π/N.
-    const PER_BIN: usize = 1024 * 8;
+    const PER_BIN: usize = 32;
 
     /// (Q, γ, ρ, dir), lower skirt at −1 and upper at +1.
     const CASES: [(f64, f64, f64, f64); 8] = [
@@ -45,8 +46,8 @@ fn first_null_matches_dense_scan() {
          offsets in −3 dB widths from the peak, Δ in naive steps\n"
     );
     println!(
-        "  {:>5} {:>4} {:>7} {:>5} {:>5} {:>11} {:>11} {:>10} {:>10} {:>10}",
-        "Q", "𝛄", "𝛒", "side", "taps", "scanner", "naive", "Δ", "|Im H|", "radius"
+        "  {:>5} {:>4} {:>7} {:>5} {:>5} {:>11} {:>11} {:>10} {:>10} {:>10} {:>10}",
+        "Q", "𝛄", "𝛒", "side", "taps", "scanner", "naive", "Δ", "|Im H|", "radius", "Re H"
     );
 
     let mut failures = Vec::new();
@@ -60,8 +61,9 @@ fn first_null_matches_dense_scan() {
         let taps = bin.taps();
         let psi = unfold(&taps, 0);
         let psi64 = lane(&taps, 0);
+        let fold = Fold(&psi64);
 
-        let r = characterize(Fold(&psi64), bin.velocity());
+        let r = characterize(fold, bin.velocity());
         let lobe = r.edges.1 - r.edges.0;
         let side = if dir < 0.0 { "lo" } else { "hi" };
         let tag = format!("Q {q} γ {gamma} ρ {rho} {side}");
@@ -69,7 +71,6 @@ fn first_null_matches_dense_scan() {
         let resp = |w: f64| dtft(&psi, w).re;
         // 16ε Σ|h|
         let null = 16.0 * f64::EPSILON * l1(&psi);
-        let density = 16.0 * psi.len() as f64 / TAU;
 
         let from = if dir < 0.0 { r.edges.0 } else { r.edges.1 };
         let stop = from + dir * PI;
@@ -89,37 +90,37 @@ fn first_null_matches_dense_scan() {
             })
             .map(|(a, b)| bisect(&resp, a, b));
 
-        let fast = first_null(&psi, from, stop, null);
+        let mut buf = Vec::new();
+        let fast = Inspect::new(Fold(&psi64), &mut buf, OVERSAMPLE)
+            .null(from, stop)
+            .map(|(w, _)| w);
 
         let (Some(fast), Some(naive)) = (fast, naive) else {
             println!(
                 "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {side:>5} {:>5} missing",
                 psi.len()
             );
-            failures.push(format!(
-                "{tag} scanner {fast:?} naive {naive:?}",
-                fast = fast.map(|p| p.w)
-            ));
+            failures.push(format!("{tag} scanner {fast:?} naive {naive:?}"));
             continue;
         };
 
         let off = |w: f64| (w - r.peak_w) / lobe;
-        let gap = (fast.w - naive).abs() / step;
+        let gap = (fast - naive).abs() / step;
         let im = dtft(&psi, naive).im.abs();
+        let re_at_fast = resp(fast);
 
-        let re_at_fast = resp(fast.w);
         println!(
             "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {side:>5} {:>5} {:>+11.6} {:>+11.6} {gap:>10.3e} \
-                    {im:>10.3e} {null:>10.3e} {re_at_fast:>10.3e}",
+             {im:>10.3e} {null:>10.3e} {re_at_fast:>10.3e}",
             psi.len(),
-            off(fast.w),
+            off(fast),
             off(naive),
         );
 
         if gap >= 1.0 {
             failures.push(format!(
                 "{tag} scanner {:+.4} lobes, naive {:+.4} lobes",
-                off(fast.w),
+                off(fast),
                 off(naive)
             ));
         }

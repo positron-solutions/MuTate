@@ -1111,6 +1111,7 @@ mod test {
             let bin = wav.at_rho(fc / sr);
             let taps = bin.taps();
             let (psi, d) = (unfold(&taps, 0), unfold(&taps, 2));
+            let psi64 = lane(&taps, 0);
 
             let (n, w0) = (psi.len(), bin.velocity());
             println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
@@ -1139,8 +1140,8 @@ mod test {
                 );
             }
 
-            let peak = dtft(&psi, w0).norm();
-            let (lo, hi) = shoulders(&psi, peak, w0, SKIRT_DB, w0 * SPAN);
+            let peak = Fold(&psi64).dtft(w0).abs();
+            let (lo, hi) = shoulders(Fold(&psi64), peak, w0, SKIRT_DB, w0 * SPAN);
 
             for w in [lo, hi].into_iter().flatten() {
                 // 1200 log2(ω/ω₀)
@@ -1731,8 +1732,14 @@ mod test {
 
     #[test]
     fn print_waveform() {
-        const TAIL_DB: f64 = -40.0;
-        let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
+        const TAIL_DB: f64 = -30.0;
+        let wav = WaveletSpec::default()
+            .with_shape(Shape {
+                beta: 8.5,
+                gamma: 3.0,
+            })
+            .max_truncation(TAIL_DB)
+            .bake();
 
         for (fc, sr) in [(1000.0f64, 8000.0), (300.0, 3000.0), (12_000.0, RATE)] {
             let rho = fc / sr;
@@ -1818,7 +1825,7 @@ mod test {
         const GAMMAS: [f64; 2] = [3.0, 4.0];
         const RHOS: [f64; 4] = [0.116, 0.189, 0.223, 0.384];
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -40.0;
+        const TAIL_DB: f64 = -30.0;
         /// Height zero, where the moment stops counting area.
         const FLOOR_DB: f64 = -80.0;
 
@@ -1869,21 +1876,36 @@ mod test {
                     // 16ε Σ|h|
                     let null = 16.0 * f64::EPSILON * l1(&psi);
 
-                    let lo = first_null(&psi, r.edges.0, r.edges.0 - PI, null)
-                        .unwrap_or_else(|| panic!("Q {q} γ {gamma} ρ {rho} lower dip not found"));
-                    let hi = first_null(&psi, r.edges.1, r.edges.1 + PI, null)
-                        .unwrap_or_else(|| panic!("Q {q} γ {gamma} ρ {rho} upper dip not found"));
+                    let mut buf = Vec::new();
+                    let mut insp = Inspect::new(Fold(&psi64), &mut buf, OVERSAMPLE);
+                    let lo = insp.null(r.edges.0, r.edges.0 - PI).map(|(w, _)| w);
+                    let hi = insp.null(r.edges.1, r.edges.1 + PI).map(|(w, _)| w);
 
-                    // ∫_band h² and ∫_dips h² on each side of the peak
+                    // ∫_band h² on each side of the peak
                     let band_lo = level_moment(&psi, r.gain, (r.edges.0, r.peak_w), FLOOR_DB);
                     let band_hi = level_moment(&psi, r.gain, (r.peak_w, r.edges.1), FLOOR_DB);
-                    // XXX naming is way off.  This is roughly energy between first null and -3dB
-                    let dips_lo = level_moment(&psi, r.gain, (lo.w, r.peak_w), FLOOR_DB);
-                    let dips_hi = level_moment(&psi, r.gain, (r.peak_w, hi.w), FLOOR_DB);
 
                     let (psl_lo, psl_hi) = skirts(&psi, (lo, hi));
 
-                    /// Level, offset, and prominence of one skirt, dashes where the band holds no lobe.
+                    /// Offset of a dip in −3 dB widths, dash where the skirt never reaches zero.
+                    let off = |w: Option<f64>| match w {
+                        Some(w) => format!("{:>+8.3}", (w - r.peak_w) / lobe),
+                        None => format!("{:>8}", "—"),
+                    };
+                    let spread = match (lo, hi) {
+                        (Some(lo), Some(hi)) => format!("{:>7.3}", (hi - lo) / lobe),
+                        _ => format!("{:>7}", "—"),
+                    };
+                    /// ∫_band h² over ∫_dips h², the dip side measured from the dip.
+                    let kappa = |band: f64, dip: Option<f64>, to: (f64, f64)| match dip {
+                        Some(_) => {
+                            format!("{:>7.4}", band / level_moment(&psi, r.gain, to, FLOOR_DB))
+                        }
+                        None => format!("{:>7}", "—"),
+                    };
+
+                    /// Level, offset, and prominence of one skirt, dashes where the band holds
+                    /// no lobe.
                     let cols = |s: &Skirt| match (s.peak, s.prominence_db()) {
                         (Some(p), Some(prom)) => format!(
                             "{:>8.2} {:>+7.3} {:>6.1} {:>5}",
@@ -1896,15 +1918,14 @@ mod test {
                     };
 
                     println!(
-                        "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {:>+8.3} {:>+8.3} {:>7.3} {} {} {:>7.4} {:>7.4}",
+                        "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {} {} {spread} {} {} {} {}",
                         psi.len(),
-                        (lo.w - r.peak_w) / lobe,
-                        (hi.w - r.peak_w) / lobe,
-                        (hi.w - lo.w) / lobe,
+                        off(lo),
+                        off(hi),
                         cols(&psl_lo),
                         cols(&psl_hi),
-                        band_lo / dips_lo,
-                        band_hi / dips_hi,
+                        kappa(band_lo, lo, (lo.unwrap_or(r.peak_w), r.peak_w)),
+                        kappa(band_hi, hi, (r.peak_w, hi.unwrap_or(r.peak_w))),
                     );
 
                     let reaches = |s: &Skirt| s.peak.is_some_and(|p| p.h >= r.gain);

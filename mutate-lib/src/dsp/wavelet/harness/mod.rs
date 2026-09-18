@@ -345,50 +345,22 @@ pub(super) fn level_moment(
         * dw
 }
 
-/// Samples per null spacing 2π/n, the finest feature a degree n−1 trigonometric polynomial
-/// admits.
-const OVERSAMPLE: f64 = 16.0;
-
-/// Stencil arm in grid steps, putting [w − h, w + h] across half a null spacing.
-const STENCIL_ARM: f64 = 4.0;
-
-/// Sampling density in samples per radian and stencil arm in radians.
-///
-///     density = OVERSAMPLE·n / 2π,  h = STENCIL_ARM / density
-fn scale(n: usize) -> (f64, f64) {
-    // HACK: capped so long filters stop driving the walkers quadratic.  Remove.
-    // let density = OVERSAMPLE * n.min(32) as f64 / TAU;
-    let density = OVERSAMPLE * n as f64 / TAU;
-    (STENCIL_ARM / density, density)
-}
-
 /// Edges either side of `peak_w` where the response first falls `level_db` below `peak`,
 /// searched out to `span`, absent where no crossing lies inside it.
 pub(super) fn shoulders(
-    taps: &[Complex32],
+    psi: Fold<'_>,
     peak: f64,
     peak_w: f64,
     level_db: f64,
     span: f64,
 ) -> (Option<f64>, Option<f64>) {
-    let (h, density) = scale(taps.len());
-    let db = |w: f64| 20.0 * dtft(taps, w).norm().log10();
-    let rel = |w: f64| db(w) - 20.0 * peak.log10();
-    let edge =
-        |stop: f64| level_crossing(&rel, level_db, peak_w, stop, 0.0, h, density).map(|p| p.w);
+    let mut buf = Vec::new();
+    let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
+    let level = db(peak) + level_db;
+    let mut edge = |stop: f64| insp.cross(level, peak_w, stop).map(|(w, _)| w);
     (
         edge((peak_w - span).max(0.0)),
         edge((peak_w + span).min(PI)),
-    )
-}
-
-/// −3 dB edges either side of `peak_w`, falling back to the bracket `w0` sets.
-pub(super) fn bandwidth(taps: &[Complex32], peak: f64, peak_w: f64, w0: f64) -> (f64, f64) {
-    let half_db = -10.0 * 2.0f64.log10();
-    let (lo, hi) = shoulders(taps, peak, peak_w, half_db, w0);
-    (
-        lo.unwrap_or((peak_w - w0).max(0.0)),
-        hi.unwrap_or((peak_w + w0).min(PI)),
     )
 }
 
@@ -427,7 +399,22 @@ fn crests(f: impl Fn(f64) -> f64, lo: f64, hi: f64, n: usize) -> Vec<(f64, f64, 
 }
 
 /// |H| over the stopband between `from` and `stop`, scanned whole.
-fn skirt(taps: &[Complex32], from: f64, stop: f64, oversample: usize, refine_top: usize) -> Skirt {
+/// |H| over the stopband between `from` and `stop`, scanned whole.  Empty where no dip bounds
+/// the band.
+fn skirt(
+    taps: &[Complex32],
+    from: Option<f64>,
+    stop: f64,
+    oversample: usize,
+    refine_top: usize,
+) -> Skirt {
+    let Some(from) = from else {
+        return Skirt {
+            peak: None,
+            median: f64::NAN,
+            lobes: 0,
+        };
+    };
     let gain = |w: f64| dtft(taps, w).norm();
     let (lo, hi) = (from.min(stop), from.max(stop));
     let n = ((hi - lo) * (oversample * taps.len()) as f64 / TAU)
@@ -453,129 +440,11 @@ fn skirt(taps: &[Complex32], from: f64, stop: f64, oversample: usize, refine_top
 }
 
 /// Both stopbands outside the first nulls, lower then upper.
-pub(super) fn skirts(taps: &[Complex32], (lo, hi): (Point, Point)) -> (Skirt, Skirt) {
+pub(super) fn skirts(taps: &[Complex32], (lo, hi): (Option<f64>, Option<f64>)) -> (Skirt, Skirt) {
     (
-        skirt(taps, lo.w, 0.0, SKIRT_OVERSAMPLE, SKIRT_REFINE),
-        skirt(taps, hi.w, PI, SKIRT_OVERSAMPLE, SKIRT_REFINE),
+        skirt(taps, lo, 0.0, SKIRT_OVERSAMPLE, SKIRT_REFINE),
+        skirt(taps, hi, PI, SKIRT_OVERSAMPLE, SKIRT_REFINE),
     )
-}
-
-/// Shared stencil walk toward a level crossing of `resp − level`, from `from` toward `stop`,
-/// within `tol`.
-fn level_crossing(
-    resp: impl Fn(f64) -> f64,
-    level: f64,
-    from: f64,
-    stop: f64,
-    tol: f64,
-    h: f64,
-    density: f64,
-) -> Option<Point> {
-    let shifted = |w: f64| resp(w) - level;
-    let dir = (stop - from).signum();
-    let clamp = |w: f64| if dir * (w - stop) > 0.0 { stop } else { w };
-    let cap = 8.0 / density;
-
-    let root = |a: f64, b: f64| {
-        let w = bisect(&shifted, a, b);
-        Point {
-            w,
-            h: shifted(w).abs(),
-        }
-    };
-    let cross = |p: &[Sample]| first_pair(p, |a, b| (a.1 < 0.0) != (b.1 < 0.0));
-    let toward_dir = |l: &Local| l.toward(dir);
-    let scan = |a: f64, b: f64| {
-        let n = ((b - a).abs() * density).ceil().max(1.0) as usize;
-        let at = |j: usize| a + (b - a) * j as f64 / n as f64;
-        let p: Vec<Sample> = (0..=n).map(|j| (at(j), shifted(at(j)))).collect();
-        cross(&p).map_or(b, |(x, y)| root(x.0, y.0).w)
-    };
-
-    let old = Local::at(&shifted, from, h);
-    if old.g[1].abs() <= tol {
-        return Some(Point {
-            w: from,
-            h: old.g[1].abs(),
-        });
-    }
-
-    let mut old = old;
-    let mut jump = 2.0 * h;
-    // HACK: step budget so a non-advancing walk bails instead of hanging.  Remove.
-    for _ in 0..1024 * 16 {
-        jump = toward_dir(&old)
-            .map_or(2.0 * jump, |t| (t - old.w).abs())
-            .clamp(2.0 * h, cap);
-        let land = clamp(old.w + dir * jump);
-        let new = Local::at(&shifted, land, h);
-
-        if new.g[1].abs() <= tol && (old.g[1] < 0.0) != (new.g[1] < 0.0) {
-            return Some(Point {
-                w: land,
-                h: new.g[1].abs(),
-            });
-        }
-
-        if let Some(t) = cross(&order([old.points(), new.points()].concat(), dir)) {
-            let w = tighten(&shifted, t, old, h, density, toward_dir, cross, scan);
-            return Some(root(w - h, w + h));
-        }
-
-        let (lo, hi) = (old.w.min(land), old.w.max(land));
-        if new.toward(-dir).is_some_and(|t| t > lo && t < hi) {
-            let n = ((land - old.w).abs() * density).ceil().max(1.0) as usize;
-            let at = |j: usize| old.w + (land - old.w) * j as f64 / n as f64;
-            let p: Vec<Sample> = (0..=n).map(|j| (at(j), shifted(at(j)))).collect();
-            if let Some((a, b)) = cross(&p) {
-                return Some(root(a.0, b.0));
-            }
-        }
-
-        if land == stop {
-            return None;
-        }
-        old = new;
-    }
-    None
-}
-
-/// First zero crossing of the real response H walking from `from` toward `stop`.
-pub(super) fn first_null(taps: &[Complex32], from: f64, stop: f64, null: f64) -> Option<Point> {
-    let (h, density) = scale(taps.len());
-    let response = |w| dtft(taps, w).re;
-    level_crossing(response, 0.0, from, stop, null, h, density)
-}
-
-/// τ solving y + sτ + ½kτ² = r, non-finite where absent.
-fn roots(y: f64, s: f64, k: f64, r: f64) -> [f64; 2] {
-    let c = r - y;
-    if k.abs() < f64::EPSILON {
-        return [c / s, f64::NAN];
-    }
-    // √(s² + 2kc)
-    let disc = (s * s + 2.0 * k * c).sqrt();
-    [(-s - disc) / k, (-s + disc) / k]
-}
-
-/// ω and a value there.
-type Sample = (f64, f64);
-
-/// A bracket around a feature, outer samples in walking order.
-type Bracket = (Sample, Sample);
-
-/// DTFTs one stencil costs, used to price scanning against tightening.
-const STENCIL: f64 = 3.0;
-
-/// Samples ordered along +dir.
-fn order(mut p: Vec<Sample>, dir: f64) -> Vec<Sample> {
-    p.sort_by(|a, b| (dir * a.0).total_cmp(&(dir * b.0)));
-    p
-}
-
-/// First adjacent pair satisfying `hit`.
-fn first_pair(p: &[Sample], hit: impl Fn(Sample, Sample) -> bool) -> Option<Bracket> {
-    p.windows(2).map(|w| (w[0], w[1])).find(|&(a, b)| hit(a, b))
 }
 
 /// Root of `resp` in a sign-changing bracket.
@@ -597,92 +466,6 @@ pub(super) fn bisect(resp: impl Fn(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
         }
     }
     0.5 * (a + b)
-}
-
-/// Shrink `t` by aiming stencils with `predict`, re-witnessing with `witness` after each
-/// landing, until a step stops saving more DTFTs than it costs, then hand the remainder
-/// to `scan`.
-fn tighten(
-    resp: impl Fn(f64) -> f64,
-    mut t: Bracket,
-    mut aim: Local,
-    h: f64,
-    density: f64,
-    predict: impl Fn(&Local) -> Option<f64>,
-    witness: impl Fn(&[Sample]) -> Option<Bracket>,
-    scan: impl Fn(f64, f64) -> f64,
-) -> f64 {
-    loop {
-        let width = (t.1 .0 - t.0 .0).abs() * density;
-        let inside = |v: f64| {
-            let (a, b) = (t.0 .0.min(t.1 .0) + h, t.0 .0.max(t.1 .0) - h);
-            v > a && v < b
-        };
-
-        let Some(v) = predict(&aim).filter(|&v| inside(v)) else {
-            return scan(t.0 .0, t.1 .0);
-        };
-        if width <= STENCIL {
-            return scan(t.0 .0, t.1 .0);
-        }
-
-        let next = Local::at(&resp, v, h);
-        let dir = (t.1 .0 - t.0 .0).signum();
-        let mut p = vec![t.0, t.1];
-        p.extend(next.points());
-        let Some(u) = witness(&order(p, dir)) else {
-            return scan(t.0 .0, t.1 .0);
-        };
-
-        if (u.1 .0 - u.0 .0).abs() * density > width - STENCIL {
-            return scan(u.0 .0, u.1 .0);
-        }
-        (t, aim) = (u, next);
-    }
-}
-
-/// Quadratic model of H on [w − h, w + h], slope and curvature along +ω.
-#[derive(Clone, Copy)]
-struct Local {
-    w: f64,
-    h: f64,
-    g: [f64; 3],
-    s: f64,
-    k: f64,
-}
-
-impl Local {
-    fn at(resp: impl Fn(f64) -> f64, w: f64, h: f64) -> Self {
-        let g = [resp(w - h), resp(w), resp(w + h)];
-        Local {
-            w,
-            h,
-            g,
-            // (g₊ − g₋) / 2h
-            s: (g[2] - g[0]) / (2.0 * h),
-            // (g₊ − 2g₀ + g₋) / h²
-            k: (g[2] - 2.0 * g[1] + g[0]) / (h * h),
-        }
-    }
-
-    /// Stencil samples along +ω.
-    fn points(&self) -> [Sample; 3] {
-        [
-            (self.w - self.h, self.g[0]),
-            (self.w, self.g[1]),
-            (self.w + self.h, self.g[2]),
-        ]
-    }
-
-    /// Nearest root of the model on the `dir` side of center, if any.
-    fn toward(&self, dir: f64) -> Option<f64> {
-        let [a, b] = roots(self.g[1], self.s, self.k, 0.0);
-        [a, b]
-            .into_iter()
-            .filter(|t| t.is_finite() && dir * *t > 0.0)
-            .map(|t| self.w + t)
-            .min_by(|a, b| (a - self.w).abs().total_cmp(&(b - self.w).abs()))
-    }
 }
 
 pub(super) struct Response {
