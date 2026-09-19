@@ -3,81 +3,145 @@
 
 //! # Refine
 //!
-//! Bring back some of the finer aspects of the Morse wavelet, aspects we now apologize truncating
-//! to bring you this live helicopter view of OJ Simpson fleeing in a white bronco.
+//! Polish off the worst of the spectral artifacts from the restriction.  Write the final weights to
+//! `f32` output in a truncation and goal-aware manner.
 //!
 //! > If the state is captive to narrow interests, then why do you wait for the state to organize
-//! > what you claim to be an overwhelming mass of your own interest?  Did the state make it illegal
-//! > for free individuals to incorporate by their own will?  I would fight against such a state,
-//! > but instead I have tragically fought to preserve what your vision of freedom will continue to
-//! > deliver.
+//! > what you claim to be an overwhelming mass of your own interests?
 //! >
 //! > - Major Edward Wuncler III, Haliburton War Veteran
 //!
+//! ⚠️ This module is currently in full retreat.  Functionality drifted out from under it before it
+//! shipped.  There is an intended role, but that role is only just taking shape.
+//!
 //! ## Motivation
 //!
-//! We wanted an ideal, infinite Morse wavelet, which only generates a response to a steady sine
-//! wave at one specific pitch.  Instead, after restriction, we have not only an approximation, but
-//! a truncated approximation.  Refinement uses the `N` taps we have to restore what fidelity we
-//! can while keeping the true champion in our thoughts and computations.
+//! Restriction provides a shape.  The goal of the shape is to create robust transient response.
+//! Restriction is intentionally not spectrally aware because unbounded spectral optimizations
+//! compromise shape and transient response.
 //!
-//! ## Theory
+//! All restrictions leave behind various kinds of spectral damage.  Finite support says we must
+//! truncate that shape, at a minimum creating strong Gibbs ringing in the floor.  The truncated
+//! filter mass is, with respect to the shape, free real-estate.  What the restriction's spectrally
+//! blind truncation would simply remove, spectrally aware refinement can shape into something more
+//! useful.
 //!
-//! So basically, when we truncate, we are introducing a hard cliff that, in response to a
-//! transient, has full response at the cliff with zero compensating moment that would otherwise
-//! reveal cancelling phase drift of unwanted off-center pitch response.  The loss of spectral mass
-//! before the cliff can be approximated as the naive moment of the wavelet tail.
+//! The first side lobes, main lobe width (especially the transition band), and noise floor shape
+//! may all have some low hanging fruit, features that can be directly tied to magnitude of some
+//! specific weights.  If polishing these features away can be accomplished within the limited
+//! support and the limited freedom of truncation, that's a win.
 //!
-//! As any shaping technique softens the cliff, we are taking away compensating moment from the core.
-//! If we broaden the shoulder of the wavelet in attempt to add back compensating moment, we are
-//! creating new uncompensated mass.  Due to the cliff, the balloon must be squeezed, but it must be
-//! squeezed evenly.
-//!
-//! The fixed point of the problem results in a coherent set of conditions and consequences:
-//!
-//! - In response to a transient, at each tap, there is a constant ratio of missing moment to mass.
-//! - The edge is naturally tapered to soften the fully uncompensated mass cliff, which is missing
-//!   the moment of the entire tail.
-//! - The shoulder naturally ramps faster to add moment without adding mass to the already
-//!   undercompensated edge.
-//! - Further adding or removing mass anywhere results in an imbalance relative to the ideal Morse
-//!   wavelet (the solver condition).
-//! - The total non-ideal response of an off-center pitch is constant from tip to tail.
-//!
-//! With all things perfectly balanced, as perfect as they can be, we have defined the goal for our
-//! solver.  The magnitude of every tap will attempt to match the shape of the ideal Morse wavelet
-//! by adjusting the mass so that the transient and therefore global (at the center tap) moment and
-//! response most closely approximate the ideal Morse wavelet our generators emit.
+//! In conclusion, the goal of this module is to only condition the worst spectral characteristics
+//! so that unlucky truncation, load quantum, and omega interactions can be made more dependable.
+//! The transient response is protected by limiting the scope of the polish to the filter mass that
+//! is slated for removal by truncation.
 
-/// Asymptotic mass of one omitted Morse tail.
-///
-/// `ut` is the truncation point measured from the center tap.
-///
-///     M(ut) = C ut^(-(2β + 1))
-///     C = γ 2^((2β + 1) / γ) Γ(β + 1)^2 / (2π (2β + 1) Γ((2β + 1) / γ))
-pub fn morse_tail_mass(shape: Shape, ut: f64) -> f64 {
-    let Shape { beta, gamma, .. } = shape;
+// The replacement module is beginning to show us some requirements.  We want to know how much mass
+// we have to work with.  Polar vs complex f64 is, in either case, just two f64 values, and we can
+// make this a runtime adaptation to support polar vs non-polar... (go check )
 
-    let p = 2.0 * beta + 1.0;
+use core::f64::consts::{FRAC_1_SQRT_2, TAU};
 
-    let c = gamma * 2.0_f64.powf(p / gamma) * tgamma(beta + 1.0).powi(2)
-        / (TAU * p * tgamma(p / gamma));
+use super::{Shape, PEAK_GAIN};
 
-    c * ut.powf(-p)
+/// Scale the cut envelope to unit center gain.
+#[derive(Clone, Copy, Default)]
+pub struct Refine;
+
+pub struct Report {
+    /// `ℓ² = Σ b_k u_k² / Σ b_k`
+    pub locality: f64,
+    /// Half power half width over the ideal `ρ/2Q`.
+    pub width: f64,
+    /// Deepest negative excursion of the response, `-inf` where it stays nonnegative.
+    pub neg_db: f64,
+    /// Tallest lobe past the main lobe.
+    pub floor_db: f64,
 }
 
-/// Center of mass of the omitted tail, measured from the center tap.
-///
-///     ut (2β + 1) / (2β)
-pub fn morse_tail_center_of_mass(shape: Shape, ut: f64) -> f64 {
-    let Shape { beta, .. } = shape;
+impl Refine {
+    /// Writes `out.len()` envelope taps normalized to `PEAK_GAIN`.  `env` is the restricted
+    /// envelope over the window, of which the leading `out.len()` taps are read.
+    pub fn refine_into(&self, shape: Shape, env: &[f64], rho: f64, out: &mut [f64]) -> Report {
+        let eps = |j: usize| if j == 0 { 1.0 } else { 2.0 };
 
-    ut * (2.0 * beta + 1.0) / (2.0 * beta)
+        let env = &env[..out.len()];
+        let norm = PEAK_GAIN / env.iter().enumerate().map(|(j, a)| eps(j) * a).sum::<f64>();
+
+        for (o, a) in out.iter_mut().zip(env) {
+            *o = a * norm;
+        }
+
+        let (mass, spread) = out.iter().enumerate().fold((0.0, 0.0), |acc, (k, b)| {
+            let u = k as f64 * rho;
+            (acc.0 + eps(k) * b, acc.1 + eps(k) * b * u * u)
+        });
+
+        let (width, neg_db, floor_db, _) = response(shape, rho, out);
+
+        Report {
+            locality: (spread / mass).sqrt(),
+            width,
+            neg_db,
+            floor_db,
+        }
+    }
 }
 
-/// First moment of the omitted tail about a retained coordinate `u`.
+/// Half power half width over the ideal, deepest negative excursion, lobe floor, and the image
+/// about `−ω₀` arriving at detuning `2ω₀`.
 ///
-///     μ(u) = M(ut) (com(ut) - u)
-pub fn morse_tail_moment(shape: Shape, ut: f64, u: f64) -> f64 {
-    morse_tail_mass(shape, ut) * (morse_tail_center_of_mass(shape, ut) - u)
+///     T(f) = b_0 + 2 Σ_{k≥1} b_k cos(2π f k)
+fn response(shape: Shape, rho: f64, b: &[f64]) -> (f64, f64, f64, f64) {
+    let m = 8 * b.len();
+
+    let at = |f: f64| {
+        let sum: f64 = b[1..]
+            .iter()
+            .enumerate()
+            .map(|(j, b)| b * (TAU * f * (j + 1) as f64).cos())
+            .sum();
+        b[0] + 2.0 * sum
+    };
+
+    let t: Vec<f64> = (0..=m).map(|i| at(0.5 * i as f64 / m as f64)).collect();
+
+    let peak = t[0];
+    let lobe = (1..=m).find(|&i| t[i] >= t[i - 1]).unwrap_or(m);
+    let half = (1..=m).find(|&i| t[i] <= peak * FRAC_1_SQRT_2).unwrap_or(m);
+
+    let (hi, lo) = (t[half - 1], t[half]);
+    let frac = (hi - peak * FRAC_1_SQRT_2) / (hi - lo);
+    let f_half = 0.5 * (half as f64 - 1.0 + frac) / m as f64;
+
+    let floor = t[lobe..].iter().fold(0.0f64, |a, t| a.max(t.abs()));
+    let sag = t.iter().fold(0.0f64, |a, &t| a.min(t));
+
+    (
+        f_half * 2.0 * shape.q() / rho,
+        20.0 * (-sag / peak).log10(),
+        20.0 * (floor / peak).log10(),
+        20.0 * (at(2.0 * rho).abs() / peak).log10(),
+    )
 }
+
+impl Report {
+    /// Reads `b` as folded envelope taps already at `PEAK_GAIN`.
+    pub fn measure(shape: Shape, rho: f64, b: &[f64]) -> Report {
+        let (mass, spread) = b.iter().enumerate().fold((0.0, 0.0), |acc, (k, b)| {
+            let (w, u) = (if k == 0 { 1.0 } else { 2.0 } * b, k as f64 * rho);
+            (acc.0 + w, acc.1 + w * u * u)
+        });
+
+        let (width, neg_db, floor_db, _) = response(shape, rho, b);
+
+        Report {
+            locality: (spread / mass).sqrt(),
+            width,
+            neg_db,
+            floor_db,
+        }
+    }
+}
+
+// mod.rs

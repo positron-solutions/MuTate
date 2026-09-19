@@ -320,6 +320,7 @@
 
 pub(self) mod generate;
 pub(self) mod inspect;
+mod refine;
 pub(self) mod restrict;
 pub(self) mod spec;
 pub mod whatsleft;

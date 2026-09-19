@@ -21,6 +21,7 @@ use num_complex::Complex64;
 
 use super::defaults;
 use super::generate::{hermite, quadjet::QuadJet};
+use super::refine;
 use super::restrict;
 use super::{Bin, Wavelet, PEAK_GAIN};
 
@@ -131,6 +132,7 @@ pub struct WaveletSpec {
     pub(super) max_load_quantum: usize,
     pub(super) max_delay: usize,
     pub(super) restriction: restrict::Restriction,
+    pub(super) refine: Option<refine::Refine>,
 }
 
 impl Default for WaveletSpec {
@@ -151,6 +153,8 @@ impl Default for WaveletSpec {
                 derivative: restrict::Derivative::Folded { sigmas: 6.0 },
                 // derivative: restrict::Derivative::Fitted { gate_db: 24.0 },
             },
+            refine: Some(refine::Refine::default()),
+            // refine: None,
         }
     }
 }
@@ -198,10 +202,15 @@ impl WaveletSpec {
         self
     }
 
+    /// Set the method for restoring some of the pre-truncation transient response characteristics.
+    pub fn with_refine(mut self, refine: Option<refine::Refine>) -> Self {
+        self.refine = refine;
+        self
+    }
+
     pub fn bake(self) -> Wavelet {
         let du = (self.resolution as f64).recip();
 
-        // u_max = u_trunc + (quantum + delay + 1/2) rho,  rho < 1/2 at Nyquist
         let u_max = self.shape.truncation_u(self.max_tail_db)
             + 0.5 * (self.max_load_quantum + self.max_delay) as f64
             + 0.25;
@@ -239,6 +248,7 @@ impl WaveletSpec {
                 load_quantum: self.max_load_quantum,
                 delay: self.max_delay,
                 tail_db: self.max_tail_db,
+                refine: None,
             },
             restriction: self.restriction,
         }
@@ -258,6 +268,7 @@ pub struct BinSpec {
     // XXX has not be reconciled with load quantum!
     pub(super) delay: usize,
     pub(super) tail_db: f64,
+    pub(super) refine: Option<refine::Refine>,
 }
 
 impl BinSpec {
@@ -279,6 +290,11 @@ impl BinSpec {
 
     pub fn bin<'w>(self, wavelet: &'w Wavelet) -> Bin<'w> {
         Bin::new(wavelet, self)
+    }
+
+    // XXX Very likely to violate what the mother wavelet must impose
+    pub fn with_refine(self, refine: Option<refine::Refine>) -> Self {
+        Self { refine, ..self }
     }
 }
 
