@@ -17,14 +17,14 @@ mod test {
 
     use super::*;
 
-    use mutate_lib::dsp::{self, bank, MIN_FREQ_CHEAP_DRIVERS};
+    use mutate_lib::dsp::{self, bank, wavelet::WaveletSpec, MIN_FREQ_CHEAP_DRIVERS};
 
-    use crate::audio::{cwt::wavelet::Spec, downsample::FILTERS};
+    use crate::audio::downsample::FILTERS;
 
     const LOAD_QUANTUM: usize = 8;
 
-    fn spec() -> Spec {
-        Spec::default().sigmas(3.5).max_load_quantum(16)
+    fn spec() -> WaveletSpec {
+        WaveletSpec::default().max_load_quantum(16)
     }
 
     fn bins() -> Vec<bank::Bin> {
