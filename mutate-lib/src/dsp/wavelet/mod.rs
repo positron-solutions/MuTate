@@ -1605,7 +1605,6 @@ mod test {
 
         // Tap count is an integer, so envelope truncation loses O(1/N) of the energy, worst at
         // the top of the range. Anchored to split the sweep rather than to any one bin.
-        // NOTE recalibrate from the first run.
         const NOISE_GAIN: f64 = 1.4105;
         const TOL: f64 = 2e-3;
 
@@ -2306,7 +2305,6 @@ mod test {
         const HOPS: usize = 64;
         const PHASES: usize = 6;
 
-        // NOTE recalibrate from the first run.
         const MEDIAN_DB: f64 = -35.0;
         const WORST_DB: f64 = -10.0;
 
@@ -2380,8 +2378,7 @@ mod test {
         const DETUNES_C: [f64; 5] = [-300.0, -150.0, 0.0, 150.0, 300.0];
         const PHASES: usize = 12;
 
-        // NOTE recalibrate from the first run.
-        const MEDIAN_DB: f64 = -25.0;
+        const MEDIAN_DB: f64 = -30.0;
         const WORST_DB: f64 = -20.0;
 
         let wav = WaveletSpec::default()
@@ -2461,7 +2458,6 @@ mod test {
         const WIDTHS: [f64; 3] = [0.25, 0.75, 2.0];
         const DETUNES_C: [f64; 3] = [-300.0, 0.0, 300.0];
 
-        // NOTE recalibrate from the first run.
         const MEDIAN_DB: f64 = -20.0;
         const WORST_DB: f64 = -10.0;
 
