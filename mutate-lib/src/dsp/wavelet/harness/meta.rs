@@ -60,7 +60,7 @@ fn first_null_matches_dense_scan() {
         let bin = wav.at_rho(rho);
         let taps = bin.taps();
         let wts = Weights::unpack(&taps);
-        let (psi, d) = (wts.psi(), wts.d());
+        let psi = wts.psi();
 
         let r = characterize(psi, bin.velocity());
         let lobe = r.edges.1 - r.edges.0;

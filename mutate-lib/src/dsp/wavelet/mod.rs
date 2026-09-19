@@ -281,8 +281,7 @@
 // tap outputs.  It may be appropriate to remove the turn from everywhere upstream of `taps_into`,
 // but that's also a ton of little edits that I want to think about before committing to.  Obvious
 // LLM task.  Tell the young, impressionable puritans to cry more into my cup.
-// NEXT A ton of the characterization gear for testing belongs in the dsp module.
-// NEXT Transient behavior evaluation to look for negative frequency response under impure tones.
+// MAYBE A ton of the characterization gear for testing belongs higher in the dsp module?
 // NEXT High omega filters, starting at around 60% of Nyquist, begin to degrade at low Q.  The
 // carrier doesn't have enough detail to represent a fast-changing envelope.  A numerical solution
 // for these heavily aliased wavelets may succeed or we may use a Plan with a higher Q beyond some
@@ -433,22 +432,6 @@ impl<'w> Grid<'w> {
 
     pub fn mass(&self, u_beg: f64, u_end: f64) -> Complex64 {
         hermite::integrate(self.psi, self.d, u_beg, u_end, self.du)
-    }
-
-    fn linear(&self, u: f64) -> Complex64 {
-        let x = u / self.du;
-        let i = x as usize;
-        let f = x - i as f64;
-        self.psi[i] * (1.0 - f) + self.psi[i + 1] * f
-    }
-
-    /// ψ_T at the upper edge of cell j, zero past the cut
-    fn edge(&self, j: usize, k: usize, rho: f64) -> Complex64 {
-        if j + 1 < k {
-            self.at((j as f64 + 0.5) * rho)
-        } else {
-            Complex64::default()
-        }
     }
 }
 
@@ -617,11 +600,12 @@ pub struct Weights {
 }
 
 impl Weights {
-    pub(super) fn psi(&self) -> Fold<'_> {
+    pub(self) fn psi(&self) -> Fold<'_> {
         Fold::new(&self.psi)
     }
 
-    pub(super) fn d(&self) -> Fold<'_> {
+    #[cfg(test)]
+    pub(self) fn d(&self) -> Fold<'_> {
         Fold::new(&self.d)
     }
 
@@ -660,6 +644,7 @@ impl Weights {
     }
 
     /// Ψ, D, T about center `m`, accumulated as the shader does.
+    #[cfg(test)]
     pub(super) fn project(&self, x: impl Fn(isize) -> f64, m: isize) -> [Complex64; 3] {
         let x0 = x(m);
         let mut psi = Complex64::new(self.psi[0].re * x0, 0.0);
@@ -701,23 +686,24 @@ impl Bake {
 pub(super) struct Fold<'a>(&'a [Complex64]);
 
 impl<'a> Fold<'a> {
-    pub(super) fn new(psi: &'a [Complex64]) -> Self {
+    pub(self) fn new(psi: &'a [Complex64]) -> Self {
         Fold(psi)
     }
 
     /// Number of real taps after weights are unfolded, in `[0, 2K - 1]`.  Center tap is still just
     /// one tap.
-    pub(super) fn len_unfolded(&self) -> usize {
+    pub fn len_unfolded(&self) -> usize {
         2 * self.0.len() - 1
     }
 
     /// Number of physical weights that unfold into taps.  Includes a center weight.  In `[0, K]`
-    pub(super) fn len_folded(&self) -> usize {
+    #[allow(unused)]
+    pub fn len_folded(&self) -> usize {
         self.0.len()
     }
 
     /// ψ₀ + 2 Σ_{k≥1} Re(ψ_k e^{−iωk})
-    pub(super) fn dtft(&self, w: f64) -> f64 {
+    pub(self) fn dtft(&self, w: f64) -> f64 {
         // k = LANES·b + i + 1
         const LANES: usize = 16;
 
@@ -765,7 +751,8 @@ impl<'a> Fold<'a> {
     }
 
     /// M_p = Σ_ν ν^p ψ_ν
-    pub(super) fn moment(&self, p: i32) -> Complex64 {
+    #[cfg(test)]
+    pub(self) fn moment(&self, p: i32) -> Complex64 {
         let head = match p {
             0 => self.0[0],
             _ => Complex64::default(),
@@ -780,19 +767,22 @@ impl<'a> Fold<'a> {
     }
 
     /// Σ_ν |ψ_ν|
-    pub(super) fn l1(&self) -> f64 {
+    #[cfg(test)]
+    pub(self) fn l1(&self) -> f64 {
         self.0[0].norm() + 2.0 * self.0[1..].iter().map(|h| h.norm()).sum::<f64>()
     }
 
     /// Σ_ν |ψ_ν|²
-    pub(super) fn energy(&self) -> f64 {
+    #[cfg(test)]
+    pub(self) fn energy(&self) -> f64 {
         self.0[0].norm_sqr() + 2.0 * self.0[1..].iter().map(|h| h.norm_sqr()).sum::<f64>()
     }
 
     /// Variance of the magnitude envelope.
     ///
     /// Σ ν²|ψ_ν| / Σ |ψ_ν|
-    pub(super) fn envelope_var(&self) -> f64 {
+    #[cfg(test)]
+    pub(self) fn envelope_var(&self) -> f64 {
         let num: f64 = self.0[1..]
             .iter()
             .enumerate()
@@ -804,17 +794,8 @@ impl<'a> Fold<'a> {
         num / self.l1()
     }
 
-    /// Envelope under a fixed carrier.
-    ///
-    /// a_k = Re(ψ_k e^{−2πikρ})
-    pub(super) fn demodulate(&self, rho: f64) -> impl Iterator<Item = f64> + '_ {
-        self.0.iter().enumerate().map(move |(j, p)| {
-            let (s, c) = (TAU * j as f64 * rho).sin_cos();
-            p.re * c + p.im * s
-        })
-    }
-
     /// ψ over [−K, K), for display.
+    #[cfg(test)]
     pub(super) fn mirrored(&self) -> impl Iterator<Item = Complex64> + '_ {
         let tail = self.0[1..].iter().copied();
         tail.clone()
@@ -1814,7 +1795,7 @@ mod test {
     #[ignore]
     #[test]
     fn print_waveform() {
-        const TAIL_DB: f64 = -30.0;
+        const TAIL_DB: f64 = -20.0;
         let wav = WaveletSpec::default()
             .with_shape(Shape {
                 beta: 8.5,

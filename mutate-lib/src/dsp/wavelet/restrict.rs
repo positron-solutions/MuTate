@@ -254,9 +254,6 @@ impl Derivative {
 /// Central first difference, order 2·len.
 const STENCIL: [f64; 3] = [0.75, -0.15, 1.0 / 60.0];
 
-/// Reach padding the stencil reads past the last tap.
-pub(super) const STENCIL_RADIUS: usize = STENCIL.len();
-
 /// ψ_k = a_k e^{2πikρ}
 /// b_k = Σ_m c_m (a_{k+m} − a_{k−m})
 /// d_k = (2πρ a_k − i b_k) e^{2πikρ} / ω₀

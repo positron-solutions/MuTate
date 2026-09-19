@@ -434,8 +434,8 @@ impl Comb {
     }
 }
 
+#[cfg(test)]
 /// -∞ representable, so a null is a number.
-// NEXT just use newtypes already.
 pub(super) fn db(mag: f64) -> f64 {
     20.0 * mag.max(f64::MIN_POSITIVE).log10()
 }

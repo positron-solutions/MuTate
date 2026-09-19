@@ -352,7 +352,6 @@ mod test {
         const DECIMATE: usize = 8;
 
         let shape = Shape::from_q(23.6, 3.0);
-        let beta = shape.beta;
 
         let settings = ifft::IfftSettings {
             periods: 10,
