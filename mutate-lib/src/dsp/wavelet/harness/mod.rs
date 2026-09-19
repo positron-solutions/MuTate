@@ -359,8 +359,8 @@ pub(super) fn garbage(readings: &[(f64, f64)], bin_c: f64) -> f64 {
     moved / total
 }
 
-/// |e| below which three quarters of the amplitude lands.
-pub(super) fn upper_quartile(readings: &mut [(f64, f64)]) -> f64 {
+/// |e| below which fraction `f` of the weight lands.
+pub(super) fn weighted_quantile(readings: &mut [(f64, f64)], f: f64) -> f64 {
     readings.sort_by(|a, b| a.1.total_cmp(&b.1));
     let total: f64 = readings.iter().map(|r| r.0).sum();
     let mut acc = 0.0;
@@ -368,9 +368,14 @@ pub(super) fn upper_quartile(readings: &mut [(f64, f64)]) -> f64 {
         .iter()
         .find(|r| {
             acc += r.0;
-            acc >= 0.75 * total
+            acc >= f * total
         })
         .map_or(f64::NAN, |r| r.1)
+}
+
+/// |e| below which three quarters of the weight lands.
+pub(super) fn upper_quartile(readings: &mut [(f64, f64)]) -> f64 {
+    weighted_quantile(readings, 0.75)
 }
 
 /// Real and imaginary parts of ψ, centered, on a shared scale.

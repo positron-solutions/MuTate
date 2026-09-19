@@ -327,7 +327,7 @@ pub mod whatsleft;
 #[cfg(test)]
 mod harness;
 
-use core::f64::consts::{LN_2, PI, TAU};
+use core::f64::consts::{FRAC_1_SQRT_2, LN_2, PI, TAU};
 
 use num_complex::Complex64;
 
@@ -2036,5 +2036,434 @@ mod test {
 
         println!("bake time: {}µs", bake_time.as_micros());
         println!("bin filling time: {}µs", fill_time.as_micros());
+    }
+
+    // Transport (time-reassignment mis-location) Tests
+
+    /// (|Ψ|², Re(T Ψ̄)) about `m`
+    fn moments(wts: &Weights, x: &dyn Fn(isize) -> f64, m: isize) -> (f64, f64) {
+        let [psi, _, tee] = wts.project(x, m);
+        (psi.norm_sqr(), (tee * psi.conj()).re)
+    }
+
+    /// About `n` hops on a uniform stride across [−r, r]
+    fn hops(r: f64, n: usize) -> impl Iterator<Item = isize> {
+        let stride = (2.0 * r / (n - 1) as f64).ceil().max(1.0) as usize;
+        let r = r.ceil() as isize;
+        (-r..=r).step_by(stride)
+    }
+
+    /// {(q + ½) φ}
+    fn offset(q: usize) -> f64 {
+        const GOLDEN: f64 = 0.618_033_988_749_894_8;
+        ((q as f64 + 0.5) * GOLDEN).fract()
+    }
+
+    /// Prints a reassignment transport report and returns the median and worst row E·d, dB re one
+    /// period.
+    ///
+    /// Each row holds (ρ, taps, readings per family), a reading being (E, d) with d in carrier
+    /// periods.  Families enter each row at unit energy, so a row's pooled E·d is their mean.
+    fn transport_report(
+        title: &str,
+        names: &[&str],
+        rows: &[(f64, usize, Vec<Vec<(f64, f64)>>)],
+        limits: [f64; 2],
+    ) -> [f64; 2] {
+        /// Displacement thresholds, periods.
+        const BEYOND: [f64; 4] = [1e-3, 1e-2, 1e-1, 1.0];
+        /// Energy band edges, least displaced first.
+        const EDGES: [f64; 5] = [0.25, 0.5, 0.75, 0.99, 1.0];
+        const BAND_LABELS: [&str; 5] = ["0-25%", "25-50%", "50-75%", "75-99%", "99-100%"];
+
+        // Σ E d / Σ E
+        let e_d = |r: &[(f64, f64)]| {
+            let (ed, e) = r
+                .iter()
+                .fold((0.0, 0.0), |(ed, e), v| (ed + v.0 * v.1, e + v.0));
+            ed / e
+        };
+        // 10 log10 u
+        let db_u = |u: f64| 10.0 * u.max(f64::MIN_POSITIVE).log10();
+        // d below which fraction f of the energy lands
+        let quantile = |r: &[(f64, f64)], f: f64| weighted_quantile(&mut r.to_vec(), f);
+        let pooled_col = names.len() > 1;
+
+        println!("\n=== {title} ===");
+        println!("  E is reported energy |Ψ|², d is displacement ρ |t̂ − t| in carrier periods");
+        println!("  E·d = Σ E·d / Σ E, in dB re one period");
+        println!("  q3 and q99 are d in periods, below which 75% and 99% of E lands\n");
+
+        print!("  {:>7} {:>5}", "rho", "taps");
+        for n in names {
+            print!(" {n:>8}");
+        }
+        if pooled_col {
+            print!(" {:>8}", "pooled");
+        }
+        println!(" {:>9} {:>9}", "q3 d", "q99 d");
+        let cols = names.len() + pooled_col as usize;
+        println!("  {}", "-".repeat(13 + 9 * cols + 20));
+
+        // Rows
+        let mut all = Vec::new();
+        let mut row_ed = Vec::with_capacity(rows.len());
+        for (rho, taps, families) in rows {
+            let mut pooled = Vec::new();
+            print!("  {rho:>7.4} {taps:>5}");
+            for f in families {
+                let total: f64 = f.iter().map(|v| v.0).sum();
+                print!(" {:>8.2}", db_u(e_d(f)));
+                pooled.extend(f.iter().map(|&(e, d)| (e / total, d)));
+            }
+            let ed = e_d(&pooled);
+            if pooled_col {
+                print!(" {:>8.2}", db_u(ed));
+            }
+            println!(
+                " {:>9.2e} {:>9.2e}",
+                quantile(&pooled, 0.75),
+                quantile(&pooled, 0.99)
+            );
+            row_ed.push((*rho, ed));
+            all.extend(pooled);
+        }
+
+        // Row quartiles
+        let mut spread: Vec<f64> = row_ed.iter().map(|r| r.1).collect();
+        spread.sort_by(f64::total_cmp);
+        let at = |f: f64| db_u(spread[((spread.len() - 1) as f64 * f).round() as usize]);
+
+        println!("\n  E·d quartiles over rows, dB re one period");
+        println!("  {:>8} {:>8} {:>8}", "q1", "median", "q3");
+        println!("  {:>8.2} {:>8.2} {:>8.2}", at(0.25), at(0.5), at(0.75));
+
+        // Row extremes
+        let by_ed = |a: &&(f64, f64), b: &&(f64, f64)| a.1.total_cmp(&b.1);
+        let (best_rho, best) = *row_ed.iter().min_by(by_ed).unwrap();
+        let (worst_rho, worst) = *row_ed.iter().max_by(by_ed).unwrap();
+
+        println!("\n  E·d row extremes");
+        println!("  {:>8} {:>8} {:>8}", "", "rho", "dB");
+        println!("  {:>8} {best_rho:>8.4} {:>8.2}", "best", db_u(best));
+        println!("  {:>8} {worst_rho:>8.4} {:>8.2}", "worst", db_u(worst));
+
+        // Energy beyond each displacement
+        let total: f64 = all.iter().map(|v| v.0).sum();
+
+        println!("\n  share of E displaced beyond d periods");
+        print!(" ");
+        for b in BEYOND {
+            print!(" {:>9}", format!(">{b:e}"));
+        }
+        print!("\n ");
+        for b in BEYOND {
+            // Σ_{d > b} E / Σ E
+            let share = all.iter().filter(|v| v.1 > b).map(|v| v.0).sum::<f64>() / total;
+            print!(" {:>8.3}%", 100.0 * share);
+        }
+        println!();
+
+        // Energy bands, least displaced first
+        all.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let mut banded = [(0.0f64, 0.0f64, 0.0f64); EDGES.len()];
+        let mut acc = 0.0;
+        for &(e, d) in &all {
+            let b = EDGES
+                .partition_point(|&x| x <= (acc + 0.5 * e) / total)
+                .min(EDGES.len() - 1);
+            let o = &mut banded[b];
+            *o = (o.0 + e / total, d, o.2 + e * d / total);
+            acc += e;
+        }
+        let total_ed: f64 = banded.iter().map(|b| b.2).sum();
+
+        println!("\n  E·d by energy band, bands sum to the mean row E·d");
+        println!("  E is the band's share of energy, d is displacement in periods");
+        println!(
+            "  {:>8} {:>7} {:>10} {:>10} {:>10} {:>8} {:>7}",
+            "band", "E", "mean d", "max d", "E·d", "E·d dB", "% E·d"
+        );
+        for (l, (e, dmax, ed)) in BAND_LABELS.iter().zip(banded) {
+            println!(
+                "  {l:>8} {:>6.1}% {:>10.2e} {dmax:>10.2e} {ed:>10.2e} {:>8.2} {:>6.1}%",
+                100.0 * e,
+                ed / e,
+                db_u(ed),
+                100.0 * ed / total_ed
+            );
+        }
+
+        // Headline
+        let measured = [at(0.5), db_u(worst)];
+        let verdict = |h: f64| if h > 0.0 { "pass" } else { "FAIL" };
+        let rule = "=".repeat(31);
+
+        println!("\n  {rule}");
+        println!("  {:>9} {:>10} {:>10}", "E·d dB", "median row", "worst row");
+        println!("  {rule}");
+        println!(
+            "  {:>9} {:>10.2} {:>10.2}",
+            "measured", measured[0], measured[1]
+        );
+        println!("  {:>9} {:>10.2} {:>10.2}", "limit", limits[0], limits[1]);
+        print!("  {:>9}", "headroom");
+        for (m, l) in measured.iter().zip(limits) {
+            print!(" {:>10.2}", l - m);
+        }
+        print!("\n  {:>9}", "");
+        for (m, l) in measured.iter().zip(limits) {
+            print!(" {:>10}", verdict(l - m));
+        }
+        println!("\n  {rule}");
+
+        measured
+    }
+
+    /// Energy that time reassignment moves off an impulse, and how far.
+    ///
+    ///     E·d = Σ E ρ |t̂ − p| / Σ E
+    ///
+    /// A band-limited impulse at sub-sample `p` has exact truth at every hop.  E = |Ψ|² is reported
+    /// energy and d is displacement in carrier periods, the dilation invariant frame.
+    #[test]
+    fn t_hat_impulse_transport() {
+        const Q: f64 = 3.5;
+        const GAMMA: f64 = 3.0;
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -40.0;
+
+        const PITCHES: usize = 48;
+        const RHO_LO: f64 = 0.01;
+        const RHO_HI: f64 = 0.375;
+        const HOPS: usize = 64;
+        const PHASES: usize = 6;
+
+        // NOTE recalibrate from the first run.
+        const MEDIAN_DB: f64 = -35.0;
+        const WORST_DB: f64 = -10.0;
+
+        let wav = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, GAMMA))
+            .max_load_quantum(QUANTUM)
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        let rows: Vec<_> = (0..PITCHES)
+            .map(|i| {
+                // ρ_lo (ρ_hi / ρ_lo)^(i / (n − 1))
+                let rho = RHO_LO * (RHO_HI / RHO_LO).powf(i as f64 / (PITCHES - 1) as f64);
+                let bin = wav.at_rho(rho);
+                let wts = bin.weights();
+                let half = (bin.len_folded() - 1) as f64;
+
+                let mut readings = Vec::with_capacity(PHASES * HOPS);
+                for q in 0..PHASES {
+                    let p = offset(q);
+                    // sinc(k − p)
+                    let x = move |k: isize| {
+                        let d = PI * (k as f64 - p);
+                        d.sin() / d
+                    };
+                    for m in hops(half, HOPS) {
+                        let (e, c) = moments(&wts, &x, m);
+                        if e > 0.0 {
+                            // ρ |m + c/e − p|
+                            readings.push((e, rho * (m as f64 + c / e - p).abs()));
+                        }
+                    }
+                }
+                (rho, bin.len_unfolded(), vec![readings])
+            })
+            .collect();
+
+        let [median, worst] = transport_report(
+            &format!("IMPULSE T_HAT (Q {Q}, γ {GAMMA}, quantum {QUANTUM}, tail {TAIL_DB:.0} dB)"),
+            &["impulse"],
+            &rows,
+            [MEDIAN_DB, WORST_DB],
+        );
+
+        assert!(
+            median < MEDIAN_DB,
+            "median row E·d {median:.2} dB re one period"
+        );
+        assert!(
+            worst < WORST_DB,
+            "worst row E·d {worst:.2} dB re one period"
+        );
+    }
+
+    /// Energy that time reassignment moves off a stationary tone, and how far, per detune.
+    ///
+    ///     E·d = Σ E ρ |t̂ − m| / Σ E
+    ///
+    /// A stationary tone belongs to every hop, so truth is the hop itself.  Error comes from the
+    /// image beating against the signal, which differs above and below the carrier.
+    #[test]
+    fn t_hat_tone_transport() {
+        const Q: f64 = 3.5;
+        const GAMMA: f64 = 3.0;
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -40.0;
+
+        const PITCHES: usize = 48;
+        const RHO_LO: f64 = 0.01;
+        const RHO_HI: f64 = 0.375;
+        const DETUNES_C: [f64; 5] = [-300.0, -150.0, 0.0, 150.0, 300.0];
+        const PHASES: usize = 12;
+
+        // NOTE recalibrate from the first run.
+        const MEDIAN_DB: f64 = -25.0;
+        const WORST_DB: f64 = -20.0;
+
+        let wav = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, GAMMA))
+            .max_load_quantum(QUANTUM)
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        let rows: Vec<_> = (0..PITCHES)
+            .map(|i| {
+                // ρ_lo (ρ_hi / ρ_lo)^(i / (n − 1))
+                let rho = RHO_LO * (RHO_HI / RHO_LO).powf(i as f64 / (PITCHES - 1) as f64);
+                let bin = wav.at_rho(rho);
+                let wts = bin.weights();
+                let w0 = bin.velocity();
+
+                let families = DETUNES_C
+                    .iter()
+                    .map(|cents| {
+                        // ω₀ 2^(c/1200)
+                        let w = w0 * (cents / 1200.0).exp2();
+                        (0..PHASES)
+                            .map(|q| {
+                                let theta = TAU * q as f64 / PHASES as f64;
+                                let x = move |k: isize| (w * k as f64 + theta).cos();
+                                let (e, c) = moments(&wts, &x, 0);
+                                // ρ |c/e|
+                                (e, rho * (c / e).abs())
+                            })
+                            .collect()
+                    })
+                    .collect();
+                (rho, bin.len_unfolded(), families)
+            })
+            .collect();
+
+        let names = DETUNES_C.map(|c| format!("{c:+.0}c"));
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let [median, worst] = transport_report(
+            &format!("TONE T_HAT (Q {Q}, γ {GAMMA}, quantum {QUANTUM}, tail {TAIL_DB:.0} dB)"),
+            &names,
+            &rows,
+            [MEDIAN_DB, WORST_DB],
+        );
+
+        assert!(
+            median < MEDIAN_DB,
+            "median row E·d {median:.2} dB re one period"
+        );
+        assert!(
+            worst < WORST_DB,
+            "worst row E·d {worst:.2} dB re one period"
+        );
+    }
+
+    /// Energy that time reassignment moves off a Gaussian burst's center, and how far, per width.
+    ///
+    ///     ĉ = Σ E t̂ / Σ E
+    ///     E·d = Σ E_b ρ |ĉ − p| / Σ E_b
+    ///
+    /// Reassignment squeezes a burst toward its center by design, so each burst is one reading,
+    /// its total reported energy E_b at the displacement of its centroid.
+    #[test]
+    fn t_hat_burst_transport() {
+        const Q: f64 = 3.5;
+        const GAMMA: f64 = 3.0;
+        const QUANTUM: usize = 4;
+        const TAIL_DB: f64 = -40.0;
+
+        const PITCHES: usize = 48;
+        const RHO_LO: f64 = 0.01;
+        const RHO_HI: f64 = 0.375;
+        const HOPS: usize = 64;
+        const PHASES: usize = 6;
+        /// Burst widths, envelope σ.
+        const WIDTHS: [f64; 3] = [0.25, 0.75, 2.0];
+        const DETUNES_C: [f64; 3] = [-300.0, 0.0, 300.0];
+
+        // NOTE recalibrate from the first run.
+        const MEDIAN_DB: f64 = -20.0;
+        const WORST_DB: f64 = -10.0;
+
+        let wav = WaveletSpec::default()
+            .with_shape(Shape::from_q(Q, GAMMA))
+            .max_load_quantum(QUANTUM)
+            .max_truncation(TAIL_DB)
+            .bake();
+
+        let rows: Vec<_> = (0..PITCHES)
+            .map(|i| {
+                // ρ_lo (ρ_hi / ρ_lo)^(i / (n − 1))
+                let rho = RHO_LO * (RHO_HI / RHO_LO).powf(i as f64 / (PITCHES - 1) as f64);
+                let bin = wav.at_rho(rho);
+                let wts = bin.weights();
+                let w0 = bin.velocity();
+                let half = (bin.len_folded() - 1) as f64;
+                // P / 2πρ
+                let sigma = wav.shape().p() / (TAU * rho);
+
+                let families = WIDTHS
+                    .iter()
+                    .map(|scale| {
+                        let sd = (scale * sigma).max(1.0);
+                        let mut readings = Vec::with_capacity(DETUNES_C.len() * PHASES);
+                        for cents in DETUNES_C {
+                            let w = w0 * (cents / 1200.0).exp2();
+                            for q in 0..PHASES {
+                                let (theta, p) = (TAU * q as f64 / PHASES as f64, offset(q));
+                                // e^{−z²/2} cos(ω(k − p) + θ), z = (k − p) / sd
+                                let x = move |k: isize| {
+                                    let t = k as f64 - p;
+                                    let z = t / sd;
+                                    (-0.5 * z * z).exp() * (w * t + theta).cos()
+                                };
+                                // (Σ E, Σ E t̂), E t̂ = E m + c
+                                let (e, et) =
+                                    hops(half + 3.0 * sd, HOPS).fold((0.0, 0.0), |(e, et), m| {
+                                        let (em, c) = moments(&wts, &x, m);
+                                        (e + em, et + em * m as f64 + c)
+                                    });
+                                // ρ |ĉ − p|
+                                readings.push((e, rho * (et / e - p).abs()));
+                            }
+                        }
+                        readings
+                    })
+                    .collect();
+                (rho, bin.len_unfolded(), families)
+            })
+            .collect();
+
+        let names = WIDTHS.map(|w| format!("b {w}σ"));
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let [median, worst] = transport_report(
+            &format!("BURST T_HAT (Q {Q}, γ {GAMMA}, quantum {QUANTUM}, tail {TAIL_DB:.0} dB)"),
+            &names,
+            &rows,
+            [MEDIAN_DB, WORST_DB],
+        );
+
+        assert!(
+            median < MEDIAN_DB,
+            "median row E·d {median:.2} dB re one period"
+        );
+        assert!(
+            worst < WORST_DB,
+            "worst row E·d {worst:.2} dB re one period"
+        );
     }
 }
