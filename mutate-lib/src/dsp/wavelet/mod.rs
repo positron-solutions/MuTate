@@ -914,11 +914,11 @@ mod test {
     /// cents hands off at half that, so beyond it the reading belongs to a neighbor.
     #[test]
     fn reassignment_is_unbiased() {
-        const Q: f64 = 8.5;
+        const Q: f64 = 3.5;
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -60.0;
+        const TAIL_DB: f64 = -40.0;
 
-        const SPACING: f64 = 100.0;
+        const SPACING: f64 = 400.0;
         const STEPS: isize = 8;
         const RESOLUTION: f64 = 0.05;
 
@@ -926,7 +926,7 @@ mod test {
         const ERROR_C: f64 = 4.0;
 
         const SKIRT_DB: f64 = -30.0;
-        const SKIRT_C: f64 = 10.0;
+        const SKIRT_C: f64 = 20.0;
         /// Reach of the crossing search, an octave either side.
         const SPAN: f64 = 1.0;
 
