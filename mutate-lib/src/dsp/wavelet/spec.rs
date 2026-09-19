@@ -11,9 +11,6 @@
 //! The specs only encapsulate the related decisions that go into generating a wavelet family or
 //! similar set of bins.  See the parent module for usage.
 
-// MAYBE Gamma = 4 is not that wild, but has a flatter top and a steeper main lobe, things we are
-// interested in.  It's possibly worth a bit of Q unless reassignment becomes broken.
-
 use core::f64::consts::{FRAC_2_SQRT_PI, LN_10, LN_2, PI, TAU};
 
 use libm::{erfc, lgamma};
@@ -30,6 +27,8 @@ use super::{Bin, Wavelet, PEAK_GAIN};
 #[derive(Clone, Copy)]
 pub struct Shape {
     /// The 𝛄 value of 3 results in a useful frequency domain uniformity and is the standard choice.
+    /// Higher values have slightly different asymmetry but give tighter main lobes.  Both `gamma` and
+    /// `beta` cost taps via the `p` factor in downstream calculations, so do your homework.
     pub gamma: f64,
     /// Adjusting beta at fixed gamma is adjusting Q.  The same envelope shape will be dilated over
     /// more carrier periods, resulting in more taps required to approximate the wavelet, the
@@ -43,7 +42,7 @@ impl Shape {
     ///
     /// The width at the start of the skirt, which must be controlled to avoid transition bands of
     /// downsampled inputs, is usually not more than `2 fc / q`.
-    pub fn from_q(q: f64, gamma: f64) -> Self {
+    pub const fn from_q(q: f64, gamma: f64) -> Self {
         // p = 2.0 * LN_2.sqrt() * q
         // beta = p * p / gamma
         Shape {
@@ -110,6 +109,12 @@ impl Shape {
         } else {
             u_gauss
         }
+    }
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Shape::from_q(defaults::Q, defaults::GAMMA)
     }
 }
 
@@ -255,9 +260,8 @@ impl WaveletSpec {
     }
 }
 
-/// The record a runtime `Bin` hydrates from.  No borrow, no realized geometry.
-// MAYBE we need to create the setters and the interface to build a bin from a wavelet via spec
-// instead of building bins and customizing them in a way that mutates the bins.
+/// The choices owned by each [`Bin`] that must only be within [`Wavelet`] limits.  Not yet tied to
+/// any `Wavelet`, which is where the [`Shape`] geometry comes from.
 #[derive(Clone, Copy)]
 pub struct BinSpec {
     pub(super) center: f64,
@@ -272,6 +276,18 @@ pub struct BinSpec {
 }
 
 impl BinSpec {
+    pub fn new(center: f64, rate: f64) -> Self {
+        debug_assert!(center <= 0.5 * rate);
+        Self {
+            center,
+            rate,
+            load_quantum: defaults::LOAD_QUANTUM,
+            delay: defaults::DELAY,
+            tail_db: defaults::TAIL_DB,
+            refine: Some(refine::Refine::default()),
+        }
+    }
+
     pub fn load_quantum(self, quantum: usize) -> Self {
         Self {
             load_quantum: quantum,
@@ -289,10 +305,18 @@ impl BinSpec {
     }
 
     pub fn bin<'w>(self, wavelet: &'w Wavelet) -> Bin<'w> {
+        // MAYBE convert to a Result API?  In any case, keep going with more checks on the spec and
+        // pull `BinSpec` mutation methods off of the `Bin`.
+        debug_assert!(
+            wavelet.limits.tail_db <= self.tail_db,
+            "wavelet supports max tail dB: {} but bin asked for tail dB: {}",
+            wavelet.limits.tail_db,
+            self.tail_db
+        );
+
         Bin::new(wavelet, self)
     }
 
-    // XXX Very likely to violate what the mother wavelet must impose
     pub fn with_refine(self, refine: Option<refine::Refine>) -> Self {
         Self { refine, ..self }
     }

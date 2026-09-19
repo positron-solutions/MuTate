@@ -341,11 +341,13 @@ pub mod defaults {
     pub const RESOLUTION: usize = 64;
     #[cfg(not(debug_assertions))]
     pub const RESOLUTION: usize = 256;
-    pub const GRID_EPS: f64 = 1e-9;
-    pub const TAIL_DB: f64 = -40.0;
-    pub const LOAD_QUANTUM: usize = 4;
+
+    pub const DELAY: usize = 0;
     pub const GAMMA: f64 = 3.0;
+    pub const GRID_EPS: f64 = 1e-9;
+    pub const LOAD_QUANTUM: usize = 4;
     pub const Q: f64 = 3.5;
+    pub const TAIL_DB: f64 = -40.0;
 }
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude, so |H| = 2 makes a unit tone
@@ -382,9 +384,17 @@ impl Wavelet {
         )
     }
 
-    // NEXT `bin_with_spec` method.
-    // XXX Without debug checks against requesting a `BinSpec` that exceeds maxima, we are letting
-    // bad behavior through even runtime.
+    pub fn from_spec(&self, spec: BinSpec) -> Bin<'_> {
+        // MAYBE Very raw API shape.  Not clear which type will own which construction paths.
+        // Review later.  Either a Result api or blowing up is necessary.  Splitting the fence with
+        // debug asserts right now.
+        let l = self.limits;
+        debug_assert!(spec.load_quantum <= l.load_quantum);
+        debug_assert!(spec.tail_db <= l.tail_db);
+        debug_assert!(spec.delay <= l.delay);
+
+        Bin::new(self, spec)
+    }
 
     /// A bin named by ρ directly, periods per tap.  `bin(fc, fs)` is `at_rho(fc / fs)`.
     pub fn at_rho(&self, rho: f64) -> Bin<'_> {
@@ -455,6 +465,9 @@ pub struct Bin<'w> {
 }
 
 impl<'w> Bin<'w> {
+    // MAYBE  Location of builder methods (on the BinSpec? on the Bin?) is still a bit up in the
+    // air.  Just keep coding 🤠.
+
     fn new(wavelet: &'w Wavelet, spec: BinSpec) -> Self {
         let rho = spec.center / spec.rate;
         let reach = (wavelet.shape.truncation_u(spec.tail_db) / rho).ceil() as usize;
@@ -468,7 +481,9 @@ impl<'w> Bin<'w> {
         }
     }
 
-    pub fn load_quantum(self, load_quantum: usize) -> Self {
+    /// Set the bin's load quantum.  Must respect `Wavelet` limits.
+    pub fn with_load_quantum(self, load_quantum: usize) -> Self {
+        debug_assert!(self.wavelet.limits.load_quantum >= load_quantum);
         Self::new(
             self.wavelet,
             BinSpec {
@@ -478,16 +493,41 @@ impl<'w> Bin<'w> {
         )
     }
 
-    pub fn delay(self, delay: usize) -> Self {
+    /// Set the bin's delay.  Must respect `Wavelet` limits.
+    pub fn with_delay(self, delay: usize) -> Self {
+        debug_assert!(self.wavelet.limits.delay >= delay);
         Self::new(self.wavelet, BinSpec { delay, ..self.spec })
     }
 
-    pub fn truncate(self, tail_db: f64) -> Self {
+    /// Set the bin's tail dB.  Must respect `Wavelet` limits.
+    pub fn with_truncation(self, tail_db: f64) -> Self {
         let tail_db = -tail_db.abs();
+
+        // NOTE we store the negative `tail_db` value, so less is more.
+        debug_assert!(
+            self.wavelet.limits.tail_db <= tail_db,
+            "wavelet supports max tail dB: {} but bin asked for tail dB: {}",
+            self.wavelet.limits.tail_db,
+            tail_db
+        );
         Self::new(
             self.wavelet,
             BinSpec {
                 tail_db,
+                ..self.spec
+            },
+        )
+    }
+
+    /// Set the bin's center frequency, using its sample rate multiplied by the periods-per-sample
+    /// density, `rho`.
+    pub fn with_rho(self, rho: f64) -> Self {
+        debug_assert!(rho <= 0.5);
+        let fc = self.spec.rate * rho;
+        Self::new(
+            self.wavelet,
+            BinSpec {
+                center: fc,
                 ..self.spec
             },
         )
@@ -1186,7 +1226,7 @@ mod test {
 
         let mut refs = Vec::with_capacity(FCS.len());
         for fc in FCS {
-            let full = w.bin(fc, RATE).truncate(FULL_DB);
+            let full = w.bin(fc, RATE).with_truncation(FULL_DB);
             let nf = full.len_folded();
             let wts = full.weights();
             let psi = wts.psi();
@@ -1238,7 +1278,7 @@ mod test {
             let (mut prev_taps, mut prev_floor) = (0usize, f64::INFINITY);
 
             for tail_db in CUTS {
-                let cut = w.bin(fc, RATE).truncate(tail_db);
+                let cut = w.bin(fc, RATE).with_truncation(tail_db);
                 let nc = cut.len_folded();
                 let wts = cut.weights();
                 let psi = wts.psi();
@@ -1429,7 +1469,10 @@ mod test {
             println!("\n=== TABLE RESPONSE (Q = {Q}, quantum {quantum}) ===");
 
             for (fc, sr) in [(1000.0f64, 6000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-                let bin = w.bin(fc, sr).load_quantum(quantum).truncate(TAIL_DB);
+                let bin = w
+                    .bin(fc, sr)
+                    .with_load_quantum(quantum)
+                    .with_truncation(TAIL_DB);
                 let wts = bin.weights();
 
                 let w0 = bin.velocity();
@@ -1520,37 +1563,41 @@ mod test {
     /// quantum, which pads the emitted half-span.
     #[test]
     fn unit_tone_reads_unity() {
-        const Q: f64 = 3.0;
-        const TAIL_DB: f64 = -50.0;
-        /// f32 storage
         const EPS: f64 = 1e-6;
 
-        let w = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
-            .max_load_quantum(8)
-            .max_truncation(TAIL_DB)
-            .bake();
-
         let mut probe = Vec::new();
-        for quantum in [1usize, 4, 8] {
-            for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-                let bin = w.bin(fc, sr).load_quantum(quantum);
-                let wts = bin.weights();
-                let psi = wts.psi();
 
-                // ω_peak
-                let (wp, _) = Inspect::new(psi, &mut probe, OVERSAMPLE)
-                    .peak(bin.velocity(), 0.0, PI)
-                    .unwrap();
-                // ½|H(−ω_peak)|
-                let beat = 0.5 * psi.dtft(-wp).abs();
+        let ws = WaveletSpec::default().max_truncation(-100.0);
+        for gamma in [3.0, 4.0] {
+            for p in 0..10 {
+                let q = p as f64 * 0.25 + 3.0;
+                let w = ws.with_shape(Shape::from_q(q, gamma)).bake();
+                for t in 0..7 {
+                    let tail_db = -20.0 + -10.0 * t as f64;
+                    for r in 0..10 {
+                        let rho = 0.005 + r as f64 * 0.015;
+                        let fc = rho * RATE;
 
-                for m in 0..8 {
-                    let env = wts.project(|k| (wp * k as f64).cos(), m)[0].norm();
-                    assert!(
-                        (env - 1.0).abs() < beat + EPS,
-                        "quantum {quantum} fc {fc} phase {m} envelope {env:.9} beat {beat:.3e}"
-                    );
+                        let bin = w.bin(fc, RATE).with_truncation(tail_db);
+                        let wts = bin.weights();
+                        let psi = wts.psi();
+
+                        // ω_peak
+                        let (wp, _) = Inspect::new(psi, &mut probe, OVERSAMPLE)
+                            .peak(bin.velocity(), 0.0, PI)
+                            .unwrap();
+
+                        // ½|H(−ω_peak)|
+                        let beat = 0.5 * psi.dtft(-wp).abs();
+
+                        for m in 0..8 {
+                            let env = wts.project(|k| (wp * k as f64).cos(), m)[0].norm();
+                            assert!(
+                                (env - 1.0).abs() < beat + EPS,
+                                "fc {fc} phase {m} envelope {env:.9} beat {beat:.3e}"
+                            );
+                        }
+                    }
                 }
             }
         }
