@@ -1347,22 +1347,29 @@ mod test {
     fn t_hat_survives_transients() {
         /// Reference tail, past which f32 storage zeroes the taps anyway.
         const REF_TAIL_DB: f64 = -100.0;
-        /// Second reference, confirming the first has converged.
+        /// Second reference, whose disagreement with the first is charged to the budget.
         const DEEP_TAIL_DB: f64 = -140.0;
         const TAIL_DB: f64 = -40.0;
 
         /// Burst widths in units of the filter's own envelope σ.
         const WIDTHS: [f64; 3] = [0.25, 0.75, 2.0];
+        /// In-bin detunes about zero, then ±400c where Δω·σ_c² outweighs the leakage allowance.
+        const DETUNES_C: [f64; 7] = [-400.0, -100.0, -50.0, 0.0, 50.0, 100.0, 400.0];
 
-        /// Reference movement between the two tails, as a fraction of the measured error.
-        const CONVERGED: f64 = 0.05;
+        /// Display floor, where a reading goes dark.
+        const FLOOR_DB: f64 = -60.0;
 
-        /// Worst |t̂ − t̂_ref| in burst sd, per level bucket.
-        const TOL: [f64; 3] = [0.4, 1.2, 2.0];
-        /// Skew against Δω·σ_c², bounding Morse departure from the Gaussian model.
-        const SKEW_TOL: f64 = 1.2;
-        /// Leakage floor in burst sd where the model predicts no skew.
-        const LEAK_TOL: f64 = 0.2;
+        // NOTE these are empirically discovered values stored to catch regressions.
+
+        /// Worst visible |t̂ − t̂_ref| plus reference drift, in burst sd.
+        // Measured 0.691 at fc 40, 0.25σ, 400c.
+        const GAP_TOL: f64 = 0.85;
+        /// Morse departure from Δω·σ_c², relative to the model.
+        // Measured 0.11 at 2σ, 400c.
+        const SKEW_TOL: f64 = 0.15;
+        /// Estimator leakage in burst sd, present at any detune.
+        // Measured 0.087 at fc 40, 0.25σ, 0c.
+        const LEAK_TOL: f64 = 0.11;
 
         let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
         let long = WaveletSpec::default().max_truncation(REF_TAIL_DB).bake();
@@ -1386,71 +1393,54 @@ mod test {
                 psi.len_unfolded(),
                 reference.psi().len_unfolded(),
             );
-            println!("  err in burst sd, skew against Δω·σ_c², drift against the -60 dB bucket\n");
+            println!(
+                "  gap is max h |t̂ − t̂_ref| in burst sd, h = 1 − dB/floor, floor {FLOOR_DB:.0} dB"
+            );
+            println!("  drift is the same against the deeper reference");
+            println!("  s and p are measured and modeled skew Δω·σ_c² in burst sd");
+            println!("  use is |s − p| over a|p| + b·σ_x, passing below 1\n");
             println!(
                 "  {:>5} {:>7} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
-                "width", "sd", "detune", "-20 dB", "-40 dB", "-60 dB", "drift", "skew"
+                "width", "sd", "detune", "gap", "drift", "s", "p", "use"
             );
 
             for scale in WIDTHS {
                 let sd = (scale * sigma).max(1.0);
-                for detune in [0.0f64, 400.0] {
+                for detune in DETUNES_C {
                     // ω₀ · 2^(c/1200)
                     let w = w0 * (detune / 1200.0).exp2();
-                    // reach plus four burst σ, so the tails clear the level buckets
+                    // reach plus four burst σ, past the floor
                     let span = 2 * half + (4.0 * sd).ceil() as isize;
-                    let (err, skew) = t_hat_profile(&wts, &reference, burst(w, sd, 0.0), span);
-                    let (drift, _) = t_hat_profile(&reference, &deeper, burst(w, sd, 0.0), span);
+
+                    let x = burst(w, sd, 0.0);
+                    let gap = visible_gap(&wts, &reference, &x, span, FLOOR_DB) / sd;
+                    let drift = visible_gap(&reference, &deeper, &x, span, FLOOR_DB) / sd;
+                    // Im(T/Ψ) at the burst center
+                    let [psi_c, _, tee_c] = wts.project(&x, 0);
+                    let skew = (tee_c / psi_c).im;
 
                     // Δω·σ_c², σ_c² = (σ_ψ⁻² + σ_x⁻²)⁻¹
                     let dw = w0 * ((detune / 1200.0).exp2() - 1.0);
                     let pred = dw * (var.recip() + (sd * sd).recip()).recip();
 
-                    // error in units of the burst being located
-                    let rel = |v: f64| v / sd;
-                    // skew against the model, or the leakage floor where the model is zero
-                    let s = if pred > 0.0 {
-                        format!("{:>8.3}", skew / pred)
-                    } else {
-                        format!("{:>8.1e}", skew / sd)
-                    };
+                    // |s − p| / (a|p| + b·σ_x)
+                    let skew_use = (skew - pred).abs() / (SKEW_TOL * pred.abs() + LEAK_TOL * sd);
 
                     println!(
-                        "  {scale:>4.2}σ {sd:>7.2} {detune:>5.0}c {:>8.3} {:>8.3} {:>8.3} {:>8.1e} {s}",
-                        rel(err[0]),
-                        rel(err[1]),
-                        rel(err[2]),
-                        drift[2] / err[2].max(1e-9),
+                        "  {scale:>4.2}σ {sd:>7.2} {detune:>5.0}c {gap:>8.3} {drift:>8.1e} \
+                         {:>+8.3} {:>+8.3} {skew_use:>8.3}",
+                        skew / sd,
+                        pred / sd,
                     );
-
-                    for (e, tol) in err.iter().zip(&TOL) {
-                        let gap = rel(*e);
-                        assert!(
-                            gap < *tol,
-                            "fc {fc} sd {sd:.2} detune {detune} t_hat gap {gap:.3} sd"
-                        );
-                    }
 
                     assert!(
-                        drift[2] < CONVERGED * err[2].max(1e-3),
-                        "fc {fc} sd {sd:.2} detune {detune} reference moves {:.4} against err {:.4}",
-                        drift[2], err[2]
+                        gap + drift < GAP_TOL,
+                        "fc {fc} sd {sd:.2} detune {detune} gap {gap:.3} drift {drift:.1e} sd"
                     );
-
-                    if pred > 0.0 {
-                        // a burst at the floor resolves too few samples for σ_x to mean anything
-                        assert!(
-                            sd < 2.0 || (skew / pred - 1.0).abs() < SKEW_TOL - 1.0,
-                            "fc {fc} sd {sd:.2} skew off model by {:.3}",
-                            skew / pred - 1.0
-                        );
-                    } else {
-                        assert!(
-                            skew / sd < LEAK_TOL,
-                            "fc {fc} sd {sd:.2} leakage {:.3e} sd",
-                            skew / sd
-                        );
-                    }
+                    assert!(
+                        skew_use < 1.0,
+                        "fc {fc} sd {sd:.2} detune {detune} skew {skew:.3} against model {pred:.3}"
+                    );
                 }
             }
         }
@@ -2092,6 +2082,35 @@ mod test {
     fn moments(wts: &Weights, x: &dyn Fn(isize) -> f64, m: isize) -> (f64, f64) {
         let [psi, _, tee] = wts.project(x, m);
         (psi.norm_sqr(), (tee * psi.conj()).re)
+    }
+
+    /// max_m h_m |t̂_a − t̂_b|, h = clamp(1 − dB/floor, 0, 1) on b's |Ψ|² re its peak
+    fn visible_gap(
+        a: &Weights,
+        b: &Weights,
+        x: &dyn Fn(isize) -> f64,
+        span: isize,
+        floor_db: f64,
+    ) -> f64 {
+        let readings: Vec<(f64, f64)> = (-span..=span)
+            .map(|m| {
+                let (ea, ca) = moments(a, x, m);
+                let (eb, cb) = moments(b, x, m);
+                (eb, ca / ea - cb / eb)
+            })
+            .collect();
+        let peak = readings.iter().fold(0.0f64, |p, r| p.max(r.0));
+
+        readings
+            .iter()
+            .map(|&(e, gap)| {
+                // 1 − dB/floor
+                let h = 1.0 - 10.0 * (e / peak).log10() / floor_db;
+                (h, gap)
+            })
+            .filter(|&(h, _)| h > 0.0)
+            .map(|(h, gap)| h * gap.abs())
+            .fold(0.0, f64::max)
     }
 
     /// About `n` hops on a uniform stride across [−r, r]

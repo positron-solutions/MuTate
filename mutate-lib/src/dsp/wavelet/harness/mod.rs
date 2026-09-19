@@ -127,44 +127,6 @@ pub(super) fn burst(w: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
     }
 }
 
-/// Worst |t̂ − t̂_ref| in samples per level bucket, plus the worst imaginary skew in the top
-/// bucket.  Cumulative, so the -60 dB entry contains the -20 dB one.  Reassignment only has
-/// to hold where the pixel is bright enough to see.
-pub(super) fn t_hat_profile(
-    wts: &Weights,
-    reference: &Weights,
-    x: impl Fn(isize) -> f64,
-    span: isize,
-) -> ([f64; 3], f64) {
-    /// Hop levels the buckets accumulate over, dB below the loudest hop.
-    const LEVELS: [f64; 3] = [-20.0, -40.0, -60.0];
-
-    let hops: Vec<(f64, f64, f64)> = (-span..=span)
-        .map(|m| {
-            let [p, _, t] = wts.project(&x, m);
-            let [rp, _, rt] = reference.project(&x, m);
-            // T/Ψ
-            let (q, r) = (t / p, rt / rp);
-            (p.norm(), (q.re - r.re).abs(), q.im.abs())
-        })
-        .collect();
-
-    let peak = hops.iter().fold(0.0f64, |a, h| a.max(h.0));
-    let (mut worst, mut skew) = ([0.0f64; 3], 0.0f64);
-    for (lvl, err, im) in hops {
-        let db = 20.0 * (lvl / peak).log10();
-        for (w, &l) in worst.iter_mut().zip(&LEVELS) {
-            if db >= l {
-                *w = w.max(err);
-            }
-        }
-        if db >= LEVELS[0] {
-            skew = skew.max(im);
-        }
-    }
-    (worst, skew)
-}
-
 /// Signed bars for `re` and `im` overlaid on one axis, zero between cells `cols / 2 - 1` and
 /// `cols / 2`. Caller guarantees `max >= |re|` and `max >= |im|`, which keeps both spans inside
 /// the `cols` field.
