@@ -346,7 +346,7 @@ impl Instance {
                 if caps.pipeline_executable_info {
                     exts.push(vk::KHR_PIPELINE_EXECUTABLE_PROPERTIES_NAME);
                 }
-                SupportedDevice::new(physical_device, self, &exts, self.profile, caps)
+                SupportedDevice::new( self, physical_device, &exts, self.profile, caps)
             })
             .collect()
     }
@@ -580,9 +580,9 @@ impl std::ops::Deref for Instance {
 /// });
 ///
 /// // With both context and instance:
-/// with_context!(|device, instance| {
-///     // `device: Device` is available here
+/// with_context!(|instance, device| {
 ///     // `instance: Instance` is available here
+///     // `device: Device` is available here
 /// });
 /// ```
 #[macro_export]
@@ -596,7 +596,7 @@ macro_rules! with_context {
         instance.destroy();
         __result
     }};
-    (|$device:ident, $instance:ident| $($body:tt)*) => {{
+    (|$instance:ident, $device:ident| $($body:tt)*) => {{
         let mut $instance = $crate::instance::Instance::new_headless();
         let mut physical_device = $instance.supported_devices(&[]).remove(0);
         let mut $device = physical_device.into_logical(&$instance);
@@ -653,7 +653,7 @@ pub struct SupportedDevice {
 }
 
 impl SupportedDevice {
-    fn new(physical_device: vk::PhysicalDevice, instance: &Instance, extensions: &[&'static CStr],
+    fn new(instance: &Instance, physical_device: vk::PhysicalDevice, extensions: &[&'static CStr],
         profile: InstanceProfile, caps: DeviceCaps) -> SupportedDevice {
         let name = unsafe {
             let props =

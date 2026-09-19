@@ -19,7 +19,7 @@ fn dispatch_increment_read_back() {
     )]
     pub struct IncrementPipeline;
 
-    with_context!(|device, _instance| {
+    with_context!(|_instance, device| {
         // NEXT any test with dispatch can re-use this kind of initialization
         let queue = device
             .queues

@@ -65,7 +65,7 @@ impl WindowContext {
         audio_outputs: Arc<Mutex<Option<audio::AudioOutputs>>>,
     ) -> Self {
         // XXX create the present ring and clone the queue to audio farther upstream?
-        let present_ring = PresentRing::new(device, instance, &surface).unwrap();
+        let present_ring = PresentRing::new(instance, device, &surface).unwrap();
         let mut renderer = video::verticlysm::Verticlysm::new(device);
         renderer.provision(device, surface.extent()).unwrap();
         Self {

@@ -166,6 +166,7 @@
 // LLMs are getting pretty cracktastic good at these "find the needle" problems where the type of X
 // is slightly off.  Deciding how to lay out control data?  That is some exceedingly boring code
 // that could use some macros later.
+// NEXT automatically promote u32 -> UInt32 and newtypes thereof
 // XXX Might be possible to pull more information up onto the GpuType and leave GpuScalar and
 //     GpuPrimitive split in order support float3 etc as simply as possible.
 // XXX Buffer Device Address destination payload types not implemented
@@ -175,6 +176,7 @@
 // XXX Remove need for double (or more) calls of into or inner for user-defined newtypes.
 // XXX Newtype for newtypes tests (and define how to interpret this)
 // XXX Finish up some Deref implementations and tests
+// XXX DeviceAddress and vk::DeviceAddress are too redundant.
 // NEXT we are definitely implementing vectors (ie float3) as leaf types (`GpuPrimitive`) to avoid
 // vector complexity infecting calculations for struct fields and enums.
 

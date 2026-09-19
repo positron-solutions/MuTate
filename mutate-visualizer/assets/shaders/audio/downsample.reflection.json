@@ -10,7 +10,7 @@
                     "name": "PushConstants",
                     "fields": [
                         {
-                            "name": "static_base",
+                            "name": "input_base",
                             "type": {
                                 "kind": "scalar",
                                 "scalarType": "uint64"
@@ -18,43 +18,67 @@
                             "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
                         },
                         {
+                            "name": "static_base",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint64"
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "input_stride",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "input_mask",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
+                        },
+                        {
                             "name": "first_window_center",
                             "type": {
                                 "kind": "array",
-                                "elementCount": 3,
+                                "elementCount": 4,
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
                                 "uniformStride": 4
                             },
-                            "binding": {"kind": "uniform", "offset": 8, "size": 12, "elementStride": 4}
+                            "binding": {"kind": "uniform", "offset": 24, "size": 16, "elementStride": 4}
                         },
                         {
                             "name": "first_output_slot",
                             "type": {
                                 "kind": "array",
-                                "elementCount": 3,
+                                "elementCount": 4,
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
                                 "uniformStride": 4
                             },
-                            "binding": {"kind": "uniform", "offset": 20, "size": 12, "elementStride": 4}
+                            "binding": {"kind": "uniform", "offset": 40, "size": 16, "elementStride": 4}
                         },
                         {
                             "name": "output_count",
                             "type": {
                                 "kind": "array",
-                                "elementCount": 3,
+                                "elementCount": 4,
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "uint32"
                                 },
                                 "uniformStride": 4
                             },
-                            "binding": {"kind": "uniform", "offset": 32, "size": 12, "elementStride": 4}
+                            "binding": {"kind": "uniform", "offset": 56, "size": 16, "elementStride": 4}
                         }
                     ]
                 },
@@ -67,7 +91,7 @@
                         "name": "PushConstants",
                         "fields": [
                             {
-                                "name": "static_base",
+                                "name": "input_base",
                                 "type": {
                                     "kind": "scalar",
                                     "scalarType": "uint64"
@@ -75,47 +99,71 @@
                                 "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
                             },
                             {
+                                "name": "static_base",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint64"
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "input_stride",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "input_mask",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
+                            },
+                            {
                                 "name": "first_window_center",
                                 "type": {
                                     "kind": "array",
-                                    "elementCount": 3,
+                                    "elementCount": 4,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "uint32"
                                     },
                                     "uniformStride": 4
                                 },
-                                "binding": {"kind": "uniform", "offset": 8, "size": 12, "elementStride": 4}
+                                "binding": {"kind": "uniform", "offset": 24, "size": 16, "elementStride": 4}
                             },
                             {
                                 "name": "first_output_slot",
                                 "type": {
                                     "kind": "array",
-                                    "elementCount": 3,
+                                    "elementCount": 4,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "uint32"
                                     },
                                     "uniformStride": 4
                                 },
-                                "binding": {"kind": "uniform", "offset": 20, "size": 12, "elementStride": 4}
+                                "binding": {"kind": "uniform", "offset": 40, "size": 16, "elementStride": 4}
                             },
                             {
                                 "name": "output_count",
                                 "type": {
                                     "kind": "array",
-                                    "elementCount": 3,
+                                    "elementCount": 4,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "uint32"
                                     },
                                     "uniformStride": 4
                                 },
-                                "binding": {"kind": "uniform", "offset": 32, "size": 12, "elementStride": 4}
+                                "binding": {"kind": "uniform", "offset": 56, "size": 16, "elementStride": 4}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 44, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 72, "elementStride": 0}
                 }
             }
         }
@@ -150,7 +198,7 @@
                     }
                 }
             ],
-            "threadGroupSize": [32, 8, 1],
+            "threadGroupSize": [32, 2, 1],
             "bindings": [
                 {
                     "name": "pc",

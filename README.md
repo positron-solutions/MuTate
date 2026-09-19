@@ -10,7 +10,7 @@
   <i>...real-time programs that display impressive graphics, music, and mind-blowing effects sometimes <b>considered impossible given the limits of the hardware</b></i> - <a title="Making Art With Code" href=https://youtu.be/vIQ74_DRWEM?si=vK3zc6X-kbbZC9aM&t=770">The Incredible Demoscene</a>
 </p>
 <p>
-  The need to be smaller drives more sophistication, not less.  It also drives faster iteration.  µTate (/ˈmjuːteɪt/) gives researchers developing post-attention heuristics a path to quick viability for their work without stacks of H200's and petabytes of data.  Music visualization that learns online demands more efficiency.  The techniques required will apply far beyond music, reaching into hard problems that will enable the next round of breakthroughs.
+  The need to be smaller drives more sophistication, not less.  µTate (/ˈmjuːteɪt/) gives researchers developing post-attention heuristics a path to quick viability for their work without running stacks of H200's and access to petabytes of data.  Music visualization that learns online demands more efficiency.  The techniques required will apply far beyond music, reaching into hard problems that will enable the next round of breakthroughs.
 </p>
 
 ### Contents
@@ -31,22 +31,22 @@
 
 ## Building the Alliance
 
-Bringing together a wide group of overlapping interests creates opportunities to solve problems that no one beneficiary could easily approach alone.  Technology that is both upstream of a huge consumer market and has even bigger downstream applications makes new things possible.
+µTate directly provides synchronize visuals for live music performances or casual home entertainment visualization.  As a library, µTate uses gaming-adjacent technologies like [slang](https://shader-slang.org/) because these enable us to tap into demand for things like more natural procedural content and more organic animation.
 
-µTate's direct usages provide synchronized visuals for live music performances or casual home entertainment visualization.  µTate uses gaming-adjacent technologies like [slang](https://shader-slang.org/) because these enable us to tap into demand for things like better artificial intelligence and more natural procedural content, tuned with feedback from a live renderer.
+Bringing together a wide group of overlapping interests creates opportunities to solve problems that no one beneficiary could easily approach alone.  Technology that is upstream of a huge consumer market has an engine.  That engine can push downstream applications that make new things possible.
 
-Incidentally, the common parts of the problems will emit open source implementations of critical components for others to advance in their own fields.  Today's neural rendering can feed into tomorrow's heuristics toolkits that enable fast iteration on multi-disciplinary problems with prohibitive search spaces, problems like using synthetic biology to more cheaply make sustainable aviation fuel so that supersonic international travel becomes trivial.
+Incidentally, the common parts of the problems will emit open source implementations for others to use to advance in their own fields.  Today's neural rendering can feed into tomorrow's heuristics toolkits that enable fast iteration on multi-disciplinary problems.
 
 ## The Vulkan Engine
 
-µTate's online learning goals require some specific runtime capabilities that will incidentally create a user-friendly declarative graphics programming interface.  The design phase complete, and this is what we are building:
+µTate's online learning goals require some specific runtime capabilities that **will** incidentally create a user-friendly declarative graphics programming interface.  The **design phase** is complete, and this is what we are building:
 
-- **Host-shader Type Agreement** - Use slang reflection data and Rust proc-macro fan-in to verify type and layout agreement of declared sets of pipeline stages.
-- **Declarative Resources** - Enable pipelines to specify the geometry and semantic type of upstream inputs, intermediate buffers, and outputs.
-- **Resource Runtime** - Maintain a single state of what should be loaded and to operate reconciliation processes to continually maintain the intended state.
-- **Workload Management** - Requesting resources fed by upstream dispatches and external processes like pipewire should spin up those processes to feed those input buffers.
-- **Memory management** - Maintain sub-allocations, epoch recycling, and borrow counts for shared resources in use by multiple independent downstreams.  Support aliasing.
-- **Reactive Argument Injection** - Enable command recording for pipelines to pick up pointer swaps and other dynamic values from a single source, decoupling the recorder from knowledge of the specific upstream sources.  Enable publishes to affect the correct epoch without knowledge of the downstream.
+- **Host-shader Type Agreement** - Use slang reflection data and Rust proc-macro fan-in to verify type and layout agreement of declared sets of pipeline stages and control data like push constants.
+- **Resource Runtime** - Maintain a single goal state of what should be loaded and to operate reconciliation loops to continually approach and then maintain the intended state.
+- **Declarative Resources** - Enable pipelines to specify the geometry and semantic type of upstream inputs, intermediate buffers, and outputs to validating pipeline remixing.  Deferred resource creation for free.
+- **Workload Management** - Depending on resources fed from upstream dispatches and external processes like pipewire should spin up the upstreams.
+- **Memory management** - Maintain sub-allocations, epoch recycling, and borrow counts for shared resources in use by multiple independent downstreams.
+- **Reactive Argument Injection** - Enable command recording for pipelines to pick up pointer swaps, screen size changes, and other dynamic values from a single source.  This decouples the recorder from knowledge of the specific upstream sources.  Enable publishing updates to affect the correct dependents without knowledge of what is downstream.
 
 The argument injection and declarative resource spin-up mean composing pipelines does not require any knowledge of how to provision them.  This enables machine learning to focus on declaring how to draw, modulating arguments, and which data to use.  Meanwhile the runtime will put those declarations into effect.
 
@@ -60,13 +60,13 @@ With regards to safety, the strategy being taken is to start with guard rails of
 
 ## The DSP
 
-µTate is bringing real-time DSP onto the GPU so that prohibitively expensive on-CPU techniques can be done at conspicuously high resolutions in real time, directly adjacent to the video pipelines that need that output.  4k filter banks with multiple high-quality Goertzel filters and wide-band IIRs are intended to provide sources of neat textures, modulation signals to move things with the music, and inputs for real-time beat detection & inference.
+µTate does DSP directly on the GPU at conspicuously high resolutions, directly adjacent to the video and machine learning pipelines that need that output.  The 4k filter bank provides a neat texture source, modulation signals to move things with the music, and inputs for online learning & inference.
 
-Past visualizers users simple beat detection based on simple heuristics like volume thresholds.  These are easily faked out.  They don't understand patterns or layering.  Only a handful of dynamic values and waveform textures were available to preset authors, so the results were inevitably highly abstract programmer art that cannot reflect the mood or spirit of the music being played.  Compared to traditional heuristics, these high quality procedural inputs will enable:
+Past visualizers users simple beat detection based on simple heuristics like volume thresholds and envelopes.  These are easily faked out.  They can never understand patterns or layering.  They will also never reflect the mood or spirit of the music being played.  Compared to traditional heuristics, modern  machine learning techniques can:
 
 - Distinguish layered melodies and instrument changes.
 - Interpret timbre and texture to create visuals unique to how an instrument is played on that particular day.
-- Beat **prediction** and visual cues when something *is expected*.
+- **Predict** beats, using visual cues to indicate when something *is expected* soon.
 - Automating visual "hard cuts" when prediction fails, following the change in musical tone with changes in visual tone.
 
 ## The Machine Learning
@@ -97,7 +97,7 @@ The internal `mutate-vulkan` crate is intended to become a competent Vulkan runt
 
 ### DSP Workbench
 
-`cargo workbench --help` will list the CLI interface for the workbench, a CLI program being developed to assist in engineering filter bank configurations for use on the GPU.  A separate `pmr` bin (requires pm_remez) can generate static FIR filter settings. Try `cargo pmr lowpass --taps 23`.
+`cargo workbench --help` will list the CLI interface for the workbench, a CLI program being developed to assist in engineering filter bank configurations for use on the GPU.  A separate `pmr` bin (requires pm_remez) can generate static FIR filter weights. Try `cargo pmr lowpass --taps 23`.
 
 ## Contributing
 

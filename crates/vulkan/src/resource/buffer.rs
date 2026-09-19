@@ -23,6 +23,12 @@
 // DEBT sub-allocation / resource runtime. 💸
 // NEXT hang buffer & image creation methods off of the device.memory.  Limit buffer & image module
 // scope to handling post-allocation.
+// DEBT DMA vs transfer abstraction.  The control data should be written device visible and then
+// copied / handed off into device-only memory.  We would initialize this lazily, only beginning
+// dispatches when the upload of control data is available and black-holing (later shared consumers
+// will need a concept of the reclaim owner) data to keep upstream ring slack available.  There's a
+// lot of runtime spec hydration and downstream dependency concepts in there.
+// NEXT separate static and dynamic data.  Use UBO buffer flags etc.
 
 use std::ptr::NonNull;
 
@@ -53,10 +59,13 @@ pub struct MappedAllocation<T> {
 impl<T> MappedAllocation<T> {
     /// `len` is the number of `T` this buffer will hold.
     pub fn new(device: &Device, len: usize) -> Result<Self, VulkanError> {
+        let padded_size = ((std::mem::size_of::<T>() * len) as u64)
+            .next_multiple_of(device.memory.non_coherent_atom_size);
+
         // NEXT these are pretty temporito.  See the abstract choices in the memory module.  That's
         // basically how we want to do this.
         let buffer_info = vk::BufferCreateInfo {
-            size: (std::mem::size_of::<T>() * len) as u64,
+            size: padded_size.into(),
             usage: vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::TRANSFER_SRC
@@ -64,13 +73,14 @@ impl<T> MappedAllocation<T> {
             sharing_mode: vk::SharingMode::EXCLUSIVE,
             ..Default::default()
         };
-        let (buffer, memory, size) = device
+        let (buffer, memory, padded_size) = device
             .memory
             .allocate_buffer(&buffer_info, MemoryUse::Upload)?;
+
         let raw_ptr = unsafe {
             device
                 .as_raw()
-                .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?
+                .map_memory(memory, 0, padded_size, vk::MemoryMapFlags::empty())?
         };
         let ptr = NonNull::new(raw_ptr as *mut T).unwrap();
         Ok(Self {
@@ -78,7 +88,7 @@ impl<T> MappedAllocation<T> {
             ptr,
             len,
             memory,
-            size,
+            size: padded_size,
         })
     }
 

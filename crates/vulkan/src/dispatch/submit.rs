@@ -42,6 +42,7 @@
 // that are laid out in order already, matching Vulkan's use of slices when assembling the
 // submission for the C API.
 // NEXT protected support can likely inherit from the queue or command buffer.
+// MAYBE get rid of fences on most submissions?
 
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
@@ -279,7 +280,7 @@ pub mod test {
 
     #[test]
     fn start_submission() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             let start = device
                 .queues
                 .compute(QueuePriority::High)
@@ -290,7 +291,7 @@ pub mod test {
 
     #[test]
     fn empty_signal() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             let mut semaphore = device.make_timeline_semaphore().unwrap();
             let signal_intent = semaphore.next_signal();
             let wait_value = signal_intent.wait_value();
@@ -310,7 +311,7 @@ pub mod test {
 
     #[test]
     fn binary_semaphores() {
-        with_context!(|device, _instance| {
+        with_context!(|_instance, device| {
             let queue = device
                 .queues
                 .graphics_offscreen(QueuePriority::High)
