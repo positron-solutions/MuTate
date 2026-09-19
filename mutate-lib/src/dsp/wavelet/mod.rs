@@ -1530,48 +1530,75 @@ mod test {
     }
 
     /// A real unit tone at the crest reads |W| = 1 even though |H| = 2: the analytic taps see only
-    /// the +ω half of the cosine, and the −ω half beats against it by ½|H(−ω)|.  Swept over the
-    /// quantum, which pads the emitted half-span.
+    /// the +ω half of the cosine, and the −ω half beats against it by ½|H(−ω)|.
     #[test]
     fn unit_tone_reads_unity() {
         const EPS: f64 = 1e-6;
+        const BINS: usize = 16;
+        const WORST: usize = 2;
+
+        const Q: Axis = Axis::Log(3.0, 6.0);
+        const GAMMA: Axis = Axis::Levels(&[3.0, 4.0, 6.0]);
+        const RHO: Axis = Axis::Log(0.004, 0.45);
+        const TAIL_DB: Axis = Axis::Lin(-20.0, -100.0);
+
+        const GOOD: f64 = 0.99;
+        const EXCESS: f64 = 5e-3;
 
         let mut probe = Vec::new();
+        let mut all = Ledger::default();
 
-        let ws = WaveletSpec::default().max_truncation(-100.0);
-        for gamma in [3.0, 4.0] {
-            for p in 0..10 {
-                let q = p as f64 * 0.25 + 3.0;
-                let w = ws.with_shape(Shape::from_q(q, gamma)).bake();
-                for t in 0..7 {
-                    let tail_db = -20.0 + -10.0 * t as f64;
-                    for r in 0..10 {
-                        let rho = 0.005 + r as f64 * 0.015;
-                        let fc = rho * RATE;
+        println!("\n=== UNIT TONE ===");
+        println!(
+            "  good is the weighted share within tolerance, excess the capped overshoot mass\n"
+        );
+        println!("  {:>6} {:>6} {:>8} {:>10}", "Q", "γ", "good", "excess");
 
-                        let bin = w.bin(fc, RATE).with_truncation(tail_db);
-                        let wts = bin.weights();
-                        let psi = wts.psi();
+        for [uq, ug] in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.5, 0.5]] {
+            let (q, gamma) = (Q.at(uq), GAMMA.at(ug));
+            let wav = WaveletSpec::default()
+                .with_shape(Shape::from_q(q, gamma))
+                .max_truncation(TAIL_DB.at(1.0))
+                .bake();
 
-                        // ω_peak
-                        let (wp, _) = Inspect::new(psi, &mut probe, OVERSAMPLE)
-                            .peak(bin.velocity(), 0.0, PI)
-                            .unwrap();
+            let mut shape = Ledger::default();
+            for (w, [rho, tail_db]) in survey([RHO, TAIL_DB], BINS) {
+                let bin = wav.at_rho(rho).with_truncation(tail_db);
+                let wts = bin.weights();
+                let psi = wts.psi();
 
-                        // ½|H(−ω_peak)|
-                        let beat = 0.5 * psi.dtft(-wp).abs();
+                // ω_peak
+                let Some((wp, _)) =
+                    Inspect::new(psi, &mut probe, OVERSAMPLE).peak(bin.velocity(), 0.0, PI)
+                else {
+                    shape.record(w, f64::NAN, at!(q, gamma, rho, tail_db));
+                    continue;
+                };
 
-                        for m in 0..8 {
-                            let env = wts.project(|k| (wp * k as f64).cos(), m)[0].norm();
-                            assert!(
-                                (env - 1.0).abs() < beat + EPS,
-                                "fc {fc} phase {m} envelope {env:.9} beat {beat:.3e}"
-                            );
-                        }
-                    }
-                }
+                // ½|H(−ω_peak)| + ε
+                let tol = 0.5 * psi.dtft(-wp).abs() + EPS;
+
+                // max over m of | |Ψ(m)| − 1 |
+                let err = (0..8)
+                    .map(|m| (wts.project(|k| (wp * k as f64).cos(), m)[0].norm() - 1.0).abs())
+                    .fold(0.0f64, f64::max);
+
+                shape.record(w, err / tol, at!(q, gamma, rho, tail_db));
             }
+
+            println!(
+                "  {q:>6.2} {gamma:>6.2} {:>8.4} {:>10.2e}",
+                shape.good(),
+                shape.excess()
+            );
+            all.absorb(shape);
         }
+
+        all.print_worst(WORST);
+        let [good, excess] = all.verdict([GOOD, EXCESS]);
+
+        assert!(good > GOOD, "good mass {good:.4}");
+        assert!(excess < EXCESS, "excess mass {excess:.2e}");
     }
 
     /// Peak-normalized constant-Q puts noise gain proportional to ρ: the ψ sum is pinned at

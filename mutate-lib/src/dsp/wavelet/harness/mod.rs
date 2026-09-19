@@ -412,3 +412,146 @@ pub(super) fn print_transform(
         println!("{w0:>9.6} {:>9.5} |{cells}|", w0 / TAU);
     }
 }
+
+// NOTE Some testing "helpers" in their infancy.  The goal is to start working on the matrix macros
+// so that our scans are more regular and then to crank up the code compression to make the test
+// behavior easy to read and compare at a glance.  The newer style of tests is being supported first
+// class in order to keep going in that direction.
+
+/// A test axis over its unit coordinate.
+#[derive(Clone, Copy)]
+pub(crate) enum Axis {
+    Lin(f64, f64),
+    Log(f64, f64),
+    Levels(&'static [f64]),
+}
+
+impl Axis {
+    pub fn at(self, u: f64) -> f64 {
+        match self {
+            Axis::Lin(a, b) => a + (b - a) * u,
+            // a (b/a)^u
+            Axis::Log(a, b) => a * (b / a).powf(u),
+            // L[min(⌊u·n⌋, n − 1)]
+            Axis::Levels(l) => l[((u * l.len() as f64) as usize).min(l.len() - 1)],
+        }
+    }
+}
+
+/// Points crowded toward the faces, weighted so weighted means estimate the uniform measure.
+/// Corners ride along at zero weight.
+///
+///     u = ½(1 − cos πs),  w = Π ½π sin(πs)
+pub(crate) fn survey<const D: usize>(
+    axes: [Axis; D],
+    n: usize,
+) -> impl Iterator<Item = (f64, [f64; D])> {
+    // φ_d^{d+1} = φ_d + 1
+    let phi = (0..32).fold(2.0f64, |x, _| (1.0 + x).powf(1.0 / (D as f64 + 1.0)));
+    // α_j = φ_d^{−(j+1)}
+    let alpha: [f64; D] = core::array::from_fn(|j| phi.powi(-(j as i32 + 1)));
+
+    // {(i + ½) α}
+    let interior = (0..n).map(move |i| alpha.map(|a| ((i as f64 + 0.5) * a).fract()));
+    // vertices of [0, 1]^D
+    let corners = (0..1usize << D).map(|b| core::array::from_fn(|j| ((b >> j) & 1) as f64));
+
+    interior.chain(corners).map(move |s| {
+        let w = s.iter().map(|s| 0.5 * PI * (PI * s).sin()).product();
+        let x = core::array::from_fn(|j| axes[j].at(0.5 * (1.0 - (PI * s[j]).cos())));
+        (w, x)
+    })
+}
+
+/// Weighted readings of err / tol.
+#[derive(Default)]
+pub(super) struct Ledger {
+    rows: Vec<(f64, f64, Vec<(&'static str, f64)>)>,
+}
+
+impl Ledger {
+    pub(super) fn record(&mut self, w: f64, r: f64, at: Vec<(&'static str, f64)>) {
+        self.rows.push((w, r, at));
+    }
+
+    /// Σ w [r < 1] / Σ w
+    pub fn good(&self) -> f64 {
+        self.mean(|r| if r < 1.0 { 1.0 } else { 0.0 })
+    }
+
+    /// Σ w min(max(r − 1, 0), 1) / Σ w
+    pub fn excess(&self) -> f64 {
+        self.mean(|r| match r {
+            r if r < 1.0 => 0.0,
+            r if r < 2.0 => r - 1.0,
+            _ => 1.0,
+        })
+    }
+
+    fn mean(&self, f: impl Fn(f64) -> f64) -> f64 {
+        let (num, den) = self
+            .rows
+            .iter()
+            .fold((0.0, 0.0), |(n, d), (w, r, _)| (n + w * f(*r), d + w));
+        num / den
+    }
+
+    pub fn absorb(&mut self, other: Ledger) {
+        self.rows.extend(other.rows);
+    }
+
+    /// The `k` largest err / tol, one column per coordinate.
+    pub(super) fn print_worst(&mut self, k: usize) {
+        self.rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        print!("\n  {:>9} {:>9}", "err/tol", "weight");
+        for (name, _) in &self.rows[0].2 {
+            print!(" {name:>9}");
+        }
+        println!();
+
+        for (w, r, at) in self.rows.iter().take(k) {
+            print!("  {r:>9.4} {w:>9.2e}");
+            for (_, v) in at {
+                print!(" {v:>9.4}");
+            }
+            println!();
+        }
+    }
+
+    /// Pooled masses against a good floor and an excess ceiling, returned as `[good, excess]`.
+    pub(super) fn verdict(&self, limits: [f64; 2]) -> [f64; 2] {
+        let measured = [self.good(), self.excess()];
+        let headroom = [measured[0] - limits[0], limits[1] - measured[1]];
+        let verdict = |h: f64| if h > 0.0 { "pass" } else { "FAIL" };
+        let rule = "=".repeat(33);
+
+        println!("\n  {rule}");
+        println!("  {:>9} {:>11} {:>11}", "mass", "good", "excess");
+        println!("  {rule}");
+        for (label, [g, e]) in [
+            ("measured", measured),
+            ("limit", limits),
+            ("headroom", headroom),
+        ] {
+            println!("  {label:>9} {g:>11.4} {e:>11.2e}");
+        }
+        println!(
+            "  {:>9} {:>11} {:>11}",
+            "",
+            verdict(headroom[0]),
+            verdict(headroom[1])
+        );
+        println!("  {rule}");
+
+        measured
+    }
+}
+
+/// Named coordinates of a reading.
+macro_rules! at {
+    ($($v:ident),+ $(,)?) => {
+        vec![$((stringify!($v), $v as f64)),+]
+    };
+}
+pub(super) use at;
