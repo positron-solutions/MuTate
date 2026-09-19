@@ -27,11 +27,11 @@
 //! shape of the wavelet we will refine is maximally well preserved every time we shove it through
 //! the grater.
 
-use std::f64::consts::TAU;
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use num_complex::Complex64;
 
-use super::{generate::hermite, spec::Shape, Grid};
+use super::{generate::hermite, spec::Shape, Fold, Grid, PEAK_GAIN};
 
 /// How the motherlet lands on a cell.
 #[derive(Clone, Copy, Default)]
@@ -45,13 +45,13 @@ pub enum Quadrature {
     ///     h_k = (1/ρ) ∫_{C_k} ψ du
     ///
     /// The box is real and even about the cell, so the restriction commutes with input phase.
-    #[default]
     Complex,
     /// Cell means of |ψ| and of the phase residual against the carrier, recombined.
     ///
     ///     h_k = ā_k · e^{i(2πkρ + θ̄_k)},  θ = arg(ψ e^{-2πiu})
     ///
     /// Nonlinear.  Intra-cell rotation cannot cancel magnitude, so the crest keeps its height.
+    #[default]
     Axial,
     /// Trapezoidal footprint of width 3ρ over the cell means.
     ///
@@ -225,13 +225,28 @@ pub enum Derivative {
     ///     d_k = (a_k − (i/ω₀) b_k) e^{2πikρ}
     #[default]
     Envelope,
+    /// |ω| smoothed at its kinks, as a real even convolution over the reach.
+    ///
+    ///     m(ω) = (G_σ ⊛ |ω|) / ω₀,  σ = min(ω̄, π − ω̄) / sigmas
+    ///
+    /// Even, so a real tone reads D = m(ω) Ψ at every phase.
+    Folded { sigmas: f64 },
+    /// Weighted least squares over the reach against |ω| H.
+    ///
+    ///     min_d Σ_ω W(ω) |H_d(ω) − (|ω|/ω₀) H(ω)|²
+    ///     W(ω) = 1 / (H(|ω|)² + ε²),  ε = PEAK_GAIN · 10^{gate_db/20}
+    ///
+    /// W reads bias at +ω and image residual at −ω against the tone's own H(|ω|).
+    Fitted { gate_db: f64 },
 }
 
 impl Derivative {
-    /// Writes `psi.len()` folded weights of d, demodulated at `rho` and reading ω/ω₀.
+    /// Writes `psi.len()` folded weights of d reading ω/ω₀.  `rho` is the envelope carrier.
     pub(super) fn write(self, psi: &[Complex64], rho: f64, w0: f64, out: &mut [Complex64]) {
         match self {
             Derivative::Envelope => envelope(psi, rho, w0, out),
+            Derivative::Folded { sigmas } => folded(psi, w0, sigmas, out),
+            Derivative::Fitted { gate_db } => fitted(psi, w0, gate_db, out),
         }
     }
 }
@@ -280,6 +295,141 @@ fn envelope(psi: &[Complex64], rho: f64, w0: f64, out: &mut [Complex64]) {
         let (s, c) = (TAU * j as f64 * rho).sin_cos();
         *o = (carrier * at(n) - Complex64::i() * b) * inv * Complex64::new(c, s);
     }
+}
+
+/// ψ_j over the mirror, zero past the reach.
+fn unfold(psi: &[Complex64], j: isize) -> Complex64 {
+    match psi.get(j.unsigned_abs()) {
+        Some(&p) if j < 0 => p.conj(),
+        Some(&p) => p,
+        None => Complex64::default(),
+    }
+}
+
+/// ω̄ = arg Σ_ν ψ_{ν+1} conj ψ_ν, the circular mean of |H|²
+fn centroid(psi: &[Complex64]) -> f64 {
+    psi.windows(2)
+        .map(|p| p[1] * p[0].conj())
+        .sum::<Complex64>()
+        .arg()
+}
+
+/// d_k = Σ_n h_n ψ_{k−n} / ω₀
+fn folded(psi: &[Complex64], w0: f64, sigmas: f64, out: &mut [Complex64]) {
+    let reach = psi.len() as isize;
+    let wc = centroid(psi);
+    let sigma = wc.min(PI - wc) / sigmas;
+
+    // G_σ ⊛ |ω| = π/2 − (4/π) Σ_{n odd} e^{−σ²n²/2} cos(nω) / n²
+    let h: Vec<f64> = (0..2 * reach - 1)
+        .map(|n| match n {
+            0 => FRAC_PI_2,
+            n if n % 2 == 0 => 0.0,
+            n => {
+                let n = n as f64;
+                -2.0 / (PI * n * n) * (-0.5 * (sigma * n).powi(2)).exp()
+            }
+        })
+        .collect();
+
+    for (k, o) in out.iter_mut().enumerate() {
+        let k = k as isize;
+        *o = ((k + 1 - reach)..(k + reach))
+            .map(|n| h[n.unsigned_abs()] * unfold(psi, k - n))
+            .sum::<Complex64>()
+            / w0;
+    }
+    out[0].im = 0.0;
+}
+
+/// Frequency samples per unfolded tap in the fit.
+const FIT_OVERSAMPLE: usize = 4;
+
+/// Normal equations over ω_j = 2πj/M.
+///
+///     Σ_μ ŵ(ν − μ) d_μ = b_ν
+///     ŵ(n) = Σ_j W_j cos(ω_j n),  b_ν = Σ_j W_j T_j e^{iω_j ν},  T = (|ω|/ω₀) H
+fn fitted(psi: &[Complex64], w0: f64, gate_db: f64, out: &mut [Complex64]) {
+    let reach = psi.len();
+    let span = 2 * reach - 1;
+    let m = (FIT_OVERSAMPLE * span).next_power_of_two();
+    let eps = PEAK_GAIN * 10f64.powf(gate_db / 20.0);
+
+    // H(ω_j)
+    let fold = Fold::new(psi);
+    let h: Vec<f64> = (0..m)
+        .map(|j| fold.dtft(TAU * j as f64 / m as f64))
+        .collect();
+
+    let mut r = vec![0.0; span];
+    let mut b = vec![Complex64::default(); reach];
+    for (j, &hj) in h.iter().enumerate() {
+        // |ω_j| on the mirror
+        let pos = j.min(m - j);
+        let w = (h[pos] * h[pos] + eps * eps).recip();
+        let wt = w * hj * TAU * pos as f64 / (m as f64 * w0);
+
+        // e^{iω_j n}
+        let step = Complex64::from_polar(1.0, TAU * j as f64 / m as f64);
+        let mut rot = Complex64::new(1.0, 0.0);
+        for (rn, bn) in r.iter_mut().zip(b.iter_mut()) {
+            *rn += w * rot.re;
+            *bn += wt * rot;
+            rot *= step;
+        }
+        for rn in &mut r[reach..] {
+            *rn += w * rot.re;
+            rot *= step;
+        }
+    }
+
+    // n = ν + K − 1, b_{−ν} = conj b_ν
+    let mut rhs = vec![Complex64::default(); span];
+    for (v, &bv) in b.iter().enumerate() {
+        rhs[reach - 1 + v] = bv;
+        rhs[reach - 1 - v] = bv.conj();
+    }
+
+    let d = levinson(&r, &rhs);
+    out.copy_from_slice(&d[reach - 1..]);
+    out[0].im = 0.0;
+}
+
+/// x with Σ_j r_{|i−j|} x_j = y_i, r symmetric positive definite Toeplitz.
+fn levinson(r: &[f64], y: &[Complex64]) -> Vec<Complex64> {
+    let n = y.len();
+    let r0 = r[0];
+    let t = |i: usize| r[i] / r0;
+
+    let mut x = Vec::with_capacity(n);
+    let mut v = Vec::with_capacity(n);
+    x.push(y[0] / r0);
+    v.push(-t(1));
+    let (mut alpha, mut beta) = (-t(1), 1.0);
+
+    for k in 1..n {
+        beta *= 1.0 - alpha * alpha;
+
+        let mu = (y[k] / r0 - (0..k).map(|i| t(i + 1) * x[k - 1 - i]).sum::<Complex64>()) / beta;
+        for i in 0..k {
+            x[i] += mu * v[k - 1 - i];
+        }
+        x.push(mu);
+
+        if k < n - 1 {
+            alpha = (-t(k + 1) - (0..k).map(|i| t(i + 1) * v[k - 1 - i]).sum::<f64>()) / beta;
+            for i in 0..k / 2 {
+                let (a, c) = (v[i], v[k - 1 - i]);
+                v[i] = a + alpha * c;
+                v[k - 1 - i] = c + alpha * a;
+            }
+            if k % 2 == 1 {
+                v[k / 2] *= 1.0 + alpha;
+            }
+            v.push(alpha);
+        }
+    }
+    x
 }
 
 #[cfg(test)]
