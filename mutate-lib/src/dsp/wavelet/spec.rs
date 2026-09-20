@@ -308,16 +308,7 @@ impl BinSpec {
     }
 
     pub fn bin<'w>(self, wavelet: &'w Wavelet) -> Bin<'w> {
-        // MAYBE convert to a Result API?  In any case, keep going with more checks on the spec and
-        // pull `BinSpec` mutation methods off of the `Bin`.
-        debug_assert!(
-            wavelet.limits.tail_db <= self.tail_db,
-            "wavelet supports max tail dB: {} but bin asked for tail dB: {}",
-            wavelet.limits.tail_db,
-            self.tail_db
-        );
-
-        Bin::new(wavelet, self)
+        wavelet.from_spec(self)
     }
 
     pub fn with_refine(self, refine: Option<refine::Refine>) -> Self {
