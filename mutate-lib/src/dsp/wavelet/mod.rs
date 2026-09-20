@@ -156,7 +156,7 @@
 //!   products with the roles exchanged, `dif` against `Re ψ` and `sum` against `Im ψ`.
 //!
 //! So we fold `ψ` and `d` as sums and use `k` to derive `t` as the difference of the same products.
-//! The resulting table is `N/2 + 1` entries of four floats, laid out as a Slang `float4` in the
+//! The resulting table is `(N + 1)/2` entries of four floats, laid out as a Slang `float4` in the
 //! order `(Re ψ, Im ψ, Re d, Im d)`.  The center tap is real in both channels, `(Re ψ₀, 0, Re d₀,
 //! 0)`, and contributes nothing to `t`.
 //!
@@ -244,7 +244,7 @@
 //! Unpack weights and obtain `r_hat` and `t_hat`.
 //!
 //! ```slang
-//! // per hop, K = N/2 + 1 entries, w[k] = (Re ψ, Im ψ, Re d, Im d)
+//! // per hop, K = (N + 1)/2 entries, w[k] = (Re ψ, Im ψ, Re d, Im d)
 //! float2 psi = float2(w[0].x, 0.0) * x[m];
 //! float2 dee = float2(w[0].z, 0.0) * x[m];
 //! float2 tee = float2(0.0, 0.0);
@@ -537,13 +537,13 @@ impl<'w> Bin<'w> {
         self.rho
     }
 
-    /// Number of folded weights, including a center tap weighs.  In [0, K].
+    /// Number of folded weights, including a center tap weighs.  `K = (N + 1) / 2`.
     pub fn len_folded(&self) -> usize {
         self.k
     }
 
-    /// Number of real taps after weights are unfolded, in [0, 2K - 1].  Center tap is still just
-    /// one tap.
+    /// Number of real taps after weights are unfolded.  `2K - 1`.  Center tap is still just one
+    /// tap.
     pub fn len_unfolded(&self) -> usize {
         2 * self.k - 1
     }
