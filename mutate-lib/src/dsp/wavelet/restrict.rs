@@ -38,24 +38,32 @@ use super::{generate::hermite, spec::Shape, Fold, Grid, PEAK_GAIN};
 pub enum Quadrature {
     /// ψ at the tap center.
     ///
-    ///     h_k = ψ(kρ)
+    /// ```text
+    /// h_k = ψ(kρ)
+    /// ```
     Nearest,
     /// Cell mean of ψ.
     ///
-    ///     h_k = (1/ρ) ∫_{C_k} ψ du
+    /// ```text
+    /// h_k = (1/ρ) ∫_{C_k} ψ du
+    /// ```
     ///
     /// The box is real and even about the cell, so the restriction commutes with input phase.
     Complex,
     /// Cell means of |ψ| and of the phase residual against the carrier, recombined.
     ///
-    ///     h_k = ā_k · e^{i(2πkρ + θ̄_k)},  θ = arg(ψ e^{-2πiu})
+    /// ```text
+    /// h_k = ā_k · e^{i(2πkρ + θ̄_k)},  θ = arg(ψ e^{-2πiu})
+    /// ```
     ///
     /// Nonlinear.  Intra-cell rotation cannot cancel magnitude, so the crest keeps its height.
     #[default]
     Axial,
     /// Trapezoidal footprint of width 3ρ over the cell means.
     ///
-    ///     h_k = (B_{k-1} + 2 B_k + B_{k+1}) / 4
+    /// ```text
+    /// h_k = (B_{k-1} + 2 B_k + B_{k+1}) / 4
+    /// ```
     Weighted,
 }
 
@@ -66,14 +74,18 @@ pub enum Taper {
     Rectangle,
     /// The first discarded magnitude removed proportionally.
     ///
-    ///     g_k = 1 − a_K / a_k
+    /// ```text
+    /// g_k = 1 − a_K / a_k
+    /// ```
     ///
     /// `a_K < a_k` over the reach, so `g_k` is a gain in (0, 1) and no tap can change sign.
     #[default]
     Cylinder,
     /// A profile through `a_K` with curvature `κ`.
     ///
-    ///     g_k = 1 − c_k / a_k,  c_k = a_K (1 + (1 − (k/K)^n) / κ)
+    /// ```text
+    /// g_k = 1 − c_k / a_k,  c_k = a_K (1 + (1 − (k/K)^n) / κ)
+    /// ```
     Knee { curvature: f64 },
 }
 
@@ -186,7 +198,7 @@ impl Taper {
     }
 }
 
-/// arg(ψ e^{-2πiu}) and its derivative.  φ' = 2π Re(conj(ψ)·d)/|ψ|², so the residual sheds 2π.
+/// `arg(ψ e^{-2πiu})` and its derivative.  `φ' = 2π Re(conj(ψ)·d)/|ψ|²`, so the residual sheds `2π`.
 fn residual(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
     grid.psi
         .iter()
@@ -203,7 +215,7 @@ fn residual(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
         .unzip()
 }
 
-/// |ψ| and d|ψ|/du = Re(conj(ψ)·ψ')/|ψ| with ψ' = 2πi d.
+/// `|ψ|` and `d|ψ|/du` = `Re(conj(ψ)·ψ')/|ψ| with ψ' = 2πi d`.
 fn magnitude(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
     grid.psi
         .iter()
@@ -220,21 +232,27 @@ fn magnitude(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
 pub enum Derivative {
     /// Stencil on the envelope demodulated at the carrier.
     ///
-    ///     ψ_k = a_k e^{2πikρ}
-    ///     b_k = Σ_m c_m (a_{k+m} − a_{k−m})
-    ///     d_k = (a_k − (i/ω₀) b_k) e^{2πikρ}
+    /// ```text
+    /// ψ_k = a_k e^{2πikρ}
+    /// b_k = Σ_m c_m (a_{k+m} − a_{k−m})
+    /// d_k = (a_k − (i/ω₀) b_k) e^{2πikρ}
+    /// ```
     #[default]
     Envelope,
     /// |ω| smoothed at its kinks, as a real even convolution over the reach.
     ///
-    ///     m(ω) = (G_σ ⊛ |ω|) / ω₀,  σ = min(ω̄, π − ω̄) / sigmas
+    /// ```text
+    /// m(ω) = (G_σ ⊛ |ω|) / ω₀,  σ = min(ω̄, π − ω̄) / sigmas`
+    /// ```
     ///
     /// Even, so a real tone reads D = m(ω) Ψ at every phase.
     Folded { sigmas: f64 },
     /// Weighted least squares over the reach against |ω| H.
     ///
-    ///     min_d Σ_ω W(ω) |H_d(ω) − (|ω|/ω₀) H(ω)|²
-    ///     W(ω) = 1 / (H(|ω|)² + ε²),  ε = PEAK_GAIN · 10^{gate_db/20}
+    /// ```text
+    /// min_d Σ_ω W(ω) |H_d(ω) − (|ω|/ω₀) H(ω)|²
+    /// W(ω) = 1 / (H(|ω|)² + ε²),  ε = PEAK_GAIN · 10^{gate_db/20}
+    /// ```
     ///
     /// W reads bias at +ω and image residual at −ω against the tone's own H(|ω|).
     Fitted { gate_db: f64 },
@@ -254,9 +272,11 @@ impl Derivative {
 /// Central first difference, order 2·len.
 const STENCIL: [f64; 3] = [0.75, -0.15, 1.0 / 60.0];
 
+/// ```text
 /// ψ_k = a_k e^{2πikρ}
 /// b_k = Σ_m c_m (a_{k+m} − a_{k−m})
 /// d_k = (2πρ a_k − i b_k) e^{2πikρ} / ω₀
+/// ```
 fn envelope(psi: &[Complex64], rho: f64, w0: f64, out: &mut [Complex64]) {
     let k = psi.len();
 
@@ -294,7 +314,7 @@ fn envelope(psi: &[Complex64], rho: f64, w0: f64, out: &mut [Complex64]) {
     }
 }
 
-/// ψ_j over the mirror, zero past the reach.
+/// `ψ_j` over the mirror, zero past the reach.
 fn unfold(psi: &[Complex64], j: isize) -> Complex64 {
     match psi.get(j.unsigned_abs()) {
         Some(&p) if j < 0 => p.conj(),
@@ -303,7 +323,7 @@ fn unfold(psi: &[Complex64], j: isize) -> Complex64 {
     }
 }
 
-/// ω̄ = arg Σ_ν ψ_{ν+1} conj ψ_ν, the circular mean of |H|²
+/// `ω̄` = `arg Σ_ν ψ_{ν+1} conj ψ_ν`, the circular mean of `|H|²`
 fn centroid(psi: &[Complex64]) -> f64 {
     psi.windows(2)
         .map(|p| p[1] * p[0].conj())
@@ -311,7 +331,7 @@ fn centroid(psi: &[Complex64]) -> f64 {
         .arg()
 }
 
-/// d_k = Σ_n h_n ψ_{k−n} / ω₀
+/// `d_k = Σ_n h_n ψ_{k−n} / ω₀`
 fn folded(psi: &[Complex64], w0: f64, sigmas: f64, out: &mut [Complex64]) {
     let reach = psi.len() as isize;
     let wc = centroid(psi);
@@ -344,8 +364,10 @@ const FIT_OVERSAMPLE: usize = 4;
 
 /// Normal equations over ω_j = 2πj/M.
 ///
-///     Σ_μ ŵ(ν − μ) d_μ = b_ν
-///     ŵ(n) = Σ_j W_j cos(ω_j n),  b_ν = Σ_j W_j T_j e^{iω_j ν},  T = (|ω|/ω₀) H
+/// ```text
+/// Σ_μ ŵ(ν − μ) d_μ = b_ν
+/// ŵ(n) = Σ_j W_j cos(ω_j n),  b_ν = Σ_j W_j T_j e^{iω_j ν},  T = (|ω|/ω₀) H
+/// ```
 fn fitted(psi: &[Complex64], w0: f64, gate_db: f64, out: &mut [Complex64]) {
     let reach = psi.len();
     let span = 2 * reach - 1;
@@ -392,7 +414,7 @@ fn fitted(psi: &[Complex64], w0: f64, gate_db: f64, out: &mut [Complex64]) {
     out[0].im = 0.0;
 }
 
-/// x with Σ_j r_{|i−j|} x_j = y_i, r symmetric positive definite Toeplitz.
+/// `x` with `Σ_j r_{|i−j|} x_j = y_i`, `r` symmetric positive definite Toeplitz.
 fn levinson(r: &[f64], y: &[Complex64]) -> Vec<Complex64> {
     let n = y.len();
     let r0 = r[0];
@@ -476,10 +498,12 @@ mod test {
     /// Sanity across every quadrature and taper over γ × Q × ρ.  Differences by design pass.
     /// A lane fails only when it is broken on its own terms and the consensus does not share it.
     ///
-    ///     pass   H(ω₀) > ½ PEAK_GAIN
-    ///     image  |H(−ω₀)| < 0.1 H(ω₀)
-    ///     body   ‖|h| − ā‖ / ‖ā‖,  ā the per tap median envelope
-    ///     bump   r_k = ln(|h_{k+1}| / |h_k|) > 0  and  r_k − median r_k > tol
+    /// ```text
+    /// pass   H(ω₀) > ½ PEAK_GAIN
+    /// image  |H(−ω₀)| < 0.1 H(ω₀)
+    /// body   ‖|h| − ā‖ / ‖ā‖,  ā the per tap median envelope
+    /// bump   r_k = ln(|h_{k+1}| / |h_k|) > 0  and  r_k − median r_k > tol
+    /// ```
     #[test]
     fn restrictions_are_sane() {
         /// Taps below this fraction of the lane's crest do not vote.

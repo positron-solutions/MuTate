@@ -11,6 +11,7 @@
 //! >
 //! > - Anthony L. Ray
 //!
+//! ```text
 //!                ·
 //!                ·
 //!                ·●
@@ -58,6 +59,7 @@
 //!                 •
 //!                 ·
 //!                 ·
+//! ```
 //!
 //! This module generates families of wavelets for use in wavelet tables.  Our wavelets are Morse
 //! family:
@@ -75,7 +77,7 @@
 //! # use mutate_lib::dsp::wavelet::WaveletSpec;
 //! let wavelet = WaveletSpec::default()
 //!     .q(5.5)
-//!     .truncate(-140.0)
+//!     .max_truncation(-140.0)
 //!     .bake();
 //! ```
 //!
@@ -84,16 +86,15 @@
 //!
 //! ```
 //! # use mutate_lib::dsp::wavelet::WaveletSpec;
-//! # let wavelet = WaveletSpec::default().q(5.5).truncate(-140.0).bake();
-//!
-//! let bin = wavelet.bin(440.0, 48_000.0).truncate(-100.0);
+//! # let wavelet = WaveletSpec::default().q(5.5).max_truncation(-140.0).bake();
+//! let bin = wavelet.bin(440.0, 48_000.0).with_truncation(-100.0);
 //!
 //! // The `Bin` can be used to calculate allocation sizes.
-//! let mut taps = vec![[0.0f32; 4]; bin.folded_taps()];
+//! let mut taps = vec![[0.0f32; 4]; bin.len_folded()];
 //! bin.taps_into(&mut taps);
 //!
 //! // float4(Re ψ, Im ψ, Re d, Im d); index 0 is the real center tap.
-//! assert!(taps[0][0].im == taps[0][2].im == 0.0);
+//! assert!(taps[0][1] == 0.0 && taps[0][3] == 0.0);
 //! ```
 //!
 //! ## Customizing the Wavelet Family
@@ -121,14 +122,19 @@
 //!
 //! ```
 //! # use mutate_lib::dsp::wavelet::WaveletSpec;
-//! # let wavelet = WaveletSpec::default().q(5.5).truncate(-140.0).bake();
-//!
+//! # let wavelet = WaveletSpec::default()
+//! #     .q(5.5)
+//! #     .max_truncation(-140.0)
+//! #     .max_load_quantum(32)
+//! #     .bake();
 //! let bin = wavelet.bin(240.0, 3_000.0)
-//!     .max_load_quantum(32);
+//!     .with_load_quantum(32);
 //!
-//! let mut taps = vec![[0.0f32; 4]; bin.folded_taps()];
+//! let mut taps = vec![[0.0f32; 4]; bin.len_folded()];
 //! let wrote = bin.taps_into(&mut taps);
-//! assert!(wrote % 32 == 0);
+//!
+//! // mirrored half lands on the quantum, center tap excluded
+//! assert!((wrote - 1) % 32 == 0);
 //! ```
 //!
 //! ## Weight Table Format
@@ -544,8 +550,10 @@ impl<'w> Bin<'w> {
 
     /// ψ and d for this bin, normalized at the measured crest of |H|.
     ///
-    ///     H(ω_peak) = PEAK_GAIN
-    ///     H_d(ω) ≈ (ω/ω₀)·H(ω)
+    /// ```text
+    /// H(ω_peak) = PEAK_GAIN
+    /// H_d(ω) ≈ (ω/ω₀)·H(ω)
+    /// ```
     pub fn write(&self, bake: &mut Bake) {
         let (wav, rho, w0) = (self.wavelet, self.rho, self.velocity());
         let Bake { weights: w, probe } = bake;
@@ -680,7 +688,7 @@ impl Bake {
 
 /// A borrowed view of a single channel of [`Weights`].
 ///
-/// ψ over [0, K), the mirror ψ₋ₖ = conj ψₖ implied.  Entry 0 is real.
+/// `ψ` over `[0, K)`, the mirror `ψ₋ₖ = conj ψₖ` implied.  Entry 0 is real.
 // Making the channel first class could prevent some kinds of mishandling
 #[derive(Clone, Copy)]
 pub(super) struct Fold<'a>(&'a [Complex64]);
@@ -702,7 +710,7 @@ impl<'a> Fold<'a> {
         self.0.len()
     }
 
-    /// ψ₀ + 2 Σ_{k≥1} Re(ψ_k e^{−iωk})
+    /// `ψ₀ + 2 Σ_{k≥1} Re(ψ_k e^{−iωk})`
     pub(self) fn dtft(&self, w: f64) -> f64 {
         // k = LANES·b + i + 1
         const LANES: usize = 16;

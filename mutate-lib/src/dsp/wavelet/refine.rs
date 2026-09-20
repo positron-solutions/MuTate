@@ -91,7 +91,9 @@ impl Refine {
 /// Half power half width over the ideal, deepest negative excursion, lobe floor, and the image
 /// about `−ω₀` arriving at detuning `2ω₀`.
 ///
-///     T(f) = b_0 + 2 Σ_{k≥1} b_k cos(2π f k)
+/// ```text
+/// T(f) = b_0 + 2 Σ_{k≥1} b_k cos(2π f k)
+/// ```
 fn response(shape: Shape, rho: f64, b: &[f64]) -> (f64, f64, f64, f64) {
     let m = 8 * b.len();
 

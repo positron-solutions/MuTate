@@ -74,10 +74,12 @@ impl Shape {
 
     /// Model estimate of the truncation point in carrier periods.
     ///
-    ///     μ = 10^(-|tail_db| / 10)
-    ///     2C t^(-p) = μ
-    ///     erfc(t ω_p / P) = μ
-    ///     u = t ω_p / 2π
+    /// ```text
+    /// μ = 10^(-|tail_db| / 10)
+    /// 2C t^(-p) = μ
+    /// erfc(t ω_p / P) = μ
+    /// u = t ω_p / 2π
+    /// ```
     pub fn truncation_u(&self, tail_db: f64) -> f64 {
         // NEXT we can absolutely switch over to a pre-baked empirical estimate.  The analytic
         // estimates are just good enough to get off the ground.  Some combination of using the
