@@ -3,7 +3,7 @@
 
 //! # Verticlysm
 //!
-//! Draws DFT with bins mapped horizontally, creating a vertical pattern.  Left interpolates from
+//! Draws spectrum with bins mapped horizontally, creating a vertical pattern.  Left interpolates from
 //! bottom to top.  Right interpolates from top to bottom.  Intensity controls both initial
 //! brightness and length of interpolation along the screen's vertical axis.  Interpolates bins and
 //! the 240Hz output with phase-aware tracking of the input stream.
@@ -19,16 +19,17 @@ use crate::audio;
         // Input channel rings and geometry.
         pub left_channel: DeviceAddress,
         pub right_channel: DeviceAddress,
-        /// Number of DFT bins
-        pub input_height: UInt,
-        /// Ring columns.  Time.  Always PoT.
-        pub input_width: UInt,
+        /// Number of spectrum bins
+        pub input_bins: UInt,
+        /// Ring slots.  Time.  Always PoT.
+        pub input_slots: UInt,
 
         // The time slice being read.
         pub beg_col: UInt,
         pub beg_phase: Float,
         pub span: Float,
 
+        // XXX after spectrum is ready
         // pub gain: DeviceAddress,
 
         /// Output buffer
@@ -78,7 +79,7 @@ impl Verticlysm {
         audio_outputs: &audio::AudioOutputs,
     ) {
         let extent = acquired_image.extent;
-        let dft = &audio_outputs.dft;
+        let spectrum = &audio_outputs.spectrum;
 
         // XXX argument order (reverse cb & device)
         self.output
@@ -86,7 +87,8 @@ impl Verticlysm {
             .unwrap()
             .barrier_compute_pre(&cb, device);
 
-        dft.data_ready.wait(device, 1_000_000_000).unwrap();
+        // XXX put a sempaphore on AudioOutputs
+        // spectrum.ready.wait(device, 1_000_000_000).unwrap();
 
         let pre = vk::MemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::COPY | vk::PipelineStageFlags2::COMPUTE_SHADER)
@@ -101,7 +103,7 @@ impl Verticlysm {
         let dep = vk::DependencyInfo::default().memory_barriers(&pre_barriers);
         unsafe { device.cmd_pipeline_barrier2(**cb, &dep) };
 
-        let width = dft.ring_width;
+        let width = spectrum.ring_width;
         debug_assert!(width.is_power_of_two());
         let mask = width as u64 - 1;
 
@@ -110,7 +112,7 @@ impl Verticlysm {
         // is exactly the set of columns the device has committed.  `beg_phase` is
         // pinned to zero and the shader's interpolation degenerates to nearest-column.
         const TARGET_SPAN: u64 = 4;
-        let end = dft.write_head;
+        let end = spectrum.write_head;
 
         // Never reach past what's been written, and leave one column of slack so we
         // can't alias the column the device is currently accumulating into.
@@ -123,11 +125,13 @@ impl Verticlysm {
         let beg_phase = 0.0f32;
 
         let push = VerticlysmPushConstants {
-            left_channel: dft.channels[0].into(),
-            right_channel: dft.channels[1].into(),
+            // XXX Channels completely hosed
+            left_channel: DeviceAddress::NULL,
+            right_channel: DeviceAddress::NULL,
 
-            input_height: dft.ring_height.into(),
-            input_width: width.into(),
+            input_bins: spectrum.bins().into(),
+            input_slots: spectrum.slots().into(),
+
             beg_col: (beg_col as u32).into(),
             beg_phase: beg_phase.into(),
             span: (span as f32).into(),
@@ -169,7 +173,7 @@ impl Verticlysm {
         // Seems like we will need to build our own submission harness.  That sucks, but it will
         // work better.  During the multithreaded switcharoo we can get that done.  Just hope it's
         // on time =D
-        let ready = &dft.data_ready;
+        // XXX Go return the normal semaphore
     }
 
     pub fn destroy(self, device: &Device) -> Result<(), utate::MutateError> {
