@@ -198,17 +198,21 @@ impl Taper {
     }
 }
 
-/// `arg(ψ e^{-2πiu})` and its derivative.  `φ' = 2π Re(conj(ψ)·d)/|ψ|²`, so the residual sheds `2π`.
+/// `arg(ψ e^{-2πiu})` unwrapped, and its derivative.  `φ' = 2π Re(conj(ψ)·d)/|ψ|²`, so the
+/// residual sheds `2π`.
 fn residual(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
+    let (mut turns, mut prev) = (0.0, 0.0);
     grid.psi
         .iter()
         .zip(grid.d)
         .enumerate()
         .map(|(i, (&psi, &d))| {
             let (s, c) = (TAU * i as f64 * grid.du).sin_cos();
-            let turn = Complex64::new(c, -s);
+            let raw = (psi * Complex64::new(c, -s)).arg();
+            turns -= TAU * ((raw - prev) / TAU).round();
+            prev = raw;
             (
-                (psi * turn).arg(),
+                raw + turns,
                 TAU * ((psi.re * d.re + psi.im * d.im) / psi.norm_sqr() - 1.0),
             )
         })
