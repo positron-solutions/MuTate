@@ -31,7 +31,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use num_complex::Complex64;
 
-use super::{generate::hermite, spec::Shape, Fold, Grid, PEAK_GAIN};
+use super::{generate::hermite, Fold, Grid, PEAK_GAIN};
 
 /// How the motherlet lands on a cell.
 #[derive(Clone, Copy, Default)]
@@ -242,7 +242,7 @@ pub enum Derivative {
     /// |ω| smoothed at its kinks, as a real even convolution over the reach.
     ///
     /// ```text
-    /// m(ω) = (G_σ ⊛ |ω|) / ω₀,  σ = min(ω̄, π − ω̄) / sigmas`
+    /// m(ω) = (G_σ ⊛ |ω|) / ω₀,  σ = min(ω̄, π − ω̄) / sigmas
     /// ```
     ///
     /// Even, so a real tone reads D = m(ω) Ψ at every phase.
@@ -453,7 +453,7 @@ fn levinson(r: &[f64], y: &[Complex64]) -> Vec<Complex64> {
 
 #[cfg(test)]
 mod test {
-    use super::super::{Bake, Fold, WaveletSpec, PEAK_GAIN};
+    use super::super::{Bake, Fold, Shape, WaveletSpec, PEAK_GAIN};
     use super::*;
 
     const TAIL_DB: f64 = -60.0;
