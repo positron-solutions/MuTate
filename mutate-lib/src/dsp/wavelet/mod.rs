@@ -302,21 +302,21 @@
 
 // === TABLE RESPONSE (Q = 3.5, quantum 8) ===
 //
-// fc  1000 sr  6000  w0 1.047198  quantized  25 (unfolded  49)
+// fc  1000 fs  6000  w0 1.047198  quantized  25 (unfolded  49)
 //   peak gain 2.000000032  dev +1.578e-8 rel
 //   width 0.99725
 //   peak -0.0125 cents
 //   image max         -111.29 dB
 //   stopband floor     -109.30 dB
 //
-// fc   250 sr  3000  w0 0.523599  quantized  49 (unfolded  97)
+// fc   250 fs  3000  w0 0.523599  quantized  49 (unfolded  97)
 //   peak gain 2.000000003  dev +1.666e-9 rel
 //   width 0.99838
 //   peak -0.0164 cents
 //   image max         -110.83 dB
 //   stopband floor     -106.17 dB
 //
-// fc 12000 sr 48000  w0 1.570796  quantized  17 (unfolded  33)
+// fc 12000 fs 48000  w0 1.570796  quantized  17 (unfolded  33)
 //   peak gain 1.999999994  dev -3.209e-9 rel
 //   width 0.99550
 //   peak -0.0088 cents
@@ -879,18 +879,18 @@ mod test {
         println!("\n=== RESPONSE PHASE DEPENDENCE ===");
         println!("  detune      |H|    img ψ         psi           d           t");
 
-        for (fc, sr) in [
+        for (fc, fs) in [
             (2_000.0f64, RATE),
             (200.0, 3000.0),
             (250.0, 3000.0),
             (12_000.0, RATE),
         ] {
-            let bin = wav.at_rho(fc / sr);
+            let bin = wav.at_rho(fc / fs);
             let wts = bin.weights();
             let psi = wts.psi();
 
             let (n, w0) = (psi.len_unfolded(), bin.velocity());
-            println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
+            println!("  fc {fc:.0} fs {fs:.0} taps {n} w0 {w0:.6}");
 
             for k in -SPAN..=SPAN {
                 let cents = k as f64 * STEP;
@@ -946,18 +946,18 @@ mod test {
 
         println!("\n=== REASSIGN ===");
 
-        for (fc, sr) in [
+        for (fc, fs) in [
             (2_000.0f64, RATE),
             (200.0, 3000.0),
             (250.0, 3000.0),
             (12_000.0, RATE),
         ] {
-            let bin = wav.at_rho(fc / sr);
+            let bin = wav.at_rho(fc / fs);
             let wts = bin.weights();
             let (psi, d) = (wts.psi(), wts.d());
 
             let (n, w0) = (psi.len_unfolded(), bin.velocity());
-            println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
+            println!("  fc {fc:.0} fs {fs:.0} taps {n} w0 {w0:.6}");
             println!("  detune      |H|     pred      bias     swing      leak");
 
             for k in -STEPS..=STEPS {
@@ -1029,18 +1029,18 @@ mod test {
         println!("\n=== PHASE DEPENDENCE ===");
         println!("  detune      |H|    img ψ    img d     pred     swing     ratio");
 
-        for (fc, sr) in [
+        for (fc, fs) in [
             (2_000.0f64, RATE),
             (200.0, 3000.0),
             (250.0, 3000.0),
             (12_000.0, RATE),
         ] {
-            let bin = wav.at_rho(fc / sr);
+            let bin = wav.at_rho(fc / fs);
             let wts = bin.weights();
             let (psi, d) = (wts.psi(), wts.d());
 
             let (n, w0) = (psi.len_unfolded(), bin.velocity());
-            println!("  fc {fc:.0} sr {sr:.0} taps {n} w0 {w0:.6}");
+            println!("  fc {fc:.0} fs {fs:.0} taps {n} w0 {w0:.6}");
 
             for k in -SPAN..=SPAN {
                 let cents = k as f64 * STEP;
@@ -1364,8 +1364,8 @@ mod test {
         let long = WaveletSpec::default().max_truncation(REF_TAIL_DB).bake();
         let deep = WaveletSpec::default().max_truncation(DEEP_TAIL_DB).bake();
 
-        for (fc, sr) in [(40.0f64, 3000.0), (200.0, 3000.0), (800.0, 3000.0)] {
-            let rho = fc / sr;
+        for (fc, fs) in [(40.0f64, 3000.0), (200.0, 3000.0), (800.0, 3000.0)] {
+            let rho = fc / fs;
             let bin = wav.at_rho(rho);
             let wts = bin.weights();
             let psi = wts.psi();
@@ -1378,7 +1378,7 @@ mod test {
             let sigma = var.sqrt();
 
             println!(
-                "\n=== T_HAT fc {fc:.0} sr {sr:.0} taps {} ref {} sigma {sigma:.1} ===",
+                "\n=== T_HAT fc {fc:.0} fs {fs:.0} taps {} ref {} sigma {sigma:.1} ===",
                 psi.len_unfolded(),
                 reference.psi().len_unfolded(),
             );
@@ -1447,9 +1447,9 @@ mod test {
         for quantum in [2usize, 4, 8, 16] {
             println!("\n=== TABLE RESPONSE (Q = {Q}, quantum {quantum}) ===");
 
-            for (fc, sr) in [(1000.0f64, 6000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
+            for (fc, fs) in [(1000.0f64, 6000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
                 let bin = w
-                    .bin(fc, sr)
+                    .bin(fc, fs)
                     .with_load_quantum(quantum)
                     .with_truncation(TAIL_DB);
                 let wts = bin.weights();
@@ -1459,7 +1459,7 @@ mod test {
                 let rel = |v: f64| db(v) - db(r.gain);
 
                 println!(
-                    "\nfc {fc:>5.0} sr {sr:>5.0}  w0 {w0:.6}  quantized {:>3} (unfolded {:>3})",
+                    "\nfc {fc:>5.0} fs {fs:>5.0}  w0 {w0:.6}  quantized {:>3} (unfolded {:>3})",
                     bin.len_folded(),
                     bin.len_unfolded()
                 );
@@ -1630,7 +1630,7 @@ mod test {
             .max_truncation(TAIL_DB)
             .bake();
 
-        println!("\n=== NOISE GAIN (Q = {Q}, sr = {RATE}, quantum {QUANTUM}) ===");
+        println!("\n=== NOISE GAIN (Q = {Q}, fs = {RATE}, quantum {QUANTUM}) ===");
 
         for fc in [500.0f64, 1000.0, 2000.0, 4000.0, 8000.0] {
             let bin = w.bin(fc, RATE);
@@ -1666,8 +1666,8 @@ mod test {
 
         let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
 
-        for (fc, sr) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
-            let bin = wav.at_rho(fc / sr);
+        for (fc, fs) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
+            let bin = wav.at_rho(fc / fs);
             let wts = bin.weights();
             let (psi, d) = (wts.psi(), wts.d());
 
@@ -1839,8 +1839,8 @@ mod test {
             .max_truncation(TAIL_DB)
             .bake();
 
-        for (fc, sr) in [(1000.0f64, 8000.0), (300.0, 3000.0), (12_000.0, RATE)] {
-            let rho = fc / sr;
+        for (fc, fs) in [(1000.0f64, 8000.0), (300.0, 3000.0), (12_000.0, RATE)] {
+            let rho = fc / fs;
             let bin = wav.at_rho(rho);
             let wts = bin.weights();
             let (psi, d) = (wts.psi(), wts.d());
@@ -1848,7 +1848,7 @@ mod test {
 
             print_wave(
                 &format!(
-                    "BIN fc {fc:.0} sr {sr:.0} w0 {w0:.6} rho {rho:.6} taps {}",
+                    "BIN fc {fc:.0} fs {fs:.0} w0 {w0:.6} rho {rho:.6} taps {}",
                     psi.len_unfolded()
                 ),
                 psi,
