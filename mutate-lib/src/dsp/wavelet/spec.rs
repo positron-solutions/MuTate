@@ -90,18 +90,19 @@ impl Shape {
         // we will estimate it better.
 
         let Shape { beta, gamma } = *self;
-        let p = 2.0 * beta + 1.0;
+        // 2β + 1, the algebraic decay exponent
+        let a = 2.0 * beta + 1.0;
         let l = tail_db.abs() / 10.0 * LN_10;
 
         // Gaussian bulk about ω_p
         let u_gauss = erfc_inv_exp(l) * self.p() / TAU;
 
         // algebraic tails from the branch point at ω = 0
-        let log_c = LN_2 + gamma.ln() + (p / gamma) * LN_2 + 2.0 * lgamma(beta + 1.0)
+        let log_c = LN_2 + gamma.ln() + (a / gamma) * LN_2 + 2.0 * lgamma(beta + 1.0)
             - TAU.ln()
-            - p.ln()
-            - lgamma(p / gamma);
-        let t_alg = ((log_c + l) / p).exp();
+            - a.ln()
+            - lgamma(a / gamma);
+        let t_alg = ((log_c + l) / a).exp();
 
         // Watson ratio Γ(β+1+γ) / Γ(β+1) t^γ = 1
         let t_watson = ((lgamma(beta + 1.0 + gamma) - lgamma(beta + 1.0)) / gamma).exp();
