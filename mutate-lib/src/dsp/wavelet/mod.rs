@@ -770,6 +770,21 @@ impl<'a> Fold<'a> {
         })
     }
 
+    /// A_p = Σ_ν |ν|^p |ψ_ν|
+    #[cfg(test)]
+    pub(self) fn abs_moment(&self, p: i32) -> f64 {
+        let head = match p {
+            0 => self.0[0].norm(),
+            _ => 0.0,
+        };
+        head + 2.0
+            * self.0[1..]
+                .iter()
+                .enumerate()
+                .map(|(j, h)| ((j + 1) as f64).powi(p) * h.norm())
+                .sum::<f64>()
+    }
+
     /// Σ_ν |ψ_ν|
     #[cfg(test)]
     pub(self) fn l1(&self) -> f64 {
@@ -825,7 +840,9 @@ fn fmt_e(x: f64) -> String {
 #[cfg(test)]
 mod test {
     // DEBT a lot of the matrix code is becoming pretty redundant.  It's simple, but every test
-    // builds a matrix slightly differently.
+    // builds a matrix slightly differently.  See the `unit_tone_reads_unity` test for some raw
+    // harness ideas taking shape.  It does a much more complete matrix than other tests and reports
+    // threshold headroom and total error mass.o
     // DEBT the print tests are secretly being used in a manner that the workbench binary is
     // intended for.  As things are becoming mature enough, moving some features over to the
     // workbench tools would be welcome, although it may need some redesign since basically all IIR
@@ -1479,7 +1496,8 @@ mod test {
         const STEP: f64 = 100.0;
         const SPAN: isize = 4;
         /// Worst reassignment bias over the scan, in cents.
-        const BIAS_C: f64 = 50.0; // XXX Tighten after no longer shit
+        const BIAS_C: f64 = 0.8;
+        const TAIL_DB: f64 = 40.0;
 
         println!("\n=== TAP PROFILE vs GAMMA (Q = 2.4) ===");
         // P² = beta gamma
@@ -1491,6 +1509,7 @@ mod test {
                     beta: p * p / gamma,
                 })
                 .max_load_quantum(QUANTUM)
+                .max_truncation(TAIL_DB)
                 .bake();
             let bin = wav.at_rho(1000.0 / 8000.0);
             let w0 = bin.velocity();
@@ -1658,7 +1677,8 @@ mod test {
     #[test]
     fn taps_are_conditioned() {
         // Use a rough tail dB so we can verify conditioning under challenging conditions.
-        const TAIL_DB: f64 = -40.0;
+        const TAIL_DB: f64 = -80.0;
+        const MOMENT_TOL: f64 = 1e-4;
 
         let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
 
@@ -1693,16 +1713,16 @@ mod test {
                 false => psi.moment(p).im,
             };
 
-            // XXX pretty loose!
-
-            // measured: fc 1000 first moment -1.123e-7
-            let m1 = mom(1);
-            assert!(m1.abs() < 1e-1 * g, "fc {fc} first moment {m1:.3e}");
-
-            // H''(0) and H'''(0), the two the solve nulls that nothing else measures.
-            let (m2, m3) = (mom(2), mom(3));
-            assert!(m2.abs() < 100.0 * g, "fc {fc} second moment {m2:.3e}");
-            assert!(m3.abs() < 100.0 * g, "fc {fc} third moment {m3:.3e}");
+            // |M_p| / A_p, the share of each moment's scale left uncancelled.  H^(p)(0) for p = 2, 3
+            // are the ones the solve nulls that nothing else measures.
+            for p in 1..=3 {
+                let residue = mom(p).abs() / psi.abs_moment(p);
+                println!("  fc {fc:>6.0}  M{p} residue {residue:.3e}");
+                assert!(
+                    residue < MOMENT_TOL,
+                    "fc {fc} moment {p} residue {residue:.3e}"
+                );
+            }
         }
     }
 
