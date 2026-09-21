@@ -11,6 +11,11 @@
 //! The specs only encapsulate the related decisions that go into generating a wavelet family or
 //! similar set of bins.  See the parent module for usage.
 
+// NEXT PSL is perhaps a better measure when planning for useful dynamic range because the skirt
+// rolls off quite deep for some filters, depending on the truncation performance etc.  After adding
+// some spectral cleanup, we'll see where the numbers and shapes land.  Tighter side lobe and
+// shaping the garbage on the noise floor is probably something that can be bought.
+
 use core::f64::consts::{FRAC_2_SQRT_PI, LN_10, LN_2, PI, TAU};
 
 use libm::{erfc, lgamma};
@@ -21,6 +26,20 @@ use super::generate::{hermite, quadjet::QuadJet};
 use super::refine;
 use super::restrict;
 use super::{Bin, Wavelet, PEAK_GAIN};
+
+/// Lowest stopband target that more taps can buy.
+pub const IMAGE_FLOOR_DB: f64 = -140.0;
+/// Neper is the natural-log analogue of the decibel.  It is not a beloved unit, but simplifies
+/// expressions in some domains.
+const DB_PER_NP: f64 = 20.0 / LN_10;
+/// Deepest noise floor an `f32` table can reliably express against `PEAK_GAIN`.
+pub const NOISE_FLOOR_LIMIT_DB: f64 = -140.0;
+/// Truncation sits this far under the noise floor, keeping the fold the binding feature and the
+/// delivered −3 dB width faithful to Q.
+pub(crate) const TAIL_OVER_FLOOR_DB: f64 = 20.0;
+/// Lowest Q whose envelope spans enough carrier periods to hold its shape.  Under it the crest
+/// leaves ω₀ and the skirt never reaches a floor.
+pub const Q_FLOOR: f64 = 2.5;
 
 /// Controls Q and other critical tradeoffs of the Morse family wavelet parameters.  For exact
 /// details, consult [real graphs](https://arxiv.org/pdf/1203.3380).
@@ -72,6 +91,47 @@ impl Shape {
         }
     }
 
+    /// Nyquist fold of a bin at `rho`, in dB under the passband crest.
+    ///
+    /// ```text
+    /// H(−π) / H(ω₀) = Ψ(ω_p/2ρ) / Ψ(ω_p)
+    /// ```
+    pub(super) fn image_db(&self, rho: f64) -> f64 {
+        -DB_PER_NP * self.beta * fold_cost(0.5 / rho, self.gamma)
+    }
+
+    /// Least shape holding the Nyquist fold at or below `noise_floor` for every bin up to
+    /// `max_rho`.
+    ///
+    /// ```text
+    /// β D(1/2ρ, γ) = |floor| ln10 / 20
+    /// ```
+    pub fn from_noise_floor(max_rho: f64, noise_floor: f64, gamma: f64) -> Self {
+        let db = noise_floor.abs().min(NOISE_FLOOR_LIMIT_DB.abs());
+        let shape = Shape {
+            gamma,
+            beta: db / (DB_PER_NP * fold_cost(0.5 / max_rho, gamma)),
+        };
+        debug_assert!(
+            shape.q() >= Q_FLOOR,
+            "floor {noise_floor:.1} at rho {max_rho} wants Q {:.2}, under the family's {Q_FLOOR}",
+            shape.q()
+        );
+        shape
+    }
+
+    /// White noise gain of a bin at `rho`, what a unit variance input reads as |Ψ|².
+    ///
+    /// ```text
+    /// Σ_ν |ψ_ν|² = ρ G² Γ(r) s^{−r} e^s / γ,  s = 2β/γ,  r = s + 1/γ
+    /// ```
+    #[cfg(test)]
+    pub(super) fn noise_gain(&self, rho: f64) -> f64 {
+        let s = 2.0 * self.beta / self.gamma;
+        let r = s + self.gamma.recip();
+        rho * PEAK_GAIN * PEAK_GAIN * (lgamma(r) - r * s.ln() + s).exp() / self.gamma
+    }
+
     /// Model estimate of the truncation point in carrier periods.
     ///
     /// ```text
@@ -121,6 +181,23 @@ impl Default for Shape {
     }
 }
 
+/// (f^γ − 1)/γ − ln f
+fn fold_cost(f: f64, gamma: f64) -> f64 {
+    (f.powf(gamma) - 1.0) / gamma - f.ln()
+}
+
+/// Inverse of `fold_cost` on f ≥ 1.
+fn fold_reach(cost: f64, gamma: f64) -> f64 {
+    // γε²/2 near the crest, (f^γ − 1)/γ away from it
+    let near = 1.0 + (2.0 * cost / gamma).sqrt();
+    let far = (gamma * cost + 1.0).powf(gamma.recip());
+    let mut f = near.max(far);
+    for _ in 0..6 {
+        f -= (fold_cost(f, gamma) - cost) / (f.powf(gamma - 1.0) - f.recip());
+    }
+    f
+}
+
 /// erfc⁻¹(e^(-l))
 fn erfc_inv_exp(l: f64) -> f64 {
     // x² + ½ ln(π x²) = l
@@ -136,8 +213,9 @@ fn erfc_inv_exp(l: f64) -> f64 {
 pub struct WaveletSpec {
     pub(super) shape: Shape,
     pub(super) resolution: usize,
-    pub(super) max_tail_db: f64,
     pub(super) max_load_quantum: usize,
+    pub(super) max_noise_floor: f64,
+    pub(super) max_rho: Option<f64>,
     pub(super) max_delay: usize,
     pub(super) restriction: restrict::Restriction,
     pub(super) refine: Option<refine::Refine>,
@@ -148,7 +226,8 @@ impl Default for WaveletSpec {
         WaveletSpec {
             shape: Shape::from_q(defaults::Q, defaults::GAMMA),
             resolution: defaults::RESOLUTION,
-            max_tail_db: defaults::TAIL_DB,
+            max_rho: None,
+            max_noise_floor: defaults::NOISE_FLOOR,
             max_load_quantum: defaults::LOAD_QUANTUM,
             max_delay: 0,
             restriction: restrict::Restriction {
@@ -185,10 +264,21 @@ impl WaveletSpec {
         self
     }
 
-    /// Weakest truncation any bin will ask for.  -10dB truncates hard, -80dB very weakly.
-    /// Supporting more truncation
+    /// Deepest noise floor any bin will ask for.
+    pub fn max_noise_floor(mut self, db: f64) -> Self {
+        self.max_noise_floor = -db.abs().min(NOISE_FLOOR_LIMIT_DB.abs());
+        self
+    }
+
+    /// Deepest truncation any bin will ask for, held as the noise floor it lands.
     pub fn max_truncation(mut self, tail_db: f64) -> Self {
-        self.max_tail_db = -tail_db.abs();
+        self.max_noise_floor = -tail_db.abs() + TAIL_OVER_FLOOR_DB;
+        self
+    }
+
+    /// Highest ρ any bin will ask for.  The noise floor holds against the Nyquist fold up to here.
+    pub fn max_rho(mut self, rho: f64) -> Self {
+        self.max_rho = Some(rho);
         self
     }
 
@@ -217,9 +307,19 @@ impl WaveletSpec {
     }
 
     pub fn bake(self) -> Wavelet {
-        let du = (self.resolution as f64).recip();
+        if let Some(rho) = self.max_rho {
+            debug_assert!(
+                self.shape.image_db(rho) <= self.max_noise_floor + 1e-9,
+                "fold {:.1} dB at rho {rho} breaks the {:.1} dB floor",
+                self.shape.image_db(rho),
+                self.max_noise_floor
+            );
+        }
 
-        let u_max = self.shape.truncation_u(self.max_tail_db)
+        let du = (self.resolution as f64).recip();
+        let u_max = self
+            .shape
+            .truncation_u(self.max_noise_floor - TAIL_OVER_FLOOR_DB)
             + 0.5 * (self.max_load_quantum + self.max_delay) as f64
             + 0.25;
 
@@ -251,11 +351,11 @@ impl WaveletSpec {
             psi,
             d,
             limits: BinSpec {
-                center: 0.0,
+                center: self.max_rho.unwrap_or(0.5),
                 rate: 1.0,
                 load_quantum: self.max_load_quantum,
                 delay: self.max_delay,
-                tail_db: self.max_tail_db,
+                noise_floor: self.max_noise_floor,
                 refine: None,
             },
             restriction: self.restriction,
@@ -274,7 +374,7 @@ pub struct BinSpec {
     /// restriction.
     // XXX has not be reconciled with load quantum!
     pub(super) delay: usize,
-    pub(super) tail_db: f64,
+    pub(super) noise_floor: f64,
     pub(super) refine: Option<refine::Refine>,
 }
 
@@ -286,7 +386,7 @@ impl BinSpec {
             rate,
             load_quantum: defaults::LOAD_QUANTUM,
             delay: defaults::DELAY,
-            tail_db: defaults::TAIL_DB,
+            noise_floor: defaults::NOISE_FLOOR,
             refine: Some(refine::Refine::default()),
         }
     }
@@ -302,9 +402,15 @@ impl BinSpec {
         Self { delay, ..self }
     }
 
+    pub fn noise_floor(self, db: f64) -> Self {
+        Self {
+            noise_floor: -db.abs(),
+            ..self
+        }
+    }
+
     pub fn truncate(self, tail_db: f64) -> Self {
-        let tail_db = -tail_db.abs();
-        Self { tail_db, ..self }
+        self.noise_floor(tail_db.abs() - TAIL_OVER_FLOOR_DB)
     }
 
     pub fn bin<'w>(self, wavelet: &'w Wavelet) -> Bin<'w> {

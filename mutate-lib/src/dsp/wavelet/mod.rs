@@ -1,9 +1,6 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// ⚠️ The module documents are aspirational and not implemented yet.  We are in the middle of
-// implementing the results of the design process conclusions.
-
 //! # The Wavelet
 //!
 //! > The traveler who fears the unknown road will eventually learn that known roads return
@@ -278,11 +275,14 @@
 
 #![warn(warnings, dead_code, unused_variables)]
 
-// 🤖 Heavy generation.  Should be pretty standard academic stuff, so not expecting a lot of
-// surprises.  We will, for the most part, swiftly and knowingly eat shit if the wavelet is busted.
-// Well-formalized stuff doesn't have a lot of wiggle room to violate the consistency of the
-// formalism.
+// 🤖 Heavy generation all over this module.  Should be pretty standard academic stuff, so not
+// expecting a lot of surprises.  We will, for the most part, swiftly and knowingly eat shit if the
+// wavelet is busted. Well-formalized stuff doesn't have a lot of wiggle room to violate the
+// consistency of the formalism.
 
+// DEBT The newer `max_rho` and `max_noise_floor` API replacing `truncation` and `tail_db` needs to
+// be migrated.  Unfortunately this affects basically all tests.  Most will adapt smoothly.  Fix up
+// the mapping constant in spec while you're at it. 🤖
 // MAYBE The `d` provided for Hermite interpolation is basically not used at all for the actual `N`
 // tap outputs.  It may be appropriate to remove the turn from everywhere upstream of `taps_into`,
 // but that's also a ton of little edits that I want to think about before committing to.  Obvious
@@ -339,6 +339,7 @@ use num_complex::Complex64;
 
 use generate::hermite;
 use inspect::{Inspect, Sample, OVERSAMPLE};
+use spec::TAIL_OVER_FLOOR_DB;
 pub use spec::{BinSpec, Shape, WaveletSpec};
 
 pub mod defaults {
@@ -353,6 +354,7 @@ pub mod defaults {
     pub const LOAD_QUANTUM: usize = 4;
     pub const Q: f64 = 3.5;
     pub const TAIL_DB: f64 = -40.0;
+    pub const NOISE_FLOOR: f64 = -70.0;
 }
 
 /// Filter peak gain. Analytic taps see half a real tone's amplitude, so |H| = 2 makes a unit tone
@@ -390,14 +392,6 @@ impl Wavelet {
     }
 
     pub fn from_spec(&self, spec: BinSpec) -> Bin<'_> {
-        // MAYBE Very raw API shape.  Not clear which type will own which construction paths.
-        // Review later.  Either a Result api or blowing up is necessary.  Splitting the fence with
-        // debug asserts right now.
-        let l = self.limits;
-        debug_assert!(spec.load_quantum <= l.load_quantum);
-        debug_assert!(spec.tail_db <= l.tail_db);
-        debug_assert!(spec.delay <= l.delay);
-
         Bin::new(self, spec)
     }
 
@@ -454,12 +448,22 @@ pub struct Bin<'w> {
 }
 
 impl<'w> Bin<'w> {
-    // MAYBE  Location of builder methods (on the BinSpec? on the Bin?) is still a bit up in the
-    // air.  Just keep coding 🤠.
-
     fn new(wavelet: &'w Wavelet, spec: BinSpec) -> Self {
+        let l = wavelet.limits;
         let rho = spec.center / spec.rate;
-        let reach = (wavelet.shape.truncation_u(spec.tail_db) / rho).ceil() as usize;
+
+        debug_assert!(rho <= l.center, "rho {rho} over the wavelet's {}", l.center);
+        debug_assert!(
+            spec.noise_floor >= l.noise_floor,
+            "noise floor {} under the wavelet's {}",
+            spec.noise_floor,
+            l.noise_floor
+        );
+        debug_assert!(spec.load_quantum <= l.load_quantum);
+        debug_assert!(spec.delay <= l.delay);
+
+        let tail_db = spec.noise_floor - TAIL_OVER_FLOOR_DB;
+        let reach = (wavelet.shape.truncation_u(tail_db) / rho).ceil() as usize;
         let half = (reach + spec.delay).div_ceil(spec.load_quantum) * spec.load_quantum;
 
         Bin {
@@ -470,9 +474,13 @@ impl<'w> Bin<'w> {
         }
     }
 
+    /// Set the bin's delay.  Must respect `Wavelet` limits.
+    pub fn with_delay(self, delay: usize) -> Self {
+        Self::new(self.wavelet, BinSpec { delay, ..self.spec })
+    }
+
     /// Set the bin's load quantum.  Must respect `Wavelet` limits.
     pub fn with_load_quantum(self, load_quantum: usize) -> Self {
-        debug_assert!(self.wavelet.limits.load_quantum >= load_quantum);
         Self::new(
             self.wavelet,
             BinSpec {
@@ -482,27 +490,11 @@ impl<'w> Bin<'w> {
         )
     }
 
-    /// Set the bin's delay.  Must respect `Wavelet` limits.
-    pub fn with_delay(self, delay: usize) -> Self {
-        debug_assert!(self.wavelet.limits.delay >= delay);
-        Self::new(self.wavelet, BinSpec { delay, ..self.spec })
-    }
-
-    /// Set the bin's tail dB.  Must respect `Wavelet` limits.
-    pub fn with_truncation(self, tail_db: f64) -> Self {
-        let tail_db = -tail_db.abs();
-
-        // NOTE we store the negative `tail_db` value, so less is more.
-        debug_assert!(
-            self.wavelet.limits.tail_db <= tail_db,
-            "wavelet supports max tail dB: {} but bin asked for tail dB: {}",
-            self.wavelet.limits.tail_db,
-            tail_db
-        );
+    pub fn with_noise_floor(self, db: f64) -> Self {
         Self::new(
             self.wavelet,
             BinSpec {
-                tail_db,
+                noise_floor: -db.abs(),
                 ..self.spec
             },
         )
@@ -511,15 +503,19 @@ impl<'w> Bin<'w> {
     /// Set the bin's center frequency, using its sample rate multiplied by the periods-per-sample
     /// density, `rho`.
     pub fn with_rho(self, rho: f64) -> Self {
-        debug_assert!(rho <= 0.5);
-        let fc = self.spec.rate * rho;
+        let center = self.spec.rate * rho;
         Self::new(
             self.wavelet,
             BinSpec {
-                center: fc,
+                center,
                 ..self.spec
             },
         )
+    }
+
+    /// Set the bin's tail dB.  Must respect `Wavelet` limits.
+    pub fn with_truncation(self, tail_db: f64) -> Self {
+        self.with_noise_floor(tail_db.abs() - TAIL_OVER_FLOOR_DB)
     }
 
     /// Options used to create this bin.
@@ -2544,5 +2540,94 @@ mod test {
             worst < WORST_DB,
             "worst row E·d {worst:.2} dB re one period"
         );
+    }
+
+    /// The band edge and noise floor a user names, and the bin the wavelet hands back.
+    #[test]
+    fn noise_floor_is_delivered() {
+        const GAMMA: f64 = 3.0;
+
+        /// Where the fold binds.  Below this a workable Q already buries the image.
+        const RHOS: [f64; 5] = [0.31, 0.35, 0.38, 0.40, 0.42];
+        const FLOORS: [f64; 4] = [-60.0, -70.0, -90.0, -110.0];
+
+        /// Measured under the floor, taps nobody needed.  The restriction kernel at π against ω₀,
+        /// which shrinks toward Nyquist.
+        // Measured 0.50 at rho 0.31, -110 dB.
+        const UNDER_DB: f64 = 1.0;
+        // Measured 0.9939 to 0.9998, tightening with Q.
+        const WIDTH_TOL: f64 = 0.02;
+        const PEAK_C: f64 = 0.5;
+        const OVER_DB: f64 = 1.0;
+        const GAIN_TOL: f64 = 1e-4;
+        const BREACH: f64 = 1.08;
+
+        println!("\n=== NOISE FLOOR DELIVERED (γ {GAMMA}) ===");
+        println!(
+            "  {:>7} {:>8} {:>6} {:>5} {:>9} {:>9} {:>9} {:>8} {:>9}",
+            "rho", "floor", "Q", "taps", "fold", "stop", "width·Q", "peak c", "breach"
+        );
+
+        for floor in FLOORS {
+            for rho in RHOS {
+                let shape = Shape::from_noise_floor(rho, floor, GAMMA);
+                let q = shape.q();
+                let spec = WaveletSpec::default()
+                    .with_shape(shape)
+                    .max_noise_floor(floor);
+
+                let wav = spec.max_rho(rho).bake();
+                let bin = wav.at_rho(rho);
+                let wts = bin.weights();
+                let w0 = bin.velocity();
+                let r = characterize(wts.psi(), w0);
+
+                let fold = db(r.image) - db(r.gain);
+                let stop = db(r.floor) - db(r.gain);
+                let peak_c = 1200.0 * (r.peak_w / w0).log2();
+
+                let breach = {
+                    let wav = WaveletSpec::default()
+                        .with_shape(shape)
+                        .max_noise_floor(floor)
+                        .bake();
+                    let bin = wav.at_rho(rho * BREACH);
+                    let r = characterize(bin.weights().psi(), bin.velocity());
+                    db(r.image) - db(r.gain)
+                };
+
+                println!(
+                    "  {rho:>7.4} {floor:>8.1} {q:>6.2} {:>5} {fold:>9.2} {stop:>9.2} {:>9.4} \
+                 {peak_c:>+8.3} {breach:>9.2}",
+                    bin.len_unfolded(),
+                    r.rel_width * q,
+                );
+
+                assert!(
+                    fold < floor + OVER_DB && fold > floor - UNDER_DB,
+                    "rho {rho} floor {floor} fold {fold:.2}"
+                );
+                assert!(
+                    stop < floor + OVER_DB,
+                    "rho {rho} floor {floor} stopband {stop:.2}"
+                );
+                assert!((r.gain - PEAK_GAIN).abs() < GAIN_TOL * PEAK_GAIN);
+                assert!(
+                    (r.rel_width * q - 1.0).abs() < WIDTH_TOL,
+                    "rho {rho} floor {floor} width·Q {:.4}",
+                    r.rel_width * q
+                );
+                assert!(
+                    peak_c.abs() < PEAK_C,
+                    "rho {rho} floor {floor} peak {peak_c:+.3}c"
+                );
+                assert!(
+                    breach > floor,
+                    "rho {:.4} past the ceiling still holds {floor:.1} at {breach:.2}",
+                    rho * BREACH
+                );
+            }
+            println!();
+        }
     }
 }
