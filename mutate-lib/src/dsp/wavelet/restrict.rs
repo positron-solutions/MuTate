@@ -71,6 +71,7 @@ pub enum Quadrature {
 #[derive(Clone, Copy, Default)]
 pub enum Taper {
     /// Full amplitude to the last tap.
+    #[default]
     Rectangle,
     /// The first discarded magnitude removed proportionally.
     ///
@@ -79,7 +80,6 @@ pub enum Taper {
     /// ```
     ///
     /// `a_K < a_k` over the reach, so `g_k` is a gain in (0, 1) and no tap can change sign.
-    #[default]
     Cylinder,
     /// A profile through `a_K` with curvature `κ`.
     ///

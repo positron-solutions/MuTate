@@ -12,9 +12,12 @@
 //! similar set of bins.  See the parent module for usage.
 
 // NEXT PSL is perhaps a better measure when planning for useful dynamic range because the skirt
-// rolls off quite deep for some filters, depending on the truncation performance etc.  After adding
-// some spectral cleanup, we'll see where the numbers and shapes land.  Tighter side lobe and
+// rolls off quite deeply for some filters, depending on the truncation performance etc.  After
+// adding some spectral cleanup, we'll see where the numbers and shapes land.  Tighter side lobe and
 // shaping the garbage on the noise floor is probably something that can be bought.
+// MAYBE Contradictory specification goals (eg max delay + min Q) would require some restructuring to
+// form a consistent API.  That is mostly a decision for planning a filter bank, not an individual
+// filter.  The implementation may be incomplete or the need may be addressed downstream.
 
 use core::f64::consts::{FRAC_2_SQRT_PI, LN_10, LN_2, PI, TAU};
 use core::ops::Range;
@@ -246,7 +249,7 @@ pub struct WaveletSpec {
     pub(super) max_rho: Option<f64>,
     pub(super) max_delay: usize,
     pub(super) restriction: restrict::Restriction,
-    pub(super) refine: Option<refine::Refine>,
+    pub(super) refinement: Option<refine::Refinement>,
 }
 
 impl Default for WaveletSpec {
@@ -268,8 +271,7 @@ impl Default for WaveletSpec {
                 derivative: restrict::Derivative::Folded { sigmas: 6.0 },
                 // derivative: restrict::Derivative::Fitted { gate_db: 24.0 },
             },
-            refine: Some(refine::Refine::default()),
-            // refine: None,
+            refinement: Some(refine::Refinement::default()),
         }
     }
 }
@@ -329,8 +331,8 @@ impl WaveletSpec {
     }
 
     /// Set the method for restoring some of the pre-truncation transient response characteristics.
-    pub fn with_refine(mut self, refine: Option<refine::Refine>) -> Self {
-        self.refine = refine;
+    pub fn with_refinement(mut self, refine: Option<refine::Refinement>) -> Self {
+        self.refinement = refine;
         self
     }
 
@@ -387,6 +389,7 @@ impl WaveletSpec {
                 refine: None,
             },
             restriction: self.restriction,
+            refinement: self.refinement,
         }
     }
 }
@@ -403,7 +406,7 @@ pub struct BinSpec {
     // XXX has not be reconciled with load quantum!
     pub(super) delay: usize,
     pub(super) noise_floor: f64,
-    pub(super) refine: Option<refine::Refine>,
+    pub(super) refine: Option<refine::Refinement>,
 }
 
 impl BinSpec {
@@ -415,7 +418,7 @@ impl BinSpec {
             load_quantum: defaults::LOAD_QUANTUM,
             delay: defaults::DELAY,
             noise_floor: defaults::NOISE_FLOOR,
-            refine: Some(refine::Refine::default()),
+            refine: Some(refine::Refinement::default()),
         }
     }
 
@@ -445,7 +448,7 @@ impl BinSpec {
         wavelet.from_spec(self)
     }
 
-    pub fn with_refine(self, refine: Option<refine::Refine>) -> Self {
+    pub fn with_refine(self, refine: Option<refine::Refinement>) -> Self {
         Self { refine, ..self }
     }
 }

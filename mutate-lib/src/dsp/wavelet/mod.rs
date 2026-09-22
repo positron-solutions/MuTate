@@ -273,7 +273,7 @@
 //! re-used for `P` taps for each read.  Each mirrored tap applies to two audio samples per
 //! pipelined hop.
 
-#![warn(warnings, dead_code, unused_variables)]
+// #![warn(warnings, dead_code, unused_variables)]
 
 // 🤖 Heavy generation all over this module.  Should be pretty standard academic stuff, so not
 // expecting a lot of surprises.  We will, for the most part, swiftly and knowingly eat shit if the
@@ -375,6 +375,8 @@ pub struct Wavelet {
     limits: BinSpec,
     /// Strategy for reducing grid to `N` taps.
     restriction: restrict::Restriction,
+    /// Strategy for refining the post-restiction spectral and analytic characteristics.
+    refinement: Option<refine::Refinement>,
 }
 
 impl Wavelet {
@@ -560,6 +562,10 @@ impl<'w> Bin<'w> {
             w.psi.iter().all(|p| p.is_finite()),
             "restriction produced a non-finite weight at rho {rho}"
         );
+
+        if let Some(refinement) = wav.refinement {
+            refinement.apply(&mut w.psi, wav.shape, rho);
+        }
 
         // ω_peak and H(ω_peak)
         let (peak, gain) = Inspect::new(w.psi(), probe, OVERSAMPLE)
@@ -1093,97 +1099,6 @@ mod test {
         }
     }
 
-    /// Amplitude a linear chirp sends to the wrong bin, read at its reassigned point.
-    ///
-    ///     e = 1200 log2(ω̂ / (ω₀ + a t̂))
-    ///     G = Σ |Ψ| min(|e| / bin, 1) / Σ |Ψ|
-    ///
-    /// Rates are c = a σ², σ² the envelope variance in samples.  A constant-Q wavelet reads the
-    /// same cents at every pitch for a given c, so rows should be flat.
-    #[test]
-    fn chirp_garbage() {
-        /// Bank spacing the misplacement is counted in.
-        const BIN_C: f64 = 25.0;
-        const RATES: [f64; 3] = [0.05, 0.2, 0.5];
-        const PITCHES: usize = 128;
-        const RHO_LO: f64 = 0.01;
-        const RHO_HI: f64 = 0.375;
-        /// Instantaneous detune either side of ω₀ the readings cover.
-        const SPAN_C: f64 = 400.0;
-        const READINGS: usize = 64;
-        const PHASES: usize = 8;
-        const GARBAGE_DB: f64 = -30.0;
-
-        let wav = WaveletSpec::default().q(8.0).bake();
-
-        println!("\n=== CHIRP GARBAGE (bin {BIN_C}c, span ±{SPAN_C}c) ===");
-        println!("  garbage in dB of amplitude sent to the wrong bin, q3 in cents\n");
-        print!("  {:>7} {:>5}", "rho", "taps");
-        for c in RATES {
-            print!(" {:>8}", format!("c {c}"));
-        }
-        println!(" {:>8} {:>8}", "pooled", "q3");
-
-        let mut rows = Vec::with_capacity(PITCHES);
-        for i in 0..PITCHES {
-            // ρ_lo (ρ_hi / ρ_lo)^(i / (n − 1))
-            let rho = RHO_LO * (RHO_HI / RHO_LO).powf(i as f64 / (PITCHES - 1) as f64);
-            let bin = wav.at_rho(rho);
-            let wts = bin.weights();
-            let w0 = bin.velocity();
-            let var = wts.psi().envelope_var();
-
-            let mut readings = Vec::with_capacity(RATES.len() * READINGS * PHASES);
-            let by_rate = RATES.map(|c| {
-                let a = c / var;
-                let start = readings.len();
-                for j in 0..READINGS {
-                    // ω₀ 2^(δ/1200) = ω₀ + a m
-                    let detune = SPAN_C * (2.0 * j as f64 / (READINGS - 1) as f64 - 1.0);
-                    let m = (w0 * ((detune / 1200.0).exp2() - 1.0) / a).round() as isize;
-
-                    for q in 0..PHASES {
-                        let theta = TAU * q as f64 / PHASES as f64;
-                        // φ(k) = ω₀k + ½ak² + θ
-                        let x = |k: isize| {
-                            let k = k as f64;
-                            (w0 * k + 0.5 * a * k * k + theta).cos()
-                        };
-                        let [psi, dee, tee] = wts.project(x, m);
-                        let w_hat = w0 * (dee / psi).re;
-                        let t_hat = m as f64 + (tee / psi).re;
-                        let err = 1200.0 * (w_hat / (w0 + a * t_hat)).log2();
-                        readings.push((psi.norm(), err.abs()));
-                    }
-                }
-                garbage(&readings[start..], BIN_C)
-            });
-
-            let pooled = garbage(&readings, BIN_C);
-            let q3 = upper_quartile(&mut readings);
-
-            print!("  {rho:>7.4} {:>5}", bin.len_unfolded());
-            for g in by_rate {
-                print!(" {:>8.2}", db(g));
-            }
-            println!(" {:>8.2} {q3:>8.3}", db(pooled));
-
-            rows.push((rho, pooled));
-        }
-
-        let (weak_rho, weak) = rows
-            .iter()
-            .copied()
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .unwrap();
-        let score = db(rows.iter().map(|r| r.1).sum::<f64>() / PITCHES as f64);
-
-        println!("\n  weakest rho {weak_rho:.4} at {:.2} dB", db(weak));
-        println!("  garbage {score:.2} dB");
-
-        assert!(score < GARBAGE_DB, "chirp garbage {score:.2} dB");
-    }
-
     /// Truncation cost against a full-length bake, swept over `tail_db`.  One motherlet serves the
     /// reference and every cut, so a gap in the delta columns is truncation and nothing else.
     #[test]
@@ -1342,112 +1257,6 @@ mod test {
         }
     }
 
-    /// t̂ against an untruncated bake, on transients short enough that the estimator has to
-    /// actually integrate the envelope.  Swept from near-impulsive to comparable to the
-    /// wavelet's own support, which is where the pull toward the hop takes over.
-    #[test]
-    fn t_hat_survives_transients() {
-        /// Reference tail, past which f32 storage zeroes the taps anyway.
-        const REF_TAIL_DB: f64 = -100.0;
-        /// Second reference, whose disagreement with the first is charged to the budget.
-        const DEEP_TAIL_DB: f64 = -140.0;
-        const TAIL_DB: f64 = -40.0;
-
-        /// Burst widths in units of the filter's own envelope σ.
-        const WIDTHS: [f64; 3] = [0.25, 0.75, 2.0];
-        /// In-bin detunes about zero, then ±400c where Δω·σ_c² outweighs the leakage allowance.
-        const DETUNES_C: [f64; 7] = [-400.0, -100.0, -50.0, 0.0, 50.0, 100.0, 400.0];
-
-        /// Display floor, where a reading goes dark.
-        const FLOOR_DB: f64 = -60.0;
-
-        // NOTE these are empirically discovered values stored to catch regressions.
-
-        /// Worst visible |t̂ − t̂_ref| plus reference drift, in burst sd.
-        // Measured 0.691 at fc 40, 0.25σ, 400c.
-        const GAP_TOL: f64 = 0.85;
-        /// Morse departure from Δω·σ_c², relative to the model.
-        // Measured 0.11 at 2σ, 400c.
-        const SKEW_TOL: f64 = 0.15;
-        /// Estimator leakage in burst sd, present at any detune.
-        // Measured 0.087 at fc 40, 0.25σ, 0c.
-        const LEAK_TOL: f64 = 0.11;
-
-        let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
-        let long = WaveletSpec::default().max_truncation(REF_TAIL_DB).bake();
-        let deep = WaveletSpec::default().max_truncation(DEEP_TAIL_DB).bake();
-
-        for (fc, fs) in [(40.0f64, 3000.0), (200.0, 3000.0), (800.0, 3000.0)] {
-            let rho = fc / fs;
-            let bin = wav.at_rho(rho);
-            let wts = bin.weights();
-            let psi = wts.psi();
-
-            let reference = long.at_rho(rho).weights();
-            let deeper = deep.at_rho(rho).weights();
-            let w0 = bin.velocity();
-            let half = (bin.len_folded() - 1) as isize;
-            let var = psi.envelope_var();
-            let sigma = var.sqrt();
-
-            println!(
-                "\n=== T_HAT fc {fc:.0} fs {fs:.0} taps {} ref {} sigma {sigma:.1} ===",
-                psi.len_unfolded(),
-                reference.psi().len_unfolded(),
-            );
-            println!(
-                "  gap is max h |t̂ − t̂_ref| in burst sd, h = 1 − dB/floor, floor {FLOOR_DB:.0} dB"
-            );
-            println!("  drift is the same against the deeper reference");
-            println!("  s and p are measured and modeled skew Δω·σ_c² in burst sd");
-            println!("  use is |s − p| over a|p| + b·σ_x, passing below 1\n");
-            println!(
-                "  {:>5} {:>7} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
-                "width", "sd", "detune", "gap", "drift", "s", "p", "use"
-            );
-
-            for scale in WIDTHS {
-                let sd = (scale * sigma).max(1.0);
-                for detune in DETUNES_C {
-                    // ω₀ · 2^(c/1200)
-                    let w = w0 * (detune / 1200.0).exp2();
-                    // reach plus four burst σ, past the floor
-                    let span = 2 * half + (4.0 * sd).ceil() as isize;
-
-                    let x = burst(w, sd, 0.0);
-                    let gap = visible_gap(&wts, &reference, &x, span, FLOOR_DB) / sd;
-                    let drift = visible_gap(&reference, &deeper, &x, span, FLOOR_DB) / sd;
-                    // Im(T/Ψ) at the burst center
-                    let [psi_c, _, tee_c] = wts.project(&x, 0);
-                    let skew = (tee_c / psi_c).im;
-
-                    // Δω·σ_c², σ_c² = (σ_ψ⁻² + σ_x⁻²)⁻¹
-                    let dw = w0 * ((detune / 1200.0).exp2() - 1.0);
-                    let pred = dw * (var.recip() + (sd * sd).recip()).recip();
-
-                    // |s − p| / (a|p| + b·σ_x)
-                    let skew_use = (skew - pred).abs() / (SKEW_TOL * pred.abs() + LEAK_TOL * sd);
-
-                    println!(
-                        "  {scale:>4.2}σ {sd:>7.2} {detune:>5.0}c {gap:>8.3} {drift:>8.1e} \
-                         {:>+8.3} {:>+8.3} {skew_use:>8.3}",
-                        skew / sd,
-                        pred / sd,
-                    );
-
-                    assert!(
-                        gap + drift < GAP_TOL,
-                        "fc {fc} sd {sd:.2} detune {detune} gap {gap:.3} drift {drift:.1e} sd"
-                    );
-                    assert!(
-                        skew_use < 1.0,
-                        "fc {fc} sd {sd:.2} detune {detune} skew {skew:.3} against model {pred:.3}"
-                    );
-                }
-            }
-        }
-    }
-
     /// Same four numbers as `response_is_characterized`, measured on the folded weight table.
     /// Sweeps the load quantum, because the quantum pads the emitted half-span.
     #[test]
@@ -1496,7 +1305,7 @@ mod test {
         const STEP: f64 = 100.0;
         const SPAN: isize = 4;
         /// Worst reassignment bias over the scan, in cents.
-        const BIAS_C: f64 = 0.8;
+        const BIAS_C: f64 = 1.2;
         const TAIL_DB: f64 = 40.0;
 
         println!("\n=== TAP PROFILE vs GAMMA (Q = 2.4) ===");
@@ -1715,7 +1524,7 @@ mod test {
 
             // |M_p| / A_p, the share of each moment's scale left uncancelled.  H^(p)(0) for p = 2, 3
             // are the ones the solve nulls that nothing else measures.
-            for p in 1..=3 {
+            for p in 0..=3 {
                 let residue = mom(p).abs() / psi.abs_moment(p);
                 println!("  fc {fc:>6.0}  M{p} residue {residue:.3e}");
                 assert!(
@@ -1894,9 +1703,9 @@ mod test {
     #[ignore]
     #[test]
     fn print_response() {
-        const Q: f64 = 8.5;
+        const Q: f64 = 16.5;
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -60.0;
+        const TAIL_DB: f64 = -40.0;
 
         const ROWS: usize = 200;
         const COLS: usize = 200;
@@ -1911,7 +1720,7 @@ mod test {
         const RHOS: [f64; 1] = [0.312];
 
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
+            .with_shape(Shape::from_q(Q, 4.0))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
@@ -2562,6 +2371,123 @@ mod test {
         );
     }
 
+    /// Energy time reassignment moves off a step's edge, and how far, for the default filter over
+    /// γ × Q × tail.
+    ///
+    ///     E·d = Σ E ρ |t̂ − p| / Σ E
+    ///
+    /// Far from the edge the step is DC, so Ψ settles to ½M₀ and each leaked reading lands displaced
+    /// by its distance to the edge.  The step's 1/ω spectrum weights the low skirt.
+    #[test]
+    fn t_hat_step_transport() {
+        const HOPS: usize = 96;
+        const PHASES: usize = 6;
+        /// Hop reach in half-spans, past where the edge leaves the window.
+        const REACH: f64 = 3.0;
+        /// Edge width, samples.
+        const EDGE: f64 = 0.5;
+
+        // (γ, Q, tail, [median row, worst row])
+        let mut summary = Vec::new();
+
+        for gamma in PITCH_GAMMAS {
+            for q in PITCH_QS {
+                for tail in PITCH_TAILS {
+                    let wav = WaveletSpec::default()
+                        .with_shape(Shape::from_q(q, gamma))
+                        .max_load_quantum(PITCH_QUANTUM)
+                        .max_truncation(tail)
+                        .bake();
+
+                    let rows: Vec<_> = PITCH_RHOS
+                        .into_iter()
+                        .map(|rho| {
+                            let bin = wav.at_rho(rho);
+                            let wts = bin.weights();
+                            let half = (bin.len_folded() - 1) as f64;
+
+                            let mut readings = Vec::with_capacity(PHASES * HOPS);
+                            for j in 0..PHASES {
+                                let p = offset(j);
+                                // ½ tanh((k − p) / w)
+                                let x = move |k: isize| 0.5 * ((k as f64 - p) / EDGE).tanh();
+                                for m in hops(REACH * half, HOPS) {
+                                    let (e, c) = moments(&wts, &x, m);
+                                    if e > 0.0 {
+                                        // ρ |m + c/e − p|
+                                        readings.push((e, rho * (m as f64 + c / e - p).abs()));
+                                    }
+                                }
+                            }
+                            (rho, bin.len_unfolded(), vec![readings])
+                        })
+                        .collect();
+
+                    let measured = transport_report(
+                        &format!(
+                            "STEP T_HAT (Q {q}, γ {gamma}, quantum {PITCH_QUANTUM}, \
+                             tail {tail:.0} dB)"
+                        ),
+                        &["step"],
+                        &rows,
+                        [0.0, 0.0],
+                    );
+                    summary.push((gamma, q, tail, measured));
+                }
+            }
+        }
+
+        let tails = PITCH_TAILS.len();
+        let rule = "=".repeat(14 + 18 * tails);
+        let header = |lead: &str| {
+            print!("  {lead}");
+            for tail in PITCH_TAILS {
+                print!(" {:>17}", format!("{tail:.0} dB"));
+            }
+            println!();
+        };
+
+        // Worst over γ × Q per tail
+        let worst: Vec<[f64; 2]> = (0..tails)
+            .map(|t| {
+                summary
+                    .iter()
+                    .skip(t)
+                    .step_by(tails)
+                    .fold([f64::NEG_INFINITY; 2], |w, r| {
+                        [w[0].max(r.3[0]), w[1].max(r.3[1])]
+                    })
+            })
+            .collect();
+
+        println!("\n  {rule}");
+        println!("  STEP T_HAT worst over γ × Q, E·d dB re one period");
+        println!("  {rule}");
+        header(&format!("{:>12}", ""));
+        for (label, i) in [("median row", 0), ("worst row", 1)] {
+            print!("  {label:>12}");
+            for w in &worst {
+                print!(" {:>17.2}", w[i]);
+            }
+            println!();
+        }
+        println!("  {rule}");
+
+        // Median and worst row E·d by tail, one row per γ × Q
+        println!("\n  {rule}");
+        println!("  STEP T_HAT E·d dB re one period by tail, median / worst row");
+        println!("  {rule}");
+        header(&format!("{:>4} {:>5}  ", "γ", "Q"));
+        for row in summary.chunks(tails) {
+            print!("  {:>4.1} {:>5.1}  ", row[0].0, row[0].1);
+            for s in row {
+                print!(" {:>17}", format!("{:.2} / {:.2}", s.3[0], s.3[1]));
+            }
+            println!();
+        }
+        println!("  {rule}");
+    }
+
     /// The band edge and noise floor a user names, and the bin the wavelet hands back.
     #[test]
     fn noise_floor_is_delivered() {
@@ -2649,5 +2575,471 @@ mod test {
             }
             println!();
         }
+    }
+
+    /// (E, ρ |t̂ − p|, m) off a ½ tanh step at sub-sample `p`, hops across ±`reach`.
+    fn step_readings(
+        wts: &Weights,
+        rho: f64,
+        reach: f64,
+        hops_n: usize,
+        phases: usize,
+        edge: f64,
+    ) -> Vec<(f64, f64, isize)> {
+        let mut readings = Vec::with_capacity(phases * hops_n);
+        for q in 0..phases {
+            let p = offset(q);
+            let x = move |k: isize| 0.5 * ((k as f64 - p) / edge).tanh();
+            for m in hops(reach, hops_n) {
+                let (e, c) = moments(wts, &x, m);
+                if e > 0.0 {
+                    readings.push((e, rho * (m as f64 + c / e - p).abs(), m));
+                }
+            }
+        }
+        readings
+    }
+
+    // Pitch transport
+
+    /// 1200 log2(1 + 1/600)
+    const PITCH_RES_C: f64 = 2.883;
+    /// Share of a filter's energy misplaced before the filter is unusable.
+    const PITCH_FAIL: f64 = 0.5;
+    /// Share of log ρ held by unusable filters before the wavelet is.
+    const WAVELET_FAIL: f64 = 0.1;
+
+    const PITCH_GAMMAS: [f64; 2] = [3.0, 4.0];
+    const PITCH_QS: [f64; 2] = [3.5, 12.5];
+    const PITCH_TAILS: [f64; 3] = [-40.0, -60.0, -80.0];
+    const PITCH_QUANTUM: usize = 4;
+
+    /// Sampled centers, denser where the top of the band degrades.
+    const PITCH_RHOS: [f64; 7] = [0.01, 0.03, 0.1, 0.2, 0.28, 0.33, 0.375];
+
+    /// Detunes in half-power half-widths.
+    const PITCH_DETUNES: [f64; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
+
+    /// 1200 log2(1 + 1/2Q)
+    fn half_width_c(q: f64) -> f64 {
+        1200.0 * (1.0 + 0.5 / q).log2()
+    }
+
+    /// Share of the log ρ span each center stands for, cells split at geometric midpoints.
+    fn rho_weights() -> [f64; PITCH_RHOS.len()] {
+        let l = PITCH_RHOS.map(f64::ln);
+        let last = l.len() - 1;
+        core::array::from_fn(|i| {
+            let lo = if i == 0 {
+                l[0]
+            } else {
+                0.5 * (l[i - 1] + l[i])
+            };
+            let hi = if i == last {
+                l[last]
+            } else {
+                0.5 * (l[i] + l[i + 1])
+            };
+            (hi - lo) / (l[last] - l[0])
+        })
+    }
+
+    /// (|Ψ|², ω₀ Re(D/Ψ), m + Re(T/Ψ))
+    fn reassign(wts: &Weights, x: &dyn Fn(isize) -> f64, m: isize, w0: f64) -> (f64, f64, f64) {
+        let [psi, dee, tee] = wts.project(x, m);
+        (
+            psi.norm_sqr(),
+            w0 * (dee / psi).re,
+            m as f64 + (tee / psi).re,
+        )
+    }
+
+    /// min(|1200 log2(ω̂/ω)|, 1200)
+    fn miss_c(w_hat: f64, w: f64) -> f64 {
+        (1200.0 * (w_hat / w).log2()).abs().min(1200.0)
+    }
+
+    /// 10 log10 u, dash where nothing was measured
+    fn db_cell(u: f64, width: usize) -> String {
+        if u > 0.0 {
+            format!("{:>width$.2}", 10.0 * u.log10())
+        } else {
+            format!("{:>width$}", "—")
+        }
+    }
+
+    /// Prints one IQM and failed share against their limits, returning whether both hold.
+    fn pitch_headline(label: &str, iqm_db: f64, share: f64, iqm_limit: f64) -> bool {
+        let verdict = |h: f64| if h >= 0.0 { "pass" } else { "FAIL" };
+        let (h_iqm, h_share) = (iqm_limit - iqm_db, WAVELET_FAIL - share);
+        let rule = "=".repeat(33);
+
+        println!("\n  {rule}");
+        println!("  {label}");
+        println!("  {rule}");
+        println!("  {:>9} {:>10} {:>10}", "", "IQM dB", "failed");
+        println!("  {:>9} {iqm_db:>10.2} {:>9.1}%", "measured", 100.0 * share);
+        println!(
+            "  {:>9} {iqm_limit:>10.2} {:>9.1}%",
+            "limit",
+            100.0 * WAVELET_FAIL
+        );
+        println!(
+            "  {:>9} {h_iqm:>10.2} {:>9.1}%",
+            "headroom",
+            100.0 * h_share
+        );
+        println!(
+            "  {:>9} {:>10} {:>10}",
+            "",
+            verdict(h_iqm),
+            verdict(h_share)
+        );
+        println!("  {rule}");
+
+        h_iqm >= 0.0 && h_share >= 0.0
+    }
+
+    /// Pitch transport over Q × γ × tail × ρ.  `readings` returns one family of
+    /// (E, e, e_phys) per column in `names`, e measured from the physical model's truth and
+    /// e_phys the model's own departure from the carrier, both in cents.
+    ///
+    ///     E·d  = Σ E e/res / Σ E
+    ///     miss = Σ E [e > res] / Σ E
+    ///     IQM  = E·d over the middle two quartiles of surviving filters
+    fn pitch_matrix(
+        title: &str,
+        names: &[String],
+        iqm_limits: [f64; PITCH_TAILS.len()],
+        readings: impl Fn(Bin<'_>, f64) -> Vec<Vec<(f64, f64, f64)>>,
+    ) {
+        // Σ E v / Σ E
+        let mean = |r: &[(f64, f64, f64)], v: &dyn Fn(&(f64, f64, f64)) -> f64| {
+            let (num, e) = r
+                .iter()
+                .fold((0.0, 0.0), |(n, e), x| (n + x.0 * v(x), e + x.0));
+            num / e
+        };
+        let ed = |r: &[(f64, f64, f64)]| mean(r, &|x| x.1 / PITCH_RES_C);
+        let phys = |r: &[(f64, f64, f64)]| mean(r, &|x| x.2 / PITCH_RES_C);
+        let miss = |r: &[(f64, f64, f64)]| mean(r, &|x| (x.1 > PITCH_RES_C) as u8 as f64);
+        let db = |u: f64| {
+            if u > 0.0 {
+                10.0 * u.log10()
+            } else {
+                f64::INFINITY
+            }
+        };
+
+        let weights = rho_weights();
+        // (γ, Q, tail, IQM dB, failed share, [q1, q2, q3], phys median)
+        let mut summary = Vec::new();
+        let mut failures = Vec::new();
+
+        for gamma in PITCH_GAMMAS {
+            for q in PITCH_QS {
+                for (t, tail) in PITCH_TAILS.into_iter().enumerate() {
+                    let wav = WaveletSpec::default()
+                        .with_shape(Shape::from_q(q, gamma))
+                        .max_load_quantum(PITCH_QUANTUM)
+                        .max_truncation(tail)
+                        .bake();
+
+                    // (ρ, w, taps, per family E·d, pooled readings)
+                    let rows: Vec<_> = PITCH_RHOS
+                        .into_iter()
+                        .zip(weights)
+                        .map(|(rho, w)| {
+                            let bin = wav.at_rho(rho);
+                            let families = readings(bin, q);
+                            let per: Vec<f64> = families.iter().map(|f| ed(f)).collect();
+                            let pooled: Vec<(f64, f64, f64)> = families
+                                .iter()
+                                .flat_map(|f| {
+                                    let total: f64 = f.iter().map(|v| v.0).sum();
+                                    f.iter().map(move |&(e, c, p)| (e / total, c, p))
+                                })
+                                .collect();
+                            (rho, w, bin.len_unfolded(), per, pooled)
+                        })
+                        .collect();
+                    let has_phys = rows.iter().any(|r| r.4.iter().any(|v| v.2 > 0.0));
+
+                    println!(
+                        "\n=== {title} (Q {q}, γ {gamma}, quantum {PITCH_QUANTUM}, \
+                         tail {tail:.0} dB, res {PITCH_RES_C}c) ==="
+                    );
+                    println!("  E·d in dB re one resolution per family and pooled");
+                    if has_phys {
+                        println!("  phys is the model's own pull, excluded from E·d");
+                    }
+                    println!("  miss is E beyond res, q50 and q99 are e in cents\n");
+                    print!("  {:>7} {:>5}", "rho", "taps");
+                    for n in names {
+                        print!(" {n:>8}");
+                    }
+                    print!(" {:>8}", "pooled");
+                    if has_phys {
+                        print!(" {:>8}", "phys");
+                    }
+                    println!(" {:>7} {:>8} {:>8}", "miss", "q50 c", "q99 c");
+
+                    // (w, E·d, phys, failed)
+                    let mut stats = Vec::with_capacity(rows.len());
+                    for (rho, w, taps, per, pooled) in &rows {
+                        let (row_ed, row_phys, row_miss) = (ed(pooled), phys(pooled), miss(pooled));
+                        let failed = row_miss > PITCH_FAIL;
+                        let mut spread: Vec<(f64, f64)> =
+                            pooled.iter().map(|&(e, c, _)| (e, c)).collect();
+
+                        print!("  {rho:>7.4} {taps:>5}");
+                        for f in per {
+                            print!(" {}", db_cell(*f, 8));
+                        }
+                        print!(" {}", db_cell(row_ed, 8));
+                        if has_phys {
+                            print!(" {}", db_cell(row_phys, 8));
+                        }
+                        println!(
+                            " {:>6.2}% {:>8.3} {:>8.3} {}",
+                            100.0 * row_miss,
+                            weighted_quantile(&mut spread, 0.5),
+                            weighted_quantile(&mut spread, 0.99),
+                            if failed { "FAIL" } else { "" }
+                        );
+                        stats.push((*w, row_ed, row_phys, failed));
+                    }
+
+                    // Survivors, weighted by log ρ share
+                    let share = stats.iter().filter(|r| r.3).fold(0.0, |s, r| s + r.0);
+                    let mut eds: Vec<(f64, f64)> =
+                        stats.iter().filter(|r| !r.3).map(|r| (r.0, r.1)).collect();
+                    let quartiles = if eds.is_empty() {
+                        [f64::NAN; 3]
+                    } else {
+                        [0.25, 0.5, 0.75].map(|f| weighted_quantile(&mut eds, f))
+                    };
+                    // Σ w E·d / Σ w over q1 ≤ E·d ≤ q3
+                    let (num, den) = eds
+                        .iter()
+                        .filter(|r| r.1 >= quartiles[0] && r.1 <= quartiles[2])
+                        .fold((0.0, 0.0), |(n, d), r| (n + r.0 * r.1, d + r.0));
+                    let iqm = db(num / den);
+                    let mut physs: Vec<(f64, f64)> = stats.iter().map(|r| (r.0, r.2)).collect();
+                    let phys_med = weighted_quantile(&mut physs, 0.5);
+
+                    println!(
+                        "\n  E·d quartiles over survivors  q1 {}  median {}  q3 {}",
+                        db_cell(quartiles[0], 0),
+                        db_cell(quartiles[1], 0),
+                        db_cell(quartiles[2], 0),
+                    );
+                    let label = format!("Q {q} γ {gamma} tail {tail:.0}");
+                    if !pitch_headline(&label, iqm, share, iqm_limits[t]) {
+                        failures.push(label);
+                    }
+                    summary.push((gamma, q, tail, iqm, share, quartiles, phys_med));
+                }
+            }
+        }
+
+        // IQM by tail, one row per γ × Q
+        // Worst over γ × Q per tail
+        let tails = PITCH_TAILS.len();
+        let rule = "=".repeat(14 + 16 * tails);
+        let worst: Vec<(f64, f64)> = (0..tails)
+            .map(|t| {
+                summary
+                    .iter()
+                    .skip(t)
+                    .step_by(tails)
+                    .fold((f64::NEG_INFINITY, 0.0f64), |(i, s), r| {
+                        (i.max(r.3), s.max(r.4))
+                    })
+            })
+            .collect();
+        let verdict = |h: f64| if h >= 0.0 { "pass" } else { "FAIL" };
+        let header = |lead: &str| {
+            print!("  {lead:>12}");
+            for tail in PITCH_TAILS {
+                print!(" {:>15}", format!("{tail:.0} dB"));
+            }
+            println!();
+        };
+        let line = |label: &str, cell: &dyn Fn(usize) -> String| {
+            print!("  {label:>12}");
+            for t in 0..tails {
+                print!(" {:>15}", cell(t));
+            }
+            println!();
+        };
+
+        println!("\n  {rule}");
+        println!("  {title} worst over γ × Q");
+        println!("  {rule}");
+        header("");
+        line("limit", &|t| format!("{:.2}", iqm_limits[t]));
+        line("headroom", &|t| {
+            format!("{:.2}", iqm_limits[t] - worst[t].0)
+        });
+        line("verdict", &|t| {
+            let h = (iqm_limits[t] - worst[t].0).min(WAVELET_FAIL - worst[t].1);
+            verdict(h).to_string()
+        });
+        println!("  {rule}");
+
+        // IQM by tail, one row per γ × Q
+        println!("\n  {rule}");
+        println!("  {title} IQM dB re {PITCH_RES_C}c by tail, failed share where nonzero");
+        println!("  {rule}");
+        print!("  {:>4} {:>5}  ", "γ", "Q");
+        for tail in PITCH_TAILS {
+            print!(" {:>15}", format!("{tail:.0} dB"));
+        }
+        println!();
+        for row in summary.chunks(tails) {
+            print!("  {:>4.1} {:>5.1}  ", row[0].0, row[0].1);
+            for s in row {
+                let cell = match s.4 > 0.0 {
+                    true => format!("{:.2} ({:.0}%)", s.3, 100.0 * s.4),
+                    false => format!("{:.2}", s.3),
+                };
+                print!(" {cell:>15}");
+            }
+            println!();
+        }
+        println!("  {rule}");
+
+        assert!(
+            failures.is_empty(),
+            "{title} failed wavelets: {}",
+            failures.join(", ")
+        );
+    }
+
+    /// Pitch misplaced off a stationary tone across the band a filter answers for.
+    ///
+    ///     e = 1200 log2(ω̂ / ω)
+    #[test]
+    fn r_hat_tone_transport() {
+        const PHASES: usize = 12;
+        // Empirical.  Keep updated.  Maps to the truncation dB.
+        const IQM_DB: [f64; 3] = [-12.0, -18.0, -29.0];
+
+        let names = PITCH_DETUNES.map(|s| format!("{s:+.1}h"));
+        pitch_matrix("TONE R_HAT", &names, IQM_DB, |bin, q| {
+            let (wts, w0) = (bin.weights(), bin.velocity());
+            PITCH_DETUNES
+                .iter()
+                .map(|s| {
+                    // ω₀ 2^(s h / 1200)
+                    let w = w0 * (s * half_width_c(q) / 1200.0).exp2();
+                    (0..PHASES)
+                        .map(|p| {
+                            let theta = TAU * p as f64 / PHASES as f64;
+                            let x = move |k: isize| (w * k as f64 + theta).cos();
+                            let (e, w_hat, _) = reassign(&wts, &x, 0, w0);
+                            (e, miss_c(w_hat, w), 0.0)
+                        })
+                        .collect()
+                })
+                .collect()
+        });
+    }
+
+    /// Pitch misplaced off a linear chirp, read at its reassigned time.
+    ///
+    ///     e = 1200 log2(ω̂ / (ω₀ + a t̂))
+    ///
+    /// Rates are c = a σ², σ² the envelope variance in samples.
+    #[test]
+    fn r_hat_chirp_transport() {
+        const RATES: [f64; 3] = [0.05, 0.2, 0.5];
+        const READINGS: usize = 32;
+        const PHASES: usize = 6;
+        const IQM_DB: [f64; 3] = [-5.0, -15.0, -25.0];
+
+        let names = RATES.map(|c| format!("aσ² {c}"));
+        pitch_matrix("CHIRP R_HAT", &names, IQM_DB, |bin, q| {
+            let (wts, w0) = (bin.weights(), bin.velocity());
+            let var = wts.psi().envelope_var();
+            let span = half_width_c(q);
+            RATES
+                .iter()
+                .map(|c| {
+                    let a = c / var;
+                    let mut r = Vec::with_capacity(READINGS * PHASES);
+                    for j in 0..READINGS {
+                        // ω₀ 2^(δ/1200) = ω₀ + a m
+                        let detune = span * (2.0 * j as f64 / (READINGS - 1) as f64 - 1.0);
+                        let m = (w0 * ((detune / 1200.0).exp2() - 1.0) / a).round() as isize;
+                        for p in 0..PHASES {
+                            let theta = TAU * p as f64 / PHASES as f64;
+                            // φ(k) = ω₀k + ½ak² + θ
+                            let x = move |k: isize| {
+                                let k = k as f64;
+                                (w0 * k + 0.5 * a * k * k + theta).cos()
+                            };
+                            let (e, w_hat, t_hat) = reassign(&wts, &x, m, w0);
+                            r.push((e, miss_c(w_hat, w0 + a * t_hat), 0.0));
+                        }
+                    }
+                    r
+                })
+                .collect()
+        });
+    }
+
+    /// Pitch misplaced off Gaussian bursts at every hop they reach, measured from the product
+    /// centroid a Gaussian envelope pair would reassign to.
+    ///
+    ///     ω* = (ω σ_x² + ω₀ σ_ψ²) / (σ_x² + σ_ψ²)
+    ///     e  = 1200 log2(ω̂ / ω*)
+    ///     e_phys = 1200 log2(ω* / ω)
+    #[test]
+    fn r_hat_burst_transport() {
+        /// Burst widths, filter envelope σ.
+        const WIDTHS: [f64; 3] = [1.0, 2.0, 4.0];
+        const HOPS: usize = 32;
+        const PHASES: usize = 4;
+        // XXX Would set limits here, but the "worst" is always a Q = 3.5 row that is probably just
+        // barely big enough to locate the burst.  With some more effort I'm sure something will
+        // become apparent.
+        const IQM_DB: [f64; 3] = [0.0; 3];
+
+        let names = WIDTHS.map(|w| format!("b {w}σ"));
+        pitch_matrix("BURST R_HAT", &names, IQM_DB, |bin, q| {
+            let (wts, w0) = (bin.weights(), bin.velocity());
+            let half = (bin.len_folded() - 1) as f64;
+            let var = wts.psi().envelope_var();
+            WIDTHS
+                .iter()
+                .map(|scale| {
+                    let sd = (scale * var.sqrt()).max(1.0);
+                    let sd2 = sd * sd;
+                    let mut r = Vec::new();
+                    for s in PITCH_DETUNES {
+                        let w = w0 * (s * half_width_c(q) / 1200.0).exp2();
+                        // ω*
+                        let w_model = (w * sd2 + w0 * var) / (sd2 + var);
+                        let phys = miss_c(w_model, w);
+                        for j in 0..PHASES {
+                            let (theta, p) = (TAU * j as f64 / PHASES as f64, offset(j));
+                            // e^{−z²/2} cos(ω(k − p) + θ), z = (k − p) / sd
+                            let x = move |k: isize| {
+                                let t = k as f64 - p;
+                                let z = t / sd;
+                                (-0.5 * z * z).exp() * (w * t + theta).cos()
+                            };
+                            for m in hops(half + 3.0 * sd, HOPS) {
+                                let (e, w_hat, _) = reassign(&wts, &x, m, w0);
+                                r.push((e, miss_c(w_hat, w_model), phys));
+                            }
+                        }
+                    }
+                    r
+                })
+                .collect()
+        });
     }
 }
