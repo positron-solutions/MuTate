@@ -105,7 +105,6 @@ impl Default for Taper {
     fn default() -> Self {
         // The only use for Cylinder and Rectangle is basically to demonstrate that tapering is very
         // important.  Rectangle naturally leaves behind a Gibbs ringing floor.
-
         Self::Knee { curvature: 0.5 }
     }
 }
@@ -485,13 +484,23 @@ fn levinson(r: &[f64], y: &[Complex64]) -> Vec<Complex64> {
 
 #[cfg(test)]
 mod test {
-    use super::super::{Bake, Fold, Shape, WaveletSpec, PEAK_GAIN};
+    use super::super::{
+        harness::{at, bisect, characterize, weighted_quantile, Ledger},
+        inspect::db,
+        Bake, Fold, Shape, WaveletSpec,
+    };
     use super::*;
 
     const TAIL_DB: f64 = -60.0;
     const GAMMAS: [f64; 3] = [2.0, 3.0, 4.0];
     const QS: [f64; 4] = [3.5, 5.0, 8.5, 12.5];
-    const RHOS: [f64; 7] = [0.02, 0.06, 0.116, 0.189, 0.25, 0.312, 0.384];
+    const RHOS: [f64; 10] = [
+        0.02, 0.06, 0.116, 0.189, 0.25, 0.312, 0.384, 0.42, 0.44, 0.46,
+    ];
+    /// Taps below this fraction of the lane's crest do not vote on rise.
+    const GATE: f64 = 1e-6;
+    /// Worst readings printed per limit.
+    const WORST: usize = 4;
 
     const QUADRATURES: [(&str, Quadrature); 4] = [
         ("nearest", Quadrature::Nearest),
@@ -506,6 +515,7 @@ mod test {
         ("knee", Taper::Knee { curvature: 1.0 }),
     ];
 
+    /// Quadrature major, `rect` first within each quadrature.
     fn methods() -> Vec<(String, Restriction)> {
         QUADRATURES
             .into_iter()
@@ -514,7 +524,7 @@ mod test {
                     let r = Restriction {
                         quadrature,
                         taper,
-                        derivative: Derivative::Envelope,
+                        ..Default::default()
                     };
                     (format!("{qn}/{tn}"), r)
                 })
@@ -522,52 +532,145 @@ mod test {
             .collect()
     }
 
-    fn median(mut v: Vec<f64>) -> f64 {
-        v.sort_by(f64::total_cmp);
-        v[v.len() / 2]
-    }
-
-    /// Sanity across every quadrature and taper over γ × Q × ρ.  Differences by design pass.
-    /// A lane fails only when it is broken on its own terms and the consensus does not share it.
+    /// ω of the tilted crest on (ω₀/4, ω₀).
     ///
     /// ```text
-    /// pass   H(ω₀) > ½ PEAK_GAIN
-    /// image  |H(−ω₀)| < 0.1 H(ω₀)
-    /// body   ‖|h| − ā‖ / ‖ā‖,  ā the per tap median envelope
-    /// bump   r_k = ln(|h_{k+1}| / |h_k|) > 0  and  r_k − median r_k > tol
+    /// (ln Ψ)' + (ln K)' = 0
+    /// (ln Ψ)' = β/ω − (β/ω₀)(ω/ω₀)^{γ−1}
+    /// Complex   (ln K)' = ½ cot(ω/2) − 1/ω
+    /// Weighted  (ln K)' = ½ cot(ω/2) − 1/ω − tan(ω/2)
     /// ```
-    #[test]
-    fn restrictions_are_sane() {
-        /// Taps below this fraction of the lane's crest do not vote.
-        const FLOOR: f64 = 1e-6;
-        const PASS: f64 = 0.5;
-        const IMAGE: f64 = 0.1;
-        // NOTE initial guesses, recalibrate from the first run.
-        const BODY_TOL: f64 = 0.3;
-        const RISE_TOL: f64 = 0.05;
+    fn tilted_crest(quadrature: Quadrature, shape: Shape, w0: f64) -> f64 {
+        let (beta, gamma) = (shape.beta, shape.gamma);
+        let box_ = |w: f64| 0.5 / (0.5 * w).tan() - 1.0 / w;
+        let tilt = |w: f64| match quadrature {
+            Quadrature::Nearest | Quadrature::Axial => 0.0,
+            Quadrature::Complex => box_(w),
+            Quadrature::Weighted => box_(w) - (0.5 * w).tan(),
+        };
+        bisect(
+            |w| beta / w - beta / w0 * (w / w0).powf(gamma - 1.0) + tilt(w),
+            0.25 * w0,
+            w0,
+        )
+    }
 
-        let methods = methods();
+    /// One lane at (γ, Q, ρ).
+    ///
+    /// ```text
+    /// crest  1200 log₂(ω_peak / ω_K),  ω_K the kernel tilted Morse crest
+    /// image  |H(−ω₀)| / H(ω_peak)
+    /// floor  stopband floor / H(ω_peak)
+    /// body   ‖|h| − |h_rect|‖ / ‖h_rect‖,  h_rect the same quadrature untapered
+    /// rise   max_k ln(|h_{k+1}| / |h_k|)
+    /// ```
+    struct Reading {
+        at: (f64, f64, f64),
+        /// Under the shape's fold ceiling, where the noise floor is promised.
+        within: bool,
+        finite: bool,
+        crest: f64,
+        image: f64,
+        floor: f64,
+        body: f64,
+        rise: f64,
+    }
+
+    fn read(
+        at: (f64, f64, f64),
+        within: bool,
+        lane: &[Complex64],
+        mag: &[f64],
+        rect: &[f64],
+        quadrature: Quadrature,
+        shape: Shape,
+        w0: f64,
+    ) -> Reading {
+        if !lane.iter().all(|h| h.is_finite()) {
+            return Reading {
+                at,
+                within,
+                finite: false,
+                crest: f64::NAN,
+                image: f64::NAN,
+                floor: f64::NAN,
+                body: f64::NAN,
+                rise: f64::NAN,
+            };
+        }
+
+        let psi = Fold::new(lane);
+        let r = characterize(psi, w0);
+        let target = tilted_crest(quadrature, shape, w0);
+
+        // ‖|h| − |h_rect|‖ / ‖h_rect‖
+        let rect_l2 = rect.iter().map(|a| a * a).sum::<f64>().sqrt();
+        let body = mag
+            .iter()
+            .zip(rect)
+            .map(|(a, e)| (a - e).powi(2))
+            .sum::<f64>()
+            .sqrt()
+            / rect_l2;
+
+        let top = mag.iter().fold(0.0f64, |a, &b| a.max(b));
+        let rise = mag
+            .windows(2)
+            .filter(|p| p[0].min(p[1]) >= GATE * top)
+            .map(|p| (p[1] / p[0]).ln())
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        Reading {
+            at,
+            within,
+            finite: true,
+            crest: 1200.0 * (r.peak_w / target).log2(),
+            image: db(psi.dtft(-w0).abs()) - db(r.gain),
+            floor: db(r.floor) - db(r.gain),
+            body,
+            rise,
+        }
+    }
+
+    /// Every method over γ × Q × ρ, unrefined, one row per bin naming its worst lanes.  Rows past
+    /// the shape's fold ceiling are starred.
+    fn sweep(methods: &[(String, Restriction)]) -> Vec<Vec<Reading>> {
         let mut bake = Bake::default();
-        let mut failures = Vec::new();
+        let mut readings: Vec<Vec<Reading>> = methods.iter().map(|_| Vec::new()).collect();
 
         println!(
-            "\n=== RESTRICTION SANITY (tail {TAIL_DB:.0} dB, {} methods) ===",
+            "\n=== RESTRICTION SANITY (tail {TAIL_DB:.0} dB, {} methods, unrefined) ===",
             methods.len()
         );
+        println!("  * past the fold ceiling, reported but not toleranced");
         println!(
-            "  {:>4} {:>5} {:>6} {:>5} {:>9} {:>16} {:>9} {:>16} {:>4}",
-            "γ", "Q", "ρ", "taps", "body", "worst", "bump", "worst", "k"
+            "  {:>4} {:>5} {:>7} {:>7} {:>5} {:>8} {:>16} {:>9} {:>9} {:>9} {:>16} {:>9}",
+            "γ",
+            "Q",
+            "ceiling",
+            "ρ",
+            "taps",
+            "crest c",
+            "worst",
+            "image",
+            "floor",
+            "body",
+            "worst",
+            "rise"
         );
 
         for gamma in GAMMAS {
             for q in QS {
+                let shape = Shape::from_q(q, gamma);
                 let mut wav = WaveletSpec::default()
-                    .with_shape(Shape::from_q(q, gamma))
+                    .with_shape(shape)
                     .max_truncation(TAIL_DB)
                     .bake();
+                wav.refinement = None;
+                let ceiling = shape.fold_ceiling(wav.limits.noise_floor);
 
                 for rho in RHOS {
-                    let w0 = TAU * rho;
+                    let (w0, within) = (TAU * rho, rho <= ceiling);
 
                     let lanes: Vec<Vec<Complex64>> = methods
                         .iter()
@@ -577,103 +680,164 @@ mod test {
                             bake.weights.psi.clone()
                         })
                         .collect();
-                    let k = lanes[0].len();
-
                     let mags: Vec<Vec<f64>> = lanes
                         .iter()
                         .map(|l| l.iter().map(|h| h.norm()).collect())
                         .collect();
 
-                    // ā_k
-                    let env: Vec<f64> = (0..k)
-                        .map(|j| median(mags.iter().map(|m| m[j]).collect()))
+                    let row: Vec<Reading> = methods
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, r))| {
+                            let rect = &mags[i - i % TAPERS.len()];
+                            read(
+                                (gamma, q, rho),
+                                within,
+                                &lanes[i],
+                                &mags[i],
+                                rect,
+                                r.quadrature,
+                                shape,
+                                w0,
+                            )
+                        })
                         .collect();
-                    // ‖ā‖
-                    let env_l2 = env.iter().map(|a| a * a).sum::<f64>().sqrt();
 
-                    // ln(|h_{k+1}| / |h_k|)
-                    let rise = |m: &[f64], j: usize| (m[j + 1] / m[j]).ln();
-                    // median r_k
-                    let consensus: Vec<f64> = (0..k - 1)
-                        .map(|j| median(mags.iter().map(|m| rise(m, j)).collect()))
-                        .collect();
-
-                    let mut worst_body = (0.0f64, "");
-                    let mut worst_bump = (f64::NEG_INFINITY, "", 0usize);
-
-                    for ((name, _), (lane, mag)) in methods.iter().zip(lanes.iter().zip(&mags)) {
-                        let tag = format!("γ {gamma} Q {q} ρ {rho} {name}");
-
-                        if !lane.iter().all(|h| h.is_finite()) {
-                            failures.push(format!("{tag} non-finite tap"));
-                            continue;
-                        }
-
-                        // carrier and image
-                        let psi = Fold::new(lane);
-                        let (pass, image) = (psi.dtft(w0), psi.dtft(-w0).abs());
-                        if pass < PASS * PEAK_GAIN {
-                            failures.push(format!("{tag} H(ω₀) {pass:.4}"));
-                        }
-                        if image > IMAGE * pass.abs() {
-                            failures.push(format!(
-                                "{tag} image {:.2} dB",
-                                20.0 * (image / pass.abs()).log10()
-                            ));
-                        }
-
-                        // ‖|h| − ā‖ / ‖ā‖
-                        let body = mag
-                            .iter()
-                            .zip(&env)
-                            .map(|(a, e)| (a - e).powi(2))
-                            .sum::<f64>()
-                            .sqrt()
-                            / env_l2;
-                        if body > worst_body.0 {
-                            worst_body = (body, name);
-                        }
-                        if body > BODY_TOL {
-                            failures.push(format!("{tag} body {body:.3}"));
-                        }
-
-                        // outward rise beyond the consensus
-                        let crest = mag.iter().fold(0.0f64, |a, &b| a.max(b));
-                        for j in 0..k - 1 {
-                            if mag[j + 1] < FLOOR * crest {
-                                continue;
-                            }
-                            let r = rise(mag, j);
-                            if r <= 0.0 {
-                                continue;
-                            }
-                            let excess = r - consensus[j];
-                            if excess > worst_bump.0 {
-                                worst_bump = (excess, name, j + 1);
-                            }
-                            if excess > RISE_TOL {
-                                failures.push(format!(
-                                    "{tag} bump at k {} rise {r:.4} consensus {:.4}",
-                                    j + 1,
-                                    consensus[j]
-                                ));
-                            }
-                        }
-                    }
+                    // worst lane of one column
+                    let worst = |f: fn(&Reading) -> f64| {
+                        row.iter()
+                            .zip(methods)
+                            .map(|(r, (n, _))| (f(r), n.as_str()))
+                            .fold(
+                                (f64::NEG_INFINITY, ""),
+                                |a, b| if b.0 > a.0 { b } else { a },
+                            )
+                    };
+                    let crest = worst(|r| r.crest.abs());
+                    let body = worst(|r| r.body);
 
                     println!(
-                        "  {gamma:>4.1} {q:>5.1} {rho:>6.3} {:>5} {:>9.2e} {:>16} {:>9.2e} {:>16} {:>4}",
-                        2 * k - 1,
-                        worst_body.0,
-                        worst_body.1,
-                        worst_bump.0.max(0.0),
-                        worst_bump.1,
-                        worst_bump.2,
+                        "  {gamma:>4.1} {q:>5.1} {ceiling:>7.3} {rho:>6.3}{} {:>5} {:>8.3} {:>16} \
+                         {:>9.2} {:>9.2} {:>9.2e} {:>16} {:>9.2e}",
+                        if within { ' ' } else { '*' },
+                        2 * lanes[0].len() - 1,
+                        crest.0,
+                        crest.1,
+                        worst(|r| r.image).0,
+                        worst(|r| r.floor).0,
+                        body.0,
+                        body.1,
+                        worst(|r| r.rise).0,
                     );
+
+                    for (acc, r) in readings.iter_mut().zip(row) {
+                        acc.push(r);
+                    }
                 }
             }
         }
+        readings
+    }
 
-        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    /// Median and worst per method over the readings `keep` admits.
+    fn report(
+        title: &str,
+        methods: &[(String, Restriction)],
+        readings: &[Vec<Reading>],
+        keep: fn(&Reading) -> bool,
+    ) {
+        println!("\n  {title}, median / worst over γ × Q × ρ");
+        println!(
+            "  {:>16} {:>17} {:>17} {:>17} {:>21} {:>21}",
+            "method", "crest c", "image dB", "floor dB", "body", "rise"
+        );
+
+        for ((name, _), rs) in methods.iter().zip(readings) {
+            // (median, worst)
+            let col = |f: fn(&Reading) -> f64| {
+                let mut v: Vec<(f64, f64)> =
+                    rs.iter().filter(|r| keep(r)).map(|r| (1.0, f(r))).collect();
+                let worst = v.iter().map(|r| r.1).fold(f64::NEG_INFINITY, f64::max);
+                (weighted_quantile(&mut v, 0.5), worst)
+            };
+            let (crest, image, floor) =
+                (col(|r| r.crest.abs()), col(|r| r.image), col(|r| r.floor));
+            let (body, rise) = (col(|r| r.body), col(|r| r.rise));
+
+            println!(
+                "  {name:>16} {:>17} {:>17} {:>17} {:>21} {:>21}",
+                format!("{:.3} / {:.3}", crest.0, crest.1),
+                format!("{:.1} / {:.1}", image.0, image.1),
+                format!("{:.1} / {:.1}", floor.0, floor.1),
+                format!("{:.2e} / {:.2e}", body.0, body.1),
+                format!("{:.2e} / {:.2e}", rise.0, rise.1),
+            );
+        }
+    }
+
+    /// One ledger of err / tol per limit over the readings `keep` admits, returning whether every
+    /// reading holds.
+    fn judge(
+        readings: &[Vec<Reading>],
+        keep: fn(&Reading) -> bool,
+        limits: &[(&str, &dyn Fn(&Reading) -> f64)],
+    ) -> bool {
+        let mut held = true;
+        for (label, ratio) in limits {
+            let mut ledger = Ledger::default();
+            for (i, rs) in readings.iter().enumerate() {
+                let (quadrature, taper) = (i / TAPERS.len(), i % TAPERS.len());
+                for r in rs.iter().filter(|r| keep(r)) {
+                    let (gamma, q, rho) = r.at;
+                    ledger.record(1.0, ratio(r), at!(gamma, q, rho, quadrature, taper));
+                }
+            }
+            println!("\n  {label}  good {:.4}", ledger.good());
+            ledger.print_worst(WORST);
+            held &= ledger.good() == 1.0;
+        }
+        held
+    }
+
+    /// Sanity across every quadrature and taper over γ × Q × ρ, restriction alone.  Tolerances
+    /// hold under each shape's fold ceiling.  Past it every method degrades, so only broken taps
+    /// fail there.
+    #[test]
+    fn restrictions_are_sane() {
+        // Measured 2.63c taper skew at γ 4, Q 3.5.
+        const CREST_C: f64 = 3.5;
+        // Measured −46.3 dB at γ 2, Q 3.5, ρ 0.384, since found past the ceiling.
+        const IMAGE_DB: f64 = -40.0;
+        // Measured 1.58e-2, knee.
+        const BODY_TOL: f64 = 2e-2;
+        // Measured no outward rise.
+        const RISE_TOL: f64 = 1e-9;
+
+        let methods = methods();
+        let readings = sweep(&methods);
+        report("WITHIN CEILING", &methods, &readings, |r| r.within);
+        report("PAST CEILING", &methods, &readings, |r| !r.within);
+
+        let finite = judge(
+            &readings,
+            |_| true,
+            &[("finite", &|r| if r.finite { 0.0 } else { f64::INFINITY })],
+        );
+        let held = judge(
+            &readings,
+            |r| r.within,
+            &[
+                ("crest", &|r| r.crest.abs() / CREST_C),
+                // 10^{(image − limit)/20}
+                ("image", &|r| 10f64.powf((r.image - IMAGE_DB) / 20.0)),
+                ("body", &|r| r.body / BODY_TOL),
+                ("rise", &|r| r.rise.max(0.0) / RISE_TOL),
+            ],
+        );
+        assert!(finite, "non-finite taps");
+        assert!(
+            held,
+            "readings past their limits under the ceiling, worst listed per limit"
+        );
     }
 }

@@ -131,6 +131,15 @@ impl Shape {
         -DB_PER_NP * self.beta * fold_cost(0.5 / rho, self.gamma)
     }
 
+    /// Highest ρ whose Nyquist fold holds `noise_floor`, the inverse of `from_noise_floor`.
+    ///
+    /// ```text
+    /// ρ = 1 / 2D⁻¹(|floor| ln10 / 20β, γ)
+    /// ```
+    pub fn fold_ceiling(&self, noise_floor: f64) -> f64 {
+        0.5 / fold_reach(noise_floor.abs() / (DB_PER_NP * self.beta), self.gamma)
+    }
+
     /// Least shape holding the Nyquist fold at or below `noise_floor` for every bin up to
     /// `max_rho`.
     ///
