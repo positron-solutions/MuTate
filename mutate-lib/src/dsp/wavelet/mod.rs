@@ -1043,6 +1043,68 @@ mod test {
         }
     }
 
+    #[test]
+    fn gamma_sweep() {
+        const QUANTUM: usize = 4;
+        const STEP: f64 = 100.0;
+        const SPAN: isize = 4;
+        /// Worst reassignment bias over the scan, in cents.
+        const BIAS_C: f64 = 1.2;
+        const TAIL_DB: f64 = 40.0;
+
+        println!("\n=== TAP PROFILE vs GAMMA (Q = 2.4) ===");
+        // P² = beta gamma
+        let p = 4.0;
+        for gamma in [1.0f64, 2.0, 3.0, 6.0] {
+            let wav = WaveletSpec::default()
+                .with_shape(Shape {
+                    gamma,
+                    beta: p * p / gamma,
+                })
+                .max_load_quantum(QUANTUM)
+                .max_truncation(TAIL_DB)
+                .bake();
+            let bin = wav.at_rho(1000.0 / 8000.0);
+            let w0 = bin.velocity();
+            let wts = bin.weights();
+            let (psi, d) = (wts.psi(), wts.d());
+            let n = psi.len_unfolded();
+
+            // M₁ / M₀
+            let delay = (psi.moment(1) / psi.moment(0)).re;
+
+            // worst over detuning of |R| / ‖ψ‖₁ and of (1200/ln 2)·(R/H)/r
+            let (floor, worst) = (-SPAN..=SPAN).fold((0.0f64, 0.0f64), |acc, k| {
+                let ratio = (k as f64 * STEP / 1200.0).exp2();
+                let (res, dr) = pairing_residual(psi, d, w0, w0 * ratio);
+                (
+                    acc.0.max(res / psi.l1()),
+                    // (1200 / ln 2) · (R/H) / r
+                    acc.1.max((1200.0 / LN_2 * dr / ratio).abs()),
+                )
+            });
+
+            println!(
+                "\ngamma = {gamma:.1}  weights {}  taps {n}  delay = {delay:+.3e}  \
+             floor = {}  bias = {worst:.3}c",
+                psi.len_folded(),
+                fmt_e(floor),
+            );
+
+            let mags: Vec<f64> = psi.mirrored().map(|h| h.norm()).collect();
+            let max = mags.iter().fold(0.0f64, |a, &b| a.max(b));
+            for (j, &v) in mags.iter().enumerate() {
+                println!(
+                    "{:>4} {}",
+                    j as isize - (n / 2) as isize,
+                    "#".repeat((v / max * 40.0).round() as usize)
+                );
+            }
+
+            assert!(worst < BIAS_C, "gamma {gamma} bias {worst:.3}c");
+        }
+    }
+
     /// Reassignment error over the detuning each bin is responsible for.  A bank at `SPACING`
     /// cents hands off at half that, so beyond it the reading belongs to a neighbor.
     #[test]
@@ -1402,68 +1464,6 @@ mod test {
                 println!("  image max        {:>8.2} dB", rel(r.image));
                 println!("  stopband floor    {:>8.2} dB", rel(r.floor));
             }
-        }
-    }
-
-    #[test]
-    fn print_gamma_sweep() {
-        const QUANTUM: usize = 4;
-        const STEP: f64 = 100.0;
-        const SPAN: isize = 4;
-        /// Worst reassignment bias over the scan, in cents.
-        const BIAS_C: f64 = 1.2;
-        const TAIL_DB: f64 = 40.0;
-
-        println!("\n=== TAP PROFILE vs GAMMA (Q = 2.4) ===");
-        // P² = beta gamma
-        let p = 4.0;
-        for gamma in [1.0f64, 2.0, 3.0, 6.0] {
-            let wav = WaveletSpec::default()
-                .with_shape(Shape {
-                    gamma,
-                    beta: p * p / gamma,
-                })
-                .max_load_quantum(QUANTUM)
-                .max_truncation(TAIL_DB)
-                .bake();
-            let bin = wav.at_rho(1000.0 / 8000.0);
-            let w0 = bin.velocity();
-            let wts = bin.weights();
-            let (psi, d) = (wts.psi(), wts.d());
-            let n = psi.len_unfolded();
-
-            // M₁ / M₀
-            let delay = (psi.moment(1) / psi.moment(0)).re;
-
-            // worst over detuning of |R| / ‖ψ‖₁ and of (1200/ln 2)·(R/H)/r
-            let (floor, worst) = (-SPAN..=SPAN).fold((0.0f64, 0.0f64), |acc, k| {
-                let ratio = (k as f64 * STEP / 1200.0).exp2();
-                let (res, dr) = pairing_residual(psi, d, w0, w0 * ratio);
-                (
-                    acc.0.max(res / psi.l1()),
-                    // (1200 / ln 2) · (R/H) / r
-                    acc.1.max((1200.0 / LN_2 * dr / ratio).abs()),
-                )
-            });
-
-            println!(
-                "\ngamma = {gamma:.1}  weights {}  taps {n}  delay = {delay:+.3e}  \
-             floor = {}  bias = {worst:.3}c",
-                psi.len_folded(),
-                fmt_e(floor),
-            );
-
-            let mags: Vec<f64> = psi.mirrored().map(|h| h.norm()).collect();
-            let max = mags.iter().fold(0.0f64, |a, &b| a.max(b));
-            for (j, &v) in mags.iter().enumerate() {
-                println!(
-                    "{:>4} {}",
-                    j as isize - (n / 2) as isize,
-                    "#".repeat((v / max * 40.0).round() as usize)
-                );
-            }
-
-            assert!(worst < BIAS_C, "gamma {gamma} bias {worst:.3}c");
         }
     }
 

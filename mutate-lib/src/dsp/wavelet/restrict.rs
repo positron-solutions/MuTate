@@ -34,8 +34,9 @@ use num_complex::Complex64;
 use super::{generate::hermite, Fold, Grid, PEAK_GAIN};
 
 /// How the motherlet lands on a cell.  `Nearest` is technically correct in a sense, but `Axial`,
-/// **the default**, has been found to be more robust near edge cases.  `Weighted` can sometimes
-/// outperform near higher `ω`.
+/// **the default**, has been found to be more robust near edge cases.  `Complex` sags in much the
+/// same places where `Nearest` sags.  `Weighted` can sometimes outperform the others on image dB
+/// near higher `ω`, but it's not a great trade.
 #[derive(Clone, Copy, Default)]
 pub enum Quadrature {
     /// ψ at the tap center.

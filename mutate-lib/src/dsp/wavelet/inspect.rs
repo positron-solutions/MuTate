@@ -20,8 +20,6 @@
 // used to tune filters.
 // DEBT may be committed in the middle of duplicating some code over.  Reenable warnings and try
 // not to cry about it.
-// NEXT Newtype the various in-memory, test, and shader storage formats.  Hard to tell what has been
-// unpacked vs not.
 
 use core::f64::consts::TAU;
 
