@@ -339,7 +339,7 @@ pub mod whatsleft;
 #[cfg(test)]
 mod harness;
 
-use core::f64::consts::{FRAC_1_SQRT_2, LN_2, PI, TAU};
+use core::f64::consts::{PI, TAU};
 
 use num_complex::Complex64;
 
@@ -859,6 +859,8 @@ mod test {
     // intended for.  As things are becoming mature enough, moving some features over to the
     // workbench tools would be welcome, although it may need some redesign since basically all IIR
     // solutions and therefore most of the tests with time dependency are DoA on the GPU.
+
+    use core::f64::consts::LN_2;
 
     use super::*;
 
@@ -1930,35 +1932,6 @@ mod test {
         (psi.norm_sqr(), (tee * psi.conj()).re)
     }
 
-    /// max_m h_m |t̂_a − t̂_b|, h = clamp(1 − dB/floor, 0, 1) on b's |Ψ|² re its peak
-    fn visible_gap(
-        a: &Weights,
-        b: &Weights,
-        x: &dyn Fn(isize) -> f64,
-        span: isize,
-        floor_db: f64,
-    ) -> f64 {
-        let readings: Vec<(f64, f64)> = (-span..=span)
-            .map(|m| {
-                let (ea, ca) = moments(a, x, m);
-                let (eb, cb) = moments(b, x, m);
-                (eb, ca / ea - cb / eb)
-            })
-            .collect();
-        let peak = readings.iter().fold(0.0f64, |p, r| p.max(r.0));
-
-        readings
-            .iter()
-            .map(|&(e, gap)| {
-                // 1 − dB/floor
-                let h = 1.0 - 10.0 * (e / peak).log10() / floor_db;
-                (h, gap)
-            })
-            .filter(|&(h, _)| h > 0.0)
-            .map(|(h, gap)| h * gap.abs())
-            .fold(0.0, f64::max)
-    }
-
     /// About `n` hops on a uniform stride across [−r, r]
     fn hops(r: f64, n: usize) -> impl Iterator<Item = isize> {
         let stride = (2.0 * r / (n - 1) as f64).ceil().max(1.0) as usize;
@@ -2581,29 +2554,6 @@ mod test {
             }
             println!();
         }
-    }
-
-    /// (E, ρ |t̂ − p|, m) off a ½ tanh step at sub-sample `p`, hops across ±`reach`.
-    fn step_readings(
-        wts: &Weights,
-        rho: f64,
-        reach: f64,
-        hops_n: usize,
-        phases: usize,
-        edge: f64,
-    ) -> Vec<(f64, f64, isize)> {
-        let mut readings = Vec::with_capacity(phases * hops_n);
-        for q in 0..phases {
-            let p = offset(q);
-            let x = move |k: isize| 0.5 * ((k as f64 - p) / edge).tanh();
-            for m in hops(reach, hops_n) {
-                let (e, c) = moments(wts, &x, m);
-                if e > 0.0 {
-                    readings.push((e, rho * (m as f64 + c / e - p).abs(), m));
-                }
-            }
-        }
-        readings
     }
 
     // Pitch transport
