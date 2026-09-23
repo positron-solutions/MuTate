@@ -261,16 +261,7 @@ impl Default for WaveletSpec {
             max_noise_floor: defaults::NOISE_FLOOR,
             max_load_quantum: defaults::LOAD_QUANTUM,
             max_delay: 0,
-            restriction: restrict::Restriction {
-                // quadrature: restrict::Quadrature::Weighted,
-                quadrature: restrict::Quadrature::Axial,
-                taper: restrict::Taper::Knee { curvature: 1.0 },
-                // taper: restrict::Taper::Cylinder,
-                // taper: restrict::Taper::Rectangle,
-                // derivative: restrict::Derivative::Envelope,
-                derivative: restrict::Derivative::Folded { sigmas: 6.0 },
-                // derivative: restrict::Derivative::Fitted { gate_db: 24.0 },
-            },
+            restriction: restrict::Restriction::default(),
             refinement: Some(refine::Refinement::default()),
         }
     }

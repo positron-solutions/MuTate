@@ -33,7 +33,9 @@ use num_complex::Complex64;
 
 use super::{generate::hermite, Fold, Grid, PEAK_GAIN};
 
-/// How the motherlet lands on a cell.
+/// How the motherlet lands on a cell.  `Nearest` is technically correct in a sense, but `Axial`,
+/// **the default**, has been found to be more robust near edge cases.  `Weighted` can sometimes
+/// outperform near higher `ω`.
 #[derive(Clone, Copy, Default)]
 pub enum Quadrature {
     /// ψ at the tap center.
@@ -67,13 +69,22 @@ pub enum Quadrature {
     Weighted,
 }
 
-/// How the reach ends.
-#[derive(Clone, Copy, Default)]
+/// Since we're writing an infinite ideal wavelet to a finite support, we must truncate.  Tapering
+/// can control some of the damage and leave us closer to an optimal solution without much work.
+///
+/// - `Rectangle` is noop, just truncate, leaving behind the cliff.
+/// - `Cylinder` subtracts a cylinder equal to the `K + 1` tap's magnitude, softening the cliff to
+///    just the rate of change at tap `K`.
+/// - `Knee`, the **default**, is axially aware like `Cylinder`, but uses a curve to modulate the taper into the final
+///    taps, leaving more of the center mass alone.
+#[derive(Clone, Copy)]
 pub enum Taper {
     /// Full amplitude to the last tap.
-    #[default]
     Rectangle,
-    /// The first discarded magnitude removed proportionally.
+    /// Remove the first discarded tap's magnitude from every other tap, subtracting a cylinder from
+    /// the middle.  Gain correction will scale the resulting shape up, and the natural result has a
+    /// thinner tail, higher envelope slope to get back up to full gain, and a steeper shoulder
+    /// that restores some moment earlier.
     ///
     /// ```text
     /// g_k = 1 − a_K / a_k
@@ -81,12 +92,22 @@ pub enum Taper {
     ///
     /// `a_K < a_k` over the reach, so `g_k` is a gain in (0, 1) and no tap can change sign.
     Cylinder,
-    /// A profile through `a_K` with curvature `κ`.
+    /// A profile through `a_K` with curvature `κ`.  Like cylinder, but modulated by a curve flowing
+    /// into the edge.
     ///
     /// ```text
     /// g_k = 1 − c_k / a_k,  c_k = a_K (1 + (1 − (k/K)^n) / κ)
     /// ```
     Knee { curvature: f64 },
+}
+
+impl Default for Taper {
+    fn default() -> Self {
+        // The only use for Cylinder and Rectangle is basically to demonstrate that tapering is very
+        // important.  Rectangle naturally leaves behind a Gibbs ringing floor.
+
+        Self::Knee { curvature: 0.5 }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -231,8 +252,10 @@ fn magnitude(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
         .unzip()
 }
 
-/// How d is drawn from the emitted ψ.
-#[derive(Clone, Copy, Default)]
+/// How d is drawn from the emitted ψ.  `Envelope` is a basic valid solution.  It is generally
+/// outperformed for reassignment by `Folded`, the **default**, which is faster and only slightly
+/// outperformed by `Fitted`.
+#[derive(Clone, Copy)]
 pub enum Derivative {
     /// Stencil on the envelope demodulated at the carrier.
     ///
@@ -241,7 +264,6 @@ pub enum Derivative {
     /// b_k = Σ_m c_m (a_{k+m} − a_{k−m})
     /// d_k = (a_k − (i/ω₀) b_k) e^{2πikρ}
     /// ```
-    #[default]
     Envelope,
     /// |ω| smoothed at its kinks, as a real even convolution over the reach.
     ///
@@ -260,6 +282,12 @@ pub enum Derivative {
     ///
     /// W reads bias at +ω and image residual at −ω against the tone's own H(|ω|).
     Fitted { gate_db: f64 },
+}
+
+impl Default for Derivative {
+    fn default() -> Self {
+        Self::Folded { sigmas: 6.0 }
+    }
 }
 
 impl Derivative {
