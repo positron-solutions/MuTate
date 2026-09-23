@@ -1495,9 +1495,20 @@ mod test {
     fn taps_are_conditioned() {
         // Use a rough tail dB so we can verify conditioning under challenging conditions.
         const TAIL_DB: f64 = -80.0;
-        const MOMENT_TOL: f64 = 1e-4;
+        const MOMENT_TOL: f64 = 1e-6;
 
-        let wav = WaveletSpec::default().max_truncation(TAIL_DB).bake();
+        // NOTE the refinement is explicitly set so that this test doesn't regress whenever the
+        // default moment conditioning is updated.
+        let wav = WaveletSpec::default()
+            .max_truncation(TAIL_DB)
+            .with_refinement(Some(refine::Refinement::Reach {
+                moments: &[0, 1, 2, 3],
+                jet: &[0, 1, 2, 3],
+                tangent: true,
+                spare: 16,
+                turns: 3.0,
+            }))
+            .bake();
 
         for (fc, fs) in [(1000.0f64, 8000.0f64), (250.0, 3000.0), (12_000.0, RATE)] {
             let bin = wav.at_rho(fc / fs);
