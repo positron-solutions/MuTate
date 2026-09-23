@@ -251,6 +251,55 @@ pub(super) fn bisect(resp: impl Fn(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
     0.5 * (a + b)
 }
 
+/// Where a bin's white noise energy lands, each a share of ∫_{−π}^{π} |H|².
+pub(super) struct Image {
+    /// ∫_guard |H(−ω)|²
+    pub beat: f64,
+    /// ∫_{¬guard} |H(−ω)|²
+    pub leak_neg: f64,
+    /// ∫_{¬guard} |H(ω)|²
+    pub leak_pos: f64,
+    /// (|H(ω)|², |H(−ω)|/|H(ω)|) inside the guard
+    pub alpha: Vec<(f64, f64)>,
+    /// (ω, |H(−ω)|) at the worst image
+    pub peak: (f64, f64),
+}
+
+pub(super) fn image(psi: Fold<'_>, r: &Response) -> Image {
+    let n = (PI * OVERSAMPLE * psi.len_unfolded() as f64 / TAU).ceil() as usize;
+    let dw = PI / n as f64;
+    let guard = 3.0 * (r.edges.1 - r.edges.0);
+
+    let (mut beat, mut leak_neg, mut leak_pos, mut total) = (0.0, 0.0, 0.0, 0.0);
+    let mut alpha = Vec::new();
+    let mut peak = (0.0, 0.0f64);
+
+    for k in 0..n {
+        let w = dw * (k as f64 + 0.5);
+        let (hp, hn) = (psi.dtft(w).abs(), psi.dtft(-w).abs());
+        let (ep, en) = (hp * hp, hn * hn);
+        total += ep + en;
+        if (w - r.peak_w).abs() <= guard {
+            beat += en;
+            alpha.push((ep, hn / hp));
+        } else {
+            leak_neg += en;
+            leak_pos += ep;
+        }
+        if hn > peak.1 {
+            peak = (w, hn);
+        }
+    }
+
+    Image {
+        beat: beat / total,
+        leak_neg: leak_neg / total,
+        leak_pos: leak_pos / total,
+        alpha,
+        peak,
+    }
+}
+
 pub(super) struct Response {
     pub peak_w: f64,
     /// |H(peak_w)|

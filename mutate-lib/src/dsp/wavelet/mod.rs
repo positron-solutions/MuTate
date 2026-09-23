@@ -864,7 +864,7 @@ mod test {
     // workbench tools would be welcome, although it may need some redesign since basically all IIR
     // solutions and therefore most of the tests with time dependency are DoA on the GPU.
 
-    use core::f64::consts::LN_2;
+    use core::f64::consts::{LN_2, LOG2_10};
 
     use super::*;
 
@@ -881,6 +881,102 @@ mod test {
             .max_load_quantum(quantum)
             .max_truncation(WEAKEST_TAIL_DB)
             .bake()
+    }
+
+    /// Negative frequency energy of each bin, split into the beat against its own passband and
+    /// leakage through the mirror, beside the positive skirt it competes with.  If leak+ is larger
+    /// than leak-, the stopband is dominated by the skirt, telling us where to prioritize spectral
+    /// cleanup work.
+    #[test]
+    fn analyticity() {
+        const BINS: usize = 6;
+        const WORST: usize = 2;
+
+        const QS: Axis = Axis::Levels(&[3.0, 4.0]);
+        const GAMMAS: Axis = Axis::Levels(&[3.0, 4.0]);
+        const DEEPEST_DB: f64 = -80.0;
+        const FLOORS: Axis = Axis::Step(-20.0, DEEPEST_DB, 10.0);
+        const RHO: Span = Span::Log(0.004, 0.45);
+
+        const GOOD: f64 = 0.95;
+        const EXCESS: f64 = 1e-2;
+
+        let pow_db = |u: f64| 10.0 * u.log10();
+        let amp_db = |u: f64| 20.0 * u.log10();
+        let med = |v: &mut Vec<(f64, f64)>| weighted_quantile(v, 0.5);
+        let mut ledger = Ledger::default();
+
+        println!("\n=== ANALYTICITY ===");
+        println!("  shares of white noise energy ∫|H|², dB, medians over served ρ");
+        println!("  beat is image inside the passband guard, leak− and leak+ outside it");
+        println!("  α is |H(−ω)|/|H(ω)| weighted by |H(ω)|² in band, peak re PEAK_GAIN\n");
+        println!(
+            "  {:>4} {:>5} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>7}",
+            "γ", "Q", "floor", "beat", "leak−", "leak+", "α50", "α99", "peak", "beyond"
+        );
+
+        for (wg, gamma) in GAMMAS.levels() {
+            for (wq, q) in QS.levels() {
+                let wav = WaveletSpec::default()
+                    .with_shape(Shape::from_q(q, gamma))
+                    .max_noise_floor(DEEPEST_DB)
+                    .bake();
+                let s = wav.shape();
+
+                for (wf, floor) in FLOORS.levels() {
+                    let [mut beat, mut neg, mut pos, mut a50, mut a99, mut peak]: [Vec<(f64, f64)>;
+                        6] = Default::default();
+                    let mut beyond = 0usize;
+
+                    for (wr, [rho]) in survey([RHO], BINS) {
+                        // ρ ≤ ρ_fold(floor)
+                        if rho > s.fold_ceiling(floor) {
+                            beyond += 1;
+                            continue;
+                        }
+
+                        let bin = wav.at_rho(rho).with_noise_floor(floor);
+                        let wts = bin.weights();
+                        let psi = wts.psi();
+                        let mut img = image(psi, &characterize(psi, bin.velocity()));
+
+                        beat.push((wr, img.beat));
+                        neg.push((wr, img.leak_neg));
+                        pos.push((wr, img.leak_pos));
+                        a50.push((wr, weighted_quantile(&mut img.alpha, 0.5)));
+                        a99.push((wr, weighted_quantile(&mut img.alpha, 0.99)));
+                        peak.push((wr, img.peak.1 / PEAK_GAIN));
+
+                        // 10^(floor/10)
+                        let tol = 10f64.powf(floor / 10.0);
+                        let at_w = img.peak.0 / bin.velocity();
+                        ledger.record(
+                            wg * wq * wf * wr,
+                            (img.beat + img.leak_neg) / tol,
+                            at!(q, gamma, floor, rho, at_w),
+                        );
+                    }
+
+                    println!(
+                        "  {gamma:>4.1} {q:>5.1} {floor:>6.0} {:>8.2} {:>8.2} {:>8.2} \
+                         {:>8.2} {:>8.2} {:>8.2} {beyond:>7}",
+                        pow_db(med(&mut beat)),
+                        pow_db(med(&mut neg)),
+                        pow_db(med(&mut pos)),
+                        amp_db(med(&mut a50)),
+                        amp_db(med(&mut a99)),
+                        amp_db(med(&mut peak)),
+                    );
+                }
+                println!();
+            }
+        }
+
+        ledger.print_worst(WORST);
+        let [good, excess] = ledger.verdict([GOOD, EXCESS]);
+
+        assert!(good > GOOD, "good mass {good:.4}");
+        assert!(excess < EXCESS, "excess mass {excess:.2e}");
     }
 
     /// Whether the filter answers the same at every input phase.  Each row drives a steady tone
