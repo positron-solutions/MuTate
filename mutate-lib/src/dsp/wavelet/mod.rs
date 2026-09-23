@@ -61,9 +61,12 @@
 //! This module generates families of wavelets for use in wavelet tables.  Our wavelets are Morse
 //! family:
 //!
-//! - Easy to generate
-//! - Regarded as nice for time and frequency reassignment
-//! - Parameterized (but only a little!)
+//! - Easy to generate (reference IFFT method and high-precision
+//!   [`QuadJet`](generate::quadjet::QuadJet) implementations available).
+//! - Fully analytic, one-sided response, making it nice for time and frequency reassignment
+//! - Very well studied, providing many closed-form analytic expressions that ease writing solvers
+//!   or estimating tap lengths necessary to achieve performance goals.
+//! - Simple parameterization of time vs pitch precision tradeoffs.
 //!
 //! ## Usage
 //!
@@ -162,19 +165,22 @@
 //! Low quality wavelets can cause many bad things that good things cannot fix.  A principled
 //! approach upstream is required.  We can divide the strategy into five phases:
 //!
-//! - Define coherent goals, such as `load_quantum` and `Q`, obtaining a [`Spec`].
-//! - Generate high resolution mother wavelet sufficient to fill any tap count that the `Spec` may
-//!   produce.
-//! - Dilate and truncate the mother wavelet to the length required to fill `N` taps.
-//! - Restrict (fancy downsampling) the high resolution daughter wavelet into the coarse `N` taps.
-//! - Repair the truncation to more closely recreate the ideal infinite wavelet's **transient**
-//!   response.
+//! - Define coherent goals, such as `load_quantum` and `Q`, obtaining a [`WaveletSpec`].
+//! - Generate high resolution mother wavelet sufficient to fill any tap count that a [`BinSpec`]
+//!   may need.
+//! - Dilate and truncate the mother wavelet to the length required to fill `N` taps with a
+//!   [Restriction](restrict::Restriction) operator (fancy downsampling) squeezing the high
+//!   resolution mother wavelet into the coarse `N` taps.
+//! - [Taper](restrict::Taper) the truncation to lessen the spectral damage of the cliff and obtain
+//!   a better starting point for refinement.
+//! - [Refine](refile::Refinement) the final result to restore certain analytic properties such as
+//!   moments and peak curvature while taking liberties to clean up spectral artifacts and enhance
+//!   transient response where possible.
 //!
-//! The final repair steps use the measured (by quadrature) moments of the high-fidelity daughterlet
-//! and analytically determined contributions from the truncated ends.  Together, these are the mass
-//! and moments of the complete ideal wavelet.  Corrections approach this ideal wavelet to minimize
-//! the spectral ringing of the truncation in a minimal number of taps without damaging the
-//! desirable response of the wavelet's main body.
+//! Everything before refinement is almost purely driven by time-domain geometry.  Refinement itself
+//! is the first spectrally aware step.  The derivative generation is downstream of all work on `Ψ`.
+//! The time derivative is re-generated from the other taps on the fly and therefore only concretely
+//! exists at the point of use.
 //!
 //! ## Symbols and Nomenclature
 //!
@@ -690,7 +696,7 @@ impl Bake {
 
 /// A borrowed view of a single channel of [`Weights`].
 ///
-/// `ψ` over `[0, K)`, the mirror `ψ₋ₖ = conj ψₖ` implied.  Entry 0 is real.
+/// `ψ` indexed over `[0, K)`, the mirror `ψ₋ₖ = conj ψₖ` implied.  Entry 0 is real.
 // Making the channel first class could prevent some kinds of mishandling
 #[derive(Clone, Copy)]
 pub(super) struct Fold<'a>(&'a [Complex64]);
@@ -706,7 +712,7 @@ impl<'a> Fold<'a> {
         2 * self.0.len() - 1
     }
 
-    /// Number of physical weights that unfold into taps.  Includes a center weight.  In `[0, K]`
+    /// Number of physical weights that unfold into taps.  Includes a center weight.  Always equal to `K`.
     #[allow(unused)]
     pub fn len_folded(&self) -> usize {
         self.0.len()
