@@ -13,17 +13,6 @@ use super::super::*;
 
 const RATE: f64 = 48_000.0;
 
-fn fmt_e(x: f64) -> String {
-    if !x.is_finite() {
-        return format!("{x:>9}");
-    }
-    let s = format!("{x:+.2e}");
-    // split "±m.mme±dd" into mantissa and exponent, then zero-pad the exponent
-    let (mantissa, exp) = s.split_once('e').unwrap_or(("999", "999"));
-    let exp: i32 = exp.parse().unwrap();
-    format!("{mantissa}e{exp:+03}")
-}
-
 #[ignore]
 #[test]
 fn print_waveform() {

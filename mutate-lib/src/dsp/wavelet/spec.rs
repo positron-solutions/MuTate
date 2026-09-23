@@ -31,8 +31,6 @@ use super::refine;
 use super::restrict;
 use super::{Bin, Wavelet, PEAK_GAIN};
 
-/// Lowest stopband target that more taps can buy.
-pub const IMAGE_FLOOR_DB: f64 = -140.0;
 /// Neper is the natural-log analogue of the decibel.  It is not a beloved unit, but simplifies
 /// expressions in some domains.
 const DB_PER_NP: f64 = 20.0 / LN_10;
@@ -386,7 +384,6 @@ impl WaveletSpec {
                 load_quantum: self.max_load_quantum,
                 delay: self.max_delay,
                 noise_floor: self.max_noise_floor,
-                refine: None,
             },
             restriction: self.restriction,
             refinement: self.refinement,
@@ -406,7 +403,6 @@ pub struct BinSpec {
     // XXX has not be reconciled with load quantum!
     pub(super) delay: usize,
     pub(super) noise_floor: f64,
-    pub(super) refine: Option<refine::Refinement>,
 }
 
 impl BinSpec {
@@ -418,7 +414,6 @@ impl BinSpec {
             load_quantum: defaults::LOAD_QUANTUM,
             delay: defaults::DELAY,
             noise_floor: defaults::NOISE_FLOOR,
-            refine: Some(refine::Refinement::default()),
         }
     }
 
@@ -446,10 +441,6 @@ impl BinSpec {
 
     pub fn bin<'w>(self, wavelet: &'w Wavelet) -> Bin<'w> {
         wavelet.from_spec(self)
-    }
-
-    pub fn with_refine(self, refine: Option<refine::Refinement>) -> Self {
-        Self { refine, ..self }
     }
 }
 

@@ -119,14 +119,6 @@ pub(super) fn tone_response(wts: &Weights, w0: f64, cents: f64, min_resolution: 
     })
 }
 
-/// Gaussian tone burst, carrier `w`, envelope sd in samples, centered at `p`.
-pub(super) fn burst(w: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
-    move |k| {
-        let z = (k as f64 - p) / sd;
-        (-0.5 * z * z).exp() * (w * (k as f64 - p)).cos()
-    }
-}
-
 /// Signed bars for `re` and `im` overlaid on one axis, zero between cells `cols / 2 - 1` and
 /// `cols / 2`. Caller guarantees `max >= |re|` and `max >= |im|`, which keeps both spans inside
 /// the `cols` field.
@@ -361,15 +353,6 @@ pub(super) fn chirp(a: f64, sd: f64, p: f64) -> impl Fn(isize) -> f64 {
     }
 }
 
-/// Σ A min(|e|/bin, 1) / Σ A over (A, |e|) readings.  NaN.min(1) is 1, so a lost reading counts
-/// as a whole bin.
-pub(super) fn garbage(readings: &[(f64, f64)], bin_c: f64) -> f64 {
-    let (moved, total) = readings.iter().fold((0.0, 0.0), |(m, t), &(a, e)| {
-        (m + a * (e / bin_c).min(1.0), t + a)
-    });
-    moved / total
-}
-
 /// |e| below which fraction `f` of the weight lands.
 pub(super) fn weighted_quantile(readings: &mut [(f64, f64)], f: f64) -> f64 {
     readings.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -382,11 +365,6 @@ pub(super) fn weighted_quantile(readings: &mut [(f64, f64)], f: f64) -> f64 {
             acc >= f * total
         })
         .map_or(f64::NAN, |r| r.1)
-}
-
-/// |e| below which three quarters of the weight lands.
-pub(super) fn upper_quartile(readings: &mut [(f64, f64)]) -> f64 {
-    weighted_quantile(readings, 0.75)
 }
 
 /// Real and imaginary parts of ψ, centered, on a shared scale.

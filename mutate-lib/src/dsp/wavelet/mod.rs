@@ -286,6 +286,7 @@
 // wavelet is busted. Well-formalized stuff doesn't have a lot of wiggle room to violate the
 // consistency of the formalism.
 
+// DEBT Redundant code check identified a lot of places to improve.  Reading this?  It's still time.
 // DEBT The newer `max_rho` and `max_noise_floor` API replacing `truncation` and `tail_db` needs to
 // be migrated.  Unfortunately this affects basically all tests.  Most will adapt smoothly.  Fix up
 // the mapping constant in spec while you're at it. 🤖
@@ -303,8 +304,6 @@
 // NOTE We have logarithmic bin spacings, but the cutoff frequencies that determine which downsample
 // will be used are not particularly aware, so it's not expected that we can re-use exact bins in
 // any kind of octave structure.  Mel scaling etc also defeats this, so there's no point.
-// NOTE Run time of the filter bank generation test (not reflective of actual sample rates and Q) is
-// about 220ms on a Zen2+ part in release.  This affects CWT startup time.
 
 // === TABLE RESPONSE (Q = 3.5, quantum 8) ===
 //
@@ -871,7 +870,6 @@ mod test {
     use harness::*;
     use inspect::*;
 
-    const BINS: usize = 1024;
     const RATE: f64 = 48_000.0;
     const WEAKEST_TAIL_DB: f64 = -160.0;
 
@@ -1770,81 +1768,6 @@ mod test {
                 println!();
             }
         }
-    }
-
-    /// Bakes the full bank at production-ish scale.
-    ///
-    /// ```text
-    /// cargo test --release wavelet::test::bake_bank -- --ignored --nocapture
-    /// ```
-    // NEXT this should be a benchmark, but we don't have any set up.  Most of our GPU driven world
-    // will not care about the host code.  But faster, less UI delay, and lower power is always
-    // better.
-    #[test]
-    #[ignore]
-    fn bake_bank() {
-        use crate::dsp::bank;
-
-        const Q: f64 = 5.0;
-
-        let bins = bank::bins(2_000.0, 20_000.0, BINS);
-
-        let start = std::time::Instant::now();
-        let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, defaults::GAMMA))
-            .bake();
-        let bake_time = start.elapsed();
-
-        // Packed bank with per-voice tap ranges
-        let start = std::time::Instant::now();
-        let mut weights = Vec::new();
-        let mut voices = Vec::with_capacity(bins.len());
-        for b in &bins {
-            let bin = wav.at_rho(b.center / RATE);
-            let taps = bin.taps();
-            let range = weights.len()..weights.len() + taps.len();
-            weights.extend_from_slice(&taps);
-            voices.push((bin, range));
-        }
-        let fill_time = start.elapsed();
-
-        // max over voices of |H(ω₀) − PEAK_GAIN|
-        let worst = voices
-            .iter()
-            .map(|(bin, r)| {
-                (Weights::unpack(&weights[r.clone()])
-                    .psi()
-                    .dtft(bin.velocity())
-                    .abs()
-                    - PEAK_GAIN)
-                    .abs()
-            })
-            .fold(0.0f64, f64::max);
-
-        let (low_bin, low_range) = &voices[0];
-        let low = Weights::unpack(&weights[low_range.clone()]);
-        print_wave(
-            &format!(
-                "LOWEST BIN ({:.0}Hz, omega0 {:.5})",
-                bins[0].center,
-                low_bin.velocity()
-            ),
-            low.psi(),
-            30,
-        );
-
-        let lens = voices.iter().map(|(_, r)| r.len());
-        println!(
-            "voices {} of {}  weights {}  longest {}  shortest {}",
-            voices.len(),
-            BINS,
-            weights.len(),
-            lens.clone().max().unwrap(),
-            lens.min().unwrap(),
-        );
-
-        println!("bake time: {}µs", bake_time.as_micros());
-        println!("bin filling time: {}µs", fill_time.as_micros());
     }
 
     // Transport (time-reassignment mis-location) Tests
