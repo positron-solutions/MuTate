@@ -418,32 +418,93 @@ pub(super) fn print_transform(
 // behavior easy to read and compare at a glance.  The newer style of tests is being supported first
 // class in order to keep going in that direction.
 
-/// A test axis over its unit coordinate.
+/// A continuous test axis, sampled by `survey` and integrated over.
 #[derive(Clone, Copy)]
-pub(crate) enum Axis {
+pub(crate) enum Span {
     Lin(f64, f64),
     Log(f64, f64),
+}
+
+impl Span {
+    fn at(self, u: f64) -> f64 {
+        match self {
+            Span::Lin(a, b) => a + (b - a) * u,
+            // a (b/a)^u
+            Span::Log(a, b) => a * (b / a).powf(u),
+        }
+    }
+
+    /// The span's value at `u = 1`.
+    pub fn end(self) -> f64 {
+        self.at(1.0)
+    }
+}
+
+/// A discrete test axis, enumerated as weighted levels.
+#[derive(Clone, Copy)]
+pub(crate) enum Axis {
+    /// Equal weights
     Levels(&'static [f64]),
+    /// Explicit levels, log cells
+    LogLevels(&'static [f64]),
+    /// a + k·step toward b, linear cells
+    Step(f64, f64, f64),
+    /// a·2^(k/n) up to b, log cells
+    PerOctave(f64, f64, usize),
 }
 
 impl Axis {
-    pub fn at(self, u: f64) -> f64 {
+    /// (w, x) in order, Σ w = 1
+    pub fn levels(self) -> Vec<(f64, f64)> {
         match self {
-            Axis::Lin(a, b) => a + (b - a) * u,
-            // a (b/a)^u
-            Axis::Log(a, b) => a * (b / a).powf(u),
-            // L[min(⌊u·n⌋, n − 1)]
-            Axis::Levels(l) => l[((u * l.len() as f64) as usize).min(l.len() - 1)],
+            Axis::Levels(l) => l.iter().map(|&x| (1.0 / l.len() as f64, x)).collect(),
+            Axis::LogLevels(l) => weigh(l.to_vec(), f64::ln),
+            Axis::Step(a, b, step) => {
+                let n = ((b - a).abs() / step + 1e-9) as usize;
+                let s = step.copysign(b - a);
+                weigh((0..=n).map(|k| a + k as f64 * s).collect(), |x| x)
+            }
+            Axis::PerOctave(a, b, n) => {
+                let m = (n as f64 * (b / a).log2() + 1e-9) as usize;
+                weigh(
+                    (0..=m).map(|k| a * (k as f64 / n as f64).exp2()).collect(),
+                    f64::ln,
+                )
+            }
         }
     }
 }
 
+/// Levels weighted by their cells in coordinate `t`, split at midpoints and clipped to the ends.
+fn weigh(x: Vec<f64>, t: impl Fn(f64) -> f64) -> Vec<(f64, f64)> {
+    let t: Vec<f64> = x.iter().map(|&x| t(x)).collect();
+    let last = t.len() - 1;
+    if last == 0 {
+        return vec![(1.0, x[0])];
+    }
+    let span = (t[last] - t[0]).abs();
+    (0..=last)
+        .map(|i| {
+            let lo = if i == 0 {
+                t[0]
+            } else {
+                0.5 * (t[i - 1] + t[i])
+            };
+            let hi = if i == last {
+                t[last]
+            } else {
+                0.5 * (t[i] + t[i + 1])
+            };
+            ((hi - lo).abs() / span, x[i])
+        })
+        .collect()
+}
+
 /// Points crowded toward the faces, weighted so weighted means estimate the uniform measure.
-/// Corners ride along at zero weight.
 ///
 ///     u = ½(1 − cos πs),  w = Π ½π sin(πs)
 pub(crate) fn survey<const D: usize>(
-    axes: [Axis; D],
+    axes: [Span; D],
     n: usize,
 ) -> impl Iterator<Item = (f64, [f64; D])> {
     // φ_d^{d+1} = φ_d + 1
@@ -451,12 +512,9 @@ pub(crate) fn survey<const D: usize>(
     // α_j = φ_d^{−(j+1)}
     let alpha: [f64; D] = core::array::from_fn(|j| phi.powi(-(j as i32 + 1)));
 
-    // {(i + ½) α}
-    let interior = (0..n).map(move |i| alpha.map(|a| ((i as f64 + 0.5) * a).fract()));
-    // vertices of [0, 1]^D
-    let corners = (0..1usize << D).map(|b| core::array::from_fn(|j| ((b >> j) & 1) as f64));
-
-    interior.chain(corners).map(move |s| {
+    (0..n).map(move |i| {
+        // {(i + ½) α}
+        let s: [f64; D] = alpha.map(|a| ((i as f64 + 0.5) * a).fract());
         let w = s.iter().map(|s| 0.5 * PI * (PI * s).sin()).product();
         let x = core::array::from_fn(|j| axes[j].at(0.5 * (1.0 - (PI * s[j]).cos())));
         (w, x)

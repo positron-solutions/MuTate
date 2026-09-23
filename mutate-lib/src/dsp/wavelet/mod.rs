@@ -1381,10 +1381,10 @@ mod test {
         const BINS: usize = 16;
         const WORST: usize = 2;
 
-        const Q: Axis = Axis::Log(3.0, 6.0);
-        const GAMMA: Axis = Axis::Levels(&[3.0, 4.0, 6.0]);
-        const RHO: Axis = Axis::Log(0.004, 0.45);
-        const TAIL_DB: Axis = Axis::Lin(-20.0, -100.0);
+        const QS: Axis = Axis::Levels(&[3.0, 4.25, 6.0]);
+        const GAMMAS: Axis = Axis::Levels(&[3.0, 4.0, 6.0]);
+        const RHO: Span = Span::Log(0.004, 0.45);
+        const TAIL_DB: Span = Span::Lin(-20.0, -100.0);
 
         const GOOD: f64 = 0.99;
         const EXCESS: f64 = 5e-3;
@@ -1398,44 +1398,45 @@ mod test {
         );
         println!("  {:>6} {:>6} {:>8} {:>10}", "Q", "γ", "good", "excess");
 
-        for [uq, ug] in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.5, 0.5]] {
-            let (q, gamma) = (Q.at(uq), GAMMA.at(ug));
-            let wav = WaveletSpec::default()
-                .with_shape(Shape::from_q(q, gamma))
-                .max_truncation(TAIL_DB.at(1.0))
-                .bake();
+        for (_, gamma) in GAMMAS.levels() {
+            for (_, q) in QS.levels() {
+                let wav = WaveletSpec::default()
+                    .with_shape(Shape::from_q(q, gamma))
+                    .max_truncation(TAIL_DB.end())
+                    .bake();
 
-            let mut shape = Ledger::default();
-            for (w, [rho, tail_db]) in survey([RHO, TAIL_DB], BINS) {
-                let bin = wav.at_rho(rho).with_truncation(tail_db);
-                let wts = bin.weights();
-                let psi = wts.psi();
+                let mut shape = Ledger::default();
+                for (w, [rho, tail_db]) in survey([RHO, TAIL_DB], BINS) {
+                    let bin = wav.at_rho(rho).with_truncation(tail_db);
+                    let wts = bin.weights();
+                    let psi = wts.psi();
 
-                // ω_peak
-                let Some((wp, _)) =
-                    Inspect::new(psi, &mut probe, OVERSAMPLE).peak(bin.velocity(), 0.0, PI)
-                else {
-                    shape.record(w, f64::NAN, at!(q, gamma, rho, tail_db));
-                    continue;
-                };
+                    // ω_peak
+                    let Some((wp, _)) =
+                        Inspect::new(psi, &mut probe, OVERSAMPLE).peak(bin.velocity(), 0.0, PI)
+                    else {
+                        shape.record(w, f64::NAN, at!(q, gamma, rho, tail_db));
+                        continue;
+                    };
 
-                // ½|H(−ω_peak)| + ε
-                let tol = 0.5 * psi.dtft(-wp).abs() + EPS;
+                    // ½|H(−ω_peak)| + ε
+                    let tol = 0.5 * psi.dtft(-wp).abs() + EPS;
 
-                // max over m of | |Ψ(m)| − 1 |
-                let err = (0..8)
-                    .map(|m| (wts.project(|k| (wp * k as f64).cos(), m)[0].norm() - 1.0).abs())
-                    .fold(0.0f64, f64::max);
+                    // max over m of | |Ψ(m)| − 1 |
+                    let err = (0..8)
+                        .map(|m| (wts.project(|k| (wp * k as f64).cos(), m)[0].norm() - 1.0).abs())
+                        .fold(0.0f64, f64::max);
 
-                shape.record(w, err / tol, at!(q, gamma, rho, tail_db));
+                    shape.record(w, err / tol, at!(q, gamma, rho, tail_db));
+                }
+
+                println!(
+                    "  {q:>6.2} {gamma:>6.2} {:>8.4} {:>10.2e}",
+                    shape.good(),
+                    shape.excess()
+                );
+                all.absorb(shape);
             }
-
-            println!(
-                "  {q:>6.2} {gamma:>6.2} {:>8.4} {:>10.2e}",
-                shape.good(),
-                shape.excess()
-            );
-            all.absorb(shape);
         }
 
         all.print_worst(WORST);
