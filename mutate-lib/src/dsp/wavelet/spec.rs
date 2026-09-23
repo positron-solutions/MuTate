@@ -17,6 +17,7 @@
 // shaping the garbage on the noise floor is probably something that can be bought.
 
 use core::f64::consts::{FRAC_2_SQRT_PI, LN_10, LN_2, PI, TAU};
+use core::ops::Range;
 
 use libm::{erfc, lgamma};
 use num_complex::Complex64;
@@ -89,6 +90,33 @@ impl Shape {
         } else {
             (self.beta / self.gamma).powf(1.0 / self.gamma)
         }
+    }
+
+    /// M_k = 0,  Ψ⁽ᵏ⁾(0) = 0,  k < β
+    ///
+    /// ∫ |t|ᵏ |ψ| is finite over the same range, |ψ(t)| ~ |t|^{−(β+1)}.
+    pub fn vanishing_moments(&self) -> Range<u32> {
+        0..self.beta.ceil() as u32
+    }
+
+    /// ∫ |t|ᵏ |ψ|² finite,  k < 2β + 1
+    pub fn energy_moments(&self) -> Range<u32> {
+        0..(2.0 * self.beta + 1.0).ceil() as u32
+    }
+
+    /// x = ω/ω₀ below the crest where the skirt meets the floor.
+    ///
+    /// ```text
+    /// β ln x + (β/γ)(1 − xᵞ) = floor ln10 / 20
+    /// ```
+    pub fn skirt(&self, noise_floor: f64) -> f64 {
+        let Shape { beta, gamma } = *self;
+        let np = -noise_floor.abs() * LN_10 / 20.0;
+        let mut x = ((np - beta / gamma) / beta).exp();
+        for _ in 0..8 {
+            x = ((np - beta / gamma * (1.0 - x.powf(gamma))) / beta).exp();
+        }
+        x
     }
 
     /// Nyquist fold of a bin at `rho`, in dB under the passband crest.
