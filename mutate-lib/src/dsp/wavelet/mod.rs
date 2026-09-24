@@ -936,7 +936,7 @@ mod test {
                         let bin = wav.at_rho(rho).with_noise_floor(floor);
                         let wts = bin.weights();
                         let psi = wts.psi();
-                        let mut img = image(psi, &characterize(psi, bin.velocity()));
+                        let mut img = image(psi, bin.velocity());
 
                         beat.push((wr, img.beat));
                         neg.push((wr, img.leak_neg));
@@ -1411,13 +1411,12 @@ mod test {
                     "fc {fc} tail {tail_db} taps {nc} < {prev_taps}"
                 );
 
-                // XXX More reliable floor needed before we can assert this.
-                // assert!(
-                //     (nc == prev_taps && rc.floor >= prev_floor) || rc.floor < prev_floor,
-                //     "fc {fc} tail {tail_db} taps {prev_taps} -> {nc} without floor gain: {} to {}",
-                //     prev_floor,
-                //     rc.floor,
-                // );
+                assert!(
+                    (nc == prev_taps && rc.floor >= prev_floor) || rc.floor < prev_floor,
+                    "fc {fc} tail {tail_db} taps {prev_taps} -> {nc} without floor gain: {} to {}",
+                    prev_floor,
+                    rc.floor,
+                );
 
                 (prev_taps, prev_floor) = (nc, rc.floor);
             }

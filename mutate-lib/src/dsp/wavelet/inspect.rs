@@ -21,7 +21,7 @@
 // DEBT may be committed in the middle of duplicating some code over.  Reenable warnings and try
 // not to cry about it.
 
-use core::f64::consts::TAU;
+use core::f64::consts::{PI, TAU};
 
 use num_complex::Complex64;
 
@@ -398,6 +398,120 @@ impl<'a> Inspect<'a> {
     /// ω and |H| at a crest, to the f64 resolution of ω.
     pub(super) fn pin_crest(&mut self, c: Crest) -> Sample {
         self.pin(Level::Mag, Seek::Crest, c.bracket)
+    }
+
+    /// Teeth of the comb from `from` toward `stop`, one landing and one probe per tooth.
+    /// Landings under `quiet` count as absent.  The walk ends at the first tooth under `fall`
+    /// times the tallest.
+    pub(super) fn teeth(&mut self, from: f64, stop: f64, quiet: f64, fall: f64) -> Teeth {
+        let dir = (stop - from).signum();
+        let past = |w: f64| dir * (w - stop) > 0.0;
+        let cell = self.comb.cell;
+        let mut pitch = cell;
+        let mut teeth = Teeth::default();
+        let mut at: Result<Sample, f64> = Err(from);
+
+        loop {
+            // reacquisition, sliding where no tooth stands
+            let (c, a) = match at {
+                Ok(t) => t,
+                Err(w) if past(w) => return teeth,
+                Err(w) => match self.acquire(w, dir, pitch) {
+                    Some(t) => t,
+                    None => {
+                        at = Err(w + dir * ACQUIRE * pitch);
+                        continue;
+                    }
+                },
+            };
+            teeth.record(c, a, pitch);
+            if teeth.tallest.is_some_and(|t| a < fall * t.at.1) {
+                return teeth;
+            }
+
+            // landing, quiet spans crossed at doubling strides
+            let mut w = c + dir * pitch;
+            let mut stride = pitch;
+            let g0 = loop {
+                if past(w) {
+                    return teeth;
+                }
+                let g = self.eval(Level::Mag, w).1;
+                if g >= quiet {
+                    break g;
+                }
+                stride *= 2.0;
+                w += dir * stride;
+            };
+            if stride > pitch {
+                at = Err(w);
+                continue;
+            }
+
+            // probe and lobe fit
+            let g1 = self.eval(Level::Mag, w + dir * PROBE * pitch).1;
+            at = match lobe_fit(g0, g1, PI * PROBE, a) {
+                Some((x, amp)) => {
+                    // w − x p/π
+                    let next = w - dir * x * pitch / PI;
+                    pitch = (pitch + PITCH_GAIN * ((next - c).abs() - pitch))
+                        .clamp(0.5 * cell, 2.0 * cell);
+                    Ok((next, amp))
+                }
+                None => Err(w),
+            };
+        }
+    }
+
+    /// Tooth within `ACQUIRE` pitches of `w` along `dir`.
+    fn acquire(&mut self, w: f64, dir: f64, pitch: f64) -> Option<Sample> {
+        let t = self.comb(Level::Mag, Seek::Crest, w, w + dir * ACQUIRE * pitch)?;
+        Some(self.eval(Level::Mag, 0.5 * (t.0 .0 + t.1 .0)))
+    }
+}
+
+/// Pitches one reacquisition combs.
+const ACQUIRE: f64 = 1.5;
+/// Probe offset in pitches.
+const PROBE: f64 = 0.125;
+/// Pitch EMA gain.
+const PITCH_GAIN: f64 = 0.25;
+/// ln 4, envelope change one tooth may carry.
+const LOBE_DRIFT: f64 = 1.386;
+
+/// Crest offset x and height A of A|cos x|, A|cos(x + φ)| through (g₀, g₁), the branch
+/// nearest the last height `a`.
+fn lobe_fit(g0: f64, g1: f64, phi: f64, a: f64) -> Option<(f64, f64)> {
+    let (s, c) = phi.sin_cos();
+    let drift = |amp: f64| (amp / a).ln().abs();
+    [g1, -g1]
+        .into_iter()
+        // tan x = (cos φ ∓ g₁/g₀) / sin φ
+        .map(|v| {
+            let x = ((c - v / g0) / s).atan();
+            (x, g0 / x.cos())
+        })
+        .min_by(|p, q| drift(p.1).total_cmp(&drift(q.1)))
+        .filter(|&(_, amp)| drift(amp) < LOBE_DRIFT)
+}
+
+/// Tallest tooth of a walk.
+#[derive(Default)]
+pub(super) struct Teeth {
+    pub tallest: Option<Crest>,
+    pub count: usize,
+}
+
+impl Teeth {
+    fn record(&mut self, c: f64, a: f64, pitch: f64) {
+        self.count += 1;
+        if self.tallest.is_none_or(|t| a > t.at.1) {
+            let edge = |s: f64| (c + s * 0.5 * pitch, 0.0);
+            self.tallest = Some(Crest {
+                at: (c, a),
+                bracket: (edge(-1.0), edge(1.0)),
+            });
+        }
     }
 }
 

@@ -257,12 +257,18 @@ pub(super) struct Image {
     pub peak: (f64, f64),
 }
 
-pub(super) fn image(psi: Fold<'_>, r: &Response) -> Image {
-    let n = (PI * OVERSAMPLE * psi.len_unfolded() as f64 / TAU).ceil() as usize;
-    let dw = PI / n as f64;
-    let guard = 3.0 * (r.edges.1 - r.edges.0);
+/// Samples per cell for the energy shares.
+const IMAGE_OVERSAMPLE: f64 = 4.0;
 
-    let (mut beat, mut leak_neg, mut leak_pos, mut total) = (0.0, 0.0, 0.0, 0.0);
+pub(super) fn image(psi: Fold<'_>, w0: f64) -> Image {
+    let Passband { peak_w, edges, .. } = passband(psi, w0);
+    let n = (PI * IMAGE_OVERSAMPLE * psi.len_unfolded() as f64 / TAU).ceil() as usize;
+    let dw = PI / n as f64;
+    let guard = 3.0 * (edges.1 - edges.0);
+    // 2π Σ|ψ_ν|² / dω
+    let total = TAU * psi.energy() / dw;
+
+    let (mut beat, mut leak_neg, mut leak_pos) = (0.0, 0.0, 0.0);
     let mut alpha = Vec::new();
     let mut peak = (0.0, 0.0f64);
 
@@ -270,8 +276,7 @@ pub(super) fn image(psi: Fold<'_>, r: &Response) -> Image {
         let w = dw * (k as f64 + 0.5);
         let (hp, hn) = (psi.dtft(w).abs(), psi.dtft(-w).abs());
         let (ep, en) = (hp * hp, hn * hn);
-        total += ep + en;
-        if (w - r.peak_w).abs() <= guard {
+        if (w - peak_w).abs() <= guard {
             beat += en;
             alpha.push((ep, hn / hp));
         } else {
@@ -292,6 +297,95 @@ pub(super) fn image(psi: Fold<'_>, r: &Response) -> Image {
     }
 }
 
+/// Skirt level above the image where a stopband begins, dB.
+const SKIRT_MARGIN_DB: f64 = 20.0;
+/// Tooth level under the tallest where a walk away from the floor stops, dB.
+const FLOOR_FALL_DB: f64 = -20.0;
+/// ‖ψ‖₁ ε, roundoff of the DTFT sum.
+const QUIET: f64 = 1e-14;
+
+fn taller(a: Option<Crest>, b: Option<Crest>) -> Option<Crest> {
+    match (a, b) {
+        (Some(x), Some(y)) if y.at.1 > x.at.1 => Some(y),
+        (x, y) => x.or(y),
+    }
+}
+
+/// Tallest stopband tooth, walked both ways from the reflection of the worst image.  NaN where
+/// no tooth stands.
+fn stopband_floor(
+    insp: &mut Inspect<'_>,
+    (lo, hi): (f64, f64),
+    (seed, image): Sample,
+    quiet: f64,
+) -> f64 {
+    let level = db(image) + SKIRT_MARGIN_DB;
+    // 10^(fall/20)
+    let fall = 10f64.powf(FLOOR_FALL_DB / 20.0);
+
+    // stopband bounds where the skirt meets the level
+    let low = match lo > 0.0 {
+        true => insp.cross(level, lo, 0.0).map_or(lo, |(w, _)| w),
+        false => 0.0,
+    };
+    let high = match hi < PI {
+        true => insp.cross(level, hi, PI).map_or(hi, |(w, _)| w),
+        false => PI,
+    };
+
+    // reflection, moved off the skirt
+    let seed = match seed.clamp(0.0, PI) {
+        s if s > low && s < high && s - low < high - s => low,
+        s if s > low && s < high => high,
+        s => s,
+    };
+
+    let mut walk = |from: f64, to: f64| match from == to {
+        true => None,
+        false => insp.teeth(from, to, quiet, fall).tallest,
+    };
+
+    // both ways from the seed, then the far stopband outward from its skirt
+    let tallest = match seed <= low {
+        true => taller(taller(walk(seed, 0.0), walk(seed, low)), walk(high, PI)),
+        false => taller(taller(walk(seed, high), walk(seed, PI)), walk(low, 0.0)),
+    };
+
+    tallest.map_or(f64::NAN, |t| insp.pin_crest(t).1)
+}
+
+/// Crest of the main lobe and its half-power edges.
+#[derive(Clone, Copy)]
+pub(super) struct Passband {
+    pub peak_w: f64,
+    /// |H(peak_w)|
+    pub gain: f64,
+    pub edges: (f64, f64),
+}
+
+/// Peak and -3 dB edges.  `w0` seeds the climb and brackets the edges.
+pub(super) fn passband(psi: Fold<'_>, w0: f64) -> Passband {
+    let mut buf = Vec::new();
+    let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
+
+    let (peak_w, gain) = insp.peak(w0, 0.0, PI).expect("no crest in [0, π]");
+
+    // |H(peak)| / √2
+    let half_power = db(gain) - 10.0 * 2.0f64.log10();
+    let (lo_stop, hi_stop) = ((peak_w - w0).max(0.0), (peak_w + w0).min(PI));
+    let lo = insp.cross(half_power, peak_w, lo_stop);
+    let hi = insp.cross(half_power, peak_w, hi_stop);
+
+    Passband {
+        peak_w,
+        gain,
+        edges: (
+            lo.map_or(lo_stop, |(w, _)| w),
+            hi.map_or(hi_stop, |(w, _)| w),
+        ),
+    }
+}
+
 pub(super) struct Response {
     pub peak_w: f64,
     /// |H(peak_w)|
@@ -303,35 +397,24 @@ pub(super) struct Response {
     pub floor: f64,
 }
 
-/// Peak, -3 dB relative width, image, and the positive-axis floor outside three half-power
-/// widths.  `w0` seeds the climb and brackets the edges.
+/// Passband, -3 dB relative width, image, and the stopband floor.
 pub(super) fn characterize(psi: Fold<'_>, w0: f64) -> Response {
+    let Passband {
+        peak_w,
+        gain,
+        edges: (lo, hi),
+    } = passband(psi, w0);
+
     let mut buf = Vec::new();
-    let mut insp = Inspect::new(psi, &mut buf, super::inspect::OVERSAMPLE);
+    let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
+    let quiet = QUIET * psi.l1();
 
-    let (peak_w, gain) = insp.peak(w0, 0.0, PI).expect("no crest in [0, π]");
-
-    // |H(peak)| / √2
-    let half_power = db(gain) - 10.0 * 2.0f64.log10();
-    let (lo_stop, hi_stop) = ((peak_w - w0).max(0.0), (peak_w + w0).min(PI));
-    let lo = insp.cross(half_power, peak_w, lo_stop);
-    let hi = insp.cross(half_power, peak_w, hi_stop);
-    let (lo, hi) = (
-        lo.map_or(lo_stop, |(w, _)| w),
-        hi.map_or(hi_stop, |(w, _)| w),
-    );
-
-    let sweep = 32;
-    let omega = |k: usize| PI * k as f64 / sweep as f64;
-    let guard = 3.0 * (hi - lo);
-    let (mut image, mut floor) = (0.0f64, 0.0f64);
-    for k in 0..=sweep {
-        let w = omega(k);
-        image = image.max(psi.dtft(-w).abs());
-        if (w - peak_w).abs() > guard {
-            floor = floor.max(psi.dtft(w).abs());
-        }
-    }
+    // tallest tooth on [−π, 0]
+    let (image_w, image) = insp
+        .teeth(0.0, -PI, quiet, 0.0)
+        .tallest
+        .map_or((0.0, 0.0), |t| insp.pin_crest(t));
+    let floor = stopband_floor(&mut insp, (lo, hi), (-image_w, image), quiet);
 
     Response {
         peak_w,
