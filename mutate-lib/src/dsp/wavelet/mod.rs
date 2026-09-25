@@ -1312,7 +1312,7 @@ mod test {
         let mut refs = Vec::with_capacity(FCS.len());
         for fc in FCS {
             let full = w.bin(fc, RATE).with_truncation(FULL_DB);
-            let nf = full.len_folded();
+            let nf = full.len_unfolded();
             let wts = full.weights();
             let psi = wts.psi();
 
@@ -1364,7 +1364,7 @@ mod test {
 
             for tail_db in CUTS {
                 let cut = w.bin(fc, RATE).with_truncation(tail_db);
-                let nc = cut.len_folded();
+                let nc = cut.len_unfolded();
                 let wts = cut.weights();
                 let psi = wts.psi();
                 let rc = characterize(psi, w0);
