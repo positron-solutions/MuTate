@@ -2843,4 +2843,71 @@ mod test {
                 .collect()
         });
     }
+
+    /// Bank reading of a tone by dilation, centroid and spread in cents.
+    ///
+    /// ```text
+    /// B = ∫ H·(H_d/r − H) dδ / ∫ H² dδ
+    /// S² = ∫ (H_d/r − H)² dδ / ∫ H² dδ − B²
+    /// ```
+    fn confluence(psi: Fold<'_>, d: Fold<'_>, w0: f64, octaves: f64, n: usize) -> (f64, f64) {
+        let span = octaves * LN_2;
+        let (mut e, mut eb, mut ebb) = (0.0, 0.0, 0.0);
+        for i in 0..n {
+            let delta = span * (2.0 * i as f64 / (n - 1) as f64 - 1.0);
+            let r = delta.exp();
+            if w0 * r >= PI {
+                continue;
+            }
+            let (h, hd) = (psi.dtft(w0 * r), d.dtft(w0 * r));
+            // H_d/r − H
+            let res = hd / r - h;
+            e += h * h;
+            eb += h * res;
+            ebb += res * res;
+        }
+        let b = eb / e;
+        let cents = 1200.0 / LN_2;
+        (cents * b, cents * (ebb / e - b * b).max(0.0).sqrt())
+    }
+
+    /// Ridge offset and width across γ at fixed Q, against the predicted log centroid.
+    #[test]
+    fn confluence_vs_gamma() {
+        const QS: [f64; 3] = [3.5, 5.0, 8.5];
+        const GAMMAS: [f64; 4] = [1.0, 2.0, 3.0, 4.0];
+        const RHOS: [f64; 4] = [0.1, 0.2, 0.25, 0.33];
+        const TAIL_DB: f64 = -60.0;
+        const OCTAVES: f64 = 3.0;
+        const SAMPLES: usize = 2049;
+
+        println!("\n=== CONFLUENCE vs GAMMA (tail {TAIL_DB:.0} dB) ===");
+        println!(
+            "  {:>5} {:>4} {:>6} {:>9} {:>9} {:>9} {:>7}",
+            "Q", "γ", "rho", "E[δ] c", "B c", "S c", "κ̂"
+        );
+
+        for q in QS {
+            for gamma in GAMMAS {
+                let wav = WaveletSpec::default()
+                    .with_shape(Shape::from_q(q, gamma))
+                    .max_truncation(TAIL_DB)
+                    .bake();
+                let p = wav.shape().p();
+                // −γ/(4P²)
+                let centroid = -1200.0 / LN_2 * gamma / (4.0 * p * p);
+
+                for rho in RHOS {
+                    let bin = wav.at_rho(rho);
+                    let wts = bin.weights();
+                    let (b, s) = confluence(wts.psi(), wts.d(), bin.velocity(), OCTAVES, SAMPLES);
+                    println!(
+                    "  {q:>5.1} {gamma:>4.1} {rho:>6.3} {centroid:>+9.2} {b:>+9.3} {s:>9.2} {:>+7.3}",
+                    -b / centroid
+                );
+                }
+                println!();
+            }
+        }
+    }
 }
