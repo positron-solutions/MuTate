@@ -362,8 +362,7 @@ impl WaveletSpec {
         let u_max = self
             .shape
             .truncation_u(self.max_noise_floor - TAIL_OVER_FLOOR_DB)
-            + 0.5 * (self.max_load_quantum + self.max_delay) as f64
-            + 0.25;
+            + self.max_rho.unwrap_or(0.5) * ((self.max_load_quantum + self.max_delay) as f64 + 1.5);
 
         let jet = QuadJet::standard(self.shape);
         let (mut psi, mut d): (Vec<Complex64>, Vec<Complex64>) = (0..=(u_max / du).ceil() as usize
