@@ -502,7 +502,7 @@ mod test {
             (2.5 + 1.0 / 7.0, 3.0 - 1.0 / 7.0),
         ];
 
-        for (q, gamma) in [(4.5, 3.0), (8.5, 3.0), (3.5, 4.5), (8.5, 4.5)] {
+        for (q, gamma) in [(4.5, 1.0), (8.5, 2.0), (4.5, 4.0), (8.5, 5.0)] {
             let shape = Shape::from_q(q, gamma);
             let settings = ifft::IfftSettings {
                 periods: 10,

@@ -358,7 +358,7 @@ pub mod defaults {
     pub const RESOLUTION: usize = 256;
 
     pub const DELAY: usize = 0;
-    pub const GAMMA: f64 = 3.0;
+    pub const GAMMA: f64 = 2.0;
     pub const GRID_EPS: f64 = 1e-9;
     pub const LOAD_QUANTUM: usize = 4;
     pub const Q: f64 = 3.5;
@@ -1659,9 +1659,9 @@ mod test {
         const GAMMAS: [f64; 2] = [3.0, 4.0];
         const RHOS: [f64; 4] = [0.116, 0.189, 0.223, 0.384];
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -30.0;
+        const TAIL_DB: f64 = -40.0;
         /// Height zero, where the moment stops counting area.
-        const FLOOR_DB: f64 = -80.0;
+        const FLOOR_DB: f64 = -90.0;
 
         println!(
             "\n=== SKIRT (quantum {QUANTUM}, tail {TAIL_DB:.0} dB, floor {FLOOR_DB:.0} dB) ===\n\
@@ -2315,7 +2315,7 @@ mod test {
     /// The band edge and noise floor a user names, and the bin the wavelet hands back.
     #[test]
     fn noise_floor_is_delivered() {
-        const GAMMA: f64 = 3.0;
+        const GAMMA: f64 = 2.0;
 
         /// Where the fold binds.  Below this a workable Q already buries the image.
         const RHOS: [f64; 5] = [0.31, 0.35, 0.38, 0.40, 0.42];

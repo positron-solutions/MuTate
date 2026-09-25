@@ -18,10 +18,7 @@ const RATE: f64 = 48_000.0;
 fn print_waveform() {
     const TAIL_DB: f64 = -20.0;
     let wav = WaveletSpec::default()
-        .with_shape(Shape {
-            beta: 8.5,
-            gamma: 3.0,
-        })
+        .with_shape(Shape::from_q(4.0, 1.0))
         .max_truncation(TAIL_DB)
         .bake();
 
@@ -64,9 +61,9 @@ fn print_waveform() {
 #[ignore]
 #[test]
 fn print_response() {
-    const Q: f64 = 16.5;
+    const Q: f64 = 22.5;
     const QUANTUM: usize = 4;
-    const TAIL_DB: f64 = -20.0;
+    const TAIL_DB: f64 = -50.0;
 
     const ROWS: usize = 200;
     const COLS: usize = 200;
@@ -81,7 +78,7 @@ fn print_response() {
     const RHOS: [f64; 1] = [0.312];
 
     let wav = WaveletSpec::default()
-        .with_shape(Shape::from_q(Q, 3.0))
+        .with_shape(Shape::from_q(Q, 2.0))
         .max_load_quantum(QUANTUM)
         .max_truncation(TAIL_DB)
         .bake();

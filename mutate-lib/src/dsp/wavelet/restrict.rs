@@ -106,7 +106,7 @@ impl Default for Taper {
     fn default() -> Self {
         // The only use for Cylinder and Rectangle is basically to demonstrate that tapering is very
         // important.  Rectangle naturally leaves behind a Gibbs ringing floor.
-        Self::Knee { curvature: 0.3 }
+        Self::Knee { curvature: 0.45 }
     }
 }
 
