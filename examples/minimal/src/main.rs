@@ -44,7 +44,7 @@ impl WindowContext {
         let (tx, rx) = std::sync::mpsc::channel::<RenderMsg>();
         let mut surface = Surface::new(instance, device, raw_surface, window).unwrap();
         let handle = std::thread::spawn(move || {
-            let mut present_ring = PresentRing::new(device, instance, &surface).unwrap();
+            let mut present_ring = PresentRing::new(instance, device, &surface).unwrap();
             let extent = surface.extent();
             let mut renderer = HelloDraw::new(device);
             renderer.provision(device, extent).unwrap();

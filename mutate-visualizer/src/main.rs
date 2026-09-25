@@ -1,13 +1,30 @@
 // Copyright 2026 The MuTate Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Visualizer
+//! # Visualizer
+//!
+//! > Get your own rally
+//! >
+//! > - Master Splinter
+//!
+//! See the CONTRIBUTING guide to find starting points.  The visualizer bin is but one possible
+//! frontend for mutate-lib, which ships the GPU audio import and on-GPU spectrogram, the
+//! elementary starting input for most frontends.  See the example app for a more minimal use of the
+//! Vulkan engine.
 //!
 //! - [`WindowContext`] owns per-window resources and lifecycle
 //! - [`ActiveApp`] is a variant of [`AppState`] that encapsulates resources that live within the
 //!   resumed lifecycle segments of the application.
 //! - [`MutateApp`] owns the longest lived resources such as the Vulkan context and audio input
 //!   stream.
+//!
+//! If you would like support to implement or modify a visualization, get in touch.
+
+// NEXT The minimal example is already closer to the proper threading structure.  That work need
+// propagation into this crate
+
+// Keep noise down by default.  Re-enable in dirty trees as helpful.
+#![allow(warnings)]
 
 mod audio;
 mod video;
@@ -65,7 +82,7 @@ impl WindowContext {
         audio_outputs: Arc<Mutex<Option<audio::AudioOutputs>>>,
     ) -> Self {
         // XXX create the present ring and clone the queue to audio farther upstream?
-        let present_ring = PresentRing::new(device, instance, &surface).unwrap();
+        let present_ring = PresentRing::new(instance, device, &surface).unwrap();
         let mut renderer = video::verticlysm::Verticlysm::new(device);
         renderer.provision(device, surface.extent()).unwrap();
         Self {
