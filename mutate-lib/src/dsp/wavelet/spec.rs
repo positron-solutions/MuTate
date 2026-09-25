@@ -64,6 +64,13 @@ impl Shape {
     /// The width at the start of the skirt, which must be controlled to avoid transition bands of
     /// downsampled inputs, is usually not more than `2 fc / q`.
     pub const fn from_q(q: f64, gamma: f64) -> Self {
+        // DEBT QuadJet's saddle handling or Stokes table march is the weakness.  We may be able to
+        // disable the Jet for non-integral gamma, falling back to pure quadrature, or use feature
+        // gating and fall back to IFFT.  To the extent that real gamma would be useful, the refine
+        // module can probably pick up the slack.  Technically QuadJet is only valid for gamma >=
+        // 3.0, but tell that to the wavelets it successfully produces.
+        debug_assert!(gamma.trunc() == gamma, "QuadJet requires integral gamma");
+
         // p = 2.0 * LN_2.sqrt() * q
         // beta = p * p / gamma
         Shape {
@@ -281,6 +288,8 @@ impl WaveletSpec {
         self
     }
 
+
+    /// Provide a [`Shape`] directly.
     pub fn with_shape(mut self, shape: Shape) -> Self {
         self.shape = shape;
         self

@@ -66,7 +66,23 @@
 //!
 //! [lilly-olhede]: https://static.aminer.org/pdf/PDF/001/231/038/higher_order_properties_of_analytic_wavelets.pdf
 
-// NOTE solver direction is headed towards a combination of probes from the inspect module, analytic
+// NEXT Work on this module is yet missing one critical model.  The performance of one filter is not
+// what creates a filter bank.  If we had to rely on individual filters to create independent output
+// lanes, then every filter must be perfect.  In a bank however, we only want high injectivity,
+// meaning every unique input maps to a unique output.  It is not necessary to emit every possible
+// output (surjective), which is physically impossible due to destructive interference in the air
+// that carries the sound.
+//
+// What is known for now is that garbage out cannot become reconstructive input.  For each input,
+// some outputs must lead to the correct identification of the input and each non-present input must
+// lead to some cancelling outputs that correctly identify the absence of that input.  A lack of
+// anti-correlation in error, noise or confusion, is the property we want to minimize.
+//
+// Correspondingly, a filter that looks somewhat ugly in isolation might be exactly what the bank
+// needs.  Until the bank's needs are better understood, "cleaning up" individual filters may yet go
+// in a wrong direction.  Whatever direction it goes, it cannot be an informed direction.
+// Characterizing the bank's demands of filters must come first.
+// NOTE Solver direction is headed towards a combination of probes from the inspect module, analytic
 // conditions like the jet terms and moments creating a null space, and likely some probes against
 // reassignment problems.
 
