@@ -424,6 +424,7 @@ impl Wavelet {
             psi: &self.psi,
             d: &self.d,
             du: self.du,
+            shape: self.shape,
         }
     }
 }
@@ -434,6 +435,7 @@ struct Grid<'w> {
     pub psi: &'w [Complex64],
     pub d: &'w [Complex64],
     pub du: f64,
+    pub shape: Shape,
 }
 
 impl<'w> Grid<'w> {

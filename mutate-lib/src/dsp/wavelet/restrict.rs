@@ -31,12 +31,19 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use num_complex::Complex64;
 
-use super::{generate::hermite, Fold, Grid, PEAK_GAIN};
+use super::{generate::hermite, spec::Shape, Fold, Grid, PEAK_GAIN};
+
+/// Deepest cliff ringing an f32 table resolves.  Every taper clamps above it.
+const F32_MIN_CLIFF_SCALE: f64 = 0.5 * f32::EPSILON as f64;
+/// Near the saddle and branch crossover, where cells may begin to oscillate and the analytic model
+/// provides a more robust slope.
+const ANALYTIC_DB: f64 = -120.0;
 
 /// How the motherlet lands on a cell.  `Nearest` is technically correct in a sense, but `Axial`,
 /// **the default**, has been found to be more robust near edge cases.  `Complex` sags in much the
 /// same places where `Nearest` sags.  `Weighted` can sometimes outperform the others on image dB
-/// near higher `ω`, but it's not a great trade.
+/// near higher `ω`, but it's not a great trade.  `Weighted` also obtains consistent monotonic
+/// envelope decay in the far tail.
 #[derive(Clone, Copy, Default)]
 pub enum Quadrature {
     /// ψ at the tap center.
@@ -124,7 +131,7 @@ impl Restriction {
         let mut cells = vec![Complex64::default(); reach + 1];
         self.quadrature.cells_into(grid, rho, &mut cells);
 
-        let gain = self.taper.gains(&cells);
+        let gain = self.taper.gains(&cells, grid.shape, rho);
         for (o, (c, g)) in out.iter_mut().zip(cells.iter().zip(gain)) {
             *o = c * g;
         }
@@ -196,19 +203,44 @@ impl Quadrature {
 }
 
 impl Taper {
-    /// One nonnegative real gain per written tap, from the reach's first discarded magnitude.
-    fn gains(self, cells: &[Complex64]) -> Vec<f64> {
+    /// One real gain per written tap, from the reach's first discarded magnitude.
+    fn gains(self, cells: &[Complex64], shape: Shape, rho: f64) -> Vec<f64> {
         let reach = cells.len() - 1;
         let axis = reach as f64;
         let pedestal = cells[reach].norm();
 
+        // |H| ≤ a_0 + 2 Σ_{k≥1} a_k
+        let crest = 2.0 * cells[..reach].iter().map(|c| c.norm()).sum::<f64>() - cells[0].norm();
+        let floor = F32_MIN_CLIFF_SCALE * crest;
+        let depth = 20.0 * (pedestal / crest).log10();
+
         let profile: Box<dyn Fn(f64) -> f64> = match self {
             Taper::Rectangle => return vec![1.0; reach],
-            Taper::Cylinder => Box::new(move |_| pedestal),
-            // s = −K a'_K / a_K, one-sided since K is the last cell held
+            _ if pedestal < floor => return vec![1.0; reach],
+            // c = clamp(a_{K−1} − ε|H|, 0, a_K)
+            Taper::Cylinder => {
+                let c = (cells[reach - 1].norm() - floor).clamp(0.0, pedestal);
+                Box::new(move |_| c)
+            }
+            // s = −K a'_K / a_K
             Taper::Knee { curvature } => {
-                let slope = pedestal - cells[reach - 1].norm();
-                let n = curvature * (-axis * slope / pedestal);
+                let analytic = || elasticity(shape, axis * rho);
+                let s = match depth < ANALYTIC_DB {
+                    true => analytic(),
+                    false => {
+                        let s = -axis * (pedestal - cells[reach - 1].norm()) / pedestal;
+                        if s < 0.0 {
+                            eprintln!(
+                                "reversed knee curvature {s:.3} at ρ {rho}, K {reach}, \
+                                 edge {depth:.1} dB, falling back to analytic"
+                            );
+                            analytic()
+                        } else {
+                            s
+                        }
+                    }
+                };
+                let n = curvature * s;
                 Box::new(move |j: f64| pedestal * (1.0 + (1.0 - (j / axis).powf(n)) / curvature))
             }
         };
@@ -250,6 +282,15 @@ fn magnitude(grid: Grid<'_>) -> (Vec<f64>, Vec<f64>) {
             (a, TAU * (psi.im * d.re - psi.re * d.im) / a)
         })
         .unzip()
+}
+
+/// `−u a'/a` of the slower of the saddle and branch tails.
+///
+/// ```text
+/// s = min((2πu/P)², β + 1)
+/// ```
+fn elasticity(shape: Shape, u: f64) -> f64 {
+    (TAU * u / shape.p()).powi(2).min(shape.beta + 1.0)
 }
 
 /// How d is drawn from the emitted ψ.  `Envelope` is a basic valid solution.  It is generally
