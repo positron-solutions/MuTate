@@ -288,6 +288,11 @@ impl WaveletSpec {
         self
     }
 
+    /// Set γ, holding Q.
+    pub fn with_gamma(mut self, gamma: f64) -> Self {
+        self.shape = Shape::from_q(self.shape.q(), gamma);
+        self
+    }
 
     /// Provide a [`Shape`] directly.
     pub fn with_shape(mut self, shape: Shape) -> Self {
