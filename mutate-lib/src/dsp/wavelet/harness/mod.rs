@@ -409,11 +409,17 @@ pub(super) fn characterize(psi: Fold<'_>, w0: f64) -> Response {
     let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
     let quiet = QUIET * psi.l1();
 
-    // tallest tooth on [−π, 0]
+    // |H(−π)|, the fold
+    let fold = (-PI, psi.dtft(-PI).abs());
+
+    // max |H| on [−π, 0]
     let (image_w, image) = insp
         .teeth(0.0, -PI, quiet, 0.0)
         .tallest
-        .map_or((0.0, 0.0), |t| insp.pin_crest(t));
+        .map(|t| insp.pin_crest(t))
+        .filter(|t| t.1 > fold.1)
+        .unwrap_or(fold);
+
     let floor = stopband_floor(&mut insp, (lo, hi), (-image_w, image), quiet);
 
     Response {
