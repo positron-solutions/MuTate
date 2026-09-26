@@ -37,7 +37,7 @@ use super::{generate::hermite, spec::Shape, Fold, Grid, PEAK_GAIN};
 const F32_MIN_CLIFF_SCALE: f64 = 0.5 * f32::EPSILON as f64;
 /// Near the saddle and branch crossover, where cells may begin to oscillate and the analytic model
 /// provides a more robust slope.
-const ANALYTIC_DB: f64 = -120.0;
+const ANALYTIC_DB: f64 = -60.0;
 
 /// How the motherlet lands on a cell.  `Nearest` is technically correct in a sense, but `Axial`,
 /// **the default**, has been found to be more robust near edge cases.  `Complex` sags in much the
@@ -113,7 +113,7 @@ impl Default for Taper {
     fn default() -> Self {
         // The only use for Cylinder and Rectangle is basically to demonstrate that tapering is very
         // important.  Rectangle naturally leaves behind a Gibbs ringing floor.
-        Self::Knee { curvature: 0.45 }
+        Self::Knee { curvature: 0.4 }
     }
 }
 
@@ -216,12 +216,8 @@ impl Taper {
 
         let profile: Box<dyn Fn(f64) -> f64> = match self {
             Taper::Rectangle => return vec![1.0; reach],
-            _ if pedestal < floor => return vec![1.0; reach],
-            // c = clamp(a_{K−1} − ε|H|, 0, a_K)
-            Taper::Cylinder => {
-                let c = (cells[reach - 1].norm() - floor).clamp(0.0, pedestal);
-                Box::new(move |_| c)
-            }
+            // c = a_K
+            Taper::Cylinder => Box::new(move |_| pedestal),
             // s = −K a'_K / a_K
             Taper::Knee { curvature } => {
                 let analytic = || elasticity(shape, axis * rho);
@@ -245,8 +241,12 @@ impl Taper {
             }
         };
 
+        // c_k ∈ [0, a_k − floor]
         (0..reach)
-            .map(|j| 1.0 - profile(j as f64) / cells[j].norm())
+            .map(|j| {
+                let a = cells[j].norm();
+                1.0 - profile(j as f64).clamp(0.0, (a - floor).max(0.0)) / a
+            })
             .collect()
     }
 }
