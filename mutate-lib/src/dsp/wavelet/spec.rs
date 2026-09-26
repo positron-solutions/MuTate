@@ -18,6 +18,10 @@
 // MAYBE Contradictory specification goals (eg max delay + min Q) would require some restructuring to
 // form a consistent API.  That is mostly a decision for planning a filter bank, not an individual
 // filter.  The implementation may be incomplete or the need may be addressed downstream.
+// DEBT Noise floor / truncation is among one of the contradictory specification goals.  It should
+// be just fine, but currently the units don't match and just got a bit lucky, being pseudolinear
+// enough to appear to be working.  As truncation bites harder, the main lobe gets wider and centers
+// try to wander.
 
 use core::f64::consts::{FRAC_2_SQRT_PI, LN_10, LN_2, PI, TAU};
 use core::ops::Range;
@@ -77,6 +81,30 @@ impl Shape {
             gamma,
             beta: (4.0 * LN_2) * (q * q / gamma),
         }
+    }
+
+    /// Least shape holding the Nyquist fold at or below `noise_floor` for every bin up to
+    /// `max_rho`.
+    ///
+    /// ```text
+    /// β D(1/2ρ, γ) = |floor| ln10 / 20
+    /// ```
+    pub fn from_noise_floor(max_rho: f64, noise_floor: f64, gamma: f64) -> Self {
+        // DEBT This method is just overall not that great.  It slipped through smoke tests but
+        // doesn't seem very accurate or precise compared to some of the other analytic tools in our
+        // box.
+
+        let db = noise_floor.abs().min(NOISE_FLOOR_LIMIT_DB.abs());
+        let shape = Shape {
+            gamma,
+            beta: db / (DB_PER_NP * fold_cost(0.5 / max_rho, gamma)),
+        };
+        debug_assert!(
+            shape.q() >= Q_FLOOR,
+            "floor {noise_floor:.1} at rho {max_rho} wants Q {:.2}, under the family's {Q_FLOOR}",
+            shape.q()
+        );
+        shape
     }
 
     /// Morse wavelet time-bandwidth product (P = √(βγ)).  It can be interpreted as a surrogate for
@@ -143,26 +171,6 @@ impl Shape {
     /// ```
     pub fn fold_ceiling(&self, noise_floor: f64) -> f64 {
         0.5 / fold_reach(noise_floor.abs() / (DB_PER_NP * self.beta), self.gamma)
-    }
-
-    /// Least shape holding the Nyquist fold at or below `noise_floor` for every bin up to
-    /// `max_rho`.
-    ///
-    /// ```text
-    /// β D(1/2ρ, γ) = |floor| ln10 / 20
-    /// ```
-    pub fn from_noise_floor(max_rho: f64, noise_floor: f64, gamma: f64) -> Self {
-        let db = noise_floor.abs().min(NOISE_FLOOR_LIMIT_DB.abs());
-        let shape = Shape {
-            gamma,
-            beta: db / (DB_PER_NP * fold_cost(0.5 / max_rho, gamma)),
-        };
-        debug_assert!(
-            shape.q() >= Q_FLOOR,
-            "floor {noise_floor:.1} at rho {max_rho} wants Q {:.2}, under the family's {Q_FLOOR}",
-            shape.q()
-        );
-        shape
     }
 
     /// White noise gain of a bin at `rho`, what a unit variance input reads as |Ψ|².
