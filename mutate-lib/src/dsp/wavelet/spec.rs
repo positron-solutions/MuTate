@@ -38,7 +38,7 @@ const DB_PER_NP: f64 = 20.0 / LN_10;
 pub const NOISE_FLOOR_LIMIT_DB: f64 = -140.0;
 /// Truncation sits this far under the noise floor, keeping the fold the binding feature and the
 /// delivered −3 dB width faithful to Q.
-pub(crate) const TAIL_OVER_FLOOR_DB: f64 = 20.0;
+pub(crate) const TAIL_OVER_FLOOR_DB: f64 = -10.0;
 /// Lowest Q whose envelope spans enough carrier periods to hold its shape.  Under it the crest
 /// leaves ω₀ and the skirt never reaches a floor.
 pub const Q_FLOOR: f64 = 2.5;

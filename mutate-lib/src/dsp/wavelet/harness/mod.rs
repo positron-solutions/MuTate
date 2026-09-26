@@ -11,7 +11,7 @@
 #[cfg(feature = "validate")]
 mod meta;
 
-use core::f64::consts::{LN_2, PI, TAU};
+use core::f64::consts::{PI, TAU};
 
 use num_complex::Complex64;
 
@@ -165,61 +165,43 @@ pub(super) fn shoulders(
     )
 }
 
-/// Extrema of |H| across one stopband, tallest first.
+/// One side of the response past the main lobe.
+#[derive(Default)]
 pub(super) struct Skirt {
-    /// Largest local maximum, absent where the band holds none.
+    /// First dip past the edge, where the main lobe ends.
+    pub dip: Option<Sample>,
+    /// Tallest lobe past the dip.
     pub peak: Option<Sample>,
-    /// Median local maximum, the ripple level the peak stands on.
-    pub median: f64,
-    /// Local maxima found.
+    /// Lobes past the dip.
     pub lobes: usize,
 }
 
-impl Skirt {
-    /// 20 log10 (peak / median), how far the tallest lobe clears the ripple.
-    pub fn prominence_db(&self) -> Option<f64> {
-        self.peak.map(|(_, h)| db(h) - db(self.median))
-    }
-}
+/// Rise a lobe must clear its dip by to end the main lobe, dB.  Shallower dips are shoulders.
+const SHOULDER_DB: f64 = 1.0;
 
-/// Tallest lobes by comb height, pinned before the tallest is chosen.
-const SKIRT_PIN: usize = 4;
-
-/// |H| over the stopband between `from` and `stop`, scanned whole.  Empty where no dip bounds
-/// the band.
-fn skirt(psi: Fold<'_>, from: Option<f64>, stop: f64) -> Skirt {
-    let Some(from) = from else {
-        return Skirt {
-            peak: None,
-            median: f64::NAN,
-            lobes: 0,
-        };
-    };
-
+/// Dip from `edge` toward `stop` and the lobes past it.
+fn skirt(psi: Fold<'_>, edge: f64, stop: f64) -> Skirt {
     let mut buf = Vec::new();
     let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
-
-    let mut found = insp.crests(from, stop);
-    found.sort_by(|a, b| b.at.1.total_cmp(&a.at.1));
-
-    let peak = found
-        .iter()
-        .take(SKIRT_PIN)
-        .map(|&c| insp.pin_crest(c))
-        .max_by(|a, b| a.1.total_cmp(&b.1));
-
-    let median = found.get(found.len() / 2).map_or(f64::NAN, |c| c.at.1);
-
+    let Some((dip, lobes)) = insp.skirt(edge, stop, SHOULDER_DB) else {
+        return Skirt::default();
+    };
     Skirt {
-        peak,
-        median,
-        lobes: found.len(),
+        dip: Some(dip),
+        lobes: lobes.len(),
+        peak: insp.tallest(lobes),
     }
 }
 
-/// Both stopbands outside the first nulls, lower then upper.
-pub(super) fn skirts(psi: Fold<'_>, (lo, hi): (Option<f64>, Option<f64>)) -> (Skirt, Skirt) {
-    (skirt(psi, lo, 0.0), skirt(psi, hi, PI))
+/// Both skirts outward from the half-power edges past the antipode ω_peak ± π, overlapping by a
+/// cell so a lobe straddling the antipode is a crest to both.
+pub(super) fn skirts(psi: Fold<'_>, r: &Response) -> (Skirt, Skirt) {
+    // π + 2π/N
+    let reach = PI + TAU / psi.len_unfolded() as f64;
+    (
+        skirt(psi, r.edges.0, r.peak_w - reach),
+        skirt(psi, r.edges.1, r.peak_w + reach),
+    )
 }
 
 /// Root of `resp` in a sign-changing bracket.
@@ -297,61 +279,21 @@ pub(super) fn image(psi: Fold<'_>, w0: f64) -> Image {
     }
 }
 
-/// Skirt level above the image where a stopband begins, dB.
-const SKIRT_MARGIN_DB: f64 = 20.0;
-/// Tooth level under the tallest where a walk away from the floor stops, dB.
-const FLOOR_FALL_DB: f64 = -20.0;
-/// ‖ψ‖₁ ε, roundoff of the DTFT sum.
-const QUIET: f64 = 1e-14;
+/// Cells either side of the antipode a floor scan covers, enough to hold a crest.
+const FLOOR_CELLS: f64 = 1.5;
+/// Widest floor scan, π/8, where the symmetric envelope rises well under a dB.
+const FLOOR_REACH_CAP: f64 = PI / 8.0;
 
-fn taller(a: Option<Crest>, b: Option<Crest>) -> Option<Crest> {
-    match (a, b) {
-        (Some(x), Some(y)) if y.at.1 > x.at.1 => Some(y),
-        (x, y) => x.or(y),
-    }
-}
-
-/// Tallest stopband tooth, walked both ways from the reflection of the worst image.  NaN where
-/// no tooth stands.
-fn stopband_floor(
-    insp: &mut Inspect<'_>,
-    (lo, hi): (f64, f64),
-    (seed, image): Sample,
-    quiet: f64,
-) -> f64 {
-    let level = db(image) + SKIRT_MARGIN_DB;
-    // 10^(fall/20)
-    let fall = 10f64.powf(FLOOR_FALL_DB / 20.0);
-
-    // stopband bounds where the skirt meets the level
-    let low = match lo > 0.0 {
-        true => insp.cross(level, lo, 0.0).map_or(lo, |(w, _)| w),
-        false => 0.0,
-    };
-    let high = match hi < PI {
-        true => insp.cross(level, hi, PI).map_or(hi, |(w, _)| w),
-        false => PI,
-    };
-
-    // reflection, moved off the skirt
-    let seed = match seed.clamp(0.0, PI) {
-        s if s > low && s < high && s - low < high - s => low,
-        s if s > low && s < high => high,
-        s => s,
-    };
-
-    let mut walk = |from: f64, to: f64| match from == to {
-        true => None,
-        false => insp.teeth(from, to, quiet, fall).tallest,
-    };
-
-    // both ways from the seed, then the far stopband outward from its skirt
-    let tallest = match seed <= low {
-        true => taller(taller(walk(seed, 0.0), walk(seed, low)), walk(high, PI)),
-        false => taller(taller(walk(seed, high), walk(seed, PI)), walk(low, 0.0)),
-    };
-
-    tallest.map_or(f64::NAN, |t| insp.pin_crest(t).1)
+/// Maximum roll-off.  Highest |H| within min(1.5 cells, π/8) of the antipode ω_peak − π.  The
+/// returned value may i
+fn floor(psi: Fold<'_>, insp: &mut Inspect<'_>, peak_w: f64) -> f64 {
+    // ω_peak − π
+    let at = peak_w - PI;
+    // min(c · 2π/N, π/8)
+    let reach = (FLOOR_CELLS * TAU / psi.len_unfolded() as f64).min(FLOOR_REACH_CAP);
+    let edges = psi.dtft(at - reach).abs().max(psi.dtft(at + reach).abs());
+    let found = insp.crests(at - reach, at + reach);
+    insp.tallest(found).map_or(edges, |t| t.1.max(edges))
 }
 
 /// Crest of the main lobe and its half-power edges.
@@ -407,20 +349,15 @@ pub(super) fn characterize(psi: Fold<'_>, w0: f64) -> Response {
 
     let mut buf = Vec::new();
     let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
-    let quiet = QUIET * psi.l1();
 
     // |H(−π)|, the fold
     let fold = (-PI, psi.dtft(-PI).abs());
 
     // max |H| on [−π, 0]
-    let (image_w, image) = insp
-        .teeth(0.0, -PI, quiet, 0.0)
-        .tallest
-        .map(|t| insp.pin_crest(t))
-        .filter(|t| t.1 > fold.1)
-        .unwrap_or(fold);
+    let found = insp.crests(0.0, -PI);
+    let (image_w, image) = insp.tallest(found).filter(|t| t.1 > fold.1).unwrap_or(fold);
 
-    let floor = stopband_floor(&mut insp, (lo, hi), (-image_w, image), quiet);
+    let floor = floor(psi, &mut insp, peak_w);
 
     Response {
         peak_w,

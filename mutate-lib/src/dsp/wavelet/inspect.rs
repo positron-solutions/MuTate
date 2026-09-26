@@ -12,20 +12,19 @@
 //! >
 //! > - Oliver Cromwell, Lord Protector of the Commonwealth of New England
 //!
-//! - [`climb`] can be used to find a local maximum, usually a peak.
-//! - [`descend`] can be used to find a crossing points.
-//! - [`null`] can specifically find the first null occurring between `beg` and `end`.
+//! - [`Inspect::peak`] finds a local maximum, usually a peak.
+//! - [`Inspect::cross`] finds where the response meets a level.
+//! - [`Inspect::skirt`] finds where the main lobe ends and every lobe past it.
+//! - [`Inspect::tallest`] pins the highest of a set of crests.
 
 // NOTE see the harness module.  Natural two-way flow of code between tests and filter inspections
 // used to tune filters.
-// DEBT may be committed in the middle of duplicating some code over.  Reenable warnings and try
+// DEBT may be committed in the middle of duplicating some code over.  Re-enable warnings and try
 // not to cry about it.
 
-use core::f64::consts::{PI, TAU};
+use core::f64::consts::TAU;
 
-use num_complex::Complex64;
-
-use super::{Fold, Grid};
+use super::Fold;
 
 /// ω and the response there.
 pub(super) type Sample = (f64, f64);
@@ -43,23 +42,36 @@ enum Level {
     Mag,
     /// |H| − target
     Offset(f64),
-    /// H, signed through a null
-    Signed,
 }
 
 /// Which feature of that scalar the walk hunts.
 #[derive(Clone, Copy)]
 enum Seek {
     Crest,
+    Trough,
     Zero,
 }
 
 impl Seek {
+    /// Sign turning the feature into a crest.
+    fn up(&self) -> f64 {
+        match self {
+            Seek::Trough => -1.0,
+            _ => 1.0,
+        }
+    }
+
+    /// Whether the middle of three samples is the feature.
+    fn marks(&self, w: &[Sample]) -> bool {
+        let e = self.up();
+        e * w[0].1 <= e * w[1].1 && e * w[1].1 > e * w[2].1
+    }
+
     /// Model locations of the feature, non-finite where absent.
     fn locate(&self, l: &Local) -> [f64; 2] {
         match self {
-            // w − s/k on the concave side
-            Seek::Crest => match l.k < 0.0 {
+            // w − s/k on the side curving toward the feature
+            Seek::Crest | Seek::Trough => match self.up() * l.k < 0.0 {
                 true => [l.vertex(), f64::NAN],
                 false => [f64::NAN; 2],
             },
@@ -69,10 +81,9 @@ impl Seek {
 
     fn witness(&self, p: &[Sample]) -> Option<Bracket> {
         match self {
-            Seek::Crest => p
-                .windows(3)
-                .find(|w| w[0].1 <= w[1].1 && w[1].1 > w[2].1)
-                .map(|w| (w[0], w[2])),
+            Seek::Crest | Seek::Trough => {
+                p.windows(3).find(|w| self.marks(w)).map(|w| (w[0], w[2]))
+            }
             Seek::Zero => p
                 .windows(2)
                 .find(|w| (w[0].1 < 0.0) != (w[1].1 < 0.0))
@@ -80,12 +91,12 @@ impl Seek {
         }
     }
 
-    /// Whether a landing is evidence the walk has left the feature behind: below where it
-    /// started, convex, and rising back the way it came.
+    /// Whether a landing is evidence the walk has left a crest behind: below where it started,
+    /// convex, and rising back the way it came.
     fn retreat(&self, start: &Local, new: &Local, dir: f64) -> bool {
         match self {
             Seek::Crest => new.g[1] < start.g[1] && new.k > 0.0 && dir * new.s < 0.0,
-            Seek::Zero => false,
+            _ => false,
         }
     }
 }
@@ -191,20 +202,12 @@ impl<'a> Inspect<'a> {
             .map(|(w, _)| self.eval(Level::Mag, w))
     }
 
-    /// ω and |H| at the deepest point between `from` and `stop`.
-    pub(super) fn null(&mut self, from: f64, stop: f64) -> Option<Sample> {
-        let start = self.local(Level::Signed, from);
-        self.hunt(Level::Signed, Seek::Zero, start, stop)
-            .map(|(w, _)| self.eval(Level::Mag, w))
-    }
-
     fn eval(&mut self, what: Level, w: f64) -> Sample {
         self.spent += 1.0;
-        let h = self.psi.dtft(w);
+        let h = self.psi.dtft(w).abs();
         let y = match what {
-            Level::Mag => h.abs(),
-            Level::Offset(t) => h.abs() - t,
-            Level::Signed => h,
+            Level::Mag => h,
+            Level::Offset(t) => h - t,
         };
         (w, y)
     }
@@ -226,32 +229,20 @@ impl<'a> Inspect<'a> {
         self.buf.sort_by(|a, b| (dir * a.0).total_cmp(&(dir * b.0)));
     }
 
-    /// Bracket from a uniform sweep of [a, b] at comb density.
-    fn comb(&mut self, what: Level, seek: Seek, a: f64, b: f64) -> Option<Bracket> {
-        let n = ((b - a).abs() * self.comb.density).ceil().max(2.0) as usize;
-        self.buf.clear();
-        for j in 0..=n {
-            let w = a + (b - a) * j as f64 / n as f64;
-            let s = self.eval(what, w);
-            self.buf.push(s);
-        }
-        seek.witness(self.buf)
-    }
-
     /// Feature inside a bracket.
     fn pin(&mut self, what: Level, seek: Seek, t: Bracket) -> Sample {
         let (mut a, mut b) = (t.0 .0, t.1 .0);
         match seek {
-            Seek::Crest => {
-                let (lo, hi) = (a.min(b), a.max(b));
-                let (mut a, mut b) = (lo, hi);
+            Seek::Crest | Seek::Trough => {
+                let e = seek.up();
+                (a, b) = (a.min(b), a.max(b));
                 // 2/3 per step from one cell to f64 resolution of ω
                 for _ in 0..96 {
                     let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
                     if m1 >= m2 {
                         break;
                     }
-                    match self.eval(what, m1).1 < self.eval(what, m2).1 {
+                    match e * self.eval(what, m1).1 < e * self.eval(what, m2).1 {
                         true => a = m1,
                         false => b = m2,
                     }
@@ -353,11 +344,12 @@ impl<'a> Inspect<'a> {
                 return Some(self.pin(what, seek, t));
             }
 
-            // model puts an extremum inside the span, so the response went and came back
+            // model puts an extremum inside the span
             let (lo, hi) = (old.w.min(land), old.w.max(land));
             if new.k.is_finite() && new.vertex() > lo && new.vertex() < hi {
-                let t = self.comb(what, seek, old.w, land)?;
-                return Some(self.pin(what, seek, t));
+                if let Some(t) = self.comb(what, seek, old.w, land) {
+                    return Some(self.pin(what, seek, t));
+                }
             }
 
             if seek.retreat(&start, &new, dir) {
@@ -376,143 +368,84 @@ impl<'a> Inspect<'a> {
         }
     }
 
-    /// Every local maximum of |H| between `from` and `stop`, at comb density, in walking order.
-    pub(super) fn crests(&mut self, from: f64, stop: f64) -> Vec<Crest> {
-        let n = ((stop - from).abs() * self.comb.density).ceil().max(2.0) as usize;
+    /// `what` over [a, b] at comb density, in scratch.
+    fn sweep(&mut self, what: Level, a: f64, b: f64) {
+        let n = ((b - a).abs() * self.comb.density).ceil().max(2.0) as usize;
         self.buf.clear();
         for j in 0..=n {
-            let w = from + (stop - from) * j as f64 / n as f64;
-            let s = self.eval(Level::Mag, w);
+            let w = a + (b - a) * j as f64 / n as f64;
+            let s = self.eval(what, w);
             self.buf.push(s);
         }
-        self.buf
-            .windows(3)
-            .filter(|w| w[0].1 <= w[1].1 && w[1].1 > w[2].1)
-            .map(|w| Crest {
-                at: w[1],
-                bracket: (w[0], w[2]),
-            })
-            .collect()
     }
 
-    /// ω and |H| at a crest, to the f64 resolution of ω.
-    pub(super) fn pin_crest(&mut self, c: Crest) -> Sample {
-        self.pin(Level::Mag, Seek::Crest, c.bracket)
+    /// Bracket from a uniform sweep of [a, b].
+    fn comb(&mut self, what: Level, seek: Seek, a: f64, b: f64) -> Option<Bracket> {
+        self.sweep(what, a, b);
+        seek.witness(self.buf)
     }
 
-    /// Teeth of the comb from `from` toward `stop`, one landing and one probe per tooth.
-    /// Landings under `quiet` count as absent.  The walk ends at the first tooth under `fall`
-    /// times the tallest.
-    pub(super) fn teeth(&mut self, from: f64, stop: f64, quiet: f64, fall: f64) -> Teeth {
-        let dir = (stop - from).signum();
-        let past = |w: f64| dir * (w - stop) > 0.0;
-        let cell = self.comb.cell;
-        let mut pitch = cell;
-        let mut teeth = Teeth::default();
-        let mut at: Result<Sample, f64> = Err(from);
+    /// Every local maximum of |H| between `from` and `stop`, at comb density, in walking order.
+    pub(super) fn crests(&mut self, from: f64, stop: f64) -> Vec<Crest> {
+        self.sweep(Level::Mag, from, stop);
+        crests_in(self.buf)
+    }
 
-        loop {
-            // reacquisition, sliding where no tooth stands
-            let (c, a) = match at {
-                Ok(t) => t,
-                Err(w) if past(w) => return teeth,
-                Err(w) => match self.acquire(w, dir, pitch) {
-                    Some(t) => t,
-                    None => {
-                        at = Err(w + dir * ACQUIRE * pitch);
-                        continue;
-                    }
-                },
+    /// First dip of |H| from `from` toward `stop` whose next crest clears it by `rise_db`, and
+    /// every crest past it in walking order.  Shallower dips are shoulders of the main lobe.
+    pub(super) fn skirt(
+        &mut self,
+        from: f64,
+        stop: f64,
+        rise_db: f64,
+    ) -> Option<(Sample, Vec<Crest>)> {
+        let rise = 10f64.powf(rise_db / 20.0);
+        self.sweep(Level::Mag, from, stop);
+        let mut at = 0;
+        // middle index of the admitted trough
+        let d = loop {
+            let d = at
+                + 1
+                + self.buf[at..]
+                    .windows(3)
+                    .position(|w| Seek::Trough.marks(w))?;
+            let Some(c) = self.buf[d..].windows(3).position(|w| Seek::Crest.marks(w)) else {
+                break d;
             };
-            teeth.record(c, a, pitch);
-            if teeth.tallest.is_some_and(|t| a < fall * t.at.1) {
-                return teeth;
+            let c = d + 1 + c;
+            if self.buf[c].1 >= rise * self.buf[d].1 {
+                break d;
             }
-
-            // landing, quiet spans crossed at doubling strides
-            let mut w = c + dir * pitch;
-            let mut stride = pitch;
-            let g0 = loop {
-                if past(w) {
-                    return teeth;
-                }
-                let g = self.eval(Level::Mag, w).1;
-                if g >= quiet {
-                    break g;
-                }
-                stride *= 2.0;
-                w += dir * stride;
-            };
-            if stride > pitch {
-                at = Err(w);
-                continue;
-            }
-
-            // probe and lobe fit
-            let g1 = self.eval(Level::Mag, w + dir * PROBE * pitch).1;
-            at = match lobe_fit(g0, g1, PI * PROBE, a) {
-                Some((x, amp)) => {
-                    // w − x p/π
-                    let next = w - dir * x * pitch / PI;
-                    pitch = (pitch + PITCH_GAIN * ((next - c).abs() - pitch))
-                        .clamp(0.5 * cell, 2.0 * cell);
-                    Ok((next, amp))
-                }
-                None => Err(w),
-            };
-        }
+            at = c;
+        };
+        let dip = (self.buf[d - 1], self.buf[d + 1]);
+        let lobes = crests_in(&self.buf[d..]);
+        Some((self.pin(Level::Mag, Seek::Trough, dip), lobes))
     }
 
-    /// Tooth within `ACQUIRE` pitches of `w` along `dir`.
-    fn acquire(&mut self, w: f64, dir: f64, pitch: f64) -> Option<Sample> {
-        let t = self.comb(Level::Mag, Seek::Crest, w, w + dir * ACQUIRE * pitch)?;
-        Some(self.eval(Level::Mag, 0.5 * (t.0 .0 + t.1 .0)))
+    /// Highest of `found`, pinning the `PIN` tallest by comb height.
+    pub(super) fn tallest(&mut self, mut found: Vec<Crest>) -> Option<Sample> {
+        found.sort_by(|a, b| b.at.1.total_cmp(&a.at.1));
+        found
+            .into_iter()
+            .take(PIN)
+            .map(|c| self.pin(Level::Mag, Seek::Crest, c.bracket))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
     }
 }
 
-/// Pitches one reacquisition combs.
-const ACQUIRE: f64 = 1.5;
-/// Probe offset in pitches.
-const PROBE: f64 = 0.125;
-/// Pitch EMA gain.
-const PITCH_GAIN: f64 = 0.25;
-/// ln 4, envelope change one tooth may carry.
-const LOBE_DRIFT: f64 = 1.386;
+/// Crests pinned before the tallest is chosen, enough to cover near ties at comb resolution.
+const PIN: usize = 4;
 
-/// Crest offset x and height A of A|cos x|, A|cos(x + φ)| through (g₀, g₁), the branch
-/// nearest the last height `a`.
-fn lobe_fit(g0: f64, g1: f64, phi: f64, a: f64) -> Option<(f64, f64)> {
-    let (s, c) = phi.sin_cos();
-    let drift = |amp: f64| (amp / a).ln().abs();
-    [g1, -g1]
-        .into_iter()
-        // tan x = (cos φ ∓ g₁/g₀) / sin φ
-        .map(|v| {
-            let x = ((c - v / g0) / s).atan();
-            (x, g0 / x.cos())
+/// Every crest in `p`, bracketed by its comb neighbors.
+fn crests_in(p: &[Sample]) -> Vec<Crest> {
+    p.windows(3)
+        .filter(|w| Seek::Crest.marks(w))
+        .map(|w| Crest {
+            at: w[1],
+            bracket: (w[0], w[2]),
         })
-        .min_by(|p, q| drift(p.1).total_cmp(&drift(q.1)))
-        .filter(|&(_, amp)| drift(amp) < LOBE_DRIFT)
-}
-
-/// Tallest tooth of a walk.
-#[derive(Default)]
-pub(super) struct Teeth {
-    pub tallest: Option<Crest>,
-    pub count: usize,
-}
-
-impl Teeth {
-    fn record(&mut self, c: f64, a: f64, pitch: f64) {
-        self.count += 1;
-        if self.tallest.is_none_or(|t| a > t.at.1) {
-            let edge = |s: f64| (c + s * 0.5 * pitch, 0.0);
-            self.tallest = Some(Crest {
-                at: (c, a),
-                bracket: (edge(-1.0), edge(1.0)),
-            });
-        }
-    }
+        .collect()
 }
 
 /// Comb samples per null spacing.  Four resolves every extremum a degree K polynomial admits.
@@ -523,8 +456,6 @@ pub(super) const OVERSAMPLE: f64 = 16.0;
 /// every one.
 #[derive(Clone, Copy)]
 pub(super) struct Comb {
-    /// 2π/N, the narrowest feature H can carry
-    cell: f64,
     /// stencil half width
     step: f64,
     /// comb samples per radian
@@ -536,9 +467,9 @@ pub(super) struct Comb {
 impl Comb {
     /// `over` samples per cell.
     pub(super) fn new(psi: Fold<'_>, over: f64) -> Self {
+        // 2π/N, the narrowest feature H can carry
         let cell = TAU / psi.len_unfolded() as f64;
         Comb {
-            cell,
             step: cell / over,
             density: over / cell,
             cap: cell,

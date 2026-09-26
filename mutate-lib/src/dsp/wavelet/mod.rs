@@ -1654,39 +1654,42 @@ mod test {
         }
     }
 
-    /// First dips, peak side lobes, and κ over Q × γ × ρ.
+    /// Main lobe ends, peak side lobes, and κ over Q × γ × ρ.
     #[test]
     fn skirt_is_characterized() {
-        const QS: [f64; 4] = [3.5, 5.0, 8.5, 12.5];
+        const QS: [f64; 4] = [6.0, 8.0, 14.0, 20.0];
         const GAMMAS: [f64; 2] = [3.0, 4.0];
-        const RHOS: [f64; 4] = [0.116, 0.189, 0.223, 0.384];
+        const RHOS: [f64; 5] = [0.058, 0.116, 0.189, 0.223, 0.384];
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -40.0;
+        const TAIL_DB: f64 = -50.0;
         /// Height zero, where the moment stops counting area.
         const FLOOR_DB: f64 = -90.0;
 
         println!(
-            "\n=== SKIRT (quantum {QUANTUM}, tail {TAIL_DB:.0} dB, floor {FLOOR_DB:.0} dB) ===\n\
+            "\n=== SKIRT (quantum {QUANTUM}, tail {TAIL_DB:.0} dB, κ floor {FLOOR_DB:.0} dB) ===\n\
          offsets in −3 dB widths from the peak, levels in dB below the peak\n\
+         dips end the main lobe, psl is the tallest lobe of the comb past each dip\n\
+         floor is the maximum roll-off, clear is psl over the floor\n\
          κ = ∫_band h² / ∫_dips h², h = 1 − dB/floor, unity for a brick wall\n"
         );
         println!(
-            "  {:>5} {:>4} {:>7} {:>5} {:>8} {:>8} {:>7} \
+            "  {:>5} {:>4} {:>7} {:>5} {:>8} {:>8} {:>7} {:>7} \
             {:>8} {:>7} {:>6} {:>5} {:>8} {:>7} {:>6} {:>5} {:>7} {:>7}",
             "Q",
             "𝛄",
             "𝛒",
             "taps",
-            "lo off",
-            "hi off",
+            "lo dip",
+            "hi dip",
             "spread",
+            "floor",
             "psl lo",
             "off lo",
-            "prom",
+            "clear",
             "lobes",
             "psl hi",
             "off hi",
-            "prom",
+            "clear",
             "lobes",
             "𝛋 lo",
             "𝛋 hi"
@@ -1708,18 +1711,14 @@ mod test {
                     let lobe = r.edges.1 - r.edges.0;
                     let to_gain = |h: f64| db(h) - db(r.gain);
 
-                    let mut buf = Vec::new();
-                    let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
-                    let lo = insp.null(r.edges.0, r.edges.0 - PI).map(|(w, _)| w);
-                    let hi = insp.null(r.edges.1, r.edges.1 + PI).map(|(w, _)| w);
+                    let (psl_lo, psl_hi) = skirts(psi, &r);
+                    let (lo, hi) = (psl_lo.dip.map(|d| d.0), psl_hi.dip.map(|d| d.0));
 
                     // ∫_band h² on each side of the peak
                     let band_lo = level_moment(psi, r.gain, (r.edges.0, r.peak_w), FLOOR_DB);
                     let band_hi = level_moment(psi, r.gain, (r.peak_w, r.edges.1), FLOOR_DB);
 
-                    let (psl_lo, psl_hi) = skirts(psi, (lo, hi));
-
-                    /// Offset of a dip in −3 dB widths, dash where the skirt never reaches zero.
+                    /// Offset of a dip in −3 dB widths, dash where the descent found none.
                     let off = |w: Option<f64>| match w {
                         Some(w) => format!("{:>+8.3}", (w - r.peak_w) / lobe),
                         None => format!("{:>8}", "—"),
@@ -1728,36 +1727,36 @@ mod test {
                         (Some(lo), Some(hi)) => format!("{:>7.3}", (hi - lo) / lobe),
                         _ => format!("{:>7}", "—"),
                     };
-                    /// ∫_band h² over ∫_dips h², the dip side measured from the dip.
-                    let kappa = |band: f64, dip: Option<f64>, to: (f64, f64)| match dip {
-                        Some(_) => {
+                    /// ∫_band h² over ∫_dip h², the dip side measured from the dip.
+                    let kappa = |band: f64, dip: Option<(f64, f64)>| match dip {
+                        Some(to) => {
                             format!("{:>7.4}", band / level_moment(psi, r.gain, to, FLOOR_DB))
                         }
                         None => format!("{:>7}", "—"),
                     };
-
-                    /// Level, offset, and prominence of one skirt, dashes where the band holds
-                    /// no lobe.
-                    let cols = |s: &Skirt| match (s.peak, s.prominence_db()) {
-                        (Some((w, h)), Some(prom)) => format!(
+                    /// Level, offset, and clearance over the floor of one skirt's tallest lobe,
+                    /// dashes where the walk met none.
+                    let cols = |s: &Skirt| match s.peak {
+                        Some((w, h)) => format!(
                             "{:>8.2} {:>+7.3} {:>6.1} {:>5}",
                             to_gain(h),
                             (w - r.peak_w) / lobe,
-                            prom,
+                            db(h) - db(r.floor),
                             s.lobes
                         ),
-                        _ => format!("{:>8} {:>7} {:>6} {:>5}", "—", "—", "—", s.lobes),
+                        None => format!("{:>8} {:>7} {:>6} {:>5}", "—", "—", "—", s.lobes),
                     };
 
                     println!(
-                        "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {} {} {spread} {} {} {} {}",
+                        "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {} {} {spread} {:>7.2} {} {} {} {}",
                         psi.len_unfolded(),
                         off(lo),
                         off(hi),
+                        to_gain(r.floor),
                         cols(&psl_lo),
                         cols(&psl_hi),
-                        kappa(band_lo, lo, (lo.unwrap_or(r.peak_w), r.peak_w)),
-                        kappa(band_hi, hi, (r.peak_w, hi.unwrap_or(r.peak_w))),
+                        kappa(band_lo, lo.map(|w| (w, r.peak_w))),
+                        kappa(band_hi, hi.map(|w| (r.peak_w, w))),
                     );
 
                     let reaches = |s: &Skirt| s.peak.is_some_and(|(_, h)| h >= r.gain);
