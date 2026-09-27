@@ -34,7 +34,7 @@
 //! floor    = psl + f_0 + f_tail t − f_reach R
 //! fold     = image_db(ρ)
 //! width·Q  = 1 + w_knee xⁿ e^{−m x²/2}
-//! Q_eff    = Q / width·Q
+//! Q_real    = Q / width·Q
 //! ```
 //!
 //! Predictions are envelopes.  Levels rise by a margin and the knee scales by one, each covering
@@ -48,7 +48,7 @@ use super::spec::Shape;
 use super::{refine, restrict, Bin, WaveletSpec};
 
 /// Lowest delivered Q.  Shorter filters have a main lobe too wide to place a pitch.
-pub const Q_EFF_MIN: f64 = 1.0;
+pub const Q_REAL_MIN: f64 = 1.0;
 /// Deepest floor a plan promises.
 pub const DEEPEST_DB: f64 = -120.0;
 /// Shallowest floor a plan targets.  Cells whose fold breaks it are never planned.
@@ -377,7 +377,7 @@ pub struct Prediction {
 
 impl Prediction {
     /// Q / width·Q
-    pub fn q_eff(&self) -> f64 {
+    pub fn q_real(&self) -> f64 {
         self.q / self.width_q
     }
 }
@@ -442,12 +442,12 @@ impl Calibration {
         self.predict(bin.wavelet.shape.q(), bin.rho(), u)
     }
 
-    /// Half spans measured by the fit where Q_eff holds `Q_EFF_MIN`.
+    /// Half spans measured by the fit where Q_real holds `Q_REAL_MIN`.
     fn reach(&self, q: f64, rho: f64) -> Option<(f64, f64)> {
         // u = x P / 2π
         let scale = self.settings.shape(q).p() / TAU;
         let (lo, hi) = (self.fit.span.0 * scale, self.fit.span.1 * scale);
-        let lo = least(|u| Q_EFF_MIN - self.predict(q, rho, u).q_eff(), lo, hi)?;
+        let lo = least(|u| Q_REAL_MIN - self.predict(q, rho, u).q_real(), lo, hi)?;
         Some((lo, hi))
     }
 
@@ -483,7 +483,7 @@ pub(super) struct Obs {
     pub center: f64,
 }
 
-/// Absent where the bin has no crest or delivers Q under `Q_EFF_MIN`.
+/// Absent where the bin has no crest or delivers Q under `Q_REAL_MIN`.
 pub(super) fn observe(bin: Bin<'_>) -> Option<Obs> {
     let shape = bin.wavelet.shape;
     let (q, rho, w0) = (shape.q(), bin.rho(), bin.velocity());
@@ -494,8 +494,8 @@ pub(super) fn observe(bin: Bin<'_>) -> Option<Obs> {
     let mut buf = Vec::new();
     Inspect::new(psi, &mut buf, OVERSAMPLE).peak(w0, 0.0, PI)?;
     let r = characterize(psi, w0);
-    // Q_eff = 1 / rel_width
-    if r.rel_width * Q_EFF_MIN > 1.0 {
+    // Q_real = 1 / rel_width
+    if r.rel_width * Q_REAL_MIN > 1.0 {
         return None;
     }
     let rel = |v: f64| db(v) - db(r.gain);
@@ -657,7 +657,7 @@ mod test {
         const ENVELOPED: f64 = 0.85;
         /// Center misses a pitch estimate ignores.
         const CENTER_C: f64 = 0.5;
-        /// Width·Q a Q_eff promise ignores.
+        /// Width·Q a Q_real promise ignores.
         const WIDTH_SLACK: f64 = 2e-3;
         const WORST: usize = 3;
 
@@ -692,7 +692,7 @@ mod test {
             ("fold", ENVELOPED, Ledger::default()),
             ("width", ENVELOPED, Ledger::default()),
             ("center", 1.0, Ledger::default()),
-            ("q_eff", 1.0, Ledger::default()),
+            ("q_real", 1.0, Ledger::default()),
         ];
         // target − floor over delivered plans
         let mut waste = Vec::new();
@@ -736,8 +736,8 @@ mod test {
 
                     let Some(seen) = observe(bin) else {
                         println!("  {q:>5.1} {rho:>6.3} {target:>6.0}  degenerate");
-                        let (_, _, q_eff) = ledgers.last_mut().unwrap();
-                        q_eff.record(1.0, f64::INFINITY, at);
+                        let (_, _, q_real) = ledgers.last_mut().unwrap();
+                        q_real.record(1.0, f64::INFINITY, at);
                         continue;
                     };
                     let want = cal.predict_bin(bin);
@@ -774,8 +774,8 @@ mod test {
                         // (seen − want) / slack
                         (seen.width_q - want.width_q) / WIDTH_SLACK,
                         seen.center.abs() / CENTER_C,
-                        // Q_EFF_MIN / Q_eff
-                        Q_EFF_MIN * seen.width_q / seen.q,
+                        // Q_REAL_MIN / Q_real
+                        Q_REAL_MIN * seen.width_q / seen.q,
                     ];
                     for ((_, _, ledger), r) in ledgers.iter_mut().zip(ratios) {
                         ledger.record(1.0, r, at.clone());

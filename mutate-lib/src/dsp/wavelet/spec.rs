@@ -48,7 +48,7 @@ pub(crate) const TAIL_OVER_FLOOR_DB: f64 = -10.0;
 /// leaves ω₀ and the skirt never reaches a floor.
 pub const Q_FLOOR: f64 = 2.5;
 /// Temporary calibration for Q effective, which is proportionate, not equal to N^{-3/2}.
-pub const Q_EFF_CAL: f64 = 1.0;
+pub const Q_REASSIGNMENT_CAL: f64 = 1.0;
 
 /// Controls Q and other critical tradeoffs of the Morse family wavelet parameters.  For exact
 /// details, consult [real graphs](https://arxiv.org/pdf/1203.3380).
@@ -202,8 +202,8 @@ impl Shape {
     /// σ_r² = ½ (σ_ω / ω₀)² / SNR_out,  σ_ω = ω_p / √2 P
     /// Qeff = 2 Q √SNR_out
     /// ```
-    pub fn q_eff(&self, rho: f64, snr_db: f64) -> f64 {
-        Q_EFF_CAL * 2.0 * self.q() * self.snr_out(rho, snr_db).sqrt()
+    pub fn q_reassignment(&self, rho: f64, snr_db: f64) -> f64 {
+        Q_REASSIGNMENT_CAL * 2.0 * self.q() * self.snr_out(rho, snr_db).sqrt()
     }
 
     /// Model estimate of the truncation point in carrier periods.
