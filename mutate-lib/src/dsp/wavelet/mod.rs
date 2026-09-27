@@ -1654,27 +1654,31 @@ mod test {
         }
     }
 
-    /// Main lobe ends, peak side lobes, and κ over Q × γ × ρ.
+    /// Main lobe ends, peak side lobes, κ, and transition transport over Q × γ × ρ.
     #[test]
     fn skirt_is_characterized() {
         const QS: [f64; 4] = [6.0, 8.0, 14.0, 20.0];
         const GAMMAS: [f64; 2] = [3.0, 4.0];
-        const RHOS: [f64; 5] = [0.058, 0.116, 0.189, 0.223, 0.384];
+        const RHOS: Axis = Axis::LogLevels(&[0.058, 0.116, 0.189, 0.223, 0.384]);
         const QUANTUM: usize = 4;
         const TAIL_DB: f64 = -50.0;
         /// Height zero, where the moment stops counting area.
         const FLOOR_DB: f64 = -90.0;
+
+        const NAMES: [&str; 3] = ["spread W", "psl dB", "E·d dB"];
+        const PRECISION: [usize; 3] = [3, 2, 2];
 
         println!(
             "\n=== SKIRT (quantum {QUANTUM}, tail {TAIL_DB:.0} dB, κ floor {FLOOR_DB:.0} dB) ===\n\
          offsets in −3 dB widths from the peak, levels in dB below the peak\n\
          dips end the main lobe, psl is the tallest lobe of the comb past each dip\n\
          floor is the maximum roll-off, clear is psl over the floor\n\
-         κ = ∫_band h² / ∫_dips h², h = 1 − dB/floor, unity for a brick wall\n"
+         κ = ∫_band h² / ∫_dips h², h = 1 − dB/floor, unity for a brick wall\n\
+         E·d is transport from the −3 dB edges to the PSL crests, dB re one −3 dB width\n"
         );
         println!(
             "  {:>5} {:>4} {:>7} {:>5} {:>8} {:>8} {:>7} {:>7} \
-            {:>8} {:>7} {:>6} {:>5} {:>8} {:>7} {:>6} {:>5} {:>7} {:>7}",
+            {:>8} {:>7} {:>6} {:>5} {:>8} {:>7} {:>6} {:>5} {:>7} {:>7} {:>7}",
             "Q",
             "𝛄",
             "𝛒",
@@ -1692,8 +1696,12 @@ mod test {
             "clear",
             "lobes",
             "𝛋 lo",
-            "𝛋 hi"
+            "𝛋 hi",
+            "E·d"
         );
+
+        // (Q, γ, (IQM, worst) per metric)
+        let mut summary = Vec::new();
 
         for q in QS {
             for gamma in GAMMAS {
@@ -1703,7 +1711,10 @@ mod test {
                     .max_truncation(TAIL_DB)
                     .bake();
 
-                for rho in RHOS {
+                // (w, x) over ρ for spread, psl, E·d
+                let mut readings: [Vec<(f64, f64)>; 3] = Default::default();
+
+                for (w, rho) in RHOS.levels() {
                     let bin = wav.at_rho(rho);
                     let wts = bin.weights();
                     let psi = wts.psi();
@@ -1713,6 +1724,23 @@ mod test {
 
                     let (psl_lo, psl_hi) = skirts(psi, &r);
                     let (lo, hi) = (psl_lo.dip.map(|d| d.0), psl_hi.dip.map(|d| d.0));
+
+                    let mass = transition_mass(psi, r.edges, &psl_lo, &psl_hi);
+                    let psl = [psl_lo.peak, psl_hi.peak]
+                        .into_iter()
+                        .flatten()
+                        .map(|p| to_gain(p.1))
+                        .reduce(f64::max);
+
+                    if let (Some(lo), Some(hi)) = (lo, hi) {
+                        readings[0].push((w, (hi - lo) / lobe));
+                    }
+                    if let Some(p) = psl {
+                        readings[1].push((w, p));
+                    }
+                    if let Some(m) = mass {
+                        readings[2].push((w, m));
+                    }
 
                     // ∫_band h² on each side of the peak
                     let band_lo = level_moment(psi, r.gain, (r.edges.0, r.peak_w), FLOOR_DB);
@@ -1746,9 +1774,14 @@ mod test {
                         ),
                         None => format!("{:>8} {:>7} {:>6} {:>5}", "—", "—", "—", s.lobes),
                     };
+                    let mass = match mass {
+                        Some(m) => format!("{m:>7.2}"),
+                        None => format!("{:>7}", "—"),
+                    };
 
                     println!(
-                        "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {} {} {spread} {:>7.2} {} {} {} {}",
+                        "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {} {} {spread} {:>7.2} {} {} {} {} \
+                         {mass}",
                         psi.len_unfolded(),
                         off(lo),
                         off(hi),
@@ -1765,9 +1798,64 @@ mod test {
                         "Q {q} γ {gamma} ρ {rho} side lobe reaches the main lobe"
                     );
                 }
+
+                // (IQM, max) over log ρ
+                let stats = readings.map(|mut v| {
+                    let worst = v.iter().map(|r| r.1).fold(f64::NEG_INFINITY, f64::max);
+                    let (q1, q3) = (
+                        weighted_quantile(&mut v, 0.25),
+                        weighted_quantile(&mut v, 0.75),
+                    );
+                    // Σ w x / Σ w over q1 ≤ x ≤ q3
+                    let (num, den) = v
+                        .iter()
+                        .filter(|r| r.1 >= q1 && r.1 <= q3)
+                        .fold((0.0, 0.0), |(n, d), r| (n + r.0 * r.1, d + r.0));
+                    (num / den, worst)
+                });
+
+                summary.push((q, gamma, stats));
                 println!();
             }
         }
+
+        // Worst over Q × γ
+        let worst: [(f64, f64); 3] = core::array::from_fn(|i| {
+            summary
+                .iter()
+                .fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |(a, b), s| {
+                    (a.max(s.2[i].0), b.max(s.2[i].1))
+                })
+        });
+
+        let rule = "=".repeat(69);
+        let cell = |(iqm, max): (f64, f64), p: usize| match iqm.is_finite() {
+            true => format!("{iqm:.p$} ({max:.p$})"),
+            false => "—".to_string(),
+        };
+        let row = |lead: String, stats: &[(f64, f64); 3]| {
+            print!("  {lead}");
+            for (s, p) in stats.iter().zip(PRECISION) {
+                print!(" {:>18}", cell(*s, p));
+            }
+            println!();
+        };
+
+        println!("\n  {rule}");
+        println!("  SKIRT IQM over log ρ, worst in parentheses");
+        println!("  spread in −3 dB widths, psl and E·d in dB, higher is worse");
+        println!("  {rule}");
+        print!("  {:>5} {:>4}", "Q", "γ");
+        for n in NAMES {
+            print!(" {n:>18}");
+        }
+        println!();
+        for (q, gamma, stats) in &summary {
+            row(format!("{q:>5.1} {gamma:>4.1}"), stats);
+        }
+        println!("  {rule}");
+        row(format!("{:>10}", "worst"), &worst);
+        println!("  {rule}");
     }
 
     // Transport (time-reassignment mis-location) Tests
