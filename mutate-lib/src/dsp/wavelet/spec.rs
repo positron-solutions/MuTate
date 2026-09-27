@@ -46,6 +46,8 @@ pub(crate) const TAIL_OVER_FLOOR_DB: f64 = -10.0;
 /// Lowest Q whose envelope spans enough carrier periods to hold its shape.  Under it the crest
 /// leaves ω₀ and the skirt never reaches a floor.
 pub const Q_FLOOR: f64 = 2.5;
+/// Temporary calibration for Q effective, which is proportionate, not equal to N^{-3/2}.
+pub const Q_EFF_CAL: f64 = 1.0;
 
 /// Controls Q and other critical tradeoffs of the Morse family wavelet parameters.  For exact
 /// details, consult [real graphs](https://arxiv.org/pdf/1203.3380).
@@ -178,11 +180,29 @@ impl Shape {
     /// ```text
     /// Σ_ν |ψ_ν|² = ρ G² Γ(r) s^{−r} e^s / γ,  s = 2β/γ,  r = s + 1/γ
     /// ```
-    #[cfg(test)]
-    pub(super) fn noise_gain(&self, rho: f64) -> f64 {
+    pub fn noise_gain(&self, rho: f64) -> f64 {
         let s = 2.0 * self.beta / self.gamma;
         let r = s + self.gamma.recip();
         rho * PEAK_GAIN * PEAK_GAIN * (lgamma(r) - r * s.ln() + s).exp() / self.gamma
+    }
+
+    /// Crest SNR of a complex tone at `snr_db` per sample against white noise.
+    ///
+    /// ```text
+    /// SNR_out = SNR_in G² / Σ|ψ_ν|²
+    /// ```
+    pub fn snr_out(&self, rho: f64, snr_db: f64) -> f64 {
+        10f64.powf(snr_db / 10.0) * PEAK_GAIN * PEAK_GAIN / self.noise_gain(rho)
+    }
+
+    /// Reassigned pitch resolution in the half-power width units of `q`.
+    ///
+    /// ```text
+    /// σ_r² = ½ (σ_ω / ω₀)² / SNR_out,  σ_ω = ω_p / √2 P
+    /// Qeff = 2 Q √SNR_out
+    /// ```
+    pub fn q_eff(&self, rho: f64, snr_db: f64) -> f64 {
+        Q_EFF_CAL * 2.0 * self.q() * self.snr_out(rho, snr_db).sqrt()
     }
 
     /// Model estimate of the truncation point in carrier periods.
