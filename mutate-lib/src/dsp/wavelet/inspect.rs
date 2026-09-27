@@ -602,18 +602,18 @@ pub(super) fn bisect(resp: impl Fn(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
     0.5 * (a + b)
 }
 
-/// Transition transport from the −3 dB edges out to the PSL crests, dB re one lobe width.
+/// Transition transport from each −3 dB edge out to its PSL crest, dB re one lobe width.
 ///
 ///     E·d = ∫_transition |H|² d dω / (W ∫_lobe |H|² dω)
 ///
-/// d is the distance from the nearer edge and W the lobe width.
+/// d is the distance from the edge and W the lobe width.  Both sides share the lobe term, so
+/// they sum linearly to the two sided transport.
 pub(super) fn transition_mass(
     psi: Fold<'_>,
     (e_lo, e_hi): (f64, f64),
     below: &Skirt,
     above: &Skirt,
-) -> Option<f64> {
-    let (p_lo, p_hi) = (below.peak?.0, above.peak?.0);
+) -> (Option<f64>, Option<f64>) {
     let width = e_hi - e_lo;
     let taps = psi.len_unfolded() as f64;
 
@@ -630,12 +630,18 @@ pub(super) fn transition_mass(
             * dw
     };
 
-    // ∫_lobe |H|²
-    let right = integrate(e_lo, e_hi, &|_| 1.0);
-    // ∫_transition |H|² d
-    let wrong = integrate(p_lo, e_lo, &|w| e_lo - w) + integrate(e_hi, p_hi, &|w| w - e_hi);
+    // W ∫_lobe |H|²
+    let right = width * integrate(e_lo, e_hi, &|_| 1.0);
+    let to_db = |wrong: f64| 10.0 * (wrong / right).log10();
 
-    Some(10.0 * (wrong / (width * right)).log10())
+    (
+        below
+            .peak
+            .map(|(p, _)| to_db(integrate(p, e_lo, &|w| e_lo - w))),
+        above
+            .peak
+            .map(|(p, _)| to_db(integrate(e_hi, p, &|w| w - e_hi))),
+    )
 }
 
 /// Passband, -3 dB relative width, image, and the stopband floor.

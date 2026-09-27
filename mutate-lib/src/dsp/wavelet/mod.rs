@@ -1679,7 +1679,7 @@ mod test {
         }
     }
 
-    /// Main lobe ends, peak side lobes, κ, and transition transport over Q × γ × ρ.
+    /// Main lobe ends, peak side lobes, and transition transport per side over Q × γ × ρ.
     #[test]
     fn skirt_is_characterized() {
         const QS: [f64; 4] = [6.0, 8.0, 14.0, 20.0];
@@ -1687,23 +1687,21 @@ mod test {
         const RHOS: Axis = Axis::LogLevels(&[0.058, 0.116, 0.189, 0.223, 0.384]);
         const QUANTUM: usize = 4;
         const TAIL_DB: f64 = -50.0;
-        /// Height zero, where the moment stops counting area.
-        const FLOOR_DB: f64 = -90.0;
 
-        const NAMES: [&str; 3] = ["spread W", "psl dB", "E·d dB"];
-        const PRECISION: [usize; 3] = [3, 2, 2];
+        const NAMES: [&str; 4] = ["spread W", "psl dB", "E·d lo dB", "E·d hi dB"];
+        const PRECISION: [usize; 4] = [3, 2, 2, 2];
 
         println!(
-            "\n=== SKIRT (quantum {QUANTUM}, tail {TAIL_DB:.0} dB, κ floor {FLOOR_DB:.0} dB) ===\n\
+            "\n=== SKIRT (quantum {QUANTUM}, tail {TAIL_DB:.0} dB) ===\n\
          offsets in −3 dB widths from the peak, levels in dB below the peak\n\
-         dips end the main lobe, psl is the tallest lobe of the comb past each dip\n\
-         floor is the maximum roll-off, clear is psl over the floor\n\
-         κ = ∫_band h² / ∫_dips h², h = 1 − dB/floor, unity for a brick wall\n\
-         E·d is transport from the −3 dB edges to the PSL crests, dB re one −3 dB width\n"
+         dips end the main lobe, psl is the tallest lobe past each dip\n\
+         floor is the maximum roll-off\n\
+         E·d is transport from each −3 dB edge to its PSL crest, dB re one −3 dB width\n\
+         lo and hi E·d share the lobe term and sum linearly to the two sided transport\n"
         );
         println!(
             "  {:>5} {:>4} {:>7} {:>5} {:>8} {:>8} {:>7} {:>7} \
-            {:>8} {:>7} {:>6} {:>5} {:>8} {:>7} {:>6} {:>5} {:>7} {:>7} {:>7}",
+            {:>8} {:>7} {:>8} {:>7} {:>7} {:>7}",
             "Q",
             "𝛄",
             "𝛒",
@@ -1714,15 +1712,10 @@ mod test {
             "floor",
             "psl lo",
             "off lo",
-            "clear",
-            "lobes",
             "psl hi",
             "off hi",
-            "clear",
-            "lobes",
-            "𝛋 lo",
-            "𝛋 hi",
-            "E·d"
+            "E·d lo",
+            "E·d hi"
         );
 
         // (Q, γ, (IQM, worst) per metric)
@@ -1736,8 +1729,8 @@ mod test {
                     .max_truncation(TAIL_DB)
                     .bake();
 
-                // (w, x) over ρ for spread, psl, E·d
-                let mut readings: [Vec<(f64, f64)>; 3] = Default::default();
+                // (w, x) over ρ per metric
+                let mut readings: [Vec<(f64, f64)>; 4] = Default::default();
 
                 for (w, rho) in RHOS.levels() {
                     let bin = wav.at_rho(rho);
@@ -1750,71 +1743,49 @@ mod test {
                     let (psl_lo, psl_hi) = skirts(psi, &r);
                     let (lo, hi) = (psl_lo.dip.map(|d| d.0), psl_hi.dip.map(|d| d.0));
 
-                    let mass = transition_mass(psi, r.edges, &psl_lo, &psl_hi);
+                    let spread = lo.zip(hi).map(|(lo, hi)| (hi - lo) / lobe);
                     let psl = [psl_lo.peak, psl_hi.peak]
                         .into_iter()
                         .flatten()
                         .map(|p| to_gain(p.1))
                         .reduce(f64::max);
+                    let (ed_lo, ed_hi) = transition_mass(psi, r.edges, &psl_lo, &psl_hi);
 
-                    if let (Some(lo), Some(hi)) = (lo, hi) {
-                        readings[0].push((w, (hi - lo) / lobe));
+                    for (v, x) in readings.iter_mut().zip([spread, psl, ed_lo, ed_hi]) {
+                        if let Some(x) = x {
+                            v.push((w, x));
+                        }
                     }
-                    if let Some(p) = psl {
-                        readings[1].push((w, p));
-                    }
-                    if let Some(m) = mass {
-                        readings[2].push((w, m));
-                    }
-
-                    // ∫_band h² on each side of the peak
-                    let band_lo = level_moment(psi, r.gain, (r.edges.0, r.peak_w), FLOOR_DB);
-                    let band_hi = level_moment(psi, r.gain, (r.peak_w, r.edges.1), FLOOR_DB);
 
                     /// Offset of a dip in −3 dB widths, dash where the descent found none.
                     let off = |w: Option<f64>| match w {
                         Some(w) => format!("{:>+8.3}", (w - r.peak_w) / lobe),
                         None => format!("{:>8}", "—"),
                     };
-                    let spread = match (lo, hi) {
-                        (Some(lo), Some(hi)) => format!("{:>7.3}", (hi - lo) / lobe),
-                        _ => format!("{:>7}", "—"),
+                    /// Right aligned at `p` digits, dash where unmeasured.
+                    let opt = |v: Option<f64>, width: usize, p: usize| match v {
+                        Some(v) => format!("{v:>width$.p$}"),
+                        None => format!("{:>width$}", "—"),
                     };
-                    /// ∫_band h² over ∫_dip h², the dip side measured from the dip.
-                    let kappa = |band: f64, dip: Option<(f64, f64)>| match dip {
-                        Some(to) => {
-                            format!("{:>7.4}", band / level_moment(psi, r.gain, to, FLOOR_DB))
-                        }
-                        None => format!("{:>7}", "—"),
-                    };
-                    /// Level, offset, and clearance over the floor of one skirt's tallest lobe,
-                    /// dashes where the walk met none.
+                    /// Level and offset of one skirt's tallest lobe.
                     let cols = |s: &Skirt| match s.peak {
-                        Some((w, h)) => format!(
-                            "{:>8.2} {:>+7.3} {:>6.1} {:>5}",
-                            to_gain(h),
-                            (w - r.peak_w) / lobe,
-                            db(h) - db(r.floor),
-                            s.lobes
-                        ),
-                        None => format!("{:>8} {:>7} {:>6} {:>5}", "—", "—", "—", s.lobes),
-                    };
-                    let mass = match mass {
-                        Some(m) => format!("{m:>7.2}"),
-                        None => format!("{:>7}", "—"),
+                        Some((w, h)) => {
+                            format!("{:>8.2} {:>+7.3}", to_gain(h), (w - r.peak_w) / lobe)
+                        }
+                        None => format!("{:>8} {:>7}", "—", "—"),
                     };
 
                     println!(
-                        "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {} {} {spread} {:>7.2} {} {} {} {} \
-                         {mass}",
+                        "  {q:>5.1} {gamma:>4.1} {rho:>7.4} {:>5} {} {} {} {:>7.2} {} {} {} {}",
                         psi.len_unfolded(),
                         off(lo),
                         off(hi),
+                        opt(spread, 7, 3),
                         to_gain(r.floor),
                         cols(&psl_lo),
                         cols(&psl_hi),
-                        kappa(band_lo, lo.map(|w| (w, r.peak_w))),
-                        kappa(band_hi, hi.map(|w| (r.peak_w, w))),
+                        opt(ed_lo, 7, 2),
+                        opt(ed_hi, 7, 2),
                     );
 
                     let reaches = |s: &Skirt| s.peak.is_some_and(|(_, h)| h >= r.gain);
@@ -1845,7 +1816,7 @@ mod test {
         }
 
         // Worst over Q × γ
-        let worst: [(f64, f64); 3] = core::array::from_fn(|i| {
+        let worst: [(f64, f64); 4] = core::array::from_fn(|i| {
             summary
                 .iter()
                 .fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |(a, b), s| {
@@ -1853,12 +1824,12 @@ mod test {
                 })
         });
 
-        let rule = "=".repeat(69);
+        let rule = "=".repeat(88);
         let cell = |(iqm, max): (f64, f64), p: usize| match iqm.is_finite() {
             true => format!("{iqm:.p$} ({max:.p$})"),
             false => "—".to_string(),
         };
-        let row = |lead: String, stats: &[(f64, f64); 3]| {
+        let row = |lead: String, stats: &[(f64, f64); 4]| {
             print!("  {lead}");
             for (s, p) in stats.iter().zip(PRECISION) {
                 print!(" {:>18}", cell(*s, p));
@@ -2086,6 +2057,10 @@ mod test {
 
         const MEDIAN_DB: f64 = -35.0;
         const WORST_DB: f64 = -10.0;
+
+        // XXX The refinement is not quite performing here or the test is not stressing the filter
+        // enough.  No refinement outperforms the default refinement, which was not the case during
+        // most of development.
 
         let wav = WaveletSpec::default()
             .with_shape(Shape::from_q(Q, GAMMA))
