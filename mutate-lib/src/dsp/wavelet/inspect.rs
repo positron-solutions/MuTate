@@ -22,7 +22,7 @@
 // DEBT may be committed in the middle of duplicating some code over.  Re-enable warnings and try
 // not to cry about it.
 
-use core::f64::consts::TAU;
+use core::f64::consts::{PI, TAU};
 
 use super::Fold;
 
@@ -477,10 +477,195 @@ impl Comb {
     }
 }
 
-#[cfg(test)]
 /// -∞ representable, so a null is a number.
 pub(super) fn db(mag: f64) -> f64 {
     20.0 * mag.max(f64::MIN_POSITIVE).log10()
+}
+
+/// Crest of the main lobe and its half-power edges.
+#[derive(Clone, Copy)]
+pub(super) struct Passband {
+    pub peak_w: f64,
+    /// |H(peak_w)|
+    pub gain: f64,
+    pub edges: (f64, f64),
+}
+
+/// Peak and -3 dB edges.  `w0` seeds the climb and brackets the edges.
+pub(super) fn passband(psi: Fold<'_>, w0: f64) -> Passband {
+    let mut buf = Vec::new();
+    let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
+
+    let (peak_w, gain) = insp.peak(w0, 0.0, PI).expect("no crest in [0, π]");
+
+    // |H(peak)| / √2
+    let half_power = db(gain) - 10.0 * 2.0f64.log10();
+    let (lo_stop, hi_stop) = ((peak_w - w0).max(0.0), (peak_w + w0).min(PI));
+    let lo = insp.cross(half_power, peak_w, lo_stop);
+    let hi = insp.cross(half_power, peak_w, hi_stop);
+
+    Passband {
+        peak_w,
+        gain,
+        edges: (
+            lo.map_or(lo_stop, |(w, _)| w),
+            hi.map_or(hi_stop, |(w, _)| w),
+        ),
+    }
+}
+
+/// Cells either side of the antipode a floor scan covers, enough to hold a crest.
+const FLOOR_CELLS: f64 = 1.5;
+/// Widest floor scan, π/8, where the symmetric envelope rises well under a dB.
+const FLOOR_REACH_CAP: f64 = PI / 8.0;
+
+/// Maximum roll-off.  Highest |H| within min(1.5 cells, π/8) of the antipode ω_peak − π.  The
+/// returned value may i
+fn floor(psi: Fold<'_>, insp: &mut Inspect<'_>, peak_w: f64) -> f64 {
+    // ω_peak − π
+    let at = peak_w - PI;
+    // min(c · 2π/N, π/8)
+    let reach = (FLOOR_CELLS * TAU / psi.len_unfolded() as f64).min(FLOOR_REACH_CAP);
+    let edges = psi.dtft(at - reach).abs().max(psi.dtft(at + reach).abs());
+    let found = insp.crests(at - reach, at + reach);
+    insp.tallest(found).map_or(edges, |t| t.1.max(edges))
+}
+
+pub(super) struct Response {
+    pub peak_w: f64,
+    /// |H(peak_w)|
+    pub gain: f64,
+    pub edges: (f64, f64),
+    pub rel_width: f64,
+    /// max |H| on [−π, 0]
+    pub image: f64,
+    pub floor: f64,
+}
+
+/// One side of the response past the main lobe.
+#[derive(Default)]
+pub(super) struct Skirt {
+    /// First dip past the edge, where the main lobe ends.
+    pub dip: Option<Sample>,
+    /// Tallest lobe past the dip.
+    pub peak: Option<Sample>,
+    /// Lobes past the dip.
+    pub lobes: usize,
+}
+
+/// Rise a lobe must clear its dip by to end the main lobe, dB.  Shallower dips are shoulders.
+const SHOULDER_DB: f64 = 1.0;
+
+/// Dip from `edge` toward `stop` and the lobes past it.
+fn skirt(psi: Fold<'_>, edge: f64, stop: f64) -> Skirt {
+    let mut buf = Vec::new();
+    let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
+    let Some((dip, lobes)) = insp.skirt(edge, stop, SHOULDER_DB) else {
+        return Skirt::default();
+    };
+    Skirt {
+        dip: Some(dip),
+        lobes: lobes.len(),
+        peak: insp.tallest(lobes),
+    }
+}
+
+/// Both skirts outward from the half-power edges past the antipode ω_peak ± π, overlapping by a
+/// cell so a lobe straddling the antipode is a crest to both.
+pub(super) fn skirts(psi: Fold<'_>, r: &Response) -> (Skirt, Skirt) {
+    // π + 2π/N
+    let reach = PI + TAU / psi.len_unfolded() as f64;
+    (
+        skirt(psi, r.edges.0, r.peak_w - reach),
+        skirt(psi, r.edges.1, r.peak_w + reach),
+    )
+}
+
+/// Root of `resp` in a sign-changing bracket.
+pub(super) fn bisect(resp: impl Fn(f64) -> f64, mut a: f64, mut b: f64) -> f64 {
+    let fa = resp(a) < 0.0;
+    for _ in 0..64 {
+        let m = 0.5 * (a + b);
+        if m == a || m == b {
+            break;
+        }
+        let fm = resp(m);
+        if fm == 0.0 {
+            return m;
+        }
+        if (fm < 0.0) == fa {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    0.5 * (a + b)
+}
+
+/// Transition transport from the −3 dB edges out to the PSL crests, dB re one lobe width.
+///
+///     E·d = ∫_transition |H|² d dω / (W ∫_lobe |H|² dω)
+///
+/// d is the distance from the nearer edge and W the lobe width.
+pub(super) fn transition_mass(
+    psi: Fold<'_>,
+    (e_lo, e_hi): (f64, f64),
+    below: &Skirt,
+    above: &Skirt,
+) -> Option<f64> {
+    let (p_lo, p_hi) = (below.peak?.0, above.peak?.0);
+    let width = e_hi - e_lo;
+    let taps = psi.len_unfolded() as f64;
+
+    // ∫_a^b |H|² f(ω) dω
+    let integrate = |a: f64, b: f64, f: &dyn Fn(f64) -> f64| {
+        let n = ((b - a) * OVERSAMPLE * taps / TAU).ceil().max(1.0) as usize;
+        let dw = (b - a) / n as f64;
+        (0..n)
+            .map(|k| {
+                let w = a + dw * (k as f64 + 0.5);
+                psi.dtft(w).powi(2) * f(w)
+            })
+            .sum::<f64>()
+            * dw
+    };
+
+    // ∫_lobe |H|²
+    let right = integrate(e_lo, e_hi, &|_| 1.0);
+    // ∫_transition |H|² d
+    let wrong = integrate(p_lo, e_lo, &|w| e_lo - w) + integrate(e_hi, p_hi, &|w| w - e_hi);
+
+    Some(10.0 * (wrong / (width * right)).log10())
+}
+
+/// Passband, -3 dB relative width, image, and the stopband floor.
+pub(super) fn characterize(psi: Fold<'_>, w0: f64) -> Response {
+    let Passband {
+        peak_w,
+        gain,
+        edges: (lo, hi),
+    } = passband(psi, w0);
+
+    let mut buf = Vec::new();
+    let mut insp = Inspect::new(psi, &mut buf, OVERSAMPLE);
+
+    // |H(−π)|, the fold
+    let fold = (-PI, psi.dtft(-PI).abs());
+
+    // max |H| on [−π, 0]
+    let found = insp.crests(0.0, -PI);
+    let (image_w, image) = insp.tallest(found).filter(|t| t.1 > fold.1).unwrap_or(fold);
+
+    let floor = floor(psi, &mut insp, peak_w);
+
+    Response {
+        peak_w,
+        gain,
+        edges: (lo, hi),
+        rel_width: (hi - lo) / peak_w,
+        image,
+        floor,
+    }
 }
 
 #[cfg(test)]

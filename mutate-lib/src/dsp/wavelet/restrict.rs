@@ -249,6 +249,19 @@ impl Taper {
             })
             .collect()
     }
+
+    /// Envelope sigmas at the cut under which the profile overtakes the crest.
+    ///
+    /// ```text
+    /// c_0 = a_K (1 + 1/κ) < a_0,  a_K / a_0 = e^{−x²/2}
+    /// x_min = √(2 ln(1 + 1/κ))
+    /// ```
+    pub(super) fn x_min(self) -> f64 {
+        match self {
+            Taper::Knee { curvature } => (2.0 * (1.0 + curvature.recip()).ln()).sqrt(),
+            Taper::Rectangle | Taper::Cylinder => 0.0,
+        }
+    }
 }
 
 /// `arg(ψ e^{-2πiu})` unwrapped, and its derivative.  `φ' = 2π Re(conj(ψ)·d)/|ψ|²`, so the
@@ -527,8 +540,8 @@ fn levinson(r: &[f64], y: &[Complex64]) -> Vec<Complex64> {
 #[cfg(test)]
 mod test {
     use super::super::{
-        harness::{at, bisect, characterize, weighted_quantile, Ledger},
-        inspect::db,
+        harness::{at, weighted_quantile, Ledger},
+        inspect::{bisect, characterize, db},
         Bake, Fold, Shape, WaveletSpec,
     };
     use super::*;

@@ -328,11 +328,14 @@
 //   image max         -111.95 dB
 //   stopband floor     -108.55 dB
 
-pub(self) mod generate;
-pub(self) mod inspect;
+
+mod calibrate;
+mod generate;
+mod inspect;
 mod refine;
-pub(self) mod restrict;
-pub(self) mod spec;
+mod restrict;
+mod spec;
+// NEXT Whatsleft is ready to go into a crate, on the way to becoming its own repo.
 pub mod whatsleft;
 
 #[cfg(test)]
@@ -400,6 +403,21 @@ impl Wavelet {
                 ..self.limits
             },
         )
+    }
+
+    // XXX Not so sure about this API
+    /// Return a bin at `rho` with `half` folded weights past the center.
+    pub fn at_reach(&self, rho: f64, half: usize) -> Bin<'_> {
+        Bin {
+            wavelet: self,
+            spec: BinSpec {
+                center: rho,
+                rate: 1.0,
+                ..self.limits
+            },
+            rho,
+            k: half + 1,
+        }
     }
 
     pub fn from_spec(&self, spec: BinSpec) -> Bin<'_> {
@@ -529,6 +547,13 @@ impl<'w> Bin<'w> {
     /// Set the bin's tail dB.  Must respect `Wavelet` limits.
     pub fn with_truncation(self, tail_db: f64) -> Self {
         self.with_noise_floor(tail_db.abs() - TAIL_OVER_FLOOR_DB)
+    }
+
+    /// truncation_tail(ρ(K − 1))
+    pub fn tail(&self) -> f64 {
+        self.wavelet
+            .shape
+            .truncation_tail(self.rho * (self.k - 1) as f64)
     }
 
     /// Options used to create this bin.

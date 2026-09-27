@@ -31,6 +31,7 @@ use num_complex::Complex64;
 
 use super::defaults;
 use super::generate::{hermite, quadjet::QuadJet};
+use super::inspect::bisect;
 use super::refine;
 use super::restrict;
 use super::{Bin, Wavelet, PEAK_GAIN};
@@ -39,7 +40,7 @@ use super::{Bin, Wavelet, PEAK_GAIN};
 /// expressions in some domains.
 const DB_PER_NP: f64 = 20.0 / LN_10;
 /// Deepest noise floor an `f32` table can reliably express against `PEAK_GAIN`.
-pub const NOISE_FLOOR_LIMIT_DB: f64 = -140.0;
+pub const NOISE_FLOOR_LIMIT_DB: f64 = -160.0;
 /// Truncation sits this far under the noise floor, keeping the fold the binding feature and the
 /// delivered −3 dB width faithful to Q.
 pub(crate) const TAIL_OVER_FLOOR_DB: f64 = -10.0;
@@ -246,6 +247,20 @@ impl Shape {
             u_gauss
         }
     }
+
+    /// Tail whose `truncation_u` is `u`, held to the model's monotone range of −3 to −400 dB.
+    pub fn truncation_tail(&self, u: f64) -> f64 {
+        const SHALLOW: f64 = -3.0;
+        const DEEP: f64 = -400.0;
+        match (
+            self.truncation_u(SHALLOW) >= u,
+            self.truncation_u(DEEP) <= u,
+        ) {
+            (true, _) => SHALLOW,
+            (_, true) => DEEP,
+            _ => bisect(|t| self.truncation_u(t) - u, SHALLOW, DEEP),
+        }
+    }
 }
 
 impl Default for Shape {
@@ -288,6 +303,7 @@ pub struct WaveletSpec {
     pub(super) resolution: usize,
     pub(super) max_load_quantum: usize,
     pub(super) max_noise_floor: f64,
+    pub(super) max_half_span: Option<f64>,
     pub(super) max_rho: Option<f64>,
     pub(super) max_delay: usize,
     pub(super) restriction: restrict::Restriction,
@@ -301,6 +317,7 @@ impl Default for WaveletSpec {
             resolution: defaults::RESOLUTION,
             max_rho: None,
             max_noise_floor: defaults::NOISE_FLOOR,
+            max_half_span: None,
             max_load_quantum: defaults::LOAD_QUANTUM,
             max_delay: 0,
             restriction: restrict::Restriction::default(),
@@ -336,7 +353,13 @@ impl WaveletSpec {
 
     /// Deepest noise floor any bin will ask for.
     pub fn max_noise_floor(mut self, db: f64) -> Self {
-        self.max_noise_floor = -db.abs().min(NOISE_FLOOR_LIMIT_DB.abs());
+        self.max_noise_floor = -(db.abs().min(NOISE_FLOOR_LIMIT_DB.abs()));
+        self
+    }
+
+    /// Longest half span any bin will reach, in carrier periods.
+    pub fn max_half_span(mut self, u: f64) -> Self {
+        self.max_half_span = Some(u);
         self
     }
 
@@ -387,9 +410,11 @@ impl WaveletSpec {
         }
 
         let du = (self.resolution as f64).recip();
-        let u_max = self
-            .shape
-            .truncation_u(self.max_noise_floor - TAIL_OVER_FLOOR_DB)
+        let reach = self.max_half_span.unwrap_or_else(|| {
+            self.shape
+                .truncation_u(self.max_noise_floor - TAIL_OVER_FLOOR_DB)
+        });
+        let u_max = reach
             + self.max_rho.unwrap_or(0.5) * ((self.max_load_quantum + self.max_delay) as f64 + 1.5);
 
         let jet = QuadJet::standard(self.shape);
