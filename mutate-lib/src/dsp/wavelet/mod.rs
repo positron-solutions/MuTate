@@ -902,7 +902,7 @@ mod test {
 
     fn wavelet(q: f64, quantum: usize) -> Wavelet {
         WaveletSpec::default()
-            .with_shape(Shape::from_q(q, 3.0))
+            .shape(Shape::from_q(q, 3.0))
             .max_load_quantum(quantum)
             .max_truncation(WEAKEST_TAIL_DB)
             .bake()
@@ -943,7 +943,7 @@ mod test {
         for (wg, gamma) in GAMMAS.levels() {
             for (wq, q) in QS.levels() {
                 let wav = WaveletSpec::default()
-                    .with_shape(Shape::from_q(q, gamma))
+                    .shape(Shape::from_q(q, gamma))
                     .max_noise_floor(DEEPEST_DB)
                     .bake();
                 let s = wav.shape();
@@ -1023,7 +1023,7 @@ mod test {
         const SPAN: isize = 6;
 
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
+            .shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
@@ -1084,7 +1084,7 @@ mod test {
         let p = 4.0;
         for gamma in [1.0f64, 2.0, 3.0, 6.0] {
             let wav = WaveletSpec::default()
-                .with_shape(Shape {
+                .shape(Shape {
                     gamma,
                     beta: p * p / gamma,
                 })
@@ -1153,7 +1153,7 @@ mod test {
         const SPAN: f64 = 1.0;
 
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
+            .shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
@@ -1235,7 +1235,7 @@ mod test {
         const SPAN: isize = 6;
 
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
+            .shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
@@ -1313,7 +1313,7 @@ mod test {
         const WIDTH_TOL: f64 = 0.02;
 
         let w = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
+            .shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
             .max_truncation(FULL_DB)
             .bake();
@@ -1521,7 +1521,7 @@ mod test {
         for (_, gamma) in GAMMAS.levels() {
             for (_, q) in QS.levels() {
                 let wav = WaveletSpec::default()
-                    .with_shape(Shape::from_q(q, gamma))
+                    .shape(Shape::from_q(q, gamma))
                     .max_truncation(TAIL_DB.end())
                     .bake();
 
@@ -1582,7 +1582,7 @@ mod test {
         const TOL: f64 = 2e-3;
 
         let w = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, 3.0))
+            .shape(Shape::from_q(Q, 3.0))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
@@ -1626,7 +1626,7 @@ mod test {
         // default moment conditioning is updated.
         let wav = WaveletSpec::default()
             .max_truncation(TAIL_DB)
-            .with_refinement(Some(refine::Refinement::Reach {
+            .refinement(Some(refine::Refinement::Reach {
                 moments: &[0, 1, 2, 3],
                 jet: &[0, 1, 2, 3],
                 tangent: true,
@@ -1724,7 +1724,7 @@ mod test {
         for q in QS {
             for gamma in GAMMAS {
                 let wav = WaveletSpec::default()
-                    .with_shape(Shape::from_q(q, gamma))
+                    .shape(Shape::from_q(q, gamma))
                     .max_load_quantum(QUANTUM)
                     .max_truncation(TAIL_DB)
                     .bake();
@@ -2063,7 +2063,7 @@ mod test {
         // most of development.
 
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, GAMMA))
+            .shape(Shape::from_q(Q, GAMMA))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
@@ -2136,7 +2136,7 @@ mod test {
         const WORST_DB: f64 = -20.0;
 
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, GAMMA))
+            .shape(Shape::from_q(Q, GAMMA))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
@@ -2216,7 +2216,7 @@ mod test {
         const WORST_DB: f64 = -10.0;
 
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(Q, GAMMA))
+            .shape(Shape::from_q(Q, GAMMA))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
@@ -2307,7 +2307,7 @@ mod test {
             for q in PITCH_QS {
                 for tail in PITCH_TAILS {
                     let wav = WaveletSpec::default()
-                        .with_shape(Shape::from_q(q, gamma))
+                        .shape(Shape::from_q(q, gamma))
                         .max_load_quantum(PITCH_QUANTUM)
                         .max_truncation(tail)
                         .bake();
@@ -2431,9 +2431,7 @@ mod test {
             for rho in RHOS {
                 let shape = Shape::from_noise_floor(rho, floor, GAMMA);
                 let q = shape.q();
-                let spec = WaveletSpec::default()
-                    .with_shape(shape)
-                    .max_noise_floor(floor);
+                let spec = WaveletSpec::default().shape(shape).max_noise_floor(floor);
 
                 let wav = spec.max_rho(rho).bake();
                 let bin = wav.at_rho(rho);
@@ -2447,7 +2445,7 @@ mod test {
 
                 let breach = {
                     let wav = WaveletSpec::default()
-                        .with_shape(shape)
+                        .shape(shape)
                         .max_noise_floor(floor)
                         .bake();
                     let bin = wav.at_rho(rho * BREACH);
@@ -2630,7 +2628,7 @@ mod test {
             for q in PITCH_QS {
                 for (t, tail) in PITCH_TAILS.into_iter().enumerate() {
                     let wav = WaveletSpec::default()
-                        .with_shape(Shape::from_q(q, gamma))
+                        .shape(Shape::from_q(q, gamma))
                         .max_load_quantum(PITCH_QUANTUM)
                         .max_truncation(tail)
                         .bake();
@@ -2979,7 +2977,7 @@ mod test {
         for q in QS {
             for gamma in GAMMAS {
                 let wav = WaveletSpec::default()
-                    .with_shape(Shape::from_q(q, gamma))
+                    .shape(Shape::from_q(q, gamma))
                     .max_truncation(TAIL_DB)
                     .bake();
                 let p = wav.shape().p();

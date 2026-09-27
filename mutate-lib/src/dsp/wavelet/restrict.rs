@@ -718,7 +718,7 @@ mod test {
             for q in QS {
                 let shape = Shape::from_q(q, gamma);
                 let mut wav = WaveletSpec::default()
-                    .with_shape(shape)
+                    .shape(shape)
                     .max_truncation(TAIL_DB)
                     .bake();
                 wav.refinement = None;

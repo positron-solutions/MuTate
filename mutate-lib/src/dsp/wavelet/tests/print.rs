@@ -18,7 +18,7 @@ const RATE: f64 = 48_000.0;
 fn print_waveform() {
     const TAIL_DB: f64 = -20.0;
     let wav = WaveletSpec::default()
-        .with_shape(Shape::from_q(4.0, 1.0))
+        .shape(Shape::from_q(4.0, 1.0))
         .max_truncation(TAIL_DB)
         .bake();
 
@@ -78,9 +78,10 @@ fn print_response() {
     const RHOS: [f64; 1] = [0.312];
 
     let wav = WaveletSpec::default()
-        .with_shape(Shape::from_q(Q, 2.0))
+        .shape(Shape::from_q(Q, 3.0))
         .max_load_quantum(QUANTUM)
-        .max_truncation(TAIL_DB)
+        // .max_truncation(TAIL_DB)
+        .max_noise_floor(-100.0)
         .bake();
 
     for rho in RHOS {
@@ -176,7 +177,7 @@ fn print_chirp_transform() {
     const RHO_BOT: f64 = 0.002;
 
     let wav = WaveletSpec::default()
-        .with_shape(Shape {
+        .shape(Shape {
             beta: 3.0,
             gamma: 3.0,
         })

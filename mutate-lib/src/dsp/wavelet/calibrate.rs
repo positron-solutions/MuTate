@@ -97,10 +97,10 @@ impl Settings {
     /// A family at `q`, maxima left to the caller.
     pub fn wavelet(&self, q: f64) -> WaveletSpec {
         WaveletSpec::default()
-            .with_shape(self.shape(q))
+            .shape(self.shape(q))
             .resolution(self.resolution)
-            .with_restriction(self.restriction)
-            .with_refinement(self.refinement)
+            .restriction(self.restriction)
+            .refinement(self.refinement)
     }
 }
 

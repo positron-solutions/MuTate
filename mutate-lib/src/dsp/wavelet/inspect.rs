@@ -687,7 +687,7 @@ mod test {
         // the peak.
 
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(3.5, 3.0))
+            .shape(Shape::from_q(3.5, 3.0))
             .max_truncation(-120.0)
             .bake();
 

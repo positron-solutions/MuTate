@@ -334,13 +334,13 @@ impl WaveletSpec {
     }
 
     /// Set γ, holding Q.
-    pub fn with_gamma(mut self, gamma: f64) -> Self {
+    pub fn gamma(mut self, gamma: f64) -> Self {
         self.shape = Shape::from_q(self.shape.q(), gamma);
         self
     }
 
     /// Provide a [`Shape`] directly.
-    pub fn with_shape(mut self, shape: Shape) -> Self {
+    pub fn shape(mut self, shape: Shape) -> Self {
         self.shape = shape;
         self
     }
@@ -388,13 +388,13 @@ impl WaveletSpec {
     }
 
     /// Set the method for squeezing the high resolution motherlet into `N` taps.
-    pub fn with_restriction(mut self, restriction: restrict::Restriction) -> Self {
+    pub fn restriction(mut self, restriction: restrict::Restriction) -> Self {
         self.restriction = restriction;
         self
     }
 
     /// Set the method for restoring some of the pre-truncation transient response characteristics.
-    pub fn with_refinement(mut self, refine: Option<refine::Refinement>) -> Self {
+    pub fn refinement(mut self, refine: Option<refine::Refinement>) -> Self {
         self.refinement = refine;
         self
     }

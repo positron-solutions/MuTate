@@ -53,7 +53,7 @@ fn first_null_matches_dense_scan() {
     let mut failures = Vec::new();
     for (q, gamma, rho, dir) in CASES {
         let wav = WaveletSpec::default()
-            .with_shape(Shape::from_q(q, gamma))
+            .shape(Shape::from_q(q, gamma))
             .max_load_quantum(QUANTUM)
             .max_truncation(TAIL_DB)
             .bake();
@@ -139,7 +139,7 @@ fn reassignment_model_agrees() {
     const TOL_C: f64 = 5e-2;
 
     let wav = WaveletSpec::default()
-        .with_shape(Shape::from_q(Q, 3.0))
+        .shape(Shape::from_q(Q, 3.0))
         .max_truncation(TAIL_DB)
         .bake();
 
