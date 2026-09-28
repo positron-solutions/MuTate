@@ -358,7 +358,7 @@ pub mod defaults {
     #[cfg(debug_assertions)]
     pub const RESOLUTION: usize = 64;
     #[cfg(not(debug_assertions))]
-    pub const RESOLUTION: usize = 256;
+    pub const RESOLUTION: usize = 128;
 
     pub const DELAY: usize = 0;
     pub const GAMMA: f64 = 2.0;
