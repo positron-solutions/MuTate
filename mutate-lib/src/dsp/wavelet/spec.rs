@@ -30,7 +30,7 @@ use libm::{erfc, lgamma};
 use num_complex::Complex64;
 
 use super::defaults;
-use super::generate::{hermite, quadjet::QuadJet};
+use super::generate::quadjet::QuadJet;
 use super::inspect::bisect;
 use super::refine;
 use super::restrict;
@@ -49,6 +49,23 @@ pub(crate) const TAIL_OVER_FLOOR_DB: f64 = -10.0;
 pub const Q_FLOOR: f64 = 2.5;
 /// Temporary calibration for Q effective, which is proportionate, not equal to N^{-3/2}.
 pub const Q_REASSIGNMENT_CAL: f64 = 1.0;
+
+/// Saddle continuation steps per envelope sigma.
+const SADDLE_STEPS: f64 = 4.0;
+const SADDLE_NEWTON: usize = 3;
+
+/// |ψ|² at t = 2πu/ω_p as saddle and endpoint parts, logs in the units of Ψ = ω^β e^{−ω^γ}.
+struct Parts {
+    t: f64,
+    /// ω_s
+    w: Complex64,
+    /// φ''(ω_s)
+    c: Complex64,
+    /// ln |ψ_s|², scaled to the exact ψ(0)
+    saddle: f64,
+    /// ln |ψ_a|², −∞ before Watson
+    endpoint: f64,
+}
 
 /// Controls Q and other critical tradeoffs of the Morse family wavelet parameters.  For exact
 /// details, consult [real graphs](https://arxiv.org/pdf/1203.3380).
@@ -143,21 +160,6 @@ impl Shape {
         0..(2.0 * self.beta + 1.0).ceil() as u32
     }
 
-    /// x = ω/ω₀ below the crest where the skirt meets the floor.
-    ///
-    /// ```text
-    /// β ln x + (β/γ)(1 − xᵞ) = floor ln10 / 20
-    /// ```
-    pub fn skirt(&self, noise_floor: f64) -> f64 {
-        let Shape { beta, gamma } = *self;
-        let np = -noise_floor.abs() * LN_10 / 20.0;
-        let mut x = ((np - beta / gamma) / beta).exp();
-        for _ in 0..8 {
-            x = ((np - beta / gamma * (1.0 - x.powf(gamma))) / beta).exp();
-        }
-        x
-    }
-
     /// Nyquist fold of a bin at `rho`, in dB under the passband crest.
     ///
     /// ```text
@@ -206,60 +208,108 @@ impl Shape {
         Q_REASSIGNMENT_CAL * 2.0 * self.q() * self.snr_out(rho, snr_db).sqrt()
     }
 
-    /// Model estimate of the truncation point in carrier periods.
-    ///
-    /// ```text
-    /// μ = 10^(-|tail_db| / 10)
-    /// 2C t^(-p) = μ
-    /// erfc(t ω_p / P) = μ
-    /// u = t ω_p / 2π
-    /// ```
-    pub fn truncation_u(&self, tail_db: f64) -> f64 {
-        // NEXT we can absolutely switch over to a pre-baked empirical estimate.  The analytic
-        // estimates are just good enough to get off the ground.  Some combination of using the
-        // envelope estimation for its math and our high-quality generators can create something
-        // accurate to 1% or so pretty handily.  Given how load quantum must work, it's basically
-        // meaningless to chase further tail precision except that the noise floor estimates will
-        // tighten up.  The actual noise floor will not get any better for a given `tail_db`, but
-        // we will estimate it better.
-
+    /// φ'' = −β/ω² − γ(γ−1)ω^{γ−2}
+    fn curvature(&self, w: Complex64) -> Complex64 {
         let Shape { beta, gamma } = *self;
-        // 2β + 1, the algebraic decay exponent
-        let a = 2.0 * beta + 1.0;
-        let l = tail_db.abs() / 10.0 * LN_10;
+        -beta / (w * w) - gamma * (gamma - 1.0) * w.powf(gamma - 2.0)
+    }
 
-        // Gaussian bulk about ω_p
-        let u_gauss = erfc_inv_exp(l) * self.p() / TAU;
+    /// ω_s solving β/ω − γω^{γ−1} + it = 0, continued from ω_p at t = 0.
+    fn saddle(&self, t: f64) -> Complex64 {
+        let Shape { beta, gamma } = *self;
+        // t / σ_t,  σ_t = P / ω_p
+        let steps = (SADDLE_STEPS * t * self.peak() / self.p()).ceil().max(1.0) as usize;
+        let mut w = Complex64::new(self.peak(), 0.0);
+        for s in 1..=steps {
+            let it = Complex64::new(0.0, t * s as f64 / steps as f64);
+            for _ in 0..SADDLE_NEWTON {
+                w -= (beta / w - gamma * w.powf(gamma - 1.0) + it) / self.curvature(w);
+            }
+        }
+        w
+    }
 
-        // algebraic tails from the branch point at ω = 0
-        let log_c = LN_2 + gamma.ln() + (a / gamma) * LN_2 + 2.0 * lgamma(beta + 1.0)
-            - TAU.ln()
-            - a.ln()
-            - lgamma(a / gamma);
-        let t_alg = ((log_c + l) / a).exp();
+    /// ln |ψ(0)|² = 2 ln(Γ((β+1)/γ) / 2πγ)
+    fn ln_center(&self) -> f64 {
+        2.0 * (lgamma((self.beta + 1.0) / self.gamma) - self.gamma.ln() - TAU.ln())
+    }
 
-        // Watson ratio Γ(β+1+γ) / Γ(β+1) t^γ = 1
-        let t_watson = ((lgamma(beta + 1.0 + gamma) - lgamma(beta + 1.0)) / gamma).exp();
+    fn parts(&self, u: f64) -> Parts {
+        let Shape { beta, gamma } = *self;
+        let (wp, p) = (self.peak(), self.p());
+        let t = TAU * u / wp;
 
-        if t_alg > t_watson {
-            u_gauss.max(t_alg * self.peak() / TAU)
-        } else {
-            u_gauss
+        // ln |ψ(0)|² exact over saddle
+        let k0 = self.ln_center()
+            - (2.0 * (beta * wp.ln() - beta / gamma) - TAU.ln() - 2.0 * (p / wp).ln());
+
+        let w = self.saddle(t);
+        let c = self.curvature(w);
+        let phi = beta * w.ln() - w.powf(gamma) + Complex64::new(0.0, t) * w;
+        let watson = ((lgamma(beta + 1.0 + gamma) - lgamma(beta + 1.0)) / gamma).exp();
+
+        Parts {
+            t,
+            w,
+            c,
+            saddle: 2.0 * phi.re - TAU.ln() - c.norm().ln() + k0,
+            // |ψ_a|² = Γ(β+1)² / 4π² t^{2β+2}
+            endpoint: match t > watson {
+                true => 2.0 * lgamma(beta + 1.0) - 2.0 * TAU.ln() - 2.0 * (beta + 1.0) * t.ln(),
+                false => f64::NEG_INFINITY,
+            },
         }
     }
 
-    /// Tail whose `truncation_u` is `u`, held to the model's monotone range of −3 to −400 dB.
+    /// ln(a(u)/a(0)) and the elasticity −u a'/a of the envelope.
+    ///
+    /// ```text
+    /// |ψ|² = |ψ_s|² + |ψ_a|²
+    /// s = (|ψ_s|² t Im ω_s + |ψ_a|² (β + 1)) / |ψ|²
+    /// ```
+    pub fn envelope(&self, u: f64) -> (f64, f64) {
+        let e = self.parts(u);
+        let total = log_add(e.saddle, e.endpoint);
+        // endpoint share of |ψ|²
+        let share = (e.endpoint - total).exp();
+        let s = (1.0 - share) * e.t * e.w.im + share * (self.beta + 1.0);
+        (0.5 * (total - self.ln_center()), s)
+    }
+
+    /// Energy outside ±u carrier periods as a share of the whole, in dB.
+    ///
+    /// ```text
+    /// f' = −2 Im ω_s,  f'' = 2 Re 1/φ''
+    /// ∫_T^∞ |ψ_s|² = |ψ_s(T)|² √(π / 2|f''|) erfcx(|f'| / √(2|f''|))
+    /// ∫_T^∞ |ψ_a|² = |ψ_a(T)|² T / (2β + 1)
+    /// μ = ∫_T^∞ (|ψ_s|² + |ψ_a|²) / ½∫|ψ|²
+    /// ```
     pub fn truncation_tail(&self, u: f64) -> f64 {
-        const SHALLOW: f64 = -3.0;
-        const DEEP: f64 = -400.0;
-        match (
-            self.truncation_u(SHALLOW) >= u,
-            self.truncation_u(DEEP) <= u,
-        ) {
-            (true, _) => SHALLOW,
-            (_, true) => DEEP,
-            _ => bisect(|t| self.truncation_u(t) - u, SHALLOW, DEEP),
+        let Shape { beta, gamma } = *self;
+        let e = self.parts(u);
+
+        // |f'|, |f''|
+        let (a, b) = (2.0 * e.w.im, (-2.0 * e.c.inv().re).max(f64::MIN_POSITIVE));
+        let saddle = e.saddle + 0.5 * (PI / (2.0 * b)).ln() + erfcx(a / (2.0 * b).sqrt()).ln();
+        // 2β + 1
+        let n = 2.0 * beta + 1.0;
+        let endpoint = e.endpoint + e.t.ln() - n.ln();
+
+        // ln ½∫|ψ|² = ln Γ(r) − ln γ − r ln 2 − ln 4π,  r = (2β + 1)/γ
+        let r = n / gamma;
+        let half = lgamma(r) - gamma.ln() - r * LN_2 - (2.0 * TAU).ln();
+        0.5 * DB_PER_NP * (log_add(saddle, endpoint) - half)
+    }
+
+    /// Least half span in carrier periods whose `truncation_tail` reaches `tail_db`.
+    pub fn truncation_u(&self, tail_db: f64) -> f64 {
+        let goal = -tail_db.abs();
+        // x = 1, doubled past the goal
+        let mut hi = self.p() / TAU;
+        while self.truncation_tail(hi) > goal {
+            hi *= 2.0;
         }
+        bisect(|u| self.truncation_tail(u) - goal, 0.0, hi)
     }
 }
 
@@ -286,17 +336,25 @@ fn fold_reach(cost: f64, gamma: f64) -> f64 {
     f
 }
 
-/// erfc⁻¹(e^(-l))
-fn erfc_inv_exp(l: f64) -> f64 {
-    // x² + ½ ln(π x²) = l
-    let x = (l - 0.5 * (PI * l).ln()).sqrt();
-
-    // Newton on ln erfc
-    let le = erfc(x).ln();
-    x + (le + l) * (le + x * x).exp() / FRAC_2_SQRT_PI
+/// ln(eᵃ + eᵇ)
+fn log_add(a: f64, b: f64) -> f64 {
+    let (hi, lo) = (a.max(b), a.min(b));
+    hi + (lo - hi).exp().ln_1p()
 }
 
-/// Maxima for the family. Every bin served by the bake sits under these.
+/// e^{y²} erfc(y), y ≥ 0
+fn erfcx(y: f64) -> f64 {
+    match y < 20.0 {
+        true => (y * y).exp() * erfc(y),
+        // (1/y√π)(1 − 1/2y² + 3/4y⁴)
+        false => {
+            let z = (y * y).recip();
+            0.5 * FRAC_2_SQRT_PI / y * (1.0 - 0.5 * z + 0.75 * z * z)
+        }
+    }
+}
+
+/// The `WaveletSpec` supports
 #[derive(Clone, Copy)]
 pub struct WaveletSpec {
     pub(super) shape: Shape,
@@ -490,6 +548,7 @@ impl BinSpec {
         }
     }
 
+    /// Likely not implemented yet
     pub fn delay(self, delay: usize) -> Self {
         Self { delay, ..self }
     }

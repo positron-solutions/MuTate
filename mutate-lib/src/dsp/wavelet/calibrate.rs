@@ -3,15 +3,41 @@
 
 //! # Calibrate
 //!
+//! Measure filter behavior versus configuration parameters.  Predict [`Bin`] configurations needed
+//! to achieve goal behaviors without baking any [`Wavelet`]s.
+//!
 //! > Poca agua bendita sale de un dique reventado.
 //! >
 //! > - Ernesto Guaraná
 //!
-//! Fitted relations between truncation, Q, ρ, and the delivered response.  Each relation carries
-//! the analytic shape of what it measures, so a fit is a handful of coefficients, enabling filter
-//! banks to be planned without baked wavelets on hand.
+//! ## Motivation
 //!
-//! ## Primary and Derived
+//! We want to plan filter banks.  This requires control over filter behavior at each bin.  However,
+//! even at a constant Q and truncation setting:
+//!
+//! - The noise floor rises with ρ (our filters are L1 normalized by default)
+//! - Wide main lobes and skirts begin to fold after the Nyquist limit, adding mirror response to at
+//!   negative frequency, corrupting reassignment signal.
+//! - High truncation settings begin eating the filter body, broadening the main lobes.
+//! - Mild analytic deviations exist across γ, Q, and
+//!
+//! All of this means that the filter the user asks for can never be the filter they get without
+//! using a complete model of the related behaviors.
+//!
+//! Furthermore, modeling the critical `Q_reassign`, the effective bandwidth after including the
+//! precision of pitch reassignment, can only be derived from an accurate model of signal-to-noise
+//! ratio in response to musically relevant pitch offsets.  Inaccurate, purely analytic
+//! understanding of main lobe widths and skirts would compound errors in those estimates, leading
+//! to banded response patterns where parts of the bank perform as advertised while other parts are
+//! frustrated by the local bias patterns.
+//!
+//! Finally, measuring the intended response for every single wavelet through trial-and-error would
+//! require building a [`Wavelet`] for each trial, which gets expensive fast.  Both banks and tests
+//! need many wavelets.  Persisting a calibrated map of the responses for a whole family of wavelets
+//! enables cheap predictions.  Because each relation carries the analytic shape of what it
+//! measures, a fit is a handful of coefficients.
+//!
+//! ## Primary and Derived Quantities
 //!
 //! The tail at the cut and the Nyquist fold are analytic.  PSL and main lobe width are measured and
 //! tight.  Floor is the skirt read at the antipode, so it fits only the decay out from the PSL.
@@ -40,6 +66,9 @@
 //! Predictions are envelopes.  Levels rise by a margin and the knee scales by one, each covering
 //! `ENVELOPE` of measured bins, so plans over deliver rather than miss.  Levels on table rounding
 //! and cells whose fold breaks the shallowest plan stay out of the fits.
+
+// 🤖 Mostly generated so far.  Working on the user API.  Keep it working, but don't worry about
+// stepping on anyone's pet lines of code.
 
 use core::f64::consts::{PI, TAU};
 
@@ -118,7 +147,7 @@ impl Default for Sweep {
         Sweep {
             qs: &[3.5, 6.0, 12.0, 20.0],
             rhos: &[0.05, 0.15, 0.2, 0.25, 0.3, 0.4],
-            xs: (1.5, 5.25, 0.1),
+            xs: (2.0, 5.25, 0.1),
         }
     }
 }
@@ -220,24 +249,24 @@ impl Fit {
 
     /// Knee settings, printed by `calibration_is_fit` once accepted.
     pub const CALIBRATED: Fit = Fit {
-        p_0: -10.118723642582511,
-        p_slope: 0.43442544472056693,
-        p_rho: -7.757918861949815,
-        p_lobe: -32.074157932850305,
+        p_0: -11.666820569063718,
+        p_slope: -0.2935918566464073,
+        p_rho: -3.1763379447535125,
+        p_lobe: -107.69384308936678,
         floor: Decay {
-            base: 32.01926378079011,
-            tail: -0.09879417859873572,
-            reach: 1.9271081645502206,
+            base: 38.41209779698655,
+            tail: 0.01848431251887577,
+            reach: 2.6494544373459683,
         },
-        w_knee: 1.4587578875268694,
-        w_n: -0.7561637357396441,
-        w_m: 0.6790987014936953,
-        span: (1.5093749342022347, 5.498437260308141),
+        w_knee: 2.05022891556142,
+        w_n: -0.43711836348271854,
+        w_m: 0.6776895798425826,
+        span: (2.009355381156725, 5.498437260308141),
         margin: Margin {
-            psl: 1.9009751022461145,
-            floor: 2.1460456192528596,
-            fold: 3.721808210498537,
-            knee: 1.1339562083434718,
+            psl: 2.748700258153704,
+            floor: 9.86477496637184,
+            fold: 2.983412775955429,
+            knee: 1.1323489524574923,
         },
     };
 
@@ -354,6 +383,17 @@ impl Fit {
             fold: quantile(fold, ENVELOPE),
             knee: quantile(knee, ENVELOPE),
         }
+    }
+
+    /// Tail whose PSL envelope lands on `psl` at `rho`.
+    ///
+    /// ```text
+    /// t = (psl − m_psl − p_0 − ρ(p_rho + p_lobe/Q)) / (1 + p_slope/P)
+    /// ```
+    pub fn tail_for_psl(&self, shape: Shape, rho: f64, psl: f64) -> f64 {
+        let (q, p) = (shape.q(), shape.p());
+        (psl - self.margin.psl - self.p_0 - rho * (self.p_rho + self.p_lobe / q))
+            / (1.0 + self.p_slope / p)
     }
 }
 
@@ -635,6 +675,11 @@ mod test {
     use super::super::harness::{at, Ledger};
     use super::*;
 
+    // NOTE The tests have two parts:
+    //
+    // - Run a fresh calibration via `make_calibration`
+    // - Test the `Calibration::CALIBRATED` via
+
     /// Plans off the calibration ladder deliver their floors and sit under the calibration's own
     /// envelopes.  Margins must sit under ceilings contaminated fits cross.  Wishes and over
     /// delivery are reported, not judged.
@@ -804,7 +849,7 @@ mod test {
     /// to paste as `Fit::CALIBRATED` once accepted.
     #[test]
     #[ignore]
-    fn calibration_is_fit() {
+    fn make_calibration() {
         /// x band edges from the knee's domain, shallow to deep.
         const BANDS: [f64; 6] = [1.5, 2.25, 3.0, 3.5, 4.0, 6.0];
 

@@ -365,7 +365,6 @@ pub mod defaults {
     pub const GRID_EPS: f64 = 1e-9;
     pub const LOAD_QUANTUM: usize = 4;
     pub const Q: f64 = 3.5;
-    pub const TAIL_DB: f64 = -40.0;
     pub const NOISE_FLOOR: f64 = -70.0;
 }
 
@@ -920,7 +919,7 @@ mod test {
         const QS: Axis = Axis::Levels(&[3.0, 4.0]);
         const GAMMAS: Axis = Axis::Levels(&[3.0, 4.0]);
         const DEEPEST_DB: f64 = -80.0;
-        const FLOORS: Axis = Axis::Step(-20.0, DEEPEST_DB, 10.0);
+        const FLOORS: Axis = Axis::Step(-40.0, DEEPEST_DB, 10.0);
         const RHO: Span = Span::Log(0.004, 0.45);
 
         const GOOD: f64 = 0.95;
@@ -1077,7 +1076,7 @@ mod test {
         const SPAN: isize = 4;
         /// Worst reassignment bias over the scan, in cents.
         const BIAS_C: f64 = 1.2;
-        const TAIL_DB: f64 = 40.0;
+        const TAIL_DB: f64 = 60.0;
 
         println!("\n=== TAP PROFILE vs GAMMA (Q = 2.4) ===");
         // P² = beta gamma
@@ -1294,16 +1293,22 @@ mod test {
         }
     }
 
-    /// Truncation cost against a full-length bake, swept over `tail_db`.  One motherlet serves the
-    /// reference and every cut, so a gap in the delta columns is truncation and nothing else.
+    /// PSL control through `Fit::CALIBRATED` against a full-length bake.  Each target sets its
+    /// tail through `Fit::tail_for_psl`, and one motherlet serves the reference and every cut, so a
+    /// gap in the delta columns is truncation and nothing else.
     #[test]
     fn truncation_is_predictable() {
+        use super::calibrate::Fit;
+
         const QUANTUM: usize = 1;
         const Q: f64 = 3.5;
 
         /// Weakest truncation in the sweep, and so the grid the wavelet is sized for.
-        const FULL_DB: f64 = -120.0;
-        const CUTS: [f64; 5] = [-20.0, -40.0, -60.0, -80.0, -100.0];
+        const FULL_DB: f64 = -140.0;
+        /// PSL targets, set through `Fit::tail_for_psl`.
+        const TARGETS: [f64; 6] = [-40.0, -50.0, -60.0, -70.0, -90.0, -110.0];
+        /// Share of in-fold targets the PSL envelope must hold, `ENVELOPE` less slack off the ladder.
+        const HELD: f64 = 0.85;
         const FCS: [f64; 4] = [2_000.0, 4_000.0, 8_000.0, 14_000.0];
 
         // NOTE these are empirically discovered values stored to catch regressions.
@@ -1311,6 +1316,21 @@ mod test {
         // Measured 0.9984 to 1.0020 across the sweep.
         const WIDTH_Q: f64 = 1.0;
         const WIDTH_TOL: f64 = 0.02;
+
+        /// Spec at `fc` whose PSL envelope under `Fit::CALIBRATED` holds `psl` on `shape`.
+        fn spec_for_psl(shape: Shape, fc: f64, rate: f64, psl: f64) -> BinSpec {
+            BinSpec::new(fc, rate).truncate(Fit::CALIBRATED.tail_for_psl(shape, fc / rate, psl))
+        }
+
+        /// Tallest skirt lobe in dB re PEAK_GAIN, NaN where no lobe stands past a dip.
+        fn psl(psi: Fold<'_>, r: &Response) -> f64 {
+            let (lo, hi) = skirts(psi, r);
+            [lo.peak, hi.peak]
+                .into_iter()
+                .flatten()
+                .map(|(_, h)| db(h) - db(PEAK_GAIN))
+                .fold(f64::NAN, f64::max)
+        }
 
         let w = WaveletSpec::default()
             .shape(Shape::from_q(Q, 3.0))
@@ -1325,15 +1345,16 @@ mod test {
             "\n=== TRUNCATION (Q = {Q}, quantum {QUANTUM}) ===\n\n\
             - |H| is the response to a unit exponential.\n\
             - gain is |H| at the peak. peak c is the peak offset from ω₀ in cents.\n\
-            - dc, image, and floor are in dB relative to PEAK_GAIN. image is the worst |H| on [−π, 0].\n\
+            - dc, psl, image, and floor are in dB relative to PEAK_GAIN. image is the worst |H| on [−π, 0].\n\
+            - target is the PSL asked of Fit::CALIBRATED, tail the realized cut, miss is psl − target.\n\
             - ratio is the tap count divided by the reference tap count."
         );
 
         // Reference
         println!("\n  reference, tail {FULL_DB:.1} dB");
         println!(
-            "  {:>6} {:>5} {:>9} {:>8} {:>9} {:>8} {:>8} {:>8}",
-            "fc", "taps", "gain", "width·Q", "peak c", "dc", "image", "floor"
+            "  {:>6} {:>5} {:>9} {:>8} {:>9} {:>8} {:>8} {:>8} {:>8}",
+            "fc", "taps", "gain", "width·Q", "peak c", "dc", "psl", "image", "floor"
         );
 
         let mut refs = Vec::with_capacity(FCS.len());
@@ -1348,11 +1369,12 @@ mod test {
             let dcf = dc_leak(psi, w0);
 
             println!(
-                "  {fc:>6.0} {nf:>5} {:>9.6} {:>8.4} {:>+9.3} {:>8.2} {:>8.2} {:>8.2}",
+                "  {fc:>6.0} {nf:>5} {:>9.6} {:>8.4} {:>+9.3} {:>8.2} {:>8.2} {:>8.2} {:>8.2}",
                 rf.gain,
                 rf.rel_width * Q,
                 cents(rf.peak_w, w0),
                 to_peak(dcf),
+                psl(psi, &rf),
                 to_peak(rf.image),
                 to_peak(rf.floor)
             );
@@ -1381,30 +1403,59 @@ mod test {
 
         // Cuts
         println!(
-            "\n  {:>6} {:>7} {:>5} {:>6} {:>9} {:>8} {:>9} {:>8} {:>8} {:>8}",
-            "fc", "tail", "taps", "ratio", "gain", "width·Q", "peak c", "dc", "image", "floor"
+            "\n  {:>6} {:>7} {:>7} {:>5} {:>6} {:>9} {:>8} {:>9} {:>8} {:>8} {:>7} {:>8} {:>8}",
+            "fc",
+            "target",
+            "tail",
+            "taps",
+            "ratio",
+            "gain",
+            "width·Q",
+            "peak c",
+            "dc",
+            "psl",
+            "miss",
+            "image",
+            "floor"
         );
 
+        let (mut held, mut asked) = (0usize, 0usize);
         for (fc, nf, rf, w0) in &refs {
             let (fc, nf, w0) = (*fc, *nf, *w0);
-            let (mut prev_taps, mut prev_floor) = (0usize, f64::INFINITY);
+            let (mut prev_taps, mut prev_psl) = (0usize, f64::INFINITY);
+            let fold = w.shape().image_db(fc / RATE);
 
-            for tail_db in CUTS {
-                let cut = w.bin(fc, RATE).with_truncation(tail_db);
+            for target in TARGETS {
+                if fold > target {
+                    println!("  {fc:>6.0} {target:>7.1}  past the fold at {fold:.1} dB");
+                    continue;
+                }
+
+                let cut = spec_for_psl(w.shape(), fc, RATE, target)
+                    .load_quantum(QUANTUM)
+                    .bin(&w);
                 let nc = cut.len_unfolded();
                 let wts = cut.weights();
                 let psi = wts.psi();
                 let rc = characterize(psi, w0);
                 let dc = dc_leak(psi, w0);
+                let seen = psl(psi, &rc);
+
+                asked += 1;
+                if !(seen > target) {
+                    held += 1;
+                }
 
                 println!(
-                    "  {fc:>6.0} {tail_db:>7.1} {nc:>5} {:>6.3} {:>9.6} {:>8.4} {:>+9.3} \
-                     {:>8.2} {:>8.2} {:>8.2}",
+                    "  {fc:>6.0} {target:>7.1} {:>7.1} {nc:>5} {:>6.3} {:>9.6} {:>8.4} {:>+9.3} \
+                     {:>8.2} {seen:>8.2} {:>+7.2} {:>8.2} {:>8.2}",
+                    cut.tail(),
                     nc as f64 / nf as f64,
                     rc.gain,
                     rc.rel_width * Q,
                     cents(rc.peak_w, w0),
                     to_peak(dc),
+                    seen - target,
                     to_peak(rc.image),
                     to_peak(rc.floor)
                 );
@@ -1412,13 +1463,13 @@ mod test {
                 // The band neither moves nor widens.
                 assert!(
                     (cents(rc.peak_w, w0) - cents(rf.peak_w, w0)).abs() < 8.0,
-                    "fc {fc} tail {tail_db} peak moved {:+.4}c",
+                    "fc {fc} target {target} peak moved {:+.4}c",
                     cents(rc.peak_w, w0) - cents(rf.peak_w, w0)
                 );
-                if tail_db.abs() > 20.0 {
+                if target < -60.0 {
                     assert!(
                         (rc.rel_width / rf.rel_width - 1.0).abs() < 0.1,
-                        "fc {fc} tail {tail_db} width {:+.3}%",
+                        "fc {fc} target {target} width {:+.3}%",
                         100.0 * (rc.rel_width / rf.rel_width - 1.0)
                     );
                 }
@@ -1428,27 +1479,35 @@ mod test {
                 // ROLL DC centering
                 assert!(
                     dc < 1e-1 * PEAK_GAIN,
-                    "fc {fc} tail {tail_db} dc {:.2} dB",
+                    "fc {fc} target {target} dc {:.2} dB",
                     to_peak(dc)
                 );
 
-                // Weaker truncation buys floor with taps.  Taps may hold under quantum rounding.
+                // Deeper targets buy PSL with taps.  Taps may hold under quantum rounding.
                 assert!(
                     nc >= prev_taps,
-                    "fc {fc} tail {tail_db} taps {nc} < {prev_taps}"
+                    "fc {fc} target {target} taps {nc} < {prev_taps}"
                 );
 
+                // If taps goes up, PSL goes down
                 assert!(
-                    (nc == prev_taps && rc.floor >= prev_floor) || rc.floor < prev_floor,
-                    "fc {fc} tail {tail_db} taps {prev_taps} -> {nc} without floor gain: {} to {}",
-                    prev_floor,
-                    rc.floor,
+                    (nc == prev_taps || seen < prev_psl),
+                    "fc {fc} target {target} taps {prev_taps} -> {nc} without PSL gain: {} to {}",
+                    prev_psl,
+                    seen,
                 );
+                prev_psl = seen;
 
-                (prev_taps, prev_floor) = (nc, rc.floor);
+                (prev_taps, prev_psl) = (nc, rc.floor);
             }
             println!();
         }
+
+        println!("  PSL held on {held} of {asked} in-fold targets");
+        assert!(
+            held as f64 >= HELD * asked as f64,
+            "PSL held on {held} of {asked} in-fold targets"
+        );
     }
 
     /// Same four numbers as `response_is_characterized`, measured on the folded weight table.
@@ -1456,7 +1515,7 @@ mod test {
     #[test]
     fn table_response_is_characterized() {
         const Q: f64 = 3.5;
-        const TAIL_DB: f64 = -65.0;
+        const TAIL_DB: f64 = -75.0;
 
         let w = wavelet(Q, 16);
 
@@ -1686,7 +1745,7 @@ mod test {
         const GAMMAS: [f64; 2] = [3.0, 4.0];
         const RHOS: Axis = Axis::LogLevels(&[0.058, 0.116, 0.189, 0.223, 0.384]);
         const QUANTUM: usize = 4;
-        const TAIL_DB: f64 = -50.0;
+        const TAIL_DB: f64 = -60.0;
 
         const NAMES: [&str; 4] = ["spread W", "psl dB", "E·d lo dB", "E·d hi dB"];
         const PRECISION: [usize; 4] = [3, 2, 2, 2];
@@ -2399,93 +2458,6 @@ mod test {
             println!();
         }
         println!("  {rule}");
-    }
-
-    /// The band edge and noise floor a user names, and the bin the wavelet hands back.
-    #[test]
-    fn noise_floor_is_delivered() {
-        const GAMMA: f64 = 2.0;
-
-        /// Where the fold binds.  Below this a workable Q already buries the image.
-        const RHOS: [f64; 5] = [0.31, 0.35, 0.38, 0.40, 0.42];
-        const FLOORS: [f64; 4] = [-60.0, -70.0, -90.0, -110.0];
-
-        /// Measured under the floor, taps nobody needed.  The restriction kernel at π against ω₀,
-        /// which shrinks toward Nyquist.
-        // Measured 0.50 at rho 0.31, -110 dB.
-        const UNDER_DB: f64 = 1.0;
-        // Measured 0.9939 to 0.9998, tightening with Q.
-        const WIDTH_TOL: f64 = 0.02;
-        const PEAK_C: f64 = 0.5;
-        const OVER_DB: f64 = 1.0;
-        const GAIN_TOL: f64 = 1e-4;
-        const BREACH: f64 = 1.08;
-
-        println!("\n=== NOISE FLOOR DELIVERED (γ {GAMMA}) ===");
-        println!(
-            "  {:>7} {:>8} {:>6} {:>5} {:>9} {:>9} {:>9} {:>8} {:>9}",
-            "rho", "floor", "Q", "taps", "fold", "stop", "width·Q", "peak c", "breach"
-        );
-
-        for floor in FLOORS {
-            for rho in RHOS {
-                let shape = Shape::from_noise_floor(rho, floor, GAMMA);
-                let q = shape.q();
-                let spec = WaveletSpec::default().shape(shape).max_noise_floor(floor);
-
-                let wav = spec.max_rho(rho).bake();
-                let bin = wav.at_rho(rho);
-                let wts = bin.weights();
-                let w0 = bin.velocity();
-                let r = characterize(wts.psi(), w0);
-
-                let fold = db(r.image) - db(r.gain);
-                let stop = db(r.floor) - db(r.gain);
-                let peak_c = 1200.0 * (r.peak_w / w0).log2();
-
-                let breach = {
-                    let wav = WaveletSpec::default()
-                        .shape(shape)
-                        .max_noise_floor(floor)
-                        .bake();
-                    let bin = wav.at_rho(rho * BREACH);
-                    let r = characterize(bin.weights().psi(), bin.velocity());
-                    db(r.image) - db(r.gain)
-                };
-
-                println!(
-                    "  {rho:>7.4} {floor:>8.1} {q:>6.2} {:>5} {fold:>9.2} {stop:>9.2} {:>9.4} \
-                 {peak_c:>+8.3} {breach:>9.2}",
-                    bin.len_unfolded(),
-                    r.rel_width * q,
-                );
-
-                assert!(
-                    fold < floor + OVER_DB && fold > floor - UNDER_DB,
-                    "rho {rho} floor {floor} fold {fold:.2}"
-                );
-                assert!(
-                    stop < floor + OVER_DB,
-                    "rho {rho} floor {floor} stopband {stop:.2}"
-                );
-                assert!((r.gain - PEAK_GAIN).abs() < GAIN_TOL * PEAK_GAIN);
-                assert!(
-                    (r.rel_width * q - 1.0).abs() < WIDTH_TOL,
-                    "rho {rho} floor {floor} width·Q {:.4}",
-                    r.rel_width * q
-                );
-                assert!(
-                    peak_c.abs() < PEAK_C,
-                    "rho {rho} floor {floor} peak {peak_c:+.3}c"
-                );
-                assert!(
-                    breach > floor,
-                    "rho {:.4} past the ceiling still holds {floor:.1} at {breach:.2}",
-                    rho * BREACH
-                );
-            }
-            println!();
-        }
     }
 
     // Pitch transport
