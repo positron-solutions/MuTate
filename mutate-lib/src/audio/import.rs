@@ -49,18 +49,17 @@
 //!
 //! // A minimal callback that just returns the number of occupied samples, enabling the upstream to
 //! // reclaim the entire ring after each callback.
-//! let callback = |view| {return view.occupied_len()};
+//! let callback = |view| {return view.read_count() };
 //!
 //! // Initialize a stream onto the device (initialization not shown);
-//! let stream = context.import_to_device::<2, _>(&device, &choice, 48_000, "mutate", callback)?;
+//! let stream = context.import_to_device::<2, _>(&device, &choice, 6_000, "µTate", callback)?;
 //!
 //! ```
 //!
 //! ### Memory Layout
 //!
-//! A single device allocation is used for control data and all channels.  Each channel is laid out
-//! in a single contiguous sub-allocation but with slight padding for the device flush atom size.
-//! Call [`channel_offsets`] to obtain these sub-allocation offsets.
+//! A single allocation is used for all channels and data is stored planar, not interleaved.
+//! Channel zero is left by convention.
 //!
 //! ## Ownership
 //!
@@ -68,30 +67,16 @@
 //! `AudioConsumer` owns the upstream pipewire stream (`AudioConnection`, not the entire
 //! `AudioContext`).
 
-// DEBT We've hit a mildly intersection between manual drop of Vulkan resources (which require
-// owning a device pointer in order to drop) and the tombstone style cooperative drop of either end
-// of audio server connections.  If the Vulkan resources could be dropped into a deletion queue, we
-// don't really need to change `Device` ownership physics because ownership of drop-queue capable
-// references becomes decoupled from logical device.  Resource management can't come soon enough.
-// DEBT Tbh, we don't need the intermediate consumer ring.  If we read into host-mapped memory,
-// release the pipewire chunks, and then flush, we are just as fast as when using an intermediate
-// ring.  Consistent visibility for consumers is the last concern that may motivate an intermediate
-// ring buffer.  We have to update control data.  The initial pipewire read doesn't want to wait on
-// that.  Currently we are also de-interleaving to planar for SoA on the device.  Pipewire can do
-// the de-interleaving, but this will require work on pipewire side to support multiple rings on the
-// process callback side.
 // DEBT Sample formats.
-// NOTE Channels are doing a fairly naive sub-allocation that could be re-derived on demand.
-// Storing the full array of offsets was chosen to duplicate less logic on the device.
-// NEXT sub-allocation alignments were not designed for wide loads.  Vectorized reading of the ring
-// is a bit more complex for the consumer, more complexity than it's worth on this pass.
+// NEXT sub-allocation alignments were not designed for wide loads.  Just support vectorized reading
+// in case a consumer wants that.
 // NEXT consumer hazard tracking and slack rotation-reclaim support on producer so that
-// discontinuities are swallowed faster and without being presented to the consumer.
-// DEBT pipewire mis-indirection.  We may still need one set of hooks outside pipewire because our
-// model is to put one callback in pipewire.  After the main connection takes ownership of the
-// pipewire chunks, we want to run a callback to write to the GPU ring.  Multiple downstreams can
-// dispatch on that as soon as it's written, either notifying a thread owned by the downstream or
-// just doing the dispatch synchronously.
+// discontinuities are swallowed faster and without restart discontinuities being presented to the
+// consumer.
+// DEBT pipewire mis-indirection.  We don't need an intermediate ring in the AudioConsumer. A simple
+// copy into mapped memory, with or without intermediate buffer to allow pipewire to reclaim as soon
+// as possible, would do just fine.  Pipewire probably can de-interleave faster already, but we have
+// to request it that way.
 
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -106,58 +91,12 @@ use crate::vulkan::prelude::*;
 use crate::MutateError;
 
 pub(crate) mod core {
-    pub use super::{AudioImport, ChannelRegion, DeviceRingView, DeviceSpan};
-}
-
-/// When dispatching a shader, provide the base address as a buffer and read `len` samples.
-/// Physical index straddles will be returned as two spans, and dispatching twice is appropriate.
-/// Barrier insertion is **not** needed because flushed ranges are guaranteed safe for read until
-/// your [`ImportSink`] allows reclaim, which **must** only be called after the dispatch is retired.
-#[derive(Clone, Copy, Debug)]
-pub struct DeviceSpan {
-    pub base: vk::DeviceAddress,
-    /// Length in *samples*, not bytes. Callers multiply by the sample stride.
-    pub len: u32,
-}
-
-/// One channel's occupied region, expressed as device spans.
-///
-/// `Contiguous` means a single dispatch covers the channel. `Split` means the
-/// occupied region wraps the ring end and needs two dispatches (or one dispatch
-/// that handles two spans).
-#[derive(Clone, Copy, Debug)]
-pub enum ChannelRegion {
-    Contiguous(DeviceSpan),
-    Split { head: DeviceSpan, tail: DeviceSpan },
-}
-
-impl ChannelRegion {
-    /// Total occupied samples across the region's spans.
-    pub fn occupied_len(&self) -> u32 {
-        match self {
-            ChannelRegion::Contiguous(s) => s.len,
-            ChannelRegion::Split { head, tail } => head.len + tail.len,
-        }
-    }
-
-    /// True when the consumer must dispatch over two spans.
-    pub fn is_split(&self) -> bool {
-        matches!(self, ChannelRegion::Split { .. })
-    }
-
-    /// Spans in logical (oldest-first) order, for uniform iteration.
-    pub fn spans(&self) -> impl Iterator<Item = DeviceSpan> {
-        let (a, b) = match self {
-            ChannelRegion::Contiguous(s) => (Some(*s), None),
-            ChannelRegion::Split { head, tail } => (Some(*head), Some(*tail)),
-        };
-        a.into_iter().chain(b)
-    }
+    pub use super::{AudioImport, DeviceAudioView};
 }
 
 // NOTE this struct is probably very close to dead.
 struct Control {
-    // MAYBE wrap up state into the untorn.
+    // MAYBE wrap up state into the Untorn.
     /// Writer has completed writes up to this logical address
     write_head: AtomicU64,
     /// Reader has allowed reclaim up to this logical address
@@ -166,116 +105,62 @@ struct Control {
     closed: AtomicBool,
 }
 
-/// Immutable ring geometry.  Copy + Send, so both the host handle and the writer thread hold
-/// their own.  Owns the wrap math so it exists in exactly one place.
+/// Downstream readers dispatch against the data using this output type.
 #[derive(Clone, Copy, Debug)]
-pub struct RingLayout<const CHANNELS: usize> {
-    /// Backing memory buffer device address.
-    pub base_address: vk::DeviceAddress,
-    /// An array of buffer offsets for each ring's sub-allocation.  Base address + offset =
-    /// on-device address.
-    pub channel_offsets: [u32; CHANNELS],
-    /// Length of each channel
+pub struct DeviceAudioView {
+    /// device address.
+    pub base_address: DeviceAddress,
+    /// Length of each channel in samples.
     pub sample_count: u32,
-}
-
-impl<const CHANNELS: usize> RingLayout<CHANNELS> {
-    /// Snapshot the occupied region for every channel from a single head read.
-    ///
-    /// All channels share the same logical [read, write) interval, so the wrap
-    /// geometry is computed once and only the per-channel base address differs.
-    pub fn regions(&self, read: u64, write: u64) -> [ChannelRegion; CHANNELS] {
-        let cap = self.sample_count as u64;
-        debug_assert!(read <= write, "read head passed write head");
-        debug_assert!(write - read <= cap, "occupied exceeds capacity");
-        let occupied = write - read;
-        let first = read % cap;
-        let to_end = cap - first;
-        let split = occupied > to_end;
-
-        std::array::from_fn(|c| {
-            let base = self.base_address + self.channel_offsets[c] as u64;
-            let phys_addr = |s: u64| base + s * 4;
-            if split {
-                ChannelRegion::Split {
-                    head: DeviceSpan {
-                        base: phys_addr(first),
-                        len: to_end as u32,
-                    },
-                    tail: DeviceSpan {
-                        base,
-                        len: (occupied - to_end) as u32,
-                    },
-                }
-            } else {
-                ChannelRegion::Contiguous(DeviceSpan {
-                    base: phys_addr(first),
-                    len: occupied as u32,
-                })
-            }
-        })
-    }
-}
-
-/// A snapshot of ring state and consumer-owned data that will be valid for use in a dispatch.
-/// Callback **must** advance the `read_head` by returning the number of reetired samples or else
-/// the producer will just fill up.  Advancing the read head allows the producer to reclaim, meaning
-/// the data could be overwritten and flushed.
-///
-/// Many methods accept a `local_read_head` which should be a value tracked by your downstream, such
-/// the farthest advance you have dispatched so far.  The index after the last sample you read
-/// should be your new `local_read_head`.  If you are smoothly tracking timing data and want to
-/// allow some buffer to prevent underruns on audio server stutter, do not consume up until read,
-/// but instead use the `AudioTiming` data.
-#[derive(Clone, Debug)]
-pub struct DeviceRingView<const CHANNELS: usize> {
-    pub ring_layout: RingLayout<CHANNELS>, // add Copy to RingLayout
-    pub timing: AudioTiming,
-    /// Logical heads at snapshot time.
+    /// number of channels
+    pub channel_count: u32,
+    /// Output rate of data arriving on this ring.  Samples per second.
+    pub sample_rate: u32,
+    /// Logical write head at snapshot time.
     pub write_head: u64,
+    /// Consumer owned logical read head.
     pub read_head: u64,
+    /// Upstream filtered timing signal to enable smooth tracking.  Only available after the first
+    /// chunk is published by the audio server.
+    pub timing: Option<AudioTiming>,
 }
 
-impl<const CHANNELS: usize> DeviceRingView<CHANNELS> {
-    /// Total number of samples in the ring.  If you return a positive intent to reclaim, you must
-    /// not use more than the difference between samples and reclaim or else undefined behavior may
-    /// occur.
-    pub fn occupied_len(&self) -> u32 {
+impl DeviceAudioView {
+    /// Convert logical read head to a pre-wrapped physical index.  Shaders usually start reading
+    /// here.
+    pub fn read_head_physical(&self) -> u32 {
+        (self.read_head % self.sample_count as u64) as u32
+    }
+
+    /// Convert occupied length to a count for use with a physical start index and the wrap mask.
+    pub fn read_count(&self) -> u32 {
         (self.write_head - self.read_head) as u32
     }
 
-    /// Obtain the ring data starting at `local_read_head`.
-    pub fn regions_since(&self, local_read_head: u64) -> [ChannelRegion; CHANNELS] {
-        debug_assert!(
-            local_read_head >= self.read_head,
-            "local head behind reclaim head"
-        );
-        debug_assert!(
-            local_read_head <= self.write_head,
-            "local head ahead of write head"
-        );
-        self.ring_layout.regions(local_read_head, self.write_head)
+    /// Wrap modulus for physical indexing.
+    pub fn mask(&self) -> u32 {
+        self.sample_count - 1
     }
 
-    /// Like `occupied_len` but only includes samples starting at `local_read_head`.
-    pub fn occupied_since(&self, local_read_head: u64) -> u32 {
-        debug_assert!(local_read_head <= self.write_head);
-        (self.write_head - local_read_head) as u32
+    /// Compute a device address of a specific channel.  Not expecting much use, but a single
+    /// channel reader may prefer it.
+    pub fn channel(&self, channel_index: usize) -> DeviceAddress {
+        (self.base_address.raw() + channel_index as u64 * self.sample_count as u64 * 4).into()
     }
 }
 
-/// Import data consumer.  Receives [`DeviceRingView`] snapshot when new data has been published to
-/// the on-device rings.  Implemented for `Send + 'static` closures.
-pub trait ImportSink<const CHANNELS: usize>: Send + 'static {
-    /// Return samples the caller is done with; the writer folds that into the read head.
-    fn process(&mut self, view: &DeviceRingView<CHANNELS>) -> Result<u32, MutateError>;
+/// User callback type that receives published updates of the device audio rings.  Implemented for
+/// `Send + 'static` closures.
+pub trait ImportSink: Send + 'static {
+    /// Callback must return retired sample count.
+    fn process(&mut self, view: &DeviceAudioView) -> Result<u32, MutateError>;
 }
 
-impl<F, const CHANNELS: usize> ImportSink<CHANNELS> for F
+impl<F> ImportSink for F
 where
-    F: FnMut(&DeviceRingView<CHANNELS>) -> Result<u32, MutateError> + Send + 'static,
+    F: FnMut(&DeviceAudioView) -> Result<u32, MutateError> + Send + 'static,
 {
-    fn process(&mut self, view: &DeviceRingView<CHANNELS>) -> Result<u32, MutateError> {
+    fn process(&mut self, view: &DeviceAudioView) -> Result<u32, MutateError> {
         self(view)
     }
 }
@@ -283,110 +168,78 @@ where
 /// The owned side a device import stream.  Data import to the GPU is handled by an owned a reader
 /// thread.  This type gathers up ownership and provides an interface to the published control data
 /// for host-side and setting up device-side reads.
-pub struct AudioImport<const CHANNELS: usize> {
+pub struct AudioImport {
     /// Just a persistent bag of bytes being used for ad-hoc sub-allocations. (DEBT).
     buffer: MappedAllocation<u8>,
     /// Reader thread.
     read_thread_handle: Option<JoinHandle<Result<(), MutateError>>>,
     /// Address, offsets of each channel, length in samples.
-    ring_layout: RingLayout<CHANNELS>,
+    ring_layout: DeviceAudioView,
     /// Shared control data.
     control: Arc<Control>,
 }
 
-impl<const CHANNELS: usize> AudioImport<CHANNELS> {
-    /// Allocate the ring backing store and derive its geometry, without starting import.
-    ///
-    /// Split out from construction so a caller can build an [`ImportSink`] that already knows the
-    /// `RingLayout` (device addresses, channel offsets, capacity) before the reader thread — and
-    /// therefore the first callback — exists.  Hand the result to [`Self::with_allocation`].
+impl AudioImport {
+    /// Create an import from the audio server to the device, using `AudioConsumer` as an embodiment
+    /// of `AudioChoice` until we cut out the middle man (see mis-indirection DEBT).
     ///
     /// `sample_count` is the length of each channel's ring buffer in samples.  More buffer means
     /// less potential for bursts leading to discontinuities.
-    pub fn allocate(
-        device: &Device,
-        sample_count: u32,
-    ) -> Result<(MappedAllocation<u8>, RingLayout<CHANNELS>), MutateError> {
-        let non_coherent_atom_size = device.memory.non_coherent_atom_size;
-        let channel_bytes = sample_count as u64 * 4;
-        // rounded up for atom flush size
-        let channel_stride = channel_bytes.next_multiple_of(non_coherent_atom_size as u64);
-        let size = channel_stride as usize * CHANNELS;
-        let channel_offsets: [u32; CHANNELS] =
-            std::array::from_fn(|i| (channel_stride * i as u64) as u32);
-        let mut buffer: MappedAllocation<u8> = MappedAllocation::new(device, size)?;
-        let base_address = buffer.device_address(device)?;
-
-        // f32 0.0 is all-zero bytes, so this write is safe.
-        buffer.as_mut_slice().fill(0u8);
-        buffer.flush(device)?;
-
-        Ok((
-            buffer,
-            RingLayout {
-                base_address,
-                channel_offsets,
-                sample_count,
-            },
-        ))
-    }
-
-    /// `sample_count` is the length of each channel's ring buffer in samples.  More buffer means
-    /// less potential for bursts leading to discontinuities.
-    ///
-    /// Use [`Self::allocate`] + [`Self::with_allocation`] when the sink needs the layout up front.
-    pub(crate) fn new<S: ImportSink<CHANNELS>>(
-        device: &Device,
-        rx: AudioConsumer,
-        sample_count: u32,
-        import_sink: S,
-    ) -> Result<AudioImport<CHANNELS>, MutateError> {
-        let (buffer, ring_layout) = Self::allocate(device, sample_count)?;
-        Self::new_inner(device, rx, buffer, ring_layout, import_sink)
-    }
-
-    /// Start import over an allocation obtained from [`Self::allocate`].  The `RingLayout` must be
-    /// the one returned alongside that buffer; pairing a layout with a different allocation is
-    /// undefined behavior on the device side.
-    pub fn with_allocation<S: ImportSink<CHANNELS>>(
-        device: &Device,
-        rx: AudioConsumer,
-        allocation: (MappedAllocation<u8>, RingLayout<CHANNELS>),
-        import_sink: S,
-    ) -> Result<AudioImport<CHANNELS>, MutateError> {
-        let (buffer, ring_layout) = allocation;
-        Self::new_inner(device, rx, buffer, ring_layout, import_sink)
-    }
-
-    fn new_inner<S: ImportSink<CHANNELS>>(
+    pub fn new<S: ImportSink>(
         device: &Device,
         mut rx: AudioConsumer,
-        mut buffer: MappedAllocation<u8>,
-        ring_layout: RingLayout<CHANNELS>,
+        sample_count: u32,
         mut import_sink: S,
-    ) -> Result<AudioImport<CHANNELS>, MutateError> {
+    ) -> Result<AudioImport, MutateError> {
         let control = Arc::new(Control {
             write_head: AtomicU64::new(0),
             read_head: AtomicU64::new(0),
             closed: AtomicBool::new(false),
         });
 
-        // Re-derive what the writer loop needs from the layout it was allocated against.
-        let non_coherent_atom_size = device.memory.non_coherent_atom_size;
-        let sample_count = ring_layout.sample_count;
-        let channel_offsets = ring_layout.channel_offsets;
-        // rounded up for atom flush size; must match `allocate`
-        let channel_stride =
-            (sample_count as u64 * 4).next_multiple_of(non_coherent_atom_size as u64);
+        // DEBT the `rx` has no idea how many channels it has 🤡🤦
+        let channel_count: u32 = 2;
+        let (buffer, ring_layout) = {
+            let size = sample_count * 4 * channel_count;
+            let mut buffer: MappedAllocation<u8> = MappedAllocation::new(device, size as usize)?;
+
+            // f32 0.0 is all-zero bytes, so this write is safe.
+            buffer.as_mut_slice().fill(0u8);
+            buffer.flush(device)?;
+
+            // LIES Just made up the rate and channel count to work downstream
+            // DEBT sample rate / channel count.  The fix can likely be implemented incidental to
+            // getting rid of the intermediate consumer, so let's do that.
+            let base_address = buffer.device_address(device)?;
+            (
+                buffer,
+                DeviceAudioView {
+                    base_address: base_address.into(),
+                    channel_count: 2,
+                    sample_count: sample_count as u32,
+                    sample_rate: 48_000,
+                    read_head: 0,
+                    write_head: 0,
+                    timing: None,
+                },
+            )
+        };
+
+        // Planar layout we will de-interleave into.
+        let channel_bytes = sample_count as usize * 4;
+        let total_bytes = channel_bytes * channel_count as usize;
+        let channels = channel_count as usize;
+
         // Owned write view for the thread.
-        // NOTE in a perfect world, we would figure out the mutability or mark unsafe.  Until that
-        // world exists, this just works.
+        // NOTE write view mutability story is not worked out at all, but not super critical here
+        // either.  There's one canonical writer, the audio server.
         let mut view = buffer.write_view(device);
+
         let writer_control = control.clone();
-        let mut timing = rx.timing()?;
+        let mut timing = Some(rx.timing()?);
 
         let read_thread_handle = Some(std::thread::spawn(move || {
-            let mut scratch = vec![0u8; 4 * CHANNELS * sample_count as usize];
+            let mut scratch = vec![0u8; (4 * channel_count * sample_count) as usize];
             let mut write_head: u64 = 0;
             let mut read_head: u64 = 0;
 
@@ -397,8 +250,9 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
                     // it from the pipewire ingestion ring to our scratch buffer.
                     Ok(_got) => {
                         let read = rx.read(&mut scratch)?;
-                        let frame_bytes = 4 * CHANNELS;
-                        // NOTE not checking for partial samples as pipewire seems well-behaved so far.
+                        let frame_bytes = (4 * channel_count) as usize;
+
+                        // NOTE not checking for partial frames as pipewire seems well-behaved so far.
                         let incoming = read / frame_bytes;
                         let occupied = write_head - read_head;
                         debug_assert!(occupied <= sample_count as u64);
@@ -416,56 +270,20 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
 
                         // Scatter interleaved input samples across channels
                         // DEBT the interleaved assumption here can break pretty spectacularly.
-                        for c in 0..CHANNELS {
-                            let ring_base = channel_offsets[c] as usize;
+                        for c in 0..channels {
+                            let ring_base = c * channel_bytes;
                             for s in 0..to_write {
-                                let src = (s * CHANNELS + c) * 4;
+                                let src = (s * channels + c) * 4;
                                 let logical = (start + s as u64) % sample_count as u64;
                                 let dst_byte = ring_base + logical as usize * 4;
                                 dst[dst_byte..dst_byte + 4].copy_from_slice(&scratch[src..src + 4]);
                             }
                         }
 
-                        // Per-channel flush.  One run if the written region is contiguous, two if it
-                        // wraps the ring end. Ring slots are 4 bytes. ring_base is stride-aligned.
-                        // NOTE over-flushing just means more coherence traffic and will not
-                        // affect the contents of slots that were not modified.
-                        let atom = non_coherent_atom_size as u64;
-                        let cap = sample_count as u64;
-
-                        // NOTE flush is no-op on coherent memory.  We are tending to put this in
-                        // BAR memory, but our buffer type wrappers are super immature, so we don't
-                        // know what kind of memory was actually given to us yet.
-                        for c in 0..CHANNELS {
-                            let ring_base = channel_offsets[c] as u64;
-                            let first = start % cap;
-                            let end = (start + to_write as u64) % cap;
-                            let wrapped = to_write != 0 && end <= first;
-                            let flush_run =
-                                |view: &mut MappedWriteView<u8>,
-                                 lo_sample: u64,
-                                 hi_sample: u64|
-                                 -> Result<(), MutateError> {
-                                    // Byte range [lo, hi) within the channel, widened to atom alignment.
-                                    let lo = ring_base + lo_sample * 4;
-                                    let hi = ring_base + hi_sample * 4;
-                                    // NOTE atom is PoT.  Equivalent expression is (lo / atom) * atom
-                                    let lo_aligned = lo & !(atom - 1);
-                                    let hi_aligned = hi
-                                        .next_multiple_of(atom)
-                                        .min(ring_base + channel_stride as u64);
-                                    Ok(view.flush_range(lo_aligned, hi_aligned - lo_aligned)?)
-                                };
-
-                            if to_write == 0 {
-                                // nothing to flush
-                            } else if wrapped {
-                                flush_run(&mut view, first, cap)?; // head: [first, cap)
-                                flush_run(&mut view, 0, end)?; // tail: [0, end)
-                            } else {
-                                flush_run(&mut view, first, end)?; // contiguous: [first, end)
-                            }
-                        }
+                        // NOTE flush is a no-op on coherent memory.  Whole-buffer flush costs some
+                        // coherence traffic but never changes unmodified slots, and the written
+                        // ranges are annoying to compute per channel across a wrap.
+                        view.flush_range(0, total_bytes as u64)?;
 
                         // Publish new write head
                         write_head += to_write as u64;
@@ -476,23 +294,21 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
                         // Pick up new timing data, which is written by now.
                         match rx.timing() {
                             Ok(new_time) => {
-                                timing = new_time;
+                                timing = Some(new_time);
                             }
                             Err(e) => {
                                 // Realistically poisoning was the only error type.  Suddenly closed
-                                // upstream still has a phase, just one that will never arrive again.
+                                // upstream still has a phase estimate, just one that will never
+                                // arrive again.
                                 return Err(e);
                             }
                         };
                         // Ring update is flushed & coherent.  Host view of state is updated.  Call
-                        // the callback with the updated view, including the latest timing data and
-                        // a pointer to the read_head so that it can update it.
-                        let device_ring_view = DeviceRingView {
-                            ring_layout,
-                            timing,
-                            read_head,
-                            write_head,
-                        };
+                        // the callback with the updated view, including the latest timing data.
+                        let mut device_ring_view = ring_layout.clone();
+                        device_ring_view.timing = timing;
+                        device_ring_view.write_head = write_head;
+                        device_ring_view.read_head = read_head;
                         let retired = match import_sink.process(&device_ring_view) {
                             Ok(retired) => retired as u64,
 
@@ -508,7 +324,7 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
                         writer_control.read_head.store(read_head, Ordering::Release);
                     }
                     Err(MutateError::Timeout(_)) => {
-                        // DEBT logging and runtime toggles for scopes of messages 💀
+                        // DEBT tracing and environment toggles for scoped logging 💀
                         println!("audio server chunk was late");
                     }
                     Err(e) => {
@@ -526,37 +342,6 @@ impl<const CHANNELS: usize> AudioImport<CHANNELS> {
             ring_layout,
             control,
         })
-    }
-
-    /// The size in elements that the physical rings can store when full.  This is also the repeat
-    /// modulus for physical indexes.
-    pub fn capacity(&self) -> u32 {
-        self.ring_layout.sample_count
-    }
-
-    /// Number of samples currently occupied (written but not reclaimed).
-    /// This is the same for every channel — they advance in lockstep.
-    pub fn occupied_len(&self) -> Result<u32, MutateError> {
-        if self.control.closed.load(Ordering::Relaxed) {
-            return Err(MutateError::Dropped);
-        }
-        // XXX These two reads can tear.  Pair the reads with Untorn.
-        let read = self.control.read_head.load(Ordering::Acquire);
-        let write = self.control.write_head.load(Ordering::Acquire);
-        Ok(write.saturating_sub(read) as u32)
-    }
-
-    /// Physical base address of each channel's ring sub-allocation.  **Bare use of these addresses
-    /// is undefined behavior** that will read torn data.  Use for fun or ring diagnostics.  All bit
-    /// patterns are valid float, but the data found may be nonsensical and pollute heuristics.
-    /// That said, observing the data tearing in real time is **pretty rad** 😎!
-    pub unsafe fn channels(&self) -> Result<[vk::DeviceAddress; CHANNELS], MutateError> {
-        if self.control.closed.load(Ordering::Relaxed) {
-            return Err(MutateError::Dropped);
-        }
-        Ok(std::array::from_fn(|c| {
-            self.ring_layout.base_address + self.ring_layout.channel_offsets[c] as u64
-        }))
     }
 
     /// Will set a flag for upstream and returns when that thread joins.  This method blocks.

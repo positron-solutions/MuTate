@@ -759,7 +759,7 @@ mod test {
 
     #[test]
     fn graphics_high_always_exact() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             // obtaining device context implicitly created queues
             let gfx = device.queues.graphics_offscreen(QueuePriority::High);
             assert_eq!(gfx.priority, QueuePriority::High);
@@ -773,7 +773,7 @@ mod test {
 
     #[test]
     fn transfer_is_always_low_priority() {
-        with_context!(|device, _instance| {
+        with_context!(|_instance, device| {
             let compute_low = device.queues.compute(QueuePriority::Low);
             let transfer = device.queues.transfer();
             // If compute had to be overloaded onto graphics high (degenerate case) then this test
@@ -791,7 +791,7 @@ mod test {
 
     #[test]
     fn compute_low_is_always_low_priority() {
-        with_context!(|device, _instance| {
+        with_context!(|_instance, device| {
             let gfx_low = device.queues.graphics_offscreen(QueuePriority::Low);
             let compute_low = device.queues.compute(QueuePriority::Low);
             // If graphics had to be overloaded onto graphics high (degenerate case) then this test
@@ -809,7 +809,7 @@ mod test {
 
     #[test]
     fn dedicated_transfer_when_present() {
-        with_context!(|device, instance| {
+        with_context!(|instance, device| {
             let physical = device.physical_device;
             let instance = &instance.raw;
 

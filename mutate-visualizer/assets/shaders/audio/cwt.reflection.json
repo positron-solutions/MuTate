@@ -1,0 +1,105 @@
+{
+    "parameters": [
+        {
+            "name": "pc",
+            "binding": {"kind": "pushConstantBuffer", "index": 0},
+            "type": {
+                "kind": "constantBuffer",
+                "elementType": {
+                    "kind": "struct",
+                    "name": "PushConstants",
+                    "fields": [
+                        {
+                            "name": "input_base",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint64"
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "static_base",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint64"
+                            },
+                            "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                        },
+                        {
+                            "name": "output_base",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint64"
+                            },
+                            "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                        }
+                    ]
+                },
+                "containerVarLayout": {
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                },
+                "elementVarLayout": {
+                    "type": {
+                        "kind": "struct",
+                        "name": "PushConstants",
+                        "fields": [
+                            {
+                                "name": "input_base",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint64"
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "static_base",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint64"
+                                },
+                                "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0}
+                            },
+                            {
+                                "name": "output_base",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint64"
+                                },
+                                "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0}
+                            }
+                        ]
+                    },
+                    "binding": {"kind": "uniform", "offset": 0, "size": 24, "elementStride": 0}
+                }
+            }
+        }
+    ],
+    "entryPoints": [
+        {
+            "name": "main",
+            "stage": "compute",
+            "parameters": [
+                {
+                    "name": "tid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        }
+                    }
+                }
+            ],
+            "threadGroupSize": [8, 1, 1],
+            "bindings": [
+                {
+                    "name": "pc",
+                    "binding": {"kind": "pushConstantBuffer", "index": 0}
+                }
+            ]
+        }
+    ],
+    "bindlessSpaceIndex": 0
+}

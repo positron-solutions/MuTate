@@ -7,6 +7,9 @@
 //! tables.  The [`Device`] pulls all of these behaviors together.  [`Device`] derefs to the raw
 //! [`ash::vk::device`] for direct use in ash APIs.
 
+// MAYBE Extend vk::Device for things that don't require the wrapped Device.  Then &Device grows
+// those methods via Deref.
+
 pub mod descriptors;
 pub mod fence;
 pub mod memory;

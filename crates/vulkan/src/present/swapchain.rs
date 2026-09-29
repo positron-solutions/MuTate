@@ -267,8 +267,8 @@ pub struct Swapchain {
 
 impl Swapchain {
     pub fn new(
-        device: &Device,
         instance: &Instance,
+        device: &Device,
         surface: &Surface,
     ) -> Result<Self, VulkanError> {
         let Instance {
