@@ -39,7 +39,7 @@ const CENTER_SHARE: f64 = 0.5;
 const F32_MIN_CLIFF_SCALE: f64 = 0.5 * f32::EPSILON as f64;
 /// Past this depth of the modeled edge re the crest, cells may ripple where the saddle and
 /// endpoint tails beat, and the envelope model sets the removal fractions.
-const ANALYTIC_DB: f64 = -120.0;
+const ANALYTIC_DB: f64 = -200.0;
 
 /// How the motherlet lands on a cell.  `Nearest` is technically correct in a sense, but `Axial`,
 /// **the default**, has been found to be more robust near edge cases.  `Complex` sags in much the
