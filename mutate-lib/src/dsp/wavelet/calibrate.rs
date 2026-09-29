@@ -66,6 +66,10 @@
 //! Predictions are envelopes.  Levels rise by a margin and the knee scales by one, each covering
 //! `ENVELOPE` of measured bins, so plans over deliver rather than miss.  Levels on table rounding
 //! and cells whose fold breaks the shallowest plan stay out of the fits.
+//!
+//! Predictions exist only at realized halves.  Measurement records every half at unit quantum, so
+//! each fit point carries just the taps its length needs.  A plan takes the least half on its
+//! quantum whose envelope holds, and taps rounding adds past that only deepen what it delivers.
 
 // 🤖 Mostly generated so far.  Working on the user API.  Keep it working, but don't worry about
 // stepping on anyone's pet lines of code.
@@ -249,24 +253,24 @@ impl Fit {
 
     /// Knee settings, printed by `calibration_is_fit` once accepted.
     pub const CALIBRATED: Fit = Fit {
-        p_0: -11.666820569063718,
-        p_slope: -0.2935918566464073,
-        p_rho: -3.1763379447535125,
-        p_lobe: -107.69384308936678,
+        p_0: -13.07015008941905,
+        p_slope: -0.5883677857968512,
+        p_rho: 2.548070102227145,
+        p_lobe: 9.0243837366645,
         floor: Decay {
-            base: 38.41209779698655,
-            tail: 0.01848431251887577,
-            reach: 2.6494544373459683,
+            base: 37.24895110631419,
+            tail: -0.12981152500147797,
+            reach: 2.6614525619662492,
         },
-        w_knee: 2.05022891556142,
-        w_n: -0.43711836348271854,
-        w_m: 0.6776895798425826,
+        w_knee: 1.033828933140709,
+        w_n: 1.1611723927192519,
+        w_m: 0.8620850505812259,
         span: (2.009355381156725, 5.498437260308141),
         margin: Margin {
-            psl: 2.748700258153704,
-            floor: 9.86477496637184,
-            fold: 2.983412775955429,
-            knee: 1.1323489524574923,
+            psl: 2.641687032523194,
+            floor: 2.298835040603791,
+            fold: 3.6338203145165835,
+            knee: 1.0400243351581635,
         },
     };
 
@@ -323,9 +327,10 @@ impl Fit {
         }
     }
 
-    /// Envelope at `shape` and `rho` with half span `u`, taps continuous.
-    pub fn predict(&self, shape: Shape, rho: f64, u: f64) -> Prediction {
+    /// Envelope at `shape` and `rho` with `half` folded weights past the center.
+    pub fn predict(&self, shape: Shape, rho: f64, half: usize) -> Prediction {
         let (q, p) = (shape.q(), shape.p());
+        let u = rho * (half + 1) as f64;
         let (tail, x) = (shape.truncation_tail(u), TAU * u / p);
         let m = self.margin;
 
@@ -335,10 +340,10 @@ impl Fit {
         Prediction {
             q,
             rho,
+            half,
             u,
             x,
             tail,
-            taps: 2 * (u / rho).ceil() as usize + 1,
             psl: psl + m.psl,
             floor: floor + m.floor,
             fold: shape.image_db(rho) + m.fold,
@@ -350,7 +355,12 @@ impl Fit {
     fn margin_over(&self, gamma: f64, obs: &[Obs]) -> Margin {
         let pairs: Vec<(&Obs, Prediction)> = obs
             .iter()
-            .map(|o| (o, self.predict(Shape::from_q(o.q, gamma), o.rho, o.u)))
+            .map(|o| {
+                (
+                    o,
+                    self.predict(Shape::from_q(o.q, gamma), o.rho, o.taps / 2),
+                )
+            })
             .collect();
 
         // q_ENVELOPE of seen − fit over resolved levels
@@ -397,17 +407,19 @@ impl Fit {
     }
 }
 
-/// Response a calibration promises.  Levels in dB re the crest, each an envelope.
+/// Response a calibration promises at a realized length.  Levels in dB re the crest, each an
+/// envelope.
 #[derive(Clone, Copy, Debug)]
 pub struct Prediction {
     pub q: f64,
     pub rho: f64,
+    /// Folded weights past the center.
+    pub half: usize,
+    /// ρ half
     pub u: f64,
     pub x: f64,
     /// Feeds `with_truncation`.
     pub tail: f64,
-    /// Unfolded at unit quantum.
-    pub taps: usize,
     pub psl: f64,
     pub floor: f64,
     /// Main lobe at Nyquist
@@ -445,55 +457,68 @@ impl Calibration {
         }
     }
 
-    /// Envelope at `q` and `rho` with half span `u`, taps continuous.
-    pub fn predict(&self, q: f64, rho: f64, u: f64) -> Prediction {
-        self.fit.predict(self.settings.shape(q), rho, u)
+    /// Envelope at `q` and `rho` with `half` folded weights past the center.
+    pub fn predict(&self, q: f64, rho: f64, half: usize) -> Prediction {
+        self.fit.predict(self.settings.shape(q), rho, half)
     }
 
-    /// Least half span whose floor envelope holds `floor`, absent past `DEEPEST_DB`.
-    pub fn u_for_floor(&self, q: f64, rho: f64, floor: f64) -> Option<f64> {
-        self.least_u(q, rho, floor, |p| p.floor)
+    /// Least half on `quantum` whose floor envelope holds `floor`, absent past `DEEPEST_DB`.
+    pub fn half_for_floor(&self, q: f64, rho: f64, floor: f64, quantum: usize) -> Option<usize> {
+        self.least_half(q, rho, quantum, floor, |p| p.floor)
     }
 
-    /// Least half span whose PSL envelope holds `psl`, absent past `DEEPEST_DB`.
-    pub fn u_for_psl(&self, q: f64, rho: f64, psl: f64) -> Option<f64> {
-        self.least_u(q, rho, psl, |p| p.psl)
+    /// Least half on `quantum` whose PSL envelope holds `psl`, absent past `DEEPEST_DB`.
+    pub fn half_for_psl(&self, q: f64, rho: f64, psl: f64, quantum: usize) -> Option<usize> {
+        self.least_half(q, rho, quantum, psl, |p| p.psl)
     }
 
-    /// Least half span whose `level` envelope holds `level_db`.
-    fn least_u(
+    /// Least half on `quantum` whose `level` envelope holds `level_db`.
+    fn least_half(
         &self,
         q: f64,
         rho: f64,
+        quantum: usize,
         level_db: f64,
         level: fn(&Prediction) -> f64,
-    ) -> Option<f64> {
+    ) -> Option<usize> {
         let goal = -level_db.abs();
         if goal < DEEPEST_DB {
             return None;
         }
-        let (lo, hi) = self.reach(q, rho)?;
-        least(|u| level(&self.predict(q, rho, u)) - goal, lo, hi)
+        let (lo, hi) = self.reach(q, rho, quantum)?;
+        least(
+            |n| level(&self.predict(q, rho, n * quantum)) <= goal,
+            lo,
+            hi,
+        )
+        .map(|n| n * quantum)
     }
 
     /// Envelope of a realized bin baked under these settings.
     pub fn predict_bin(&self, bin: Bin<'_>) -> Prediction {
-        let u = bin.rho() * (bin.len_folded() - 1) as f64;
-        self.predict(bin.wavelet.shape.q(), bin.rho(), u)
+        self.predict(bin.wavelet.shape.q(), bin.rho(), bin.len_folded() - 1)
     }
 
-    /// Half spans measured by the fit where Q_real holds `Q_REAL_MIN`.
-    fn reach(&self, q: f64, rho: f64) -> Option<(f64, f64)> {
-        // u = x P / 2π
-        let scale = self.settings.shape(q).p() / TAU;
-        let (lo, hi) = (self.fit.span.0 * scale, self.fit.span.1 * scale);
-        let lo = least(|u| Q_REAL_MIN - self.predict(q, rho, u).q_real(), lo, hi)?;
+    /// Multiples of `quantum` whose halves the fit measured and whose Q_real holds `Q_REAL_MIN`.
+    fn reach(&self, q: f64, rho: f64, quantum: usize) -> Option<(usize, usize)> {
+        // (x P / 2πρ − 1) / quantum, the halves of K spanning x
+        let scale = self.settings.shape(q).p() / (TAU * rho);
+        let multiple = |x: f64| (x * scale - 1.0) / quantum as f64;
+        let (lo, hi) = (
+            multiple(self.fit.span.0).ceil() as usize,
+            multiple(self.fit.span.1).floor() as usize,
+        );
+        let lo = least(
+            |n| self.predict(q, rho, n * quantum).q_real() >= Q_REAL_MIN,
+            lo,
+            hi,
+        )?;
         Some((lo, hi))
     }
 
-    /// Q at least `q` whose fold envelope holds `floor` at `rho`, and the half span holding it
-    /// past the fold.
-    pub fn plan(&self, q: f64, rho: f64, floor: f64) -> Option<Prediction> {
+    /// Q at least `q` whose fold envelope holds `floor` at `rho`, at the least half on `quantum`
+    /// holding it past the fold.
+    pub fn plan(&self, q: f64, rho: f64, floor: f64, quantum: usize) -> Option<Prediction> {
         // goal − fold margin
         let limit = -floor.abs() - self.fit.margin.fold;
         let fold = self.settings.shape(q).image_db(rho);
@@ -502,8 +527,8 @@ impl Calibration {
             true => q * (limit / fold).sqrt(),
             false => q,
         };
-        self.u_for_floor(q, rho, floor)
-            .map(|u| self.predict(q, rho, u))
+        self.half_for_floor(q, rho, floor, quantum)
+            .map(|half| self.predict(q, rho, half))
     }
 }
 
@@ -527,7 +552,7 @@ pub(super) struct Obs {
 pub(super) fn observe(bin: Bin<'_>) -> Option<Obs> {
     let shape = bin.wavelet.shape;
     let (q, rho, w0) = (shape.q(), bin.rho(), bin.velocity());
-    let u = rho * (bin.len_folded() - 1) as f64;
+    let u = rho * bin.len_folded() as f64;
     let wts = bin.weights();
     let psi = wts.psi();
 
@@ -602,7 +627,7 @@ pub(super) fn measure(settings: Settings, sweep: Sweep) -> Vec<Obs> {
             }
             let mut last = 0;
             for &x in &xs {
-                let half = (u(x) / rho).ceil() as usize;
+                let half = (u(x) / rho).ceil() as usize - 1;
                 if half != last {
                     last = half;
                     out.extend(observe(wav.at_reach(rho, half)));
@@ -628,13 +653,19 @@ fn grid((lo, hi, step): (f64, f64, f64)) -> impl Iterator<Item = f64> + Clone {
     (0..=n).map(move |i| lo + step * i as f64)
 }
 
-/// Least point of [lo, hi] where a decreasing `f` reaches zero.
-fn least(f: impl Fn(f64) -> f64, lo: f64, hi: f64) -> Option<f64> {
-    match (f(lo) <= 0.0, f(hi) <= 0.0) {
-        (true, _) => Some(lo),
-        (false, true) => Some(bisect(f, lo, hi)),
-        (false, false) => None,
+/// Least n of [lo, hi] where a monotone `holds` turns true.
+fn least(holds: impl Fn(usize) -> bool, mut lo: usize, mut hi: usize) -> Option<usize> {
+    if lo > hi || !holds(hi) {
+        return None;
     }
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        match holds(mid) {
+            true => hi = mid,
+            false => lo = mid + 1,
+        }
+    }
+    Some(lo)
 }
 
 /// x minimizing Σ (a·x − y)².
@@ -672,19 +703,32 @@ fn lstsq<const M: usize>(rows: &[([f64; M], f64)]) -> [f64; M] {
 
 #[cfg(test)]
 mod test {
-    use super::super::harness::{at, Ledger};
     use super::*;
 
     // NOTE The tests have two parts:
     //
     // - Run a fresh calibration via `make_calibration`
-    // - Test the `Calibration::CALIBRATED` via
+    // - Test the `Calibration::CALIBRATED` via `calibration_is_accepted`
 
-    /// Plans off the calibration ladder deliver their floors and sit under the calibration's own
-    /// envelopes.  Margins must sit under ceilings contaminated fits cross.  Wishes and over
-    /// delivery are reported, not judged.
+    /// (IQM |e|, median e, worst e) over rows with an error
+    fn scale(e: &[f64]) -> [f64; 3] {
+        let e: Vec<f64> = e.iter().copied().filter(|e| !e.is_nan()).collect();
+        let mut abs: Vec<f64> = e.iter().map(|e| e.abs()).collect();
+        abs.sort_by(f64::total_cmp);
+        let q = abs.len() / 4;
+        let mid = &abs[q..abs.len() - q];
+        [
+            mid.iter().sum::<f64>() / mid.len() as f64,
+            quantile(e.clone(), 0.5),
+            e.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        ]
+    }
+
+    /// Plans off the calibration ladder deliver their PSL and sit under the calibration's own
+    /// envelopes.  Each realized bin answers once, and the PSL envelope answers where it chose the
+    /// length.  Margins must sit under limits contaminated fits cross.
     fn accept(cal: &Calibration) -> bool {
-        // Wished margins, the over delivery each envelope costs.
+        // Target margins, the over delivery each envelope costs.
         const PSL_DB: f64 = 2.5;
         const FLOOR_DB: f64 = 6.0;
         const FOLD_DB: f64 = 3.0;
@@ -695,154 +739,210 @@ mod test {
         const FOLD_CEIL_DB: f64 = 10.0;
         const KNEE_CEIL: f64 = 1.3;
 
+        const QUANTA: [usize; 2] = [1, 4];
         const QS: [f64; 3] = [4.5, 8.5, 16.0];
         const RHOS: [f64; 4] = [0.08, 0.2, 0.25, 0.35];
-        const FLOORS: [f64; 4] = [-40.0, -60.0, -90.0, -120.0];
+        const PSLS: [f64; 4] = [-40.0, -60.0, -80.0, -100.0];
         /// `ENVELOPE` less slack for bins off the ladder.
         const ENVELOPED: f64 = 0.85;
-        /// Center misses a pitch estimate ignores.
-        const CENTER_C: f64 = 0.5;
         /// Width·Q a Q_real promise ignores.
         const WIDTH_SLACK: f64 = 2e-3;
-        const WORST: usize = 3;
 
         let m = cal.fit.margin;
-        let mut held = true;
+        let mut accepted = true;
 
         println!("\n=== ACCEPTANCE (γ {}) ===", cal.settings.gamma);
-        println!("\n  span x {:.3} to {:.3}", cal.fit.span.0, cal.fit.span.1);
         println!(
-            "\n  {:>9} {:>9} {:>9} {:>9}",
-            "margin", "fit", "wish", "ceiling"
+            "\n  fit measured over x {:.2} to {:.2}",
+            cal.fit.span.0, cal.fit.span.1
         );
-        for (label, v, w, c) in [
-            ("psl dB", m.psl, PSL_DB, PSL_CEIL_DB),
-            ("floor dB", m.floor, FLOOR_DB, FLOOR_CEIL_DB),
-            ("fold dB", m.fold, FOLD_DB, FOLD_CEIL_DB),
-            ("knee", m.knee, KNEE, KNEE_CEIL),
+        println!("\n  margin is how far each envelope sits over its fitted relation");
+        println!("  target is the margin we would like, limit is where the fit is contaminated\n");
+        println!("  {:>6} {:>9} {:>9} {:>9}", "", "margin", "target", "limit");
+        for (label, v, w, c, unit) in [
+            ("psl", m.psl, PSL_DB, PSL_CEIL_DB, "dB"),
+            ("floor", m.floor, FLOOR_DB, FLOOR_CEIL_DB, "dB"),
+            ("fold", m.fold, FOLD_DB, FOLD_CEIL_DB, "dB"),
+            ("knee", m.knee, KNEE, KNEE_CEIL, "×"),
         ] {
             let mark = match (v < w, v < c) {
                 (true, _) => "",
-                (false, true) => "short",
-                (false, false) => "FAIL",
+                (false, true) => "over target",
+                (false, false) => "FAIL over limit",
             };
-            println!("  {label:>9} {v:>9.4} {w:>9.4} {c:>9.4} {mark}");
-            held &= v < c;
+            println!(
+                "  {label:>6} {:>9} {:>9} {:>9}  {mark}",
+                format!("{v:.2} {unit:<2}"),
+                format!("{w:.2} {unit:<2}"),
+                format!("{c:.2} {unit:<2}"),
+            );
+            accepted &= v < c;
         }
 
+        // (label, unit, (measured − fit, envelope − measured, within the envelope))
         let mut ledgers = [
-            ("delivered", ENVELOPED, Ledger::default()),
-            ("floor", ENVELOPED, Ledger::default()),
-            ("psl", ENVELOPED, Ledger::default()),
-            ("fold", ENVELOPED, Ledger::default()),
-            ("width", ENVELOPED, Ledger::default()),
-            ("center", 1.0, Ledger::default()),
-            ("q_real", 1.0, Ledger::default()),
+            ("psl", "dB", Vec::new()),
+            ("floor", "dB", Vec::new()),
+            ("fold", "dB", Vec::new()),
+            ("width", "%", Vec::new()),
         ];
-        // target − floor over delivered plans
-        let mut waste = Vec::new();
-        // 10^((seen − want)/20), holding where the seen level is absent or on table rounding
-        let over = |seen: f64, want: f64| match resolved(seen) {
-            true => 10f64.powf((seen - want) / 20.0),
-            false => 0.0,
+        let bare = Fit {
+            margin: Margin::NONE,
+            ..cal.fit
         };
+        // (measured − fit, envelope − measured, envelope holds)
+        let level = |seen: f64, fit: f64, env: f64| {
+            resolved(seen).then(|| (seen - fit, env - seen, seen <= env))
+        };
+        let (mut kept, mut plans) = (0usize, 0usize);
 
-        println!("\n  plans off the ladder, seen / envelope, dB re gain and cents\n");
+        // (Q, ρ, half) of bins already held to their envelopes
+        let mut held = Vec::new();
+        // target − psl over plans whose PSL chose the length
+        let mut waste = Vec::new();
+
+        println!("\n  plans off the ladder by PSL target, levels in dB re gain");
+        println!("  error is |measured − fit|, the fit's miss before any margin");
+        println!("  by names what set the length, the requested PSL or the fit span edge\n");
         println!(
-            "  {:>5} {:>6} {:>6} {:>6} {:>5} {:>6} {:>17} {:>17} {:>17} {:>15} {:>7}",
+            "  {:>3} {:>5} {:>6} {:>6} {:>5} {:>5} {:>5} {:>8} {:>7} {:>8} {:>7} {:>7} {:>7}",
+            "n",
             "Q",
             "rho",
             "target",
-            "plan Q",
             "taps",
             "x",
-            "floor",
+            "by",
             "psl",
-            "fold",
+            "error",
+            "floor",
+            "error",
             "width·Q",
-            "center"
+            "error %"
         );
 
-        for q in QS {
-            for rho in RHOS {
-                for target in FLOORS {
-                    let Some(plan) = cal.plan(q, rho, target) else {
-                        println!("  {q:>5.1} {rho:>6.3} {target:>6.0}  unreachable");
-                        continue;
-                    };
-                    let wav = cal
-                        .settings
-                        .wavelet(plan.q)
-                        .max_load_quantum(1)
-                        .max_half_span(plan.u)
-                        .bake();
-                    let bin = wav.at_reach(rho, (plan.u / rho).ceil() as usize);
-                    let at = at!(q, rho, target);
+        for quantum in QUANTA {
+            for q in QS {
+                for rho in RHOS {
+                    for target in PSLS {
+                        let Some(half) = cal.half_for_psl(q, rho, target, quantum) else {
+                            println!(
+                                "  {quantum:>3} {q:>5.1} {rho:>6.3} {target:>6.0}  unreachable"
+                            );
+                            continue;
+                        };
+                        let plan = cal.predict(q, rho, half);
+                        let wav = cal
+                            .settings
+                            .wavelet(q)
+                            .max_load_quantum(1)
+                            .max_half_span(plan.u)
+                            .bake();
+                        let bin = wav.at_reach(rho, half);
 
-                    let Some(seen) = observe(bin) else {
-                        println!("  {q:>5.1} {rho:>6.3} {target:>6.0}  degenerate");
-                        let (_, _, q_real) = ledgers.last_mut().unwrap();
-                        q_real.record(1.0, f64::INFINITY, at);
-                        continue;
-                    };
-                    let want = cal.predict_bin(bin);
+                        // longer than the fit span edge
+                        let bound = cal
+                            .reach(q, rho, quantum)
+                            .is_some_and(|(lo, _)| half > lo * quantum);
+                        let key = (q.to_bits(), rho.to_bits(), half);
+                        let fresh = !held.contains(&key);
+                        if fresh {
+                            held.push(key);
+                        }
 
-                    println!(
-                        "  {q:>5.1} {rho:>6.3} {target:>6.0} {:>6.2} {:>5} {:>6.2} \
-                         {:>8.2}/{:<8.2} {:>8.2}/{:<8.2} {:>8.2}/{:<8.2} {:>7.4}/{:<7.4} {:>7.3}",
-                        plan.q,
-                        seen.taps,
-                        seen.x,
-                        seen.floor,
-                        want.floor,
-                        seen.psl,
-                        want.psl,
-                        seen.fold,
-                        want.fold,
-                        seen.width_q,
-                        want.width_q,
-                        seen.center,
-                    );
+                        plans += 1;
+                        let Some(seen) = observe(bin) else {
+                            println!(
+                                "  {quantum:>3} {q:>5.1} {rho:>6.3} {target:>6.0}  degenerate"
+                            );
+                            continue;
+                        };
+                        let fit = bare.predict(cal.settings.shape(q), rho, half);
 
-                    if seen.floor <= target {
-                        waste.push(target - seen.floor);
-                    }
-                    let ratios = [
-                        over(seen.floor, target),
-                        over(seen.floor, want.floor),
-                        over(seen.psl, want.psl),
-                        // fold envelope where the main lobe clears the PSL at Nyquist
-                        match want.fold > want.psl {
-                            true => over(seen.fold, want.fold),
-                            false => 0.0,
-                        },
-                        // (seen − want) / slack
-                        (seen.width_q - want.width_q) / WIDTH_SLACK,
-                        seen.center.abs() / CENTER_C,
-                        // Q_REAL_MIN / Q_real
-                        Q_REAL_MIN * seen.width_q / seen.q,
-                    ];
-                    for ((_, _, ledger), r) in ledgers.iter_mut().zip(ratios) {
-                        ledger.record(1.0, r, at.clone());
+                        println!(
+                            "  {quantum:>3} {q:>5.1} {rho:>6.3} {target:>6.0} {:>5} {:>5.2} \
+                             {:>5} {:>8.2} {:>7.2} {:>8.2} {:>7.2} {:>7.4} {:>7.2}",
+                            seen.taps,
+                            seen.x,
+                            if bound { "psl" } else { "span" },
+                            seen.psl,
+                            (seen.psl - fit.psl).abs(),
+                            seen.floor,
+                            (seen.floor - fit.floor).abs(),
+                            seen.width_q,
+                            100.0 * (seen.width_q / fit.width_q - 1.0).abs(),
+                        );
+
+                        kept += (seen.psl <= target) as usize;
+                        if bound && seen.psl <= target {
+                            waste.push(target - seen.psl);
+                        }
+
+                        if fresh {
+                            let rows = [
+                                level(seen.psl, fit.psl, plan.psl).filter(|_| bound),
+                                level(seen.floor, fit.floor, plan.floor),
+                                level(seen.fold, fit.fold, plan.fold)
+                                    .filter(|_| plan.fold > plan.psl),
+                                // 100 (W_seen / W − 1), 100 (W_env − W_seen) / W_seen
+                                Some((
+                                    100.0 * (seen.width_q / fit.width_q - 1.0),
+                                    100.0 * (plan.width_q - seen.width_q) / seen.width_q,
+                                    seen.width_q - plan.width_q <= WIDTH_SLACK,
+                                )),
+                            ];
+                            for ((_, _, errs), row) in ledgers.iter_mut().zip(rows) {
+                                errs.extend(row);
+                            }
+                        }
                     }
                 }
             }
         }
 
+        println!(
+            "\n  requested PSL delivered on {kept} of {plans} plans, {:.1}%",
+            100.0 * kept as f64 / plans as f64
+        );
         if !waste.is_empty() {
             println!(
-                "\n  over delivery, median {:.1} dB, q90 {:.1} dB",
+                "  over delivery where the PSL set the length, median {:.1} dB, q90 {:.1} dB",
                 quantile(waste.clone(), 0.5),
                 quantile(waste, 0.9)
             );
         }
+        accepted &= kept as f64 >= ENVELOPED * plans as f64;
 
-        for (label, share, mut ledger) in ledgers {
-            println!("\n  {label}  good {:.4}", ledger.good());
-            ledger.print_worst(WORST);
-            held &= ledger.good() >= share;
+        let rule = "=".repeat(90);
+        println!("\n  {rule}");
+        println!("  bias is the median of measured − fit, spread is how far bins land from the fit either way");
+        println!("  headroom is envelope − measured, crossed is the share of bins where it went negative");
+        println!("  {rule}");
+        println!(
+            "  {:>6} {:>5} {:>13} {:>13} {:>13} {:>8} {:>15}",
+            "", "bins", "bias", "typical ±", "90% within ±", "crossed", "worst headroom"
+        );
+        for (label, unit, errs) in &ledgers {
+            let abs: Vec<f64> = errs.iter().map(|v| v.0.abs()).collect();
+            let crossed = errs.iter().filter(|v| !v.2).count() as f64 / errs.len() as f64;
+            let worst = errs.iter().map(|v| v.1).fold(f64::INFINITY, f64::min);
+            println!(
+                "  {label:>6} {:>5} {:>13} {:>13} {:>13} {:>7.1}% {:>15}",
+                errs.len(),
+                format!(
+                    "{:+.2} {unit:<2}",
+                    quantile(errs.iter().map(|v| v.0).collect(), 0.5)
+                ),
+                format!("{:.2} {unit:<2}", scale(&abs)[0]),
+                format!("{:.2} {unit:<2}", quantile(abs.clone(), 0.9)),
+                100.0 * crossed,
+                format!("{worst:+.2} {unit:<2}"),
+            );
+            accepted &= crossed <= 1.0 - ENVELOPED;
         }
-        held
+        println!("  {rule}");
+
+        accepted
     }
 
     /// Measure and fit the knee settings, print headroom by cell and by cut, and print the literal
@@ -852,6 +952,7 @@ mod test {
     fn make_calibration() {
         /// x band edges from the knee's domain, shallow to deep.
         const BANDS: [f64; 6] = [1.5, 2.25, 3.0, 3.5, 4.0, 6.0];
+        const UNITS: [&str; 4] = ["dB", "dB", "dB", "%"];
 
         let settings = Settings::knee();
         let obs = measure(settings, Sweep::default());
@@ -860,12 +961,12 @@ mod test {
             fit: Fit::new(settings.gamma, &obs),
         };
 
-        // (median, share under zero) of envelope − seen for psl, floor, fold, width·Q
+        // (median, share under zero) of envelope − measured for psl, floor, fold in dB and width in % of the lobe
         let headroom = |rows: &[Obs]| -> [(f64, f64); 4] {
             let h: Vec<[f64; 4]> = rows
                 .iter()
                 .map(|o| {
-                    let p = cal.predict(o.q, o.rho, o.u);
+                    let p = cal.predict(o.q, o.rho, o.taps / 2);
                     let level = |want: f64, seen: f64| match resolved(seen) {
                         true => want - seen,
                         false => f64::NAN,
@@ -877,7 +978,7 @@ mod test {
                             true => level(p.fold, o.fold),
                             false => f64::NAN,
                         },
-                        p.width_q - o.width_q,
+                        100.0 * (p.width_q - o.width_q) / o.width_q,
                     ]
                 })
                 .collect();
@@ -887,24 +988,24 @@ mod test {
                 (quantile(v, 0.5), under)
             })
         };
-        // max |center|
-        let center = |rows: &[Obs]| rows.iter().map(|o| o.center.abs()).fold(0.0, f64::max);
-        let cols = |[p, f, d, w]: [(f64, f64); 4], c: f64| {
-            format!(
-                "{:>+7.2} {:>6.1}% {:>+8.2} {:>6.1}% {:>+8.2} {:>6.1}% {:>+8.4} {:>6.1}% {c:>6.3}",
-                p.0,
-                100.0 * p.1,
-                f.0,
-                100.0 * f.1,
-                d.0,
-                100.0 * d.1,
-                w.0,
-                100.0 * w.1,
-            )
+        let cols = |stats: [(f64, f64); 4]| {
+            stats
+                .into_iter()
+                .zip(UNITS)
+                .map(|((h, under), unit)| match h.is_finite() {
+                    true => format!(
+                        "{:>10} {:>7}",
+                        format!("{h:+.2} {unit:<2}"),
+                        format!("{:.0}%", 100.0 * under)
+                    ),
+                    false => format!("{:>10} {:>7}", "—", "—"),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
         };
         let head = format!(
-            "{:>7} {:>7} {:>8} {:>7} {:>8} {:>7} {:>8} {:>7} {:>6}",
-            "psl h", "under", "floor h", "under", "fold h", "under", "width h", "under", "|c|"
+            "{:>10} {:>7} {:>10} {:>7} {:>10} {:>7} {:>10} {:>7}",
+            "psl", "missed", "floor", "missed", "fold", "missed", "width", "missed"
         );
 
         println!(
@@ -912,9 +1013,9 @@ mod test {
             settings.gamma,
             obs.len()
         );
-        println!("  headroom h is median envelope − seen, under the share delivered worse");
-        println!("  psl, floor, fold in dB, width in width·Q, |c| the worst center in cents");
-        println!("  fold only where its envelope clears the PSL, dashes where no bin does");
+        println!("  headroom is envelope − measured, median per group, negative means the envelope was crossed");
+        println!("  missed is the share of bins that crossed it");
+        println!("  fold only where the main lobe clears the PSL at Nyquist, dash where no bin qualifies");
         println!("  levels under {QUANTIZED_DB:.0} dB sit on table rounding and are left out\n");
         println!("  {:>5} {:>6} {:>5} {head}", "Q", "rho", "bins");
         for cell in obs.chunk_by(|a, b| a.q == b.q && a.rho == b.rho) {
@@ -923,11 +1024,11 @@ mod test {
                 cell[0].q,
                 cell[0].rho,
                 cell.len(),
-                cols(headroom(cell), center(cell))
+                cols(headroom(cell))
             );
         }
 
-        println!("\n  {:>11} {:>7} {:>5} {head}", "x band", "tail", "bins");
+        println!("\n  {:>12} {:>8} {:>5} {head}", "x band", "tail dB", "bins");
         for w in BANDS.windows(2) {
             let rows: Vec<Obs> = obs
                 .iter()
@@ -936,18 +1037,18 @@ mod test {
                 .collect();
             let tail = rows.iter().map(|o| o.tail).sum::<f64>() / rows.len() as f64;
             println!(
-                "  {:>11} {tail:>7.1} {:>5} {}",
+                "  {:>12} {tail:>8.1} {:>5} {}",
                 format!("{:.2} to {:.2}", w[0], w[1]),
                 rows.len(),
-                cols(headroom(&rows), center(&rows))
+                cols(headroom(&rows))
             );
         }
         println!(
-            "  {:>11} {:>7} {:>5} {}",
+            "  {:>12} {:>8} {:>5} {}",
             "pooled",
             "",
             obs.len(),
-            cols(headroom(&obs), center(&obs))
+            cols(headroom(&obs))
         );
 
         assert!(accept(&cal), "calibration not accepted, literal withheld");
@@ -959,7 +1060,7 @@ mod test {
     fn calibration_is_accepted() {
         assert!(
             accept(&Calibration::calibrated()),
-            "calibration not accepted, worst listed per ledger"
+            "calibration not accepted, see crossed and worst headroom per relation"
         );
     }
 }

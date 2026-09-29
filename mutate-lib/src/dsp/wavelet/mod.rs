@@ -494,8 +494,9 @@ impl<'w> Bin<'w> {
         debug_assert!(spec.delay <= l.delay);
 
         let tail_db = spec.noise_floor - TAIL_OVER_FLOOR_DB;
-        let reach = (wavelet.shape.truncation_u(tail_db) / rho).ceil() as usize;
-        let half = (reach + spec.delay).div_ceil(spec.load_quantum) * spec.load_quantum;
+        // K, where the taper reaches zero at or past u
+        let edge = (wavelet.shape.truncation_u(tail_db) / rho).ceil() as usize;
+        let half = (edge - 1 + spec.delay).div_ceil(spec.load_quantum) * spec.load_quantum;
 
         Bin {
             wavelet,
@@ -549,11 +550,9 @@ impl<'w> Bin<'w> {
         self.with_noise_floor(tail_db.abs() - TAIL_OVER_FLOOR_DB)
     }
 
-    /// truncation_tail(ρ(K − 1))
+    /// truncation_tail(ρK)
     pub fn tail(&self) -> f64 {
-        self.wavelet
-            .shape
-            .truncation_tail(self.rho * (self.k - 1) as f64)
+        self.wavelet.shape.truncation_tail(self.rho * self.k as f64)
     }
 
     /// Options used to create this bin.
