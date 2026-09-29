@@ -116,8 +116,8 @@ impl Default for Refinement {
         Self::Reach {
             moments: &[0],
             jet: &[0, 1, 2],
-            turns: 3.0,
-            tangent: false,
+            turns: 5.0,
+            tangent: true,
             spare: 16,
         }
     }
